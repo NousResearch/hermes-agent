@@ -666,7 +666,11 @@ export function toolPartFromStoredCall(call: unknown, fallbackIndex: number, tim
   }
 }
 
-export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
+export function applyStoredToolResult(
+  messages: ChatMessage[],
+  toolMessage: SessionMessage,
+  toolRowId?: number
+): number | null {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
   const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
@@ -696,12 +700,20 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       result: parseStoredToolResult(content),
       isError: false
     } as ChatMessagePart
-    messages[i] = { ...message, parts }
+    // The result row was written after the bubble's own rows, so folding it in
+    // extends the durable row span the bubble covers (branch addressing).
+    messages[i] = {
+      ...message,
+      parts,
+      ...(toolRowId !== undefined && toolRowId > (message.endRowId ?? -Infinity)
+        ? { endRowId: toolRowId }
+        : {})
+    }
 
-    return true
+    return i
   }
 
-  return false
+  return null
 }
 
 export function applyStoredToolResultToParts(

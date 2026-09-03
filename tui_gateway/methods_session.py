@@ -779,6 +779,8 @@ def _(rid, params: dict) -> dict:
                 # history becomes the resumed session record's working conversation),
                 # so heal a durable ``user;user`` violation once here instead of
                 # re-firing the pre-request repair on every subsequent turn.
+                # include_row_ids: session.branch truncates by durable row id
+                # (up_to_row_id) when the desktop branches from a specific message.
                 history = db.get_messages_as_conversation(
                     target, repair_alternation=True, include_row_ids=True
                 )
@@ -938,7 +940,12 @@ def _(rid, params: dict) -> dict:
                 # inspection/export must show what is actually stored.
                 if omit_messages:
                     raw_history = db.get_messages_as_conversation(
-                        target, repair_alternation=True, include_row_ids=True
+                        target,
+                        repair_alternation=True,
+                        # session.branch truncates by durable row id
+                        # (up_to_row_id) when the desktop branches from a
+                        # specific message.
+                        include_row_ids=True,
                     )
                     display_history = []
                 else:
@@ -3328,9 +3335,39 @@ def _(rid, params: dict) -> dict:
             history = _visible_branch_history(in_memory_history)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        count = params.get("count")
-        if isinstance(count, int) and count > 0:
-            history = history[:count]
+        # Truncate to a specific message ONLY when the client names it by its
+        # durable row id. The desktop's transcript is the toChatMessages MERGED
+        # projection (tool rows folded into assistant bubbles), so a "count" of
+        # merged messages has no stable mapping onto this raw row history — the
+        # desktop's count-based slice silently dropped the conversation tail
+        # (#80973). Default (no up_to_row_id) = copy the whole history.
+        #
+        # The cut is ORDINAL ("keep rows up to the last row whose id <= X"),
+        # not an exact-member match: a merged bubble's terminal id may belong
+        # to a row this projection filtered out (a folded tool row, a hidden
+        # marker), and requiring that exact row would wrongly reject the fork.
+        # Rows carry monotonically increasing ids in insertion order, so the
+        # ordinal cut lands on exactly the last visible row of the clicked
+        # bubble's span.
+        up_to_row_id = params.get("up_to_row_id")
+        if isinstance(up_to_row_id, bool) or not isinstance(up_to_row_id, int):
+            up_to_row_id = None
+        if up_to_row_id is not None and up_to_row_id > 0:
+            row_ids = [
+                row_id
+                for message in history
+                if isinstance(row_id := message.get("_row_id"), int) and not isinstance(row_id, bool)
+            ]
+            # Outside the id range this transcript ever persisted, the target
+            # cannot belong to this session — it is stale or foreign. Refuse
+            # rather than silently forking the whole (or an empty) history.
+            if not row_ids or up_to_row_id < min(row_ids) or up_to_row_id > max(row_ids):
+                return _err(rid, 4009, f"branch target row not found: {up_to_row_id}")
+            history = [
+                message
+                for message in history
+                if not isinstance(message.get("_row_id"), int) or message.get("_row_id") <= up_to_row_id
+            ]
         new_key = _new_session_key()
         new_sid = uuid.uuid4().hex[:8]
         source = _session_source(session)
@@ -3398,6 +3435,23 @@ def _(rid, params: dict) -> dict:
                 ],
                 chunk_rows=500,
             )
+            # The copied rows received NEW SQLite ids in the CHILD's database.
+            # Re-address the in-memory history with them: the child branched
+            # again later (a second-generation branch) sends the terminal row's
+            # id, and an id that only exists in the parent's DB would be
+            # rejected as "branch target row not found". Read back with
+            # include_row_ids — the same rows, in insertion order, stamped
+            # with their new durable ids (#80973).
+            try:
+                child_rows = db.get_messages_as_conversation(new_key, include_row_ids=True)
+                if len(child_rows) == len(history):
+                    for message, row in zip(history, child_rows):
+                        child_id = row.get("_row_id")
+
+                        if isinstance(child_id, int):
+                            message["_row_id"] = child_id
+            except Exception:
+                logger.debug("branch child row-id restamp failed", exc_info=True)
             db.set_session_title(new_key, title)
         except Exception as e:
             if lease is not None:

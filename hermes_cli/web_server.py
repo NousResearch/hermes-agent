@@ -1546,6 +1546,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `nous.keepalive_interval_seconds` is the only schema-surfaced nous field
     # (Portal tokens live in auth.json) — fold it into the agent tab.
     "nous": "agent",
+    # `agent_computer.runtime` is the only schema-surfaced Agent Computer
+    # field — fold it into the agent tab rather than spawning a one-field
+    # orphan category.
+    "agent_computer": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -15551,6 +15555,9 @@ def _clear_skills_prompt_cache() -> None:
 from hermes_cli.web_routers import tools as _tools_routes  # noqa: E402
 
 app.include_router(_tools_routes.router)
+from hermes_cli.web_routers import agent_computer as _agent_computer_routes  # noqa: E402
+
+app.include_router(_agent_computer_routes.router)
 from hermes_cli.web_routers.tools import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     get_toolsets,
     toggle_toolset,

@@ -402,6 +402,32 @@ def get_read_block_error(path: str) -> Optional[str]:
             "can still bypass.)"
         )
 
+    # agent-computers/: durable BrowserIdentity user-data-dirs (BWM-796).
+    # Same credential class as browser-profile/; deny the prefix so Cookies /
+    # Login Data / Web Data cannot be read via file tools.
+    for hd in list(hermes_dirs) + [_hermes_root_path()]:
+        try:
+            agent_computers = (hd / "agent-computers").resolve()
+        except Exception:
+            continue
+        if resolved == agent_computers:
+            return (
+                f"Access denied: {path} is the Hermes Agent Computer store "
+                "(managed browser identities) and cannot be read directly. "
+                "(Defense-in-depth — not a security boundary; the terminal "
+                "tool can still bypass.)"
+            )
+        try:
+            resolved.relative_to(agent_computers)
+        except ValueError:
+            continue
+        return (
+            f"Access denied: {path} is inside the Hermes Agent Computer "
+            "store (managed browser identities) and cannot be read directly. "
+            "(Defense-in-depth — not a security boundary; the terminal tool "
+            "can still bypass.)"
+        )
+
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw
     # .env contents — .env.example is the documented-shape substitute. The

@@ -179,6 +179,22 @@ TOOLSETS = {
         "includes": []
     },
     
+    "agent_computer": {
+        "description": (
+            "Opt-in durable AgentComputer tools. Ordinary chat does not "
+            "enable this toolset; enabling it still requires an explicit "
+            "computer_ensure / computer_wake call."
+        ),
+        "tools": [
+            "computer_ensure",
+            "computer_status",
+            "computer_wake",
+            "computer_observe",
+            "computer_act",
+        ],
+        "includes": [],
+    },
+
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [

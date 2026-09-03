@@ -723,13 +723,9 @@ class InProcessCronScheduler(CronScheduler):
                 )
             ]
 
-        # Recovery + initial heartbeat for every profile.
-        # A profile may have been deleted since this snapshot was taken;
-        # never recreate a deleted home's cron workspace via the heartbeat
-        # below (#47368).
-        # One profile's broken store (corrupt executions.db, unreadable
-        # cron dir) must not abort startup for every other profile (#74878).
-        for entry in eligible_profile_homes():
+        initialized_homes: set[str] = set()
+
+        def initialize_profile(entry) -> None:
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
             try:
@@ -752,6 +748,36 @@ class InProcessCronScheduler(CronScheduler):
             finally:
                 reset_hermes_home_override(home_token)
 
+        def initialize_eligible_profiles(entries):
+            eligible_keys = {
+                str(entry[1] if isinstance(entry, tuple) else entry)
+                for entry in entries
+            }
+            # Losing eligibility ends this process's ownership epoch. If the
+            # profile becomes eligible again, recover work abandoned by the
+            # previous owner before this scheduler resumes ticking it.
+            initialized_homes.intersection_update(eligible_keys)
+            for entry in entries:
+                home = entry[1] if isinstance(entry, tuple) else entry
+                key = str(home)
+                if key not in initialized_homes:
+                    initialize_profile(entry)
+                    initialized_homes.add(key)
+            return [
+                entry
+                for entry in entries
+                if str(entry[1] if isinstance(entry, tuple) else entry)
+                in initialized_homes
+            ]
+
+        # Recovery + initial heartbeat for every initially eligible profile.
+        # A profile may have been deleted since this snapshot was taken;
+        # never recreate a deleted home's cron workspace via the heartbeat
+        # below (#47368). One profile's broken store (corrupt executions.db,
+        # unreadable cron dir) must not abort startup for every other profile
+        # (#74878).
+        initialize_eligible_profiles(eligible_profile_homes())
+
         consecutive_failures = 0
         while not stop_event.is_set():
             ok = False
@@ -760,7 +786,7 @@ class InProcessCronScheduler(CronScheduler):
             # Worst per-profile failure this cycle (fd exhaustion wins) so the
             # #87644 backoff/reclaim is applied once per cycle, not per profile.
             _cycle_exc: BaseException | None = None
-            cycle_homes = eligible_profile_homes()
+            cycle_homes = initialize_eligible_profiles(eligible_profile_homes())
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")

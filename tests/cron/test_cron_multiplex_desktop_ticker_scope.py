@@ -106,6 +106,55 @@ def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
     assert (orphan / "cron" / "ticker_last_success").exists()
 
 
+def test_multiplex_ticker_recovers_each_new_ownership_epoch(tmp_path):
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    home = tmp_path / "handoff"
+    (home / "cron").mkdir(parents=True)
+    stop = threading.Event()
+    events: list[tuple[str, str]] = []
+    gate_results = iter((False, True, False, True))
+
+    def _recover():
+        events.append(("recover", str(get_hermes_home())))
+        return 0
+
+    def _tick(*args, **kwargs):
+        events.append(("tick", str(get_hermes_home())))
+        if sum(kind == "tick" for kind, _ in events) == 2:
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with (
+        patch.object(provider, "recover_interrupted", side_effect=_recover),
+        patch("cron.scheduler.tick", side_effect=_tick),
+    ):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("handoff", home)],
+                "profile_gate": lambda name, candidate: next(gate_results),
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == [
+        ("recover", str(home)),
+        ("tick", str(home)),
+        ("recover", str(home)),
+        ("tick", str(home)),
+    ]
+
+
 def test_desktop_ticker_gates_on_every_profile_gateway_owner(tmp_path, monkeypatch):
     """The desktop ticker stands down for direct and multiplex gateway owners."""
     from hermes_cli import web_server

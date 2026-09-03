@@ -1697,6 +1697,56 @@ def _audio_playback_guard(request, monkeypatch):
     if hasattr(_voice, "play_audio_file"):
         monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
 
+    # Second escape route (receipted 2026-09-02: a plain ``pytest tests/ -q``
+    # spoke "Hello world" through a developer's real speakers — caught live as
+    # ``afplay /var/folders/.../tmpcsxohl4y.mp3`` under the keyless ``edge``
+    # provider, so no API key stood between the suite and the speakers):
+    # ``tools/tts_tool.py`` never goes near ``hermes_cli.voice``. It plays
+    # through ``tools.voice_mode.play_audio_file`` — imported at CALL time
+    # inside ``speak()`` / ``_play_via_tempfile``, so patching the
+    # ``tools.voice_mode`` module attribute is what intercepts it — and,
+    # off-macOS, directly through a sounddevice ``OutputStream`` opened via
+    # ``tools.tts_tool._import_sounddevice``. Block both; the stream block
+    # routes synthesis to the tempfile path, whose playback is the stub.
+    # Guard-rot must be LOUD (review note, #101689): if either module path
+    # renames, a silent `except: pass` would quietly reopen the speakers and
+    # nobody would know until the next audible incident. Warn on failure so
+    # coverage loss shows up in the test run's warning summary.
+    import warnings as _warnings
+    try:
+        import tools.voice_mode as _voice_mode
+        if hasattr(_voice_mode, "play_audio_file"):
+            monkeypatch.setattr(_voice_mode, "play_audio_file", _blocked_play_audio_file)
+        else:
+            _warnings.warn(
+                "audio-playback guard: tools.voice_mode.play_audio_file is gone — "
+                "the tts_tool playback route is UNGUARDED; update _audio_playback_guard",
+                RuntimeWarning, stacklevel=1)
+    except Exception as exc:
+        _warnings.warn(
+            f"audio-playback guard: could not patch tools.voice_mode ({exc!r}) — "
+            "the tts_tool playback route is UNGUARDED; update _audio_playback_guard",
+            RuntimeWarning, stacklevel=1)
+    try:
+        import tools.tts_tool as _tts_tool
+
+        def _blocked_import_sounddevice():
+            raise ImportError("sounddevice blocked by the audio-playback guard")
+
+        if hasattr(_tts_tool, "_import_sounddevice"):
+            monkeypatch.setattr(
+                _tts_tool, "_import_sounddevice", _blocked_import_sounddevice)
+        else:
+            _warnings.warn(
+                "audio-playback guard: tools.tts_tool._import_sounddevice is gone — "
+                "the direct speaker stream is UNGUARDED; update _audio_playback_guard",
+                RuntimeWarning, stacklevel=1)
+    except Exception as exc:
+        _warnings.warn(
+            f"audio-playback guard: could not patch tools.tts_tool ({exc!r}) — "
+            "the direct speaker stream is UNGUARDED; update _audio_playback_guard",
+            RuntimeWarning, stacklevel=1)
+
     yield
 
 

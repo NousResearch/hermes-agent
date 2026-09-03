@@ -124,3 +124,41 @@ def test_bypass_marker_restores_the_real_speak_text():
     import hermes_cli.voice as voice
 
     assert voice.speak_text.__name__ == "speak_text"
+
+
+def test_tts_tool_playback_route_is_stubbed():
+    """The tts_tool/afplay route is guarded, not just ``hermes_cli.voice``.
+
+    Receipted 2026-09-02: a plain ``pytest tests/ -q`` spoke "Hello world"
+    through real speakers via ``tools/tts_tool.py::text_to_speech_tool`` —
+    the tool plays through ``tools.voice_mode.play_audio_file`` (imported at
+    call time, so the module attribute is the interception point) and the
+    keyless ``edge`` provider meant no API key stood between the suite and
+    the speakers. The original guard only patched ``hermes_cli.voice``.
+    """
+    import tools.voice_mode as voice_mode
+
+    assert voice_mode.play_audio_file.__name__ == "_blocked_play_audio_file"
+
+
+def test_tts_tool_sounddevice_stream_is_blocked():
+    """The direct speaker path (sounddevice OutputStream) cannot open.
+
+    Off-macOS the streamer bypasses tempfile playback entirely and writes
+    PCM straight to the output device; blocking the import routes synthesis
+    to the tempfile path, whose playback is the stub above.
+    """
+    import tools.tts_tool as tts_tool
+
+    with pytest.raises(ImportError):
+        tts_tool._import_sounddevice()
+
+
+@pytest.mark.real_audio_playback
+def test_bypass_marker_restores_the_real_tts_tool_route():
+    """The opt-out hands back the real bindings on this route too."""
+    import tools.tts_tool as tts_tool
+    import tools.voice_mode as voice_mode
+
+    assert voice_mode.play_audio_file.__name__ == "play_audio_file"
+    assert tts_tool._import_sounddevice.__name__ == "_import_sounddevice"

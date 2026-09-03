@@ -961,6 +961,7 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
     Returns the number of repairs made (same as ``repair_message_sequence``).
     """
+    # O(N) cursor: pre-repair ids set avoids O(N²) index scan (see #98887, commit 8905ee6)
     pre_repair_flushed_ids = None
     flush_cursor = getattr(agent, "_last_flushed_db_idx", None)
     if isinstance(flush_cursor, int) and flush_cursor > 0:

@@ -8,7 +8,6 @@ reject a second copy even when the first copy was renamed.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import tempfile
@@ -24,6 +23,7 @@ import httpx
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, safe_extract_targz
 
 MAX_BOT_CLONE_BYTES = 10_000_000
+MAX_BOT_CLONE_MEMBERS = 10_000
 BOT_ID_FILENAME = ".hermes-bot-id"
 
 # Deliberately excludes USER/MEMORY, sessions, memories, databases, logs,
@@ -120,9 +120,9 @@ def _reset_owner_policies(staged: Path) -> None:
     if not config_path.is_file():
         return
     try:
-        import yaml
+        from hermes_cli.config import read_user_config_raw
 
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        config = read_user_config_raw(config_path)
         gateway = config.get("gateway") if isinstance(config, dict) else None
         if not isinstance(gateway, dict) or "bot_sharing" not in gateway:
             return
@@ -187,13 +187,18 @@ def _validate_bot_archive(archive: Path) -> tuple[str, str]:
         raise ValueError(
             f"Bot clone exceeds the {MAX_BOT_CLONE_BYTES // 1_000_000} MB transfer limit."
         )
-    roots = archive_root_dirs(archive)
+    roots = archive_root_dirs(archive, max_members=MAX_BOT_CLONE_MEMBERS)
     if len(roots) != 1:
         raise ValueError("Bot clone must contain exactly one top-level directory.")
     archive_root = next(iter(roots))
     with tempfile.TemporaryDirectory(prefix="hermes_bot_validate_") as tmpdir:
         staging = Path(tmpdir)
-        safe_extract_targz(archive, staging)
+        safe_extract_targz(
+            archive,
+            staging,
+            max_bytes=MAX_BOT_CLONE_BYTES,
+            max_members=MAX_BOT_CLONE_MEMBERS,
+        )
         extracted = staging / archive_root
         unexpected = {path.name for path in extracted.iterdir()} - BOT_CLONE_ROOTS
         if unexpected:
@@ -227,31 +232,49 @@ def _clone_import_lock(timeout: float = 30.0) -> Iterator[None]:
     root = _get_profiles_root()
     root.mkdir(parents=True, exist_ok=True)
     lock = root / ".bot-clone.lock"
+    handle = open(lock, "a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
     deadline = time.monotonic() + timeout
-    while True:
-        try:
-            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            break
-        except FileExistsError:
+    acquired = False
+    try:
+        while not acquired:
             try:
-                stale = time.time() - lock.stat().st_mtime > max(timeout * 2, 60.0)
-            except OSError:
-                stale = False
-            if stale:
-                try:
-                    lock.unlink()
-                    continue
-                except OSError:
-                    pass
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except (BlockingIOError, OSError):
+                pass
+            if acquired:
+                break
             if time.monotonic() >= deadline:
                 raise TimeoutError("Timed out waiting for another bot clone import.")
             time.sleep(0.05)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps({"pid": os.getpid(), "created": time.time()}))
         yield
     finally:
-        lock.unlink(missing_ok=True)
+        if acquired:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
 
 
 def import_bot_profile(archive_path: str, name: Optional[str] = None) -> tuple[Path, str]:
@@ -270,7 +293,12 @@ def import_bot_profile(archive_path: str, name: Optional[str] = None) -> tuple[P
                 raise FileExistsError(
                     f"Bot {bot_id} already exists as profile '{profile_dir.name}'."
                 )
-        profile_dir = import_profile(str(archive), name=name or archive_root)
+        profile_dir = import_profile(
+            str(archive),
+            name=name or archive_root,
+            max_extract_bytes=MAX_BOT_CLONE_BYTES,
+            max_archive_members=MAX_BOT_CLONE_MEMBERS,
+        )
     return profile_dir, bot_id
 
 

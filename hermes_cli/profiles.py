@@ -2426,7 +2426,13 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         return Path(result)
 
 
-def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
+def import_profile(
+    archive_path: str,
+    name: Optional[str] = None,
+    *,
+    max_extract_bytes: Optional[int] = None,
+    max_archive_members: Optional[int] = None,
+) -> Path:
     """Import a profile from a tar.gz archive.
 
     If *name* is not given, infers it from the archive's top-level directory.
@@ -2438,7 +2444,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    top_dirs = archive_root_dirs(archive)
+    top_dirs = archive_root_dirs(archive, max_members=max_archive_members)
     archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
     inferred_name = name or archive_root
     if not inferred_name:
@@ -2471,7 +2477,12 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
     with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
         staging_root = Path(tmpdir)
-        safe_extract_targz(archive, staging_root)
+        safe_extract_targz(
+            archive,
+            staging_root,
+            max_bytes=max_extract_bytes,
+            max_members=max_archive_members,
+        )
 
         extracted = staging_root / archive_root
         if not extracted.is_dir():

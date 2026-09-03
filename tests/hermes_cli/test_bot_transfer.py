@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import multiprocessing
 import shutil
 import tarfile
+import time
 from pathlib import Path
 
 import httpx
@@ -47,6 +49,13 @@ def _source_profile(root: Path, name: str = "helper") -> Path:
     (source / ".env").write_text("OPENAI_API_KEY=private\n", encoding="utf-8")
     (source / "auth.json").write_text('{"token":"private"}\n', encoding="utf-8")
     return source
+
+
+def _hold_clone_lock(profiles_root: str, ready) -> None:
+    profiles._get_profiles_root = lambda: Path(profiles_root)
+    with bot_transfer._clone_import_lock():
+        ready.set()
+        time.sleep(30)
 
 
 def test_bot_export_is_definition_only_and_identity_is_stable(profile_root, tmp_path):
@@ -119,6 +128,49 @@ def test_bot_import_rejects_user_state_even_from_safe_tar(profile_root, tmp_path
 
     with pytest.raises(ValueError, match="disallowed profile data: sessions"):
         import_bot_profile(str(archive))
+
+
+def test_bot_import_bounds_expanded_archive_and_leaves_no_profile(
+    profile_root, tmp_path, monkeypatch
+):
+    staged = tmp_path / "staged" / "large"
+    staged.mkdir(parents=True)
+    (staged / BOT_ID_FILENAME).write_text(
+        "a8c214f7-37ee-4f50-95a4-939a51631283\n", encoding="utf-8"
+    )
+    (staged / "SOUL.md").write_bytes(b"0" * 2048)
+    archive = tmp_path / "large.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staged, arcname="large")
+    assert archive.stat().st_size < 1024
+    monkeypatch.setattr(bot_transfer, "MAX_BOT_CLONE_BYTES", 1024)
+
+    with pytest.raises(ValueError, match="expanded-size limit"):
+        import_bot_profile(str(archive))
+
+    assert not (profile_root / "profiles" / "large").exists()
+
+
+def test_clone_import_lock_cannot_be_stolen_and_recovers_after_owner_death(
+    profile_root,
+):
+    profiles_root = profile_root / "profiles"
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    holder = context.Process(target=_hold_clone_lock, args=(str(profiles_root), ready))
+    holder.start()
+    try:
+        assert ready.wait(timeout=10)
+        with pytest.raises(TimeoutError):
+            with bot_transfer._clone_import_lock(timeout=0.1):
+                pass
+    finally:
+        holder.terminate()
+        holder.join(timeout=10)
+    assert not holder.is_alive()
+
+    with bot_transfer._clone_import_lock(timeout=1):
+        pass
 
 
 def test_pull_downloads_and_imports_remote_clone(profile_root, tmp_path, monkeypatch):

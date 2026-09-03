@@ -187,12 +187,16 @@ class TestCLIStatusBar:
 
 
 
-    def test_spinner_height_uses_display_width_for_wide_characters(self):
+    def test_spinner_stays_on_one_row_and_clips_before_wrap_column(self):
         cli_obj = _make_cli()
         cli_obj._spinner_text = "你" * 40
         cli_obj._tool_start_time = 0
 
-        assert cli_obj._spinner_widget_height(width=64) == 2
+        rendered = cli_obj._render_spinner_widget_text(width=64)
+
+        assert cli_obj._spinner_widget_height(width=64) == 1
+        assert cli_obj._status_bar_display_width(rendered) <= 63
+        assert rendered.endswith("...")
 
 
     def test_voice_status_bar_compacts_on_narrow_terminals(self):

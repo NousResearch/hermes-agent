@@ -683,6 +683,122 @@ class TestInstallUvInternals:
             call_env = mock_posix.call_args[0][0]
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
 
+    def test_installer_identity_is_versioned_and_digest_bound(self):
+        import hermes_cli.managed_uv as managed_uv
+
+        assert f"/{managed_uv.UV_INSTALLER_VERSION}/" in managed_uv.UV_INSTALLER_URL_POSIX
+        assert f"/{managed_uv.UV_INSTALLER_VERSION}/" in managed_uv.UV_INSTALLER_URL_WINDOWS
+        assert "/latest/" not in managed_uv.UV_INSTALLER_URL_POSIX
+        assert "/latest/" not in managed_uv.UV_INSTALLER_URL_WINDOWS
+        assert len(managed_uv.UV_INSTALLER_SHA256_POSIX) == 64
+        assert len(managed_uv.UV_INSTALLER_SHA256_WINDOWS) == 64
+
+    def test_verified_download_rejects_mismatch_before_write(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b"tampered installer"
+
+        destination = tmp_path / "installer.sh"
+        monkeypatch.setattr(managed_uv.urllib.request, "urlopen", lambda *_a, **_k: Response())
+
+        with pytest.raises(RuntimeError, match="checksum mismatch"):
+            managed_uv._download_verified_uv_installer(
+                "https://example.invalid/installer.sh",
+                destination,
+                "0" * 64,
+            )
+
+        assert not destination.exists()
+
+    def test_verified_download_writes_matching_bytes(self, tmp_path, monkeypatch):
+        import hashlib
+        import hermes_cli.managed_uv as managed_uv
+
+        payload = b"verified installer"
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return payload
+
+        destination = tmp_path / "installer.sh"
+        monkeypatch.setattr(managed_uv.urllib.request, "urlopen", lambda *_a, **_k: Response())
+
+        managed_uv._download_verified_uv_installer(
+            "https://example.invalid/installer.sh",
+            destination,
+            hashlib.sha256(payload).hexdigest(),
+        )
+
+        assert destination.read_bytes() == payload
+
+    def test_posix_executes_only_verified_tempfile(self, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        observed = {}
+
+        def fake_download(url, destination, digest):
+            observed["download"] = (url, destination, digest)
+            destination.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        def fake_run(command, **kwargs):
+            observed["run"] = (command, kwargs)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(managed_uv, "_download_verified_uv_installer", fake_download)
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+
+        managed_uv._install_uv_posix({"UV_UNMANAGED_INSTALL": "/managed"})
+
+        url, destination, digest = observed["download"]
+        assert url == managed_uv.UV_INSTALLER_URL_POSIX
+        assert digest == managed_uv.UV_INSTALLER_SHA256_POSIX
+        assert observed["run"][0] == ["sh", str(destination)]
+        assert not destination.exists()
+
+    def test_windows_executes_only_verified_tempfile(self, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        observed = {}
+
+        def fake_download(url, destination, digest):
+            observed["download"] = (url, destination, digest)
+            destination.write_text("Write-Output uv", encoding="utf-8")
+
+        def fake_run(command, **kwargs):
+            observed["run"] = (command, kwargs)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(managed_uv, "_download_verified_uv_installer", fake_download)
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+
+        managed_uv._install_uv_windows({"UV_INSTALL_DIR": "C:/managed"})
+
+        url, destination, digest = observed["download"]
+        assert url == managed_uv.UV_INSTALLER_URL_WINDOWS
+        assert digest == managed_uv.UV_INSTALLER_SHA256_WINDOWS
+        assert observed["run"][0] == [
+            "powershell",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(destination),
+        ]
+        assert not destination.exists()
+
 
 class TestRuntimeRequestMinorLine:
     """The repair must request the CPython minor line, not the exact patch.

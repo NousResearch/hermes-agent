@@ -86,6 +86,11 @@ $ErrorActionPreference = "Stop"
 # automatically when the script exits.
 $ProgressPreference = "SilentlyContinue"
 
+# The uv installer is executable supply-chain input. Keep this version and
+# digest paired; the astral.sh and GitHub release copies are byte-identical.
+$UvInstallerVersion = "0.11.6"
+$UvInstallerSha256 = "46da9313591884d09aa4f06f7f78f74154ea01a8012d425ed090163d4799295c"
+
 # Force the console to UTF-8 so non-ASCII output from native commands
 # (e.g. playwright's box-drawing progress bars and download banners,
 # git's bullet glyphs, npm's check marks) renders correctly instead of
@@ -770,8 +775,10 @@ function Install-Uv {
         # PowerShell 7 / pwsh-only setups.
         $psHostExe = Get-PowerShellHostExe
 
-        # Rungs 1 + 2: run the uv installer -- astral.sh first, then the
-        # byte-identical copy published on GitHub releases.  Corporate
+        # Rungs 1 + 2: download the pinned uv installer -- astral.sh first,
+        # then the byte-identical copy published on GitHub releases. Verify
+        # the bytes before execution so neither source is a mutable trust root.
+        # Corporate
         # proxies and AV products frequently block astral.sh while
         # github.com is reachable (issue #69216), so a second source turns
         # a hard failure into a working install.  Capture the installer
@@ -780,20 +787,33 @@ function Install-Uv {
         # permissions) must reach the user instead of only the generic
         # "installed but not found" message.
         $installerOutput = @()
-        $astralOut = @()
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
-        $installerOutput += "--- uv installer source: astral.sh ---"
-        $installerOutput += @($astralOut | ForEach-Object { "$_" })
-        if (Test-Path $managedUv) {
-            Write-Info "uv installer succeeded via astral.sh"
-        } else {
-            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
-            $ghOut = @()
-            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
-            $installerOutput += "--- uv installer source: GitHub releases ---"
-            $installerOutput += @($ghOut | ForEach-Object { "$_" })
+        $installerPath = Join-Path ([IO.Path]::GetTempPath()) "hermes-uv-installer-$PID.ps1"
+        $installerSources = @(
+            @{ Label = "astral.sh"; Url = "https://astral.sh/uv/$UvInstallerVersion/install.ps1" },
+            @{ Label = "GitHub releases"; Url = "https://github.com/astral-sh/uv/releases/download/$UvInstallerVersion/uv-installer.ps1" }
+        )
+        foreach ($source in $installerSources) {
+            if (Test-Path $managedUv) { break }
+            $sourceOut = @()
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $source.Url -OutFile $installerPath -ErrorAction Stop
+                $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $installerPath).Hash.ToLowerInvariant()
+                if ($actualSha256 -ne $UvInstallerSha256) {
+                    throw "uv installer checksum mismatch (expected $UvInstallerSha256, got $actualSha256)"
+                }
+                & $psHostExe -ExecutionPolicy ByPass -File $installerPath 2>&1 |
+                    Tee-Object -Variable sourceOut | Out-Null
+            } catch {
+                $sourceOut += "$_"
+            } finally {
+                Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+            }
+            $installerOutput += "--- uv installer source: $($source.Label) ---"
+            $installerOutput += @($sourceOut | ForEach-Object { "$_" })
             if (Test-Path $managedUv) {
-                Write-Info "uv installer succeeded via GitHub releases"
+                Write-Info "uv installer succeeded via $($source.Label)"
+            } elseif ($source.Label -eq "astral.sh") {
+                Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
             }
         }
 

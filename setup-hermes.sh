@@ -34,6 +34,26 @@ cd "$SCRIPT_DIR"
 export UV_NO_CONFIG=1
 
 PYTHON_VERSION="3.11"
+UV_INSTALLER_VERSION="0.11.6"
+UV_INSTALLER_SHA256="02f6fdf8077f97f7bbd901de06054a65e7aefbd54432c8a83784d42a3e360a45"
+
+verify_uv_installer() {
+    local installer="$1" actual=""
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum < "$installer" | cut -d' ' -f1)"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 < "$installer" | cut -d' ' -f1)"
+    else
+        echo -e "${RED}✗${NC} Cannot verify uv installer: sha256sum or shasum is required." >&2
+        return 1
+    fi
+    if [ "$actual" != "$UV_INSTALLER_SHA256" ]; then
+        echo -e "${RED}✗${NC} uv installer checksum mismatch." >&2
+        echo "    expected: $UV_INSTALLER_SHA256" >&2
+        echo "    actual:   $actual" >&2
+        return 1
+    fi
+}
 
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
@@ -89,10 +109,14 @@ else
         # failures (sh exits 0 on empty stdin under no pipefail).
         _uv_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
         _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
-        if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_log"; then
+        if ! curl -LsSf "https://astral.sh/uv/$UV_INSTALLER_VERSION/install.sh" -o "$_uv_installer" 2>"$_uv_log"; then
             echo -e "${RED}✗${NC} Failed to download uv installer."
             sed 's/^/    /' "$_uv_log" >&2
             echo -e "${CYAN}→${NC} Install manually: https://docs.astral.sh/uv/"
+            rm -f "$_uv_log" "$_uv_installer"
+            exit 1
+        fi
+        if ! verify_uv_installer "$_uv_installer"; then
             rm -f "$_uv_log" "$_uv_installer"
             exit 1
         fi

@@ -19,6 +19,7 @@ releases it.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import logging
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +47,16 @@ _VENV_NAME = "venv"
 _ALT_VENV_NAME = ".venv"
 _REPAIR_LOCK_NAME = "runtime-repair.lock"
 _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
+
+# The installer is executable supply-chain input, so its version and digest
+# move together deliberately. These digests are for Astral uv 0.11.6's
+# release-published installer scripts (the astral.sh and GitHub release copies
+# are byte-identical).
+UV_INSTALLER_VERSION = "0.11.6"
+UV_INSTALLER_SHA256_POSIX = "02f6fdf8077f97f7bbd901de06054a65e7aefbd54432c8a83784d42a3e360a45"
+UV_INSTALLER_SHA256_WINDOWS = "46da9313591884d09aa4f06f7f78f74154ea01a8012d425ed090163d4799295c"
+UV_INSTALLER_URL_POSIX = f"https://astral.sh/uv/{UV_INSTALLER_VERSION}/install.sh"
+UV_INSTALLER_URL_WINDOWS = f"https://astral.sh/uv/{UV_INSTALLER_VERSION}/install.ps1"
 
 # ---------------------------------------------------------------------------
 # Public helpers
@@ -1513,16 +1525,37 @@ def _install_uv(target: Path) -> None:
         _install_uv_posix(env)
 
 
+def _download_verified_uv_installer(
+    url: str,
+    destination: Path,
+    expected_sha256: str,
+) -> None:
+    """Download an installer and fail closed unless its SHA-256 matches."""
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "hermes-agent-installer"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        payload = response.read()
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError(
+            "uv installer checksum mismatch "
+            f"(expected {expected_sha256}, got {actual_sha256})"
+        )
+    destination.write_bytes(payload)
+
+
 def _install_uv_posix(env: dict[str, str]) -> None:
-    """Download + sh the POSIX installer (two-stage to avoid curl|sh pitfalls)."""
+    """Download, verify, then run the pinned POSIX installer."""
     with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as f:
         installer_path = f.name
 
     try:
-        subprocess.run(
-            ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
-            check=True,
-            capture_output=True,
+        _download_verified_uv_installer(
+            UV_INSTALLER_URL_POSIX,
+            Path(installer_path),
+            UV_INSTALLER_SHA256_POSIX,
         )
         subprocess.run(
             ["sh", installer_path],
@@ -1538,14 +1571,27 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 
 
 def _install_uv_windows(env: dict[str, str]) -> None:
-    """Invoke the PowerShell installer."""
-    cmd = "irm https://astral.sh/uv/install.ps1 | iex"
-    subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
-        env=env,
-        check=True,
-        capture_output=True,
-    )
+    """Download, verify, then run the pinned PowerShell installer."""
+    with tempfile.NamedTemporaryFile(suffix=".ps1", delete=False) as f:
+        installer_path = f.name
+
+    try:
+        _download_verified_uv_installer(
+            UV_INSTALLER_URL_WINDOWS,
+            Path(installer_path),
+            UV_INSTALLER_SHA256_WINDOWS,
+        )
+        subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-File", installer_path],
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+    finally:
+        try:
+            os.unlink(installer_path)
+        except OSError:
+            pass
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

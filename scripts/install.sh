@@ -58,6 +58,8 @@ else
 fi
 PYTHON_VERSION="3.11"
 NODE_VERSION="26"
+UV_INSTALLER_VERSION="0.11.6"
+UV_INSTALLER_SHA256="02f6fdf8077f97f7bbd901de06054a65e7aefbd54432c8a83784d42a3e360a45"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
 #   code at /usr/local/lib/hermes-agent, command at /usr/local/bin/hermes,
@@ -552,6 +554,24 @@ detect_os() {
 # Dependency checks
 # ============================================================================
 
+verify_uv_installer() {
+    local installer="$1" actual=""
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum < "$installer" | cut -d' ' -f1)"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 < "$installer" | cut -d' ' -f1)"
+    else
+        log_error "Cannot verify uv installer: sha256sum or shasum is required"
+        return 1
+    fi
+    if [ "$actual" != "$UV_INSTALLER_SHA256" ]; then
+        log_error "uv installer checksum mismatch"
+        echo "    expected: $UV_INSTALLER_SHA256" >&2
+        echo "    actual:   $actual" >&2
+        return 1
+    fi
+}
+
 install_uv() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Termux detected — using Python's stdlib venv + pip instead of uv"
@@ -581,11 +601,16 @@ install_uv() {
     local _uv_install_log _uv_installer
     _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
     _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
-    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
-        log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
+    local _uv_installer_url="https://astral.sh/uv/$UV_INSTALLER_VERSION/install.sh"
+    if ! curl -LsSf "$_uv_installer_url" -o "$_uv_installer" 2>"$_uv_install_log"; then
+        log_error "Failed to download uv installer from $_uv_installer_url"
         log_info "curl output:"
         sed 's/^/    /' "$_uv_install_log" >&2
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        rm -f "$_uv_install_log" "$_uv_installer"
+        exit 1
+    fi
+    if ! verify_uv_installer "$_uv_installer"; then
         rm -f "$_uv_install_log" "$_uv_installer"
         exit 1
     fi

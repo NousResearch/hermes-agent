@@ -455,6 +455,55 @@ class TestStoredPromptCwdDrift:
         ):
             assert _stored_prompt_matches_runtime(agent, stored_prompt) is False
 
+    def test_stored_prompt_rejected_when_gethostname_raises_oserror(self):
+        """Fail closed: if socket.gethostname() raises OSError, reject the stored prompt."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = self._host_block("/project/current", hostname="atlas")
+
+        with (
+            patch("agent.conversation_loop.resolve_agent_cwd", return_value="/project/current"),
+            patch("socket.gethostname", side_effect=OSError("gethostname failed")),
+        ):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False
+
+    def test_stored_prompt_rejected_when_gethostname_returns_empty(self):
+        """Fail closed: if socket.gethostname() returns empty string, reject the stored prompt."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = self._host_block("/project/current", hostname="atlas")
+
+        with (
+            patch("agent.conversation_loop.resolve_agent_cwd", return_value="/project/current"),
+            patch("socket.gethostname", return_value=""),
+        ):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False
+
+    def test_same_hostname_different_profile_still_valid(self):
+        """Hostname is host anchoring, not authentication: same host, different profile is valid."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        # Same hostname but different user home (different profile)
+        stored_prompt = (
+            "Host: Linux (6.16.0)\n"
+            "Machine hostname: atlas\n"
+            "User home directory: /home/other-profile\n"
+            "Current working directory: /project/current\n"
+        )
+
+        with (
+            patch("agent.conversation_loop.resolve_agent_cwd", return_value="/project/current"),
+            patch("socket.gethostname", return_value="atlas"),
+        ):
+            # Same hostname should be considered valid even with different profile
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True
+
     def test_stored_prompt_stale_when_cwd_differs(self):
         """Different cwd should force a prompt rebuild."""
         from unittest.mock import patch

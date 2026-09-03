@@ -775,6 +775,33 @@ class TestEnvironmentHints:
         assert "Machine hostname: atlas" in result
         assert result.index("Machine hostname: atlas") < result.index("User home directory:")
 
+    def test_build_environment_hints_omits_hostname_when_gethostname_raises(self, monkeypatch):
+        """Regression: if socket.gethostname() raises OSError, the prompt must still build."""
+        import agent.prompt_builder as _pb
+
+        def _raise_oserror():
+            raise OSError("gethostname failed")
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr("socket.gethostname", _raise_oserror)
+
+        result = _pb.build_environment_hints()
+
+        assert "Machine hostname:" not in result
+        assert "User home directory:" in result
+
+    def test_build_environment_hints_omits_hostname_when_gethostname_returns_empty(self, monkeypatch):
+        """Regression: if socket.gethostname() returns empty string, omit the hostname line."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr("socket.gethostname", lambda: "")
+
+        result = _pb.build_environment_hints()
+
+        assert "Machine hostname:" not in result
+        assert "User home directory:" in result
+
     def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
         """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()
         (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""

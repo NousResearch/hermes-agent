@@ -1300,14 +1300,25 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     # local prompts have no hostname at all, so reject them once to upgrade the
     # persisted snapshot. Remote/sandbox prompts intentionally omit the whole
     # host-info block and remain reusable.
+    #
+    # Hostname is a useful human-readable signal but not a globally unique
+    # gateway identity: two cloned VMs or machines can share a hostname, and
+    # two gateway instances can run on the same host. This is host anchoring,
+    # not an authentication boundary; track a follow-up for a stable opaque
+    # per-install/runtime identity if stronger guarantees are needed.
     stored_host = host_info_value("Host")
     stored_hostname = host_info_value("Machine hostname")
-    try:
-        current_hostname = socket.gethostname().strip()
-    except OSError:
-        current_hostname = ""
-    if stored_host and current_hostname:
-        if not stored_hostname or stored_hostname.casefold() != current_hostname.casefold():
+    if stored_host:
+        if not stored_hostname:
+            # Legacy local prompt without hostname: reject once to upgrade.
+            return False
+        try:
+            current_hostname = socket.gethostname().strip()
+        except OSError:
+            current_hostname = ""
+        # Fail closed: a local stored prompt must not silently be treated as
+        # verified when the live hostname cannot be read.
+        if not current_hostname or stored_hostname.casefold() != current_hostname.casefold():
             return False
 
     # Detect runtime-surface drift: the stored prompt records which platform it

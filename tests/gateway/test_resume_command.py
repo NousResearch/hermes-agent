@@ -898,6 +898,34 @@ class TestSameOriginChatGroupScoping:
             self._src("alice"), "bobs_live_sid", allow_override=False
         ) is False
 
+    def test_live_group_auth_honors_shared_platform_override(self):
+        from gateway.config import PlatformConfig
+
+        runner = _make_runner()
+        runner.config.group_sessions_per_user = True
+        runner.config.platforms = {
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                extra={"group_sessions_per_user": False},
+            )
+        }
+
+        assert runner._same_origin_chat(self._src("alice"), self._src("bob")) is True
+
+    def test_live_group_auth_honors_isolated_platform_override(self):
+        from gateway.config import PlatformConfig
+
+        runner = _make_runner()
+        runner.config.group_sessions_per_user = False
+        runner.config.platforms = {
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                extra={"group_sessions_per_user": True},
+            )
+        }
+
+        assert runner._same_origin_chat(self._src("alice"), self._src("bob")) is False
+
     # --- thread scoping: thread_id is part of the session key, so a session in
     # one thread must never match a caller in another thread of the same chat,
     # even when threads are shared among participants by default. ---

@@ -3132,6 +3132,7 @@ from gateway.session import (
     build_channel_continuity_note,
     build_session_key,
     is_shared_multi_user_session,
+    resolve_session_isolation,
     neutralize_untrusted_inline_text,
 )
 from gateway.delivery import (
@@ -8616,10 +8617,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
+        # Honor per-platform extra overrides (mirrors SessionStore._generate_session_key
+        # and the adapters' text-batching keys) so the fallback path never diverges
+        # from the primary path on group/thread session isolation.
+        _group_sessions_per_user, _thread_sessions_per_user = (
+            resolve_session_isolation(config, source)
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=_group_sessions_per_user,
+            thread_sessions_per_user=_thread_sessions_per_user,
             profile=_profile,
         )
 
@@ -20529,8 +20536,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _pending_stt_prepared
             else event.text
         ) or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        _group_sessions_per_user, _thread_sessions_per_user = (
+            resolve_session_isolation(self.config, source)
+        )
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
         # to deriving it here for tests and legacy standalone callers.

@@ -604,7 +604,12 @@ async def auth_callback(
     # cookie is server-set so this is defence in depth, but a regression
     # that lets attacker-controlled bytes into the cookie would otherwise
     # produce an open redirect.
-    landing = _validate_post_login_target(next_from_cookie) or "/"
+    #
+    # Fall back to the path-prefix root rather than "/" so that deploys
+    # behind a reverse proxy at /hermes don't redirect to /  (outside the
+    # prefix, 404) instead of /hermes/ (#99123).
+    _default_landing = (_prefix(request) or "") + "/"
+    landing = _validate_post_login_target(next_from_cookie) or _default_landing
     resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
         resp,

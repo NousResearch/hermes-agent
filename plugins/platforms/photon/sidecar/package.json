@@ -7,12 +7,14 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
+    "postinstall": "node patch-spectrum-mixed-attachments.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=18.17"
   },
   "dependencies": {
+    "@photon-ai/advanced-imessage": "2.1.0",
     "spectrum-ts": "12.7.0"
   },
   "overrides": {
@@ -21,6 +23,7 @@
     "@opentelemetry/otlp-exporter-base": "0.218.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.218.0",
     "@opentelemetry/exporter-logs-otlp-http": "0.218.0",
-    "@opentelemetry/core": "2.10.0"
+    "@opentelemetry/core": "2.10.0",
+    "encoding-sniffer": "1.0.2"
   }
 }

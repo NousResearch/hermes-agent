@@ -3647,14 +3647,20 @@ def _event_media_is_audio(event, index: int) -> bool:
 
 
 def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
+    """True when this attachment should enter the automatic STT pipeline.
+
+    Pending follow-ups can merge several attachments into one event.  In that
+    case the event-level ``VOICE`` type must not make a sibling PDF/video look
+    like voice input.  Trust the per-attachment MIME whenever it is present and
+    use the message type only as a legacy fallback when MIME metadata is absent.
+    """
     message_type = getattr(event, "message_type", None)
     if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
         return False
-    return (
-        message_type == MessageType.VOICE
-        or _event_media_type_at(event, index).startswith("audio/")
-    )
+    media_type = _event_media_type_at(event, index)
+    if media_type:
+        return media_type.startswith("audio/")
+    return message_type == MessageType.VOICE
 
 
 def _event_media_is_video(event, index: int) -> bool:

@@ -463,6 +463,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
         )
+        # Bridge transports are not all capability-equivalent.  The bundled
+        # Baileys bridge supports message edits, while custom Web bridges may
+        # intentionally expose final-message delivery only.  Declare the actual
+        # transport capability so GatewayRunner skips edit-based streaming rather
+        # than creating a stream consumer that can never deliver a preview.
+        self.SUPPORTS_MESSAGE_EDITING = bool(
+            config.extra.get("supports_message_editing", True)
+        )
         self._session_path: Path = Path(config.extra.get(
             "session_path",
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")

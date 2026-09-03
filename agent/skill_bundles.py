@@ -45,12 +45,14 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import yaml
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,71 @@ _BUNDLE_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 _bundles_cache: Dict[str, Dict[str, Any]] = {}
 _bundles_cache_mtime: Optional[float] = None
+_bundles_cache_dir: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _BundleCacheSnapshot:
+    bundles: Mapping[str, Mapping[str, Any]]
+    home_key: str
+    platform: Optional[str]
+    directory_key: str
+    mtime: float
+
+
+_bundle_cache_snapshots: Dict[tuple[str, Optional[str]], _BundleCacheSnapshot] = {}
+
+
+def _normalize_cache_platform(platform: Any) -> Optional[str]:
+    value = str(platform or "").strip().lower()
+    return value or None
+
+
+def _resolve_bundle_platform() -> Optional[str]:
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = os.getenv("HERMES_PLATFORM") or get_session_env(
+            "HERMES_SESSION_PLATFORM"
+        )
+    except Exception:
+        platform = os.getenv("HERMES_PLATFORM")
+    return _normalize_cache_platform(platform)
+
+
+def _resolve_bundle_home() -> Path:
+    return get_hermes_home()
+
+
+def _freeze_bundles(
+    bundles: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Mapping[str, Any]]:
+    frozen: Dict[str, Mapping[str, Any]] = {}
+    for key, value in bundles.items():
+        info = dict(value)
+        if isinstance(info.get("skills"), list):
+            info["skills"] = tuple(info["skills"])
+        frozen[key] = MappingProxyType(info)
+    return MappingProxyType(frozen)
+
+
+def _copy_bundles_for_public(
+    bundles: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Return a detached dict/list view matching the historical public API."""
+    copied: Dict[str, Dict[str, Any]] = {}
+    for key, value in bundles.items():
+        info = dict(value)
+        if isinstance(info.get("skills"), (list, tuple)):
+            info["skills"] = list(info["skills"])
+        copied[key] = info
+    return copied
+
+
+def _bundle_snapshot_bundles(snapshot: Any) -> Mapping[str, Mapping[str, Any]]:
+    if isinstance(snapshot, _BundleCacheSnapshot):
+        return snapshot.bundles
+    return snapshot
 
 
 def _bundles_dir() -> Path:
@@ -172,7 +239,9 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
     bundle info dict. Later bundles with a duplicate slug are skipped with
     a warning (first wins, alphabetical order).
     """
-    global _bundles_cache, _bundles_cache_mtime
+    global _bundles_cache, _bundles_cache_mtime, _bundles_cache_dir
+    scan_home_key = hermes_home_key(_resolve_bundle_home())
+    scan_platform = _resolve_bundle_platform()
     files = _iter_bundle_files()
     out: Dict[str, Dict[str, Any]] = {}
     for f in files:
@@ -187,9 +256,21 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
             )
             continue
         out[key] = info
-    _bundles_cache = out
-    _bundles_cache_mtime = _max_mtime(files)
-    return out
+    snapshot = _BundleCacheSnapshot(
+        bundles=_freeze_bundles(out),
+        home_key=scan_home_key,
+        platform=scan_platform,
+        directory_key=hermes_home_key(_bundles_dir()),
+        mtime=_max_mtime(files),
+    )
+    _bundle_cache_snapshots[(scan_home_key, scan_platform)] = snapshot
+    public_bundles = _copy_bundles_for_public(snapshot.bundles)
+    # Keep the old module-local aliases for discovery/reload callers. The
+    # recovered-ingress resolver reads only the immutable keyed snapshot.
+    _bundles_cache = public_bundles
+    _bundles_cache_mtime = snapshot.mtime
+    _bundles_cache_dir = snapshot.directory_key
+    return public_bundles
 
 
 def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
@@ -198,11 +279,28 @@ def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
     Cheap to call repeatedly: only rescans when the bundles directory or
     any bundle file's mtime is newer than the cached snapshot.
     """
+    global _bundles_cache, _bundles_cache_mtime, _bundles_cache_dir
+    current_home_key = hermes_home_key(_resolve_bundle_home())
+    current_platform = _resolve_bundle_platform()
+    snapshot = _bundle_cache_snapshots.get((current_home_key, current_platform))
     files = _iter_bundle_files()
     current_mtime = _max_mtime(files)
-    if not _bundles_cache or _bundles_cache_mtime != current_mtime:
-        scan_bundles()
-    return _bundles_cache
+    if (
+        not _bundles_cache
+        or snapshot is None
+        or snapshot.directory_key != hermes_home_key(_bundles_dir())
+        or snapshot.mtime != current_mtime
+    ):
+        return scan_bundles()
+
+    # The keyed snapshot is immutable and authoritative.  Return a detached
+    # public view selected for this call so a concurrent profile cannot swap
+    # the compatibility alias out from under the caller.
+    bundles = _copy_bundles_for_public(_bundle_snapshot_bundles(snapshot))
+    _bundles_cache = bundles
+    _bundles_cache_mtime = snapshot.mtime
+    _bundles_cache_dir = snapshot.directory_key
+    return bundles
 
 
 def resolve_bundle_command_key(command: str) -> Optional[str]:
@@ -216,6 +314,36 @@ def resolve_bundle_command_key(command: str) -> Optional[str]:
         return None
     cmd_key = f"/{command.replace('_', '-')}"
     return cmd_key if cmd_key in get_skill_bundles() else None
+
+
+def resolve_cached_bundle_command_key(
+    command: str, expected_home_key: str, platform: str
+) -> Optional[str]:
+    """Resolve against one explicitly identified bundle snapshot.
+
+    ``expected_home_key`` is prepared with :func:`hermes_home_key` by the
+    caller. This function intentionally performs only in-memory lookup and
+    platform normalization; it cannot discover a profile or inspect a path.
+    """
+    if not command:
+        return None
+    bundles = get_cached_skill_bundles(expected_home_key, platform)
+    if bundles is None:
+        return None
+    cmd_key = f"/{command.replace('_', '-')}"
+    return cmd_key if cmd_key in bundles else None
+
+
+def get_cached_skill_bundles(
+    expected_home_key: str, platform: str
+) -> Optional[Mapping[str, Mapping[str, Any]]]:
+    """Return one explicitly identified bundle cache without discovery or I/O."""
+    snapshot = _bundle_cache_snapshots.get(
+        (str(expected_home_key), _normalize_cache_platform(platform))
+    )
+    if snapshot is None:
+        return None
+    return _bundle_snapshot_bundles(snapshot)
 
 
 def reload_bundles() -> Dict[str, Any]:
@@ -255,6 +383,8 @@ def build_bundle_invocation_message(
     user_instruction: str = "",
     task_id: str | None = None,
     platform: str | None = None,
+    *,
+    bundles: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Optional[Tuple[str, List[str], List[str]]]:
     """Build the user message content for a bundle slash command invocation.
 
@@ -275,8 +405,13 @@ def build_bundle_invocation_message(
     in one process); when *None*, the platform resolves from session env
     vars and the global disabled list still applies.  Mirrors the
     stacked-skill gate in gateway dispatch (#58888).
+
+    ``bundles`` may provide an already-selected profile/platform cache
+    snapshot. Recovered busy routing uses it to avoid a second ambient lookup
+    after cache-only classification.
     """
-    bundles = get_skill_bundles()
+    if bundles is None:
+        bundles = get_skill_bundles()
     info = bundles.get(cmd_key)
     if not info:
         return None

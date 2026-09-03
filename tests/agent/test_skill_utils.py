@@ -285,6 +285,24 @@ class TestNormalizeSkillLookupName:
         monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
         assert normalize_skill_lookup_name(str(link)) == "my-skill"
 
+    def test_absolute_path_uses_active_profile_root_not_import_time_root(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.skills_tool as skills_tool
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        import_time_root = tmp_path / "default" / "skills"
+        active_home = tmp_path / "profiles" / "secondary"
+        active_root = active_home / "skills"
+        skill_dir = active_root / "my-skill"
+        skill_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(skills_tool, "SKILLS_DIR", import_time_root)
+        monkeypatch.setattr(skills_tool, "_SKILLS_DIR_AT_IMPORT", import_time_root)
+        monkeypatch.setattr(skills_tool, "get_hermes_home", lambda: active_home)
+
+        assert normalize_skill_lookup_name(str(skill_dir)) == "my-skill"
+
 
 
 # ── parse_frontmatter: UTF-8 BOM tolerance ─────────────────────────────────

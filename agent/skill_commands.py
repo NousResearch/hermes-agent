@@ -8,11 +8,12 @@ import json
 import logging
 import os
 import re
-import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, hermes_home_key
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
@@ -25,10 +26,44 @@ logger = logging.getLogger(__name__)
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 _skill_commands_home: Optional[str] = None
-# Guards the (map, platform-tag, home-tag) triple so publication and the
-# freshness lookup always see a consistent snapshot. Scanning itself stays
-# outside this lock.
-_publish_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _SkillCommandSnapshot:
+    commands: Mapping[str, Mapping[str, Any]]
+    home_key: str
+    platform: Optional[str]
+
+
+_skill_command_snapshots: Dict[tuple[str, Optional[str]], _SkillCommandSnapshot] = {}
+
+
+def _normalize_cache_platform(platform: Any) -> Optional[str]:
+    value = str(platform or "").strip().lower()
+    return value or None
+
+
+def _skill_snapshot_commands(snapshot: Any) -> Mapping[str, Mapping[str, Any]]:
+    """Return commands from a real snapshot (or a test-installed mapping)."""
+    if isinstance(snapshot, _SkillCommandSnapshot):
+        return snapshot.commands
+    return snapshot
+
+
+def _freeze_skill_commands(commands: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
+    return MappingProxyType(
+        {
+            key: MappingProxyType(dict(value))
+            for key, value in commands.items()
+        }
+    )
+
+
+def _copy_skill_commands_for_public(
+    commands: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Return a detached mutable view matching the historical public API."""
+    return {key: dict(value) for key, value in commands.items()}
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -431,15 +466,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands, _skill_commands_platform, _skill_commands_home
-    platform = _resolve_skill_commands_platform()
-    home = _resolve_skill_commands_home()
-    # Build into a local map and publish once, at the end. Writing straight
-    # into the global made a scan's partial results visible to everything
-    # else in the process: a second, overlapping scan deduped against its own
-    # (empty) ``seen_names`` but collided against the first scan's already-
-    # published slugs, logging one bogus "already claimed" warning per skill —
-    # each naming the same skill as its own incumbent (#74574).
-    commands: Dict[str, Dict[str, Any]] = {}
+    scan_home_key = hermes_home_key(_resolve_skill_commands_home())
+    scan_platform = _normalize_cache_platform(_resolve_skill_commands_platform())
+    out: Dict[str, Dict[str, Any]] = {}
     try:
         from tools.skills_tool import _skills_dir, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import (
@@ -523,14 +552,14 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # slug (e.g. "git_helper" vs "git-helper"). First-wins
                     # preserves local-before-external precedence.
                     cmd_key = f"/{cmd_name}"
-                    if cmd_key in commands:
+                    if cmd_key in out:
                         logger.warning(
                             "Skill %r maps to slash command %s already claimed "
                             "by %r; keeping the first and skipping this one.",
-                            name, cmd_key, commands[cmd_key]["name"],
+                            name, cmd_key, out[cmd_key]["name"],
                         )
                         continue
-                    commands[cmd_key] = {
+                    out[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -540,18 +569,19 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     continue
     except Exception:
         pass
-    # Publish the finished map and the platform/home it was scanned for as
-    # ONE step. Bare assignments are not atomic together: a reader landing
-    # between them sees the NEW map still carrying the OLD platform tag, and
-    # if that stale tag happens to match its own platform it accepts the map
-    # without rescanning — serving another platform's disabled-skill view,
-    # exactly the leak #14536 closed. Only the publish/lookup pair is locked;
-    # the scan above (file I/O, deferred imports) stays outside it.
-    with _publish_lock:
-        _skill_commands = commands
-        _skill_commands_platform = platform
-        _skill_commands_home = home
-    return commands
+    snapshot = _SkillCommandSnapshot(
+        commands=_freeze_skill_commands(out),
+        home_key=scan_home_key,
+        platform=scan_platform,
+    )
+    _skill_command_snapshots[(scan_home_key, scan_platform)] = snapshot
+    public_commands = _copy_skill_commands_for_public(snapshot.commands)
+    # These aliases preserve the existing module-local observability for
+    # discovery callers. Resolvers use only the immutable keyed snapshot above.
+    _skill_commands = public_commands
+    _skill_commands_home = snapshot.home_key
+    _skill_commands_platform = snapshot.platform
+    return public_commands
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
@@ -563,22 +593,21 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     active profile's Hermes home changes (e.g. Desktop switching profiles
     mid-session) so each profile sees its own ``skills.external_dirs`` (#88023).
     """
-    current_platform = _resolve_skill_commands_platform()
-    current_home = _resolve_skill_commands_home()
-    # Read the map and its tags under the same lock that publishes them, so
-    # the freshness decision is made against a consistent snapshot.
-    with _publish_lock:
-        commands = _skill_commands
-        is_fresh = (
-            bool(commands)
-            and _skill_commands_platform == current_platform
-            and _skill_commands_home == current_home
-        )
-    if is_fresh:
-        return commands
-    # Scan outside the lock — it does file I/O and deferred imports, and
-    # concurrent scans are already safe (each builds its own map).
-    return scan_skill_commands()
+    global _skill_commands, _skill_commands_home, _skill_commands_platform
+    current_home_key = hermes_home_key(_resolve_skill_commands_home())
+    current_platform = _normalize_cache_platform(_resolve_skill_commands_platform())
+    snapshot = _skill_command_snapshots.get((current_home_key, current_platform))
+    if not _skill_commands or snapshot is None:
+        return scan_skill_commands()
+
+    # Return the mapping selected for this call, not the process-global
+    # compatibility alias: another profile can legitimately replace that alias
+    # between publication and return.
+    commands = _copy_skill_commands_for_public(_skill_snapshot_commands(snapshot))
+    _skill_commands = commands
+    _skill_commands_home = current_home_key
+    _skill_commands_platform = current_platform
+    return commands
 
 
 def reload_skills() -> Dict[str, Any]:
@@ -665,22 +694,58 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
+def resolve_cached_skill_command_key(
+    command: str, expected_home_key: str, platform: str
+) -> Optional[str]:
+    """Resolve against one explicitly identified built slash-skill snapshot.
+
+    Unlike :func:`resolve_skill_command_key`, this function never scans skill
+    directories, reads config, imports registration helpers, or normalizes a
+    filesystem path. ``expected_home_key`` is prepared with
+    :func:`hermes_constants.hermes_home_key` by the caller.
+    """
+    if not command:
+        return None
+    commands = get_cached_skill_commands(expected_home_key, platform)
+    if commands is None:
+        return None
+    cmd_key = f"/{command.replace('_', '-')}"
+    return cmd_key if cmd_key in commands else None
+
+
+def get_cached_skill_commands(
+    expected_home_key: str, platform: str
+) -> Optional[Mapping[str, Mapping[str, Any]]]:
+    """Return one explicitly identified built cache without discovery or I/O."""
+    snapshot = _skill_command_snapshots.get(
+        (str(expected_home_key), _normalize_cache_platform(platform))
+    )
+    if snapshot is None:
+        return None
+    return _skill_snapshot_commands(snapshot)
+
+
 def build_skill_invocation_message(
     cmd_key: str,
     user_instruction: str = "",
     task_id: str | None = None,
     runtime_note: str = "",
+    *,
+    commands: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Optional[str]:
     """Build the user message content for a skill slash command invocation.
 
     Args:
         cmd_key: The command key including leading slash (e.g., "/gif-search").
         user_instruction: Optional text the user typed after the command.
+        commands: Optional already-selected cache snapshot. Supplying it keeps
+            profile/platform identity stable and skips ambient cache lookup.
 
     Returns:
         The formatted message string, or None if the skill wasn't found.
     """
-    commands = get_skill_commands()
+    if commands is None:
+        commands = get_skill_commands()
     skill_info = commands.get(cmd_key)
     if not skill_info:
         return None
@@ -729,7 +794,11 @@ def build_skill_invocation_message(
 _MAX_STACKED_SKILLS = 5
 
 
-def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
+def split_stacked_skill_commands(
+    rest: str,
+    *,
+    commands: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> tuple[list[str], str]:
     """Consume additional leading ``/skill`` tokens from *rest*.
 
     *rest* is the text that follows the FIRST matched skill command (the
@@ -743,6 +812,9 @@ def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
     Returns:
         ``(extra_cmd_keys, remaining_instruction)`` where ``extra_cmd_keys``
         are canonical ``/slug`` keys from :func:`get_skill_commands`.
+
+    When ``commands`` is provided, parsing is restricted to that already
+    selected cache snapshot and performs no ambient cache lookup.
     """
     keys: list[str] = []
     remaining = rest or ""
@@ -753,7 +825,12 @@ def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
         parts = stripped.split(None, 1)
         token = parts[0]
         tail = parts[1] if len(parts) > 1 else ""
-        cmd_key = resolve_skill_command_key(token.lstrip("/"))
+        command = token.lstrip("/")
+        if commands is None:
+            cmd_key = resolve_skill_command_key(command)
+        else:
+            candidate = f"/{command.replace('_', '-')}"
+            cmd_key = candidate if candidate in commands else None
         if cmd_key is None or cmd_key in keys:
             break
         keys.append(cmd_key)
@@ -765,18 +842,23 @@ def build_stacked_skill_invocation_message(
     cmd_keys: list[str],
     user_instruction: str = "",
     task_id: str | None = None,
+    *,
+    commands: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation.
 
     Args:
         cmd_keys: Canonical ``/slug`` keys, in the order the user typed them.
         user_instruction: Text remaining after the leading skill commands.
+        commands: Optional already-selected cache snapshot used for every
+            member lookup instead of the ambient cache.
 
     Returns:
         ``(message, loaded_skill_names, missing_skill_names)`` or ``None``
         when no skill could be loaded at all.
     """
-    commands = get_skill_commands()
+    if commands is None:
+        commands = get_skill_commands()
 
     loaded_names: list[str] = []
     missing: list[str] = []

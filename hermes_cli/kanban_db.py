@@ -9605,6 +9605,24 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def ready_dispatch_enabled() -> bool:
+    """Return whether ``ready``-status tasks should be auto-dispatched.
+
+    Default is ``True``.  Operators running boards where the "ready" column is
+    always pulled by human-operated terminals (not autonomous Hermes profiles)
+    can set ``kanban.ready_dispatch: false`` in config.yaml to prevent the
+    dispatcher from spawning those tasks and crashing on a no-model profile
+    (#98560).  Mirrors :func:`review_dispatch_enabled`.
+    """
+    try:
+        from hermes_cli.config import load_config
+        return bool(
+            (load_config() or {}).get("kanban", {}).get("ready_dispatch", True)
+        )
+    except Exception:
+        return True
+
+
 def review_dispatch_enabled() -> bool:
     """Return whether first-class review tasks should dispatch automatically.
 
@@ -10044,11 +10062,13 @@ def _dispatch_once_locked(
             )
             spawn_budget = 1
 
-    ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    ready_rows = []
+    if ready_dispatch_enabled():
+        ready_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE status = 'ready' AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
     # Review rows are enumerated up front (not after the ready loop) so the
     # budget split below can see whether review work exists at all.
     review_rows = []

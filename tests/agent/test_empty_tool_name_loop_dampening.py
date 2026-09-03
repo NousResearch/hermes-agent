@@ -122,6 +122,23 @@ def _text_resp(text: str) -> dict:
 @pytest.fixture()
 def agent_env():
     """Spin up the mock provider + an isolated HERMES_HOME, yield (agent, helpers)."""
+    module_names = {
+        name: module
+        for name, module in sys.modules.items()
+        if (
+            name == "run_agent"
+            or name == "agent"
+            or name.startswith("agent.")
+            or name == "tools"
+            or name.startswith("tools.")
+            or name.startswith("hermes_")
+        )
+    }
+    package_dicts = {
+        name: dict(module.__dict__)
+        for name, module in module_names.items()
+        if name in {"agent", "tools"}
+    }
     _MockHandler.captured_requests = []
     _MockHandler.response_queue = []
     srv = HTTPServer(("127.0.0.1", 0), _MockHandler)
@@ -159,6 +176,21 @@ def agent_env():
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = prev_home
+        for name in list(sys.modules):
+            if (
+                name == "run_agent"
+                or name == "agent"
+                or name.startswith("agent.")
+                or name == "tools"
+                or name.startswith("tools.")
+                or name.startswith("hermes_")
+            ):
+                sys.modules.pop(name, None)
+        sys.modules.update(module_names)
+        for name, original_dict in package_dicts.items():
+            package = module_names[name]
+            package.__dict__.clear()
+            package.__dict__.update(original_dict)
 
 
 def _tool_results(handler) -> list[str]:

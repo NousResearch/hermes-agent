@@ -15,7 +15,7 @@ Registration:
 Lifecycle (called by MemoryManager, wired in run_agent.py):
   initialize()          — connect, create resources, warm up
   system_prompt_block()  — static text for the system prompt
-  prefetch(query)        — background recall before each turn
+  prefetch(query)        — background recall before each turn; returns str or MemoryPrefetchResult
   sync_turn(user, asst)  — async write after each turn
   get_tool_schemas()     — tool schemas to expose to the model
   handle_tool_call()     — dispatch a tool call
@@ -33,11 +33,13 @@ Optional hooks (override to opt in):
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,316 @@ PRE_COMPRESS_CHECKPOINT_API_VERSION = 2
 # Default glyph for the deterministic memory indicators. Providers override
 # per-status with their own brand mark (e.g. Hindsight uses "👁️").
 INDICATOR_GLYPH = "🧠"
+
+# Structured prefetch observations are an in-process extension surface. Keep
+# their budget deliberately small: providers can still inject their existing
+# formatted string, but an observer must not become an unbounded side channel.
+MAX_MEMORY_OBSERVATIONS = 16
+MAX_MEMORY_OBSERVATION_DEPTH = 6
+MAX_MEMORY_OBSERVATION_ITEMS = 64
+MAX_MEMORY_OBSERVATION_STRING_CHARS = 4096
+MAX_MEMORY_OBSERVATION_BYTES = 16 * 1024
+MAX_MEMORY_OBSERVATION_BATCH_BYTES = 64 * 1024
+MAX_MEMORY_OBSERVATION_FIELD_CHARS = 128
+# Global cap on the total number of JSON nodes visited while freezing a single
+# observation payload. Per-container width and per-payload depth are bounded
+# individually, but their product (64**6) is not: without an aggregate budget
+# a well-formed-looking width/depth combination can force explosive traversal
+# and allocation before the encoded-byte check has a chance to reject it. The
+# limit is picked to comfortably exceed any payload that could fit under
+# MAX_MEMORY_OBSERVATION_BYTES while still terminating pathological trees
+# during recursion rather than after full expansion.
+MAX_MEMORY_OBSERVATION_NODES = 4096
+# Operation-wide cap on freeze traversal across every observation candidate a
+# prefetch inspects — including malformed ones. Per-candidate the payload
+# budget still fires, but a provider returning many malformed payloads that
+# each exhaust a fresh 4096-node budget would otherwise force repeated deep
+# traversal for each one. The operation cap is set to
+# MAX_MEMORY_OBSERVATIONS × MAX_MEMORY_OBSERVATION_NODES so a well-behaved
+# provider filling the full accepted prefix with max-node payloads still fits,
+# while a malformed tail exhausts the shared budget and every subsequent
+# candidate fails on its first budget decrement instead of walking its tree.
+MAX_MEMORY_OBSERVATION_OPERATION_NODES = (
+    MAX_MEMORY_OBSERVATIONS * MAX_MEMORY_OBSERVATION_NODES
+)
+# Operation-wide cap on the total number of candidate observations the manager
+# is willing to *inspect* (pull via next() and validate) across every provider
+# in one prefetch. The per-payload and operation node caps only fire once a
+# freeze call runs — wrong-type or invalid-metadata candidates fail their
+# validation guard before freeze and consume no node budget at all, so an
+# unbounded or infinite malformed iterable could still force unbounded
+# next()/logging work. This cap decrements for every candidate the manager
+# pulls (valid, malformed, or peeked for truncation), stops the tail once
+# exhausted, and emits at most one truncation warning. Set to a small strict
+# multiple of MAX_MEMORY_OBSERVATIONS so a well-behaved provider filling the
+# accepted prefix (plus the count/bytes look-ahead) never trips it, while a
+# pathological tail is bounded well below the point where per-candidate log
+# spam becomes a problem.
+MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES = MAX_MEMORY_OBSERVATIONS * 4
+
+
+class _FrozenDict(dict):
+    """A JSON-serializable dict with the mutating surface disabled."""
+
+    def __setitem__(self, key, value):
+        raise TypeError("frozen observation payload")
+
+    def __delitem__(self, key):
+        raise TypeError("frozen observation payload")
+
+    def clear(self):
+        raise TypeError("frozen observation payload")
+
+    def pop(self, key, default=None):
+        raise TypeError("frozen observation payload")
+
+    def popitem(self):
+        raise TypeError("frozen observation payload")
+
+    def setdefault(self, key, default=None):
+        raise TypeError("frozen observation payload")
+
+    def update(self, *args, **kwargs):
+        raise TypeError("frozen observation payload")
+
+    def __ior__(self, other):
+        raise TypeError("frozen observation payload")
+
+
+class _FreezeBudget(list):
+    """Node budget carrying the bounded JSON byte count for one payload."""
+
+    def __init__(self, nodes: int) -> None:
+        super().__init__([nodes])
+        self.encoded_bytes = 0
+
+
+def _account_encoded_bytes(budget: List[int], size: int) -> None:
+    """Charge compact UTF-8 JSON bytes without materializing the payload."""
+    if not isinstance(budget, _FreezeBudget):
+        return
+    encoded_bytes = budget.encoded_bytes + size
+    if encoded_bytes > MAX_MEMORY_OBSERVATION_BYTES:
+        raise ValueError("observation payload is too large")
+    budget.encoded_bytes = encoded_bytes
+
+
+def _encoded_json_scalar_size(value: Any) -> int:
+    """Return the exact compact UTF-8 JSON size of one accepted scalar.
+
+    A very large builtin int can make ``json.dumps`` allocate a very large
+    decimal string.  Reject values whose bit length proves that they cannot
+    fit before asking the encoder to render them.  Values below that bound
+    are still tiny compared with the old unbounded container materialization.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        # Since 2**4 > 10, a B-bit integer has more than (B - 1) / 4
+        # decimal digits. Keep the equality boundary for the exact encoder.
+        if value.bit_length() > 4 * MAX_MEMORY_OBSERVATION_BYTES + 1:
+            raise ValueError("observation payload is too large")
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return len(encoded)
+
+
+@dataclass(frozen=True)
+class MemoryObservation:
+    """One bounded, provider-authored observation attached to a prefetch.
+
+    ``payload`` is opaque to Hermes, but the manager only emits observations
+    after recursively validating and freezing it as JSON-shaped data. The
+    provider field is normally left empty by a provider and is bound to the
+    registered provider name by :class:`MemoryManager`; a non-empty mismatch
+    is rejected rather than allowing provenance to be spoofed.
+
+    The class is intentionally generic. It does not encode retrieval ranks,
+    tenants, incident identifiers, model identity, storage, cryptography, or
+    evaluation metrics.
+    """
+
+    source_kind: str
+    schema: str
+    version: int
+    payload: Any
+    provider: str = ""
+
+
+@dataclass(frozen=True)
+class MemoryPrefetchResult:
+    """Immutable context plus observations from one provider prefetch call.
+
+    Existing providers may continue returning ``str``. ``MemoryManager``
+    converts that legacy return to this shape internally, preserving the
+    context bytes. The manager owns the observation trust boundary: it warns
+    and applies the operation-level bounds, then replaces provider payloads
+    with recursively immutable values before returning this trusted result and
+    before exposing its observation tuple to the privacy-limited hook.
+    """
+
+    context: str = ""
+    observations: list[MemoryObservation] | tuple[MemoryObservation, ...] = ()
+
+    def __post_init__(self) -> None:
+        # A provider may conveniently pass a list. Exact builtin lists are
+        # bounded to the inspected-candidate cap plus one look-ahead item;
+        # MemoryManager remains the authoritative trust boundary that warns
+        # and applies the operation-level bounds before emitting observations.
+        # Reject arbitrary iterables instead of consuming a potentially
+        # unbounded generator at this public boundary.
+        raw_observations = self.observations
+        if raw_observations is None:
+            raw_observations = ()
+        if not isinstance(raw_observations, (list, tuple)):
+            raise TypeError("observations must be a list or tuple")
+        # Exact builtin lists are bounded before copying so a provider cannot
+        # force a full duplicate of a huge candidate list at this public
+        # boundary. Keep one look-ahead item for the manager's deterministic
+        # truncation warning. List subclasses are rejected rather than calling
+        # an overridden iterator; tuple instances (including tuple subclasses)
+        # retain their existing lazy traversal contract.
+        if type(raw_observations) is list:
+            raw_observations = raw_observations[
+                : MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1
+            ]
+        elif not isinstance(raw_observations, tuple):
+            raise TypeError("observations must be a list or tuple")
+        object.__setattr__(
+            self,
+            "observations",
+            raw_observations
+            if isinstance(raw_observations, tuple)
+            else tuple(raw_observations),
+        )
+
+
+def _freeze_json_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    budget: Optional[List[int]] = None,
+    operation_budget: Optional[List[int]] = None,
+) -> Any:
+    """Validate and recursively freeze one JSON-safe observation value.
+
+    This helper is intentionally private: providers return ordinary JSON
+    values, while the manager owns the trust boundary and emits the frozen
+    representation only after validation.
+
+    ``budget`` is a shared mutable counter (a single-element list) tracking
+    the number of JSON nodes still allowed for this payload. It is decremented
+    on every entry so that pathological width/depth combinations (each
+    container individually under MAX_MEMORY_OBSERVATION_ITEMS, but nested
+    such that their product explodes) fail during recursion rather than
+    after the whole structure has been materialized. When ``None``, the top
+    call auto-initializes it to ``MAX_MEMORY_OBSERVATION_NODES``.
+
+    ``operation_budget`` is an *additional* shared counter that spans many
+    payloads in one operation (see ``MAX_MEMORY_OBSERVATION_OPERATION_NODES``).
+    When supplied, every node decrements *both* counters and either exhausting
+    raises. Passing an operation budget does NOT relax the per-payload budget:
+    a single payload is still capped at ``MAX_MEMORY_OBSERVATION_NODES``.
+    """
+    if budget is None:
+        budget = [MAX_MEMORY_OBSERVATION_NODES]
+    if depth > MAX_MEMORY_OBSERVATION_DEPTH:
+        raise ValueError("observation payload is too deeply nested")
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise ValueError("observation payload has too many nodes")
+    if operation_budget is not None:
+        operation_budget[0] -= 1
+        if operation_budget[0] < 0:
+            raise ValueError("observation operation exhausted node budget")
+    if value is None or isinstance(value, (bool, int, str)):
+        if isinstance(value, str) and len(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+            raise ValueError("observation payload string is too long")
+        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("observation payload contains a non-finite number")
+        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
+        return value
+    if isinstance(value, dict):
+        if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
+            raise ValueError("observation payload object has too many keys")
+        _account_encoded_bytes(budget, 2)  # ``{}``
+        frozen = {}
+        for index, (key, child) in enumerate(value.items()):
+            if not isinstance(key, str) or len(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+                raise ValueError("observation payload object keys must be bounded strings")
+            if index:
+                _account_encoded_bytes(budget, 1)  # ``,``
+            _account_encoded_bytes(budget, _encoded_json_scalar_size(key) + 1)  # key + ``:``
+            frozen[key] = _freeze_json_value(
+                child,
+                depth=depth + 1,
+                budget=budget,
+                operation_budget=operation_budget,
+            )
+        return _FrozenDict(frozen)
+    if isinstance(value, list):
+        if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
+            raise ValueError("observation payload array has too many items")
+        _account_encoded_bytes(budget, 2)  # ``[]``
+        frozen = []
+        for index, child in enumerate(value):
+            if index:
+                _account_encoded_bytes(budget, 1)  # ``,``
+            frozen.append(
+                _freeze_json_value(
+                    child,
+                    depth=depth + 1,
+                    budget=budget,
+                    operation_budget=operation_budget,
+                )
+            )
+        return tuple(frozen)
+    raise TypeError("observation payload must contain only JSON-safe values")
+
+
+def _thaw_json_value(value: Any) -> Any:
+    """Return a JSON-native copy of a frozen observation value for sizing."""
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(child) for child in value]
+    return value
+
+
+def _freeze_memory_observation_payload(
+    payload: Any,
+    *,
+    operation_budget: Optional[List[int]] = None,
+) -> tuple[Any, int]:
+    """Validate, freeze, and size a provider observation payload.
+
+    ``MemoryManager`` uses this at the provider boundary. Providers should
+    return ordinary JSON values and must not use this to bypass manager
+    provenance checks.
+
+    ``operation_budget`` is an optional shared node counter that lets a caller
+    cap the total freeze traversal work across many candidate payloads in one
+    operation (see ``MAX_MEMORY_OBSERVATION_OPERATION_NODES``). Every payload
+    still gets its own ``MAX_MEMORY_OBSERVATION_NODES`` budget on top of it:
+    the two counters are additive, not substitutive, so a caller cannot
+    accidentally raise the per-payload cap by supplying an operation budget.
+    """
+    budget = _FreezeBudget(MAX_MEMORY_OBSERVATION_NODES)
+    frozen = _freeze_json_value(
+        payload,
+        budget=budget,
+        operation_budget=operation_budget,
+    )
+    encoded = json.dumps(
+        _thaw_json_value(frozen), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
+        raise ValueError("observation payload is too large")
+    return frozen, len(encoded)
 
 
 @dataclass(frozen=True)
@@ -175,13 +487,16 @@ class MemoryProvider(ABC):
         """
         return ""
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(
+        self, query: str, *, session_id: str = ""
+    ) -> str | MemoryPrefetchResult:
         """Recall relevant context for the upcoming turn.
 
         Called before each API call. Return formatted text to inject as
-        context, or empty string if nothing relevant. Implementations
-        should be fast — use background threads for the actual recall
-        and return cached results here.
+        context, or a :class:`MemoryPrefetchResult` carrying that text plus
+        optional bounded observations. Implementations should be fast — use
+        background threads for the actual recall and return cached results
+        here.
 
         session_id is provided for providers serving concurrent sessions
         (gateway group chats, cached agents). Providers that don't need

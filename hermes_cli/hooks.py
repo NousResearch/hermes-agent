@@ -146,6 +146,8 @@ _DEFAULT_PAYLOADS = {
     },
     "pre_llm_call": {
         "session_id": "test-session",
+        "task_id": "test-task",
+        "turn_id": "test-turn",
         "user_message": "What is the weather?",
         "conversation_history": [],
         "is_first_turn": True,
@@ -154,6 +156,8 @@ _DEFAULT_PAYLOADS = {
     },
     "post_llm_call": {
         "session_id": "test-session",
+        "task_id": "test-task",
+        "turn_id": "test-turn",
         "model": "gpt-4",
         "platform": "cli",
     },

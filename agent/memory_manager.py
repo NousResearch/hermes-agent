@@ -25,15 +25,30 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
 import logging
 import re
-import inspect
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
+from agent.memory_provider import (
+    MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+    MAX_MEMORY_OBSERVATION_BYTES,
+    MAX_MEMORY_OBSERVATION_FIELD_CHARS,
+    MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
+    MAX_MEMORY_OBSERVATION_OPERATION_NODES,
+    MAX_MEMORY_OBSERVATIONS,
+    MemoryObservation,
+    MemoryPrefetchResult,
+    MemoryProvider,
+    PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    _freeze_memory_observation_payload,
+    _thaw_json_value,
+)
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
@@ -79,6 +94,15 @@ logger = logging.getLogger(__name__)
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+
+
+@dataclass(frozen=True)
+class _NormalizedPrefetchResult:
+    """Validated provider result plus private operation-boundary metadata."""
+
+    result: MemoryPrefetchResult
+    observation_sizes: tuple[int, ...]
+    truncated_reason: Optional[str] = None
 
 
 def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
@@ -591,40 +615,371 @@ class MemoryManager:
         """
         return extract_user_instruction_from_skill_message(text)
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
-        """Collect prefetch context from all providers.
+    @staticmethod
+    def _normalize_prefetch_result(
+        provider: MemoryProvider,
+        raw_result: Any,
+        *,
+        remaining_count: int = MAX_MEMORY_OBSERVATIONS,
+        remaining_bytes: int = MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        inspect_observations: bool = True,
+        traversal_budget: Optional[List[int]] = None,
+        inspected_budget: Optional[List[int]] = None,
+    ) -> _NormalizedPrefetchResult:
+        """Normalize one provider result within the remaining operation budget.
 
-        Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        Observation data is intentionally traversed here, rather than first
+        materializing a fully normalized provider result. A provider controls
+        the size of its returned tuple, so the manager must stop at the
+        operation boundary before validating or encoding more items than can
+        possibly be returned. ``inspect_observations=False`` is used after a
+        previous provider has exhausted the operation budget: the provider's
+        context still gets normalized, but its observation container is never
+        touched.
+
+        ``traversal_budget`` is an optional shared node counter that
+        ``prefetch_all_result`` allocates once per operation and threads
+        through every candidate — valid or malformed — so a provider cannot
+        force a fresh ``MAX_MEMORY_OBSERVATION_NODES`` traversal for each of
+        many malformed payloads. Once the shared budget is exhausted, every
+        subsequent freeze call fails on its first decrement and the malformed
+        tail is dropped without deep recursion.
+
+        ``inspected_budget`` is an additional operation-wide counter that
+        bounds the total number of candidates the manager pulls before
+        validation. Wrong-type or invalid-metadata candidates fail validation
+        before ``_freeze_json_value`` ever runs, so ``traversal_budget`` alone
+        cannot bound them; without a candidate cap an unbounded or infinite
+        malformed iterable would force unbounded ``next()`` calls and per-item
+        warning spam. Every candidate the manager pulls — valid, malformed, or
+        the single count/bytes look-ahead — decrements this counter, and once
+        it hits zero the tail is dropped without another ``next()`` and the
+        caller records a single truncation warning for the whole operation.
+        """
+        if raw_result is None:
+            raw_result = ""
+        if isinstance(raw_result, str):
+            return _NormalizedPrefetchResult(
+                result=MemoryPrefetchResult(context=raw_result),
+                observation_sizes=(),
+            )
+        if not isinstance(raw_result, MemoryPrefetchResult):
+            raise TypeError(
+                f"Memory provider '{provider.name}' prefetch() must return str "
+                "or MemoryPrefetchResult"
+            )
+        if not isinstance(raw_result.context, str):
+            raise TypeError(
+                f"Memory provider '{provider.name}' returned non-string prefetch context"
+            )
+
+        if not inspect_observations:
+            return _NormalizedPrefetchResult(
+                result=MemoryPrefetchResult(context=raw_result.context),
+                observation_sizes=(),
+            )
+
+        observations: List[MemoryObservation] = []
+        observation_sizes: List[int] = []
+        observation_bytes = 0
+        raw_observations = raw_result.observations
+        if raw_observations is None:
+            raw_observations = ()
+        observation_iterator = iter(raw_observations)
+        truncated_reason = None
+        while True:
+            # Operation-wide inspected-candidate cap: applied *before* any
+            # further next() so wrong-type or invalid-metadata candidates
+            # (which never reach freeze and cost no node budget) cannot force
+            # unbounded synchronous iteration or per-item log spam.
+            if inspected_budget is not None and inspected_budget[0] <= 0:
+                truncated_reason = "inspected"
+                break
+            # Once the prefix has consumed a budget, inspect at most one more
+            # item to establish that data would be dropped. Do not validate or
+            # encode that item, and never continue into the unbounded tail.
+            if (
+                len(observations) >= remaining_count
+                or observation_bytes >= remaining_bytes
+            ):
+                if inspected_budget is not None:
+                    inspected_budget[0] -= 1
+                try:
+                    next(observation_iterator)
+                except StopIteration:
+                    break
+                truncated_reason = (
+                    "count" if len(observations) >= remaining_count else "bytes"
+                )
+                break
+            if inspected_budget is not None:
+                inspected_budget[0] -= 1
+            try:
+                candidate = next(observation_iterator)
+            except StopIteration:
+                break
+            try:
+                if not isinstance(candidate, MemoryObservation):
+                    raise TypeError("observation has the wrong type")
+                for field_name in ("source_kind", "schema"):
+                    field = getattr(candidate, field_name)
+                    if (
+                        not isinstance(field, str)
+                        or not field
+                        or len(field) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
+                    ):
+                        raise ValueError(f"observation {field_name} is invalid")
+                if (
+                    isinstance(candidate.version, bool)
+                    or not isinstance(candidate.version, int)
+                    or candidate.version < 1
+                ):
+                    raise ValueError("observation version is invalid")
+                if candidate.provider not in ("", provider.name):
+                    raise ValueError("observation provider does not match its source provider")
+                if not isinstance(provider.name, str) or not provider.name:
+                    raise ValueError("provider name is invalid")
+                if len(provider.name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+                    raise ValueError("provider name is too long")
+
+                frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
+                    candidate.payload, operation_budget=traversal_budget
+                )
+                encoded = json.dumps(
+                    {
+                        "source_kind": candidate.source_kind,
+                        "provider": provider.name,
+                        "schema": candidate.schema,
+                        "version": candidate.version,
+                        "payload": _thaw_json_value(frozen_payload),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
+                    raise ValueError("observation envelope is too large")
+                if observation_bytes + len(encoded) > remaining_bytes:
+                    truncated_reason = "bytes"
+                    break
+                observations.append(
+                    MemoryObservation(
+                        source_kind=candidate.source_kind,
+                        provider=provider.name,
+                        schema=candidate.schema,
+                        version=candidate.version,
+                        payload=frozen_payload,
+                    )
+                )
+                observation_sizes.append(len(encoded))
+                observation_bytes += len(encoded)
+            except (TypeError, ValueError, OverflowError) as exc:
+                # Observation data is an optional side channel. A malformed
+                # envelope is dropped, while the provider's formatted context
+                # remains usable. Provider call exceptions retain the older
+                # fail-isolated behavior in prefetch_all_result().
+                logger.warning(
+                    "Memory provider '%s' returned a malformed prefetch observation; "
+                    "dropping it: %s",
+                    provider.name,
+                    exc,
+                )
+
+        return _NormalizedPrefetchResult(
+            result=MemoryPrefetchResult(
+                context=raw_result.context,
+                observations=tuple(observations),
+            ),
+            observation_sizes=tuple(observation_sizes),
+            truncated_reason=truncated_reason,
+        )
+
+    @staticmethod
+    def _emit_prefetch_observation(
+        result: MemoryPrefetchResult,
+        *,
+        query: str,
+        session_id: str,
+        task_id: Optional[str],
+        turn_id: Optional[str],
+    ) -> None:
+        """Queue an opt-in observer event without exposing merged context.
+
+        The hook receives only the validated, provider-bound observation tuple,
+        operation identifiers, and a digest/byte length for the final merged
+        context. ``task_id`` and ``turn_id`` are explicit operation arguments;
+        direct callers that do not own a turn leave them ``None``. The public
+        result remains available to trusted direct callers, but must never cross
+        this observer boundary. Hook return values are ignored so observers
+        cannot transform context or affect the agent turn. Delivery uses the
+        shared host-owned bounded observer dispatcher, so callback latency is
+        not on the turn path.
+        """
+        if not result.observations:
+            return
+        try:
+            from hermes_cli import plugins
+
+            # The merged context can be large even when the observer payload is
+            # small. Resolve the real, lazily-discovered hook registry before
+            # doing any digest work; without a consumer this method must be a
+            # no-op after the observation-presence check.
+            if not plugins.has_hook("memory_prefetch"):
+                return
+            from agent.plugin_stream_hooks import enqueue_plugin_observer_hook
+
+            context_bytes = result.context.encode("utf-8")
+            enqueue_plugin_observer_hook(
+                "memory_prefetch",
+                query=query,
+                session_id=session_id,
+                task_id=task_id,
+                turn_id=turn_id,
+                observations=result.observations,
+                context_sha256=hashlib.sha256(context_bytes).hexdigest(),
+                context_byte_length=len(context_bytes),
+            )
+        except Exception as exc:
+            # Plugin hook dispatch is best-effort; memory injection must remain
+            # independent of an observer's import, discovery, or callback error.
+            logger.debug("memory_prefetch observer dispatch failed: %s", exc)
+
+    def prefetch_all_result(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        task_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> MemoryPrefetchResult:
+        """Collect context and bounded observations from one prefetch operation.
+
+        Existing providers returning ``str`` are normalized without changing
+        their context bytes. Provider failures remain isolated as before;
+        malformed structured observations alone are dropped while that
+        provider's formatted context is retained. ``task_id`` and ``turn_id``
+        are manager-owned operation metadata only; they are not passed to
+        providers and do not affect provider queries or context bytes.
         """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
-            return ""
+            return MemoryPrefetchResult()
         parts = []
+        observations: List[MemoryObservation] = []
+        observation_bytes = 0
+        observation_budget_exhausted = False
+        # Shared node budget spanning every candidate — malformed included —
+        # inspected during this operation. Without it, each malformed payload
+        # gets a fresh per-payload budget and can force a full traversal.
+        traversal_budget: List[int] = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
+        # Shared candidate cap spanning every provider. Wrong-type or
+        # invalid-metadata candidates fail before freeze and never spend node
+        # budget, so this counter is what bounds pull/log work against an
+        # unbounded or infinite malformed iterable.
+        inspected_budget: List[int] = [MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES]
         for provider in self._providers:
             try:
-                result = self._prefetch_provider(provider, clean_query, session_id=session_id)
-                if result and result.strip():
-                    parts.append(result)
+                raw_result = self._prefetch_provider(
+                    provider, clean_query, session_id=session_id
+                )
+                normalized = self._normalize_prefetch_result(
+                    provider,
+                    raw_result,
+                    remaining_count=MAX_MEMORY_OBSERVATIONS - len(observations),
+                    remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES
+                    - observation_bytes,
+                    inspect_observations=not observation_budget_exhausted,
+                    traversal_budget=traversal_budget,
+                    inspected_budget=inspected_budget,
+                )
+                result = normalized.result
+                if result.context and result.context.strip():
+                    parts.append(result.context)
+                if observation_budget_exhausted:
+                    continue
+                observations.extend(result.observations)
+                observation_bytes += sum(normalized.observation_sizes)
+                if normalized.truncated_reason == "count":
+                    logger.warning(
+                        "Memory prefetch operation exceeded the observation "
+                        "count budget of %d; keeping the deterministic "
+                        "provider-ordered prefix and dropping remaining "
+                        "observations (reduce provider observation count or "
+                        "payload sizes)",
+                        MAX_MEMORY_OBSERVATIONS,
+                    )
+                    observation_budget_exhausted = True
+                elif normalized.truncated_reason == "bytes":
+                    logger.warning(
+                        "Memory prefetch operation exceeded the aggregate "
+                        "observation batch budget of %d bytes; keeping the "
+                        "deterministic provider-ordered prefix and dropping "
+                        "remaining observations (reduce observation payload "
+                        "sizes or count)",
+                        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+                    )
+                    observation_budget_exhausted = True
+                elif normalized.truncated_reason == "inspected":
+                    logger.warning(
+                        "Memory prefetch operation reached the observation "
+                        "inspected-candidate cap of %d; stopping tail traversal "
+                        "for this and every remaining provider (a provider is "
+                        "returning too many candidates or an unbounded "
+                        "malformed iterable — filter upstream or reduce the "
+                        "observation count)",
+                        MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
+                    )
+                    observation_budget_exhausted = True
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
-        return "\n\n".join(parts)
+        result = MemoryPrefetchResult(
+            context="\n\n".join(parts),
+            observations=tuple(observations),
+        )
+        self._emit_prefetch_observation(
+            result,
+            query=clean_query,
+            session_id=session_id,
+            task_id=task_id,
+            turn_id=turn_id,
+        )
+        return result
+
+    def prefetch_all(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        task_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> str:
+        """Collect prefetch context from all providers.
+
+        This compatibility method intentionally keeps its historical ``str``
+        return type. Use :meth:`prefetch_all_result` when the operation-bound
+        structured result is needed.
+        """
+        return self.prefetch_all_result(
+            query,
+            session_id=session_id,
+            task_id=task_id,
+            turn_id=turn_id,
+        ).context
 
     def _prefetch_provider(
         self, provider: MemoryProvider, query: str, *, session_id: str = ""
-    ) -> str:
+    ) -> Any:
         if provider.name == "builtin":
             return provider.prefetch(query, session_id=session_id)
 
-        result_box: Dict[str, str] = {}
+        result_box: Dict[str, Any] = {}
         error_box: Dict[str, Exception] = {}
 
         def _run() -> None:
             try:
-                result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
+                result_box["value"] = provider.prefetch(query, session_id=session_id)
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 error_box["value"] = exc
 

@@ -3864,6 +3864,23 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     if not tool_name:
         return None
 
+    # Validation runs before all dispatcher seams. Resolve the same declared
+    # legacy names here so resumptions and saved prompts are not rejected as
+    # hallucinated tools before the dispatch aliases can run. This never
+    # widens the session: the canonical target must be either model-visible or
+    # in Tool Search's existing enabled-and-available scoped catalog.
+    from model_tools import _LEGACY_TOOL_ALIASES
+
+    legacy_target = _LEGACY_TOOL_ALIASES.get(tool_name)
+    if legacy_target:
+        allowed_names = set(agent.valid_tool_names)
+        if legacy_target not in allowed_names:
+            from agent.tool_executor import _tool_search_scoped_names
+
+            allowed_names.update(_tool_search_scoped_names(agent))
+        if legacy_target in allowed_names:
+            return legacy_target
+
     # VolcEngine api/plan workaround (issue #33007): the endpoint's
     # protocol-translation layer occasionally leaks raw XML attribute
     # fragments into tool_use.name, e.g.
@@ -3929,6 +3946,48 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         return matches[0]
 
     return None
+
+
+def repair_and_classify_tool_call_names(
+    agent,
+    tool_calls: list[Any],
+) -> tuple[list[str], set[int]]:
+    """Repair names and classify invalid calls without widening deferral.
+
+    A declared legacy alias may resolve to an enabled Tool Search-deferred
+    canonical tool. Only that exact call object receives a validation
+    exemption; a model that emits the deferred canonical name directly must
+    still use ``tool_call``. Returns ``(invalid_names, exempt_call_ids)``.
+    """
+    from model_tools import _LEGACY_TOOL_ALIASES
+
+    valid_names = set(agent.valid_tool_names)
+    exempt_call_ids: set[int] = set()
+    for tool_call in tool_calls:
+        original_name = tool_call.function.name
+        if original_name in valid_names:
+            continue
+        repaired = agent._repair_tool_call(original_name)
+        if not repaired:
+            continue
+        print(
+            f"{agent.log_prefix}🔧 Auto-repaired tool name: "
+            f"'{original_name}' -> '{repaired}'"
+        )
+        tool_call.function.name = repaired
+        if (
+            repaired not in valid_names
+            and _LEGACY_TOOL_ALIASES.get(original_name) == repaired
+        ):
+            exempt_call_ids.add(id(tool_call))
+
+    invalid_names = [
+        tool_call.function.name
+        for tool_call in tool_calls
+        if tool_call.function.name not in valid_names
+        and id(tool_call) not in exempt_call_ids
+    ]
+    return invalid_names, exempt_call_ids
 
 
 def _tool_call_id_variants(tc: Any) -> set:

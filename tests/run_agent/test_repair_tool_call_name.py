@@ -30,6 +30,10 @@ VALID = {
 }
 
 
+def _tool_call(name: str):
+    return SimpleNamespace(function=SimpleNamespace(name=name))
+
+
 @pytest.fixture
 def repair():
     """Return a bound _repair_tool_call built on a minimal shell agent.
@@ -49,6 +53,112 @@ class TestExistingBehaviorStillWorks:
 
     def test_lowercase_already_matches(self, repair):
         assert repair("browser_click") == "browser_click"
+
+    @pytest.mark.parametrize(
+        ("legacy_name", "canonical_name"),
+        sorted(__import__("model_tools", fromlist=["_LEGACY_TOOL_ALIASES"])._LEGACY_TOOL_ALIASES.items()),
+    )
+    def test_declared_legacy_alias_repairs_before_tool_name_validation(
+        self,
+        legacy_name,
+        canonical_name,
+    ):
+        from run_agent import AIAgent
+
+        stub = SimpleNamespace(valid_tool_names={canonical_name})
+        repair_alias = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+        assert repair_alias(legacy_name) == canonical_name
+
+    def test_declared_legacy_alias_repairs_when_canonical_tool_is_enabled_but_deferred(self):
+        from run_agent import AIAgent
+
+        stub = SimpleNamespace(
+            valid_tool_names={"tool_search", "tool_describe", "tool_call"},
+            enabled_toolsets=["todo"],
+            disabled_toolsets=None,
+        )
+        repair_alias = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+        assert repair_alias("todo") == "todo_list"
+
+    def test_declared_legacy_alias_does_not_widen_a_disabled_toolset(self):
+        from run_agent import AIAgent
+
+        stub = SimpleNamespace(
+            valid_tool_names={"tool_search", "tool_describe", "tool_call"},
+            enabled_toolsets=["todo"],
+            disabled_toolsets=["todo"],
+        )
+        repair_alias = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+        assert repair_alias("todo") is None
+
+
+class TestConversationValidationBoundary:
+    @staticmethod
+    def _agent(*, disabled_toolsets=None, valid_tool_names=None):
+        from run_agent import AIAgent
+
+        agent = SimpleNamespace(
+            valid_tool_names=valid_tool_names
+            or {"tool_search", "tool_describe", "tool_call"},
+            enabled_toolsets=["todo"],
+            disabled_toolsets=disabled_toolsets,
+            log_prefix="",
+        )
+        agent._repair_tool_call = AIAgent._repair_tool_call.__get__(agent, AIAgent)
+        return agent
+
+    def test_legacy_alias_to_deferred_canonical_is_valid_for_that_call_only(self):
+        from agent.agent_runtime_helpers import repair_and_classify_tool_call_names
+
+        call = _tool_call("todo")
+        invalid, exemptions = repair_and_classify_tool_call_names(
+            self._agent(),
+            [call],
+        )
+
+        assert invalid == []
+        assert call.function.name == "todo_list"
+        assert exemptions == {id(call)}
+
+    def test_direct_deferred_canonical_name_still_requires_tool_call_bridge(self):
+        from agent.agent_runtime_helpers import repair_and_classify_tool_call_names
+
+        call = _tool_call("todo_list")
+        invalid, exemptions = repair_and_classify_tool_call_names(
+            self._agent(),
+            [call],
+        )
+
+        assert invalid == ["todo_list"]
+        assert exemptions == set()
+
+    def test_disabled_legacy_alias_remains_invalid(self):
+        from agent.agent_runtime_helpers import repair_and_classify_tool_call_names
+
+        call = _tool_call("todo")
+        invalid, exemptions = repair_and_classify_tool_call_names(
+            self._agent(disabled_toolsets=["todo"]),
+            [call],
+        )
+
+        assert invalid == ["todo"]
+        assert exemptions == set()
+
+    def test_visible_canonical_alias_needs_no_deferred_exemption(self):
+        from agent.agent_runtime_helpers import repair_and_classify_tool_call_names
+
+        call = _tool_call("todo")
+        invalid, exemptions = repair_and_classify_tool_call_names(
+            self._agent(valid_tool_names={"todo_list"}),
+            [call],
+        )
+
+        assert invalid == []
+        assert call.function.name == "todo_list"
+        assert exemptions == set()
 
 
 

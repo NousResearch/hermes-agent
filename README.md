@@ -65,6 +65,12 @@ source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
 ```
 
+## Deploy on Sealos
+
+[![Deploy on Sealos](https://sealos.io/Deploy-on-Sealos.svg)](https://sealos.io/products/app-store/hermes-agent)
+
+The community-maintained [Sealos template](https://github.com/labring-actions/templates/tree/kb-0.9/template/hermes-agent) runs the Hermes gateway and dashboard with a shared persistent data volume. Deployment requires dashboard credentials and an API key before Sealos exposes the services over HTTPS.
+
 ### Troubleshooting
 
 #### Windows Defender or antivirus flags `uv.exe` as malware

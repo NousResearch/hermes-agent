@@ -165,6 +165,20 @@ def _notification_belongs_to_turn(
     return True
 
 
+def _extract_thread_id(result: dict) -> Optional[str]:
+    """Cross-fill thread.id/sessionId — different codex versions have
+    serialized this under either key. Mirrors openclaw beta.8's tolerance
+    fix so future codex drops/renames don't KeyError us at handshake
+    time."""
+    thread_obj = result.get("thread") or {}
+    return (
+        thread_obj.get("id")
+        or thread_obj.get("sessionId")
+        or result.get("sessionId")
+        or result.get("threadId")
+    )
+
+
 def _coerce_turn_input_text(user_input: Any) -> str:
     """Collapse Hermes/OpenAI rich content into app-server text input.
 
@@ -282,8 +296,14 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        resume_thread_id: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
+        # Codex persists thread rollouts on disk, so a thread outlives this
+        # process. When set, ensure_started() tries thread/resume before
+        # thread/start — the difference between conversation memory
+        # surviving an agent-cache eviction and total amnesia.
+        self._resume_thread_id = resume_thread_id
         self._codex_bin = codex_bin
         self._codex_home = codex_home
         self._permission_profile = (
@@ -342,19 +362,43 @@ class CodexAppServerSession:
         # codex CLI workflow and avoids fighting codex's own validation.
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
+        if self._resume_thread_id:
+            try:
+                result = self._client.request(
+                    "thread/resume",
+                    {"threadId": self._resume_thread_id, "cwd": self._cwd},
+                    timeout=15,
+                )
+                thread_id = _extract_thread_id(result)
+                if thread_id:
+                    self._thread_id = thread_id
+                    logger.info(
+                        "codex app-server thread resumed: id=%s profile=%s "
+                        "cwd=%s",
+                        self._thread_id[:8],
+                        self._permission_profile,
+                        self._cwd,
+                    )
+                    return self._thread_id
+                logger.warning(
+                    "codex thread/resume returned no thread id "
+                    "(payload keys: %s) — starting a fresh thread",
+                    sorted(result.keys()),
+                )
+            except (CodexAppServerError, TimeoutError) as exc:
+                # Rollout gone, codex too old, or id from another CODEX_HOME
+                # — a fresh thread is the correct degraded behavior either
+                # way, so resume failures must never fail the turn.
+                logger.warning(
+                    "codex thread/resume failed for id=%s (%s) — starting "
+                    "a fresh thread",
+                    self._resume_thread_id[:8],
+                    exc,
+                )
+
         params: dict[str, Any] = {"cwd": self._cwd}
         result = self._client.request("thread/start", params, timeout=15)
-        # Cross-fill thread.id/sessionId — different codex versions have
-        # serialized this under either key. Mirrors openclaw beta.8's
-        # tolerance fix so future codex drops/renames don't KeyError us
-        # at handshake time.
-        thread_obj = result.get("thread") or {}
-        thread_id = (
-            thread_obj.get("id")
-            or thread_obj.get("sessionId")
-            or result.get("sessionId")
-            or result.get("threadId")
-        )
+        thread_id = _extract_thread_id(result)
         if not thread_id:
             raise CodexAppServerError(
                 code=-32603,

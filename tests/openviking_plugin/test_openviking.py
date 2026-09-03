@@ -1101,6 +1101,122 @@ class TestEnsureClientReloadsEnv:
         assert posts[0][0].endswith("/messages")
         assert posts[1][0].endswith("/commit")
 
+
+class TestVikingWrite:
+    """viking_write: overwrite an existing file by exact viking:// URI."""
+
+    def _provider_with_client(self, client):
+        provider = OpenVikingMemoryProvider()
+        provider._client = client
+        return provider
+
+    def test_write_replaces_existing_uri(self):
+        client = FakeVikingClient({})
+        client.post = lambda path, payload=None, **kw: (
+            client.calls.append((path, payload or {})),
+            {"result": {"content_updated": True, "written_bytes": 12}},
+        )[1]
+
+        out = json.loads(self._provider_with_client(client).handle_tool_call(
+            "viking_write",
+            {
+                "uri": "viking://resources/wiki/entities/foo/foo.md",
+                "content": "updated body",
+                "mode": "replace",
+            },
+        ))
+
+        assert out["status"] == "written"
+        assert out["uri"].startswith("viking://resources/wiki/")
+        assert out["mode"] == "replace"
+        assert out["content_updated"] is True
+        path, payload = client.calls[-1]
+        assert path == "/api/v1/content/write"
+        assert payload["content"] == "updated body"
+        assert payload["mode"] == "replace"
+
+    def test_write_default_mode_is_replace(self):
+        client = FakeVikingClient({})
+        client.post = lambda path, payload=None, **kw: (
+            client.calls.append((path, payload or {})),
+            {"result": {}},
+        )[1]
+
+        out = json.loads(self._provider_with_client(client).handle_tool_call(
+            "viking_write",
+            {"uri": "viking://resources/a/b.md", "content": "x"},
+        ))
+
+        assert out["mode"] == "replace"
+        assert client.calls[-1][1]["mode"] == "replace"
+
+    def test_write_append_mode_success(self):
+        client = FakeVikingClient({})
+        client.post = lambda path, payload=None, **kw: (
+            client.calls.append((path, payload or {})),
+            {"result": {"content_updated": True}},
+        )[1]
+
+        out = json.loads(self._provider_with_client(client).handle_tool_call(
+            "viking_write",
+            {"uri": "viking://resources/a/b.md", "content": "more", "mode": "append"},
+        ))
+
+        assert out["status"] == "written"
+        assert out["mode"] == "append"
+        assert client.calls[-1][0] == "/api/v1/content/write"
+        assert client.calls[-1][1]["mode"] == "append"
+
+    def test_write_rejects_empty_content(self):
+        client = FakeVikingClient({})
+        out = json.loads(self._provider_with_client(client).handle_tool_call(
+            "viking_write",
+            {"uri": "viking://resources/a/b.md", "content": ""},
+        ))
+
+        assert "error" in out
+        assert client.calls == []
+
+    def test_write_rejects_non_viking_uri(self):
+        client = FakeVikingClient({})
+        out = json.loads(self._provider_with_client(client).handle_tool_call(
+            "viking_write",
+            {"uri": "/tmp/evil.md", "content": "x"},
+        ))
+
+        assert "error" in out
+        assert client.calls == []
+
+    def test_write_rejects_unknown_mode(self):
+        client = FakeVikingClient({})
+        out = json.loads(self._provider_with_client(client).handle_tool_call(
+            "viking_write",
+            {"uri": "viking://resources/a/b.md", "content": "x", "mode": "upsert"},
+        ))
+
+        assert "error" in out
+        assert "upsert" in out["error"]
+        assert client.calls == []
+
+    def test_write_server_error_is_not_swallowed(self):
+        client = FakeVikingClient({})
+
+        def _raise_404(path, payload=None, **kw):
+            client.calls.append((path, payload or {}))
+            raise RuntimeError("404 Not Found")
+
+        client.post = _raise_404
+
+        out = json.loads(self._provider_with_client(client).handle_tool_call(
+            "viking_write",
+            {"uri": "viking://resources/missing/x.md", "content": "x"},
+        ))
+
+        assert "error" in out
+        assert "404" in out["error"]
+
+
+class TestClientRefresh:
     def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):
         refresh_entered = threading.Event()
         release_refresh = threading.Event()

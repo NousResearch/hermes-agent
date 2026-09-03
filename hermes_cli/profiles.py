@@ -507,22 +507,55 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _seed_model_config(profile_dir: Path) -> None:
-    """Copy (not link) the active profile's model block into a fresh profile so it is usable;
-    profiles stay independent islands afterwards."""
+    """Give a profile created without a clone source a usable model block.
+
+    Such a profile gets its directory tree but no ``config.yaml`` at all, so it
+    resolves no provider and its first turn dies with "No LLM provider
+    configured" — created, but unable to run. Copy the active profile's
+    ``model`` block over at creation time.
+
+    This is a copy, not a link: profiles remain independent islands, and
+    editing either one afterwards never touches the other. "Fresh" means fresh
+    skills and SOUL, not unreachable.
+
+    The config.yaml may already exist (voice section mirroring, etc.), so read
+    it and only inject the model block when absent, preserving other content.
+    """
     config_path = profile_dir / "config.yaml"
-    if config_path.exists():
-        return
-    with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
+    try:
         import yaml
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
         source = get_hermes_home() / "config.yaml"
-        model_cfg = read_user_config_raw(source).get("model") if source.is_file() else None
-        if model_cfg:
-            config_path.write_text(yaml.safe_dump({"model": model_cfg}, sort_keys=False), encoding="utf-8")
+        if not source.is_file():
+            return
+        model_cfg = read_user_config_raw(source).get("model")
+        if not model_cfg:
+            return
+    except Exception:
+        return
+
+    existing = {}
+    try:
+        if config_path.exists():
+            existing = read_user_config_raw(config_path) or {}
+    except Exception:
+        existing = {}
+
+    if existing.get("model"):
+        return
+
+    existing["model"] = model_cfg
+    try:
+        config_path.write_text(
+            yaml.safe_dump(existing, sort_keys=False), encoding="utf-8"
+        )
+    except Exception:
+        # Creation must not fail over this; `hermes model` still sets it later.
+        pass
 
 
-def _check_gateway_running(profile_dir: Path) -> bool:
+def _check_gateway_running(profile_dir: Path) -> bool:def _check_gateway_running(profile_dir: Path) -> bool:
     """Gateway liveness for a profile dir, never mutating HERMES_HOME.
 
     Primary signal is ``gateway.pid`` verified against the runtime lock (fails closed when

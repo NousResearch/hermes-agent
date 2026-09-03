@@ -3637,7 +3637,7 @@ def _warn_pending_fleet_restart_on_startup() -> None:
 
 
 def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+    """Best-effort ``systemctl restart`` of every hermes-gateway/serve/webui unit."""
     for scope, scope_cmd in (
         ("user", ["systemctl", "--user"]),
         ("system", ["systemctl"]),
@@ -3649,6 +3649,7 @@ def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
                     "list-units",
                     "hermes-gateway*",
                     "hermes-serve*",
+                    "hermes-webui*",
                     "--plain",
                     "--no-legend",
                     "--no-pager",
@@ -6924,8 +6925,11 @@ def _for_each_systemd_gateway_unit(
     process_unit,
     on_unit_timeout,
 ) -> None:
-    """Process each ``hermes-gateway*.service``/``hermes-serve*.service`` unit
-    from ``systemctl list-units``.
+    """Process each systemd unit from ``systemctl list-units``.
+
+    Covers ``hermes-gateway*.service`` (the gateway fleet),
+    ``hermes-serve*.service`` (the Desktop app's backend, #83438), and
+    ``hermes-webui*.service`` (companion WebUI sharing the source tree, #95882).
 
     ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
     that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
@@ -6939,7 +6943,7 @@ def _for_each_systemd_gateway_unit(
         if not unit.endswith(".service"):
             continue
         # list-units is already pattern-filtered, but keep the name gate so a
-        # stray non-gateway/serve line cannot enter the restart path.
+        # stray non-gateway/serve/webui line cannot enter the restart path.
         # ``unit.startswith("hermes-serve")`` alone would also accept the
         # unrelated ``hermes-server.service`` — require the exact base unit
         # or the hyphenated profile family instead (review on #83595).
@@ -6948,6 +6952,8 @@ def _for_each_systemd_gateway_unit(
             or unit.startswith("hermes-gateway-")
             or unit == "hermes-serve.service"
             or unit.startswith("hermes-serve-")
+            or unit == "hermes-webui.service"
+            or unit.startswith("hermes-webui-")
         ):
             continue
         svc_name = unit.removesuffix(".service")
@@ -10097,9 +10103,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception:
                 _pre_restart_gateway_pids = None
 
-            # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles) plus
-            # hermes-serve* units (the Desktop app's backend, #83438).
+            # hermes-serve* (the Desktop app's backend, #83438) and
+            # hermes-webui* (companion WebUI sharing the source tree, #95882).
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -10117,6 +10123,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 "list-units",
                                 "hermes-gateway*",
                                 "hermes-serve*",
+                                "hermes-webui*",
                                 "--plain",
                                 "--no-legend",
                                 "--no-pager",

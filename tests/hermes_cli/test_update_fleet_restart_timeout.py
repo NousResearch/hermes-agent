@@ -112,6 +112,48 @@ class TestFleetRestartTimeoutIsolation:
 
         assert seen == ["hermes-serve", "hermes-serve-work", "hermes-gateway"]
 
+    def test_hermes_webui_units_are_included(self):
+        # #95882 — hermes update restarted hermes-gateway* and hermes-serve*
+        # units but left companion hermes-webui* (sharing the source tree) on
+        # stale pre-update code, producing HTTP 409 until a manual restart.
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            "\n".join(
+                [
+                    "ssh.service loaded active running",
+                    "hermes-webui.service loaded active running",
+                    "hermes-webui-prod.service loaded active running",
+                    "hermes-serve.service loaded active running",
+                    "hermes-gateway.service loaded active running",
+                    "",
+                ]
+            ),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == [
+            "hermes-webui",
+            "hermes-webui-prod",
+            "hermes-serve",
+            "hermes-gateway",
+        ]
+
+    def test_hermes_webui_near_prefix_is_rejected(self):
+        # A bare ``startswith("hermes-webui")`` is fine for the profile family,
+        # but the existing strict exact/hyphenated gate must still reject a
+        # hypothetical near-prefix unit such as ``hermes-webuictl.service``.
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            _list_units_stdout(["hermes-webuictl", "hermes-webui-coder"]),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == ["hermes-webui-coder"]
+
     def test_hermes_server_near_prefix_is_rejected(self):
         # Review on #83595: a bare ``startswith("hermes-serve")`` gate also
         # accepts the unrelated ``hermes-server.service``. Only the exact
@@ -139,6 +181,47 @@ class TestFleetRestartTimeoutIsolation:
         )
 
         assert seen == ["hermes-gateway-coder"]
+
+class TestFleetRestartBestEffort:
+    def test_discovers_and_restarts_hermes_webui_units(self, monkeypatch):
+        # #95882 — the user-facing boundary is that ``hermes update`` runs
+        # ``systemctl list-units`` with the right globs and restarts the units.
+        # Mock the subprocess boundary so this is testable on macOS/CI.
+        from hermes_cli.update_cmd import _restart_systemd_gateway_units_best_effort
+
+        calls: list[list[str]] = []
+        class FakeResult:
+            def __init__(self, returncode: int = 0, stdout: str = ""):
+                self.returncode = returncode
+                self.stdout = stdout
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "list-units" in cmd:
+                return FakeResult(
+                    stdout="\n".join(
+                        [
+                            "hermes-webui.service loaded active running",
+                            "hermes-serve.service loaded active running",
+                        ]
+                    )
+                )
+            return FakeResult()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        failed: list[str] = []
+        _restart_systemd_gateway_units_best_effort(failed)
+
+        list_units_calls = [c for c in calls if "list-units" in c]
+        assert all(
+            any("hermes-webui*" == arg for arg in c) for c in list_units_calls
+        ), f"missing hermes-webui* in list-units patterns: {list_units_calls}"
+
+        restart_calls = [
+            c for c in calls if "restart" in c and "hermes-webui" in c
+        ]
+        assert len(restart_calls) >= 1, f"no hermes-webui restart issued: {calls}"
+        assert failed == []
 
 
 class TestGracefulSigusr1Eligibility:

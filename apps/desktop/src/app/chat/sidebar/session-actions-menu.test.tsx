@@ -1,10 +1,23 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuSub, DropdownMenuSubTrigger } from '@/components/ui/dropdown-menu'
+import { setSessionColorOverride } from '@/store/session-color'
+import { loadedRowFor } from '@/store/session-pin-sync'
+
+import { SessionActionsMenu, SessionColorSwatches, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
+
+// Radix calls these on open; jsdom doesn't implement them. Only the
+// Appearance-submenu test below (which force-opens a DropdownMenuSub) needs
+// them, but stubbing globally is harmless for the rest of the suite.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -71,7 +84,7 @@ vi.mock('@/i18n', () => ({
   })
 }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
-vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: [] }))
+vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: ['#3b82f6'] }))
 vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
@@ -91,12 +104,22 @@ vi.mock('@/store/session', () => ({
   $unreadFinishedSessionIds: atom<string[]>([]),
   markSessionRead: vi.fn(),
   sessionMatchesStoredId: vi.fn(() => false),
-  sessionPinId: vi.fn((s: { id: string }) => s.id),
+  // Real fallback semantics (see session.ts's sessionPinId): a lineage-rotated
+  // row's durable pin id is its ORIGINAL root, not its current live id.
+  sessionPinId: vi.fn((s: { _lineage_root_id?: null | string; id: string }) => s._lineage_root_id ?? s.id),
   setSessions: vi.fn()
 }))
 vi.mock('@/store/session-color', () => ({
   $sessionColorOverrides: atom<Record<string, string>>({}),
   setSessionColorOverride: vi.fn()
+}))
+// The cross-slice pin resolver (recents + cron + messaging, active-gateway
+// tie-break) — session-pin-sync.test.ts already covers its own resolution
+// logic in depth. Here it's a plain stub SessionColorSwatches calls into, so
+// this suite only has to prove it's consulted (and its result used) instead
+// of the component re-deriving a $sessions-only lookup.
+vi.mock('@/store/session-pin-sync', () => ({
+  loadedRowFor: vi.fn(() => undefined)
 }))
 vi.mock('@/store/session-states', () => ({
   $sessionTiles: atom<unknown[]>([]),
@@ -286,5 +309,57 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('SessionColorSwatches', () => {
+  // A pinned row from a NON-$sessions slice (cron/messaging) whose live id has
+  // rotated away from its original lineage root — the realistic case for any
+  // session that has been through auto-compression. The reader
+  // (session-color.ts's resolveSessionColor) always keys on sessionPinId,
+  // i.e. the lineage root — so the picker must write under that same key, not
+  // the raw live id it was passed, or the color silently never renders.
+  const cronRow = { _lineage_root_id: 'root-1', id: 'live-2', profile: 'default', title: 'Nightly build' }
+
+  // Force-opens the DropdownMenuSub so the swatches mount without needing to
+  // drive Radix's real hover/keyboard sub-menu interaction — same technique
+  // as apps/desktop/src/app/shell/model-edit-submenu.test.tsx.
+  function renderSwatches(sessionId: string) {
+    return render(
+      <DropdownMenu open>
+        <DropdownMenuContent>
+          <DropdownMenuSub open>
+            <DropdownMenuSubTrigger>Appearance</DropdownMenuSubTrigger>
+            <SessionColorSwatches sessionId={sessionId} />
+          </DropdownMenuSub>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )
+  }
+
+  it('writes the color override under the lineage-root id for a pinned cron/messaging row not in $sessions', async () => {
+    // $sessions itself never has this row (it lives in $cronSessions /
+    // $messagingSessions) — loadedRowFor is the cross-slice resolver that
+    // finds it regardless.
+    vi.mocked(loadedRowFor).mockReturnValue(cronRow as never)
+
+    renderSwatches('live-2')
+
+    const swatch = await screen.findByRole('button', { name: '#3b82f6' })
+    fireEvent.click(swatch)
+
+    expect(setSessionColorOverride).toHaveBeenCalledWith('root-1', '#3b82f6')
+    expect(setSessionColorOverride).not.toHaveBeenCalledWith('live-2', expect.anything())
+  })
+
+  it('falls back to the raw sessionId when no slice has the row', async () => {
+    vi.mocked(loadedRowFor).mockReturnValue(undefined)
+
+    renderSwatches('unresolvable-id')
+
+    const swatch = await screen.findByRole('button', { name: '#3b82f6' })
+    fireEvent.click(swatch)
+
+    expect(setSessionColorOverride).toHaveBeenCalledWith('unresolvable-id', '#3b82f6')
   })
 })

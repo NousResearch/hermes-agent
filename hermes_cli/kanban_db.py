@@ -3833,6 +3833,60 @@ def set_reasoning_effort(
     return True
 
 
+def update_task_body(
+    conn: sqlite3.Connection,
+    task_id: str,
+    body: str,
+    *,
+    author: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Atomically refresh a task's canonical body and audit the change.
+
+    Returns ``None`` when ``task_id`` does not exist.  Otherwise returns a
+    small metadata dict with ``changed`` plus old/new body hashes and lengths.
+    Repeating the same update is a no-op and does not append an event.  The
+    operation deliberately changes only ``tasks.body`` and its audit event;
+    it never recomputes readiness or mutates assignment/status fields.
+
+    Body contents are not copied into the event payload.  Hashes and lengths
+    are enough to prove what changed without duplicating potentially sensitive
+    task text in the event log.
+    """
+    if not isinstance(body, str):
+        raise ValueError("task body must be a string")
+    actor = (author or "").strip() or None
+    new_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT body FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return None
+        old_body = row["body"] or ""
+        old_sha256 = hashlib.sha256(old_body.encode("utf-8")).hexdigest()
+        changed = old_body != body
+        if changed:
+            conn.execute(
+                "UPDATE tasks SET body = ? WHERE id = ?",
+                (body, task_id),
+            )
+            payload = {
+                "author": actor,
+                "old_sha256": old_sha256,
+                "new_sha256": new_sha256,
+                "old_length": len(old_body),
+                "new_length": len(body),
+            }
+            _append_event(conn, task_id, "body_updated", payload)
+        return {
+            "changed": changed,
+            "old_sha256": old_sha256,
+            "new_sha256": new_sha256,
+            "old_length": len(old_body),
+            "new_length": len(body),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------

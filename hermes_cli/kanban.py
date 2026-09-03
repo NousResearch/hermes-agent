@@ -610,6 +610,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("--max-len", type=int, default=None,
                            help="Trim the stored comment body to this many characters")
 
+    p_update_body = sub.add_parser(
+        "update-body",
+        help="Replace the canonical body of an existing task and audit the change",
+    )
+    p_update_body.add_argument("task_id")
+    p_update_body.add_argument(
+        "--body", required=True,
+        help="New canonical task body (passed as one argument; newlines are preserved)",
+    )
+    p_update_body.add_argument(
+        "--author", default=None,
+        help="Author/source recorded in the body_updated event",
+    )
+    p_update_body.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- attach / attachments / attach-rm ---
     p_attach = sub.add_parser("attach", help="Attach a local file to a task")
     p_attach.add_argument("task_id")
@@ -1160,6 +1175,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
+            "update-body": _cmd_update_body,
             "attach":   _cmd_attach,
             "attachments": _cmd_attachments,
             "attach-rm": _cmd_attach_rm,
@@ -2218,6 +2234,32 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         kb.add_comment(conn, args.task_id, author, body)
     print(f"Comment added to {args.task_id}")
+    return 0
+
+
+def _cmd_update_body(args: argparse.Namespace) -> int:
+    author = args.author or _profile_author()
+    with kb.connect_closing() as conn:
+        result = kb.update_task_body(
+            conn,
+            args.task_id,
+            args.body,
+            author=author,
+        )
+    if result is None:
+        print(f"kanban: no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    payload = {
+        "task_id": args.task_id,
+        "changed": bool(result["changed"]),
+        "body_sha256": result["new_sha256"],
+        "body_length": result["new_length"],
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        state = "updated" if result["changed"] else "unchanged"
+        print(f"Canonical body {state} for {args.task_id}")
     return 0
 
 

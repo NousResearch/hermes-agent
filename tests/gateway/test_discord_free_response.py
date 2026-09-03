@@ -110,6 +110,7 @@ def adapter(monkeypatch):
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
+        "DISCORD_AUTO_THREAD_FREE_RESPONSE",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
         "DISCORD_IGNORED_CHANNELS",
@@ -305,6 +306,49 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
     assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_channel_auto_threads_when_opted_in(adapter, monkeypatch):
+    """Explicit opt-in makes a free-response parent create a thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_FREE_RESPONSE", "true")
+    thread = FakeThread(channel_id=456, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="new task in free-response parent",
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once_with(message)
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "456"
+    assert event.source.chat_type == "thread"
+    assert event.source.auto_thread_created is True
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_uses_platform_extra(adapter, monkeypatch):
+    """The supported YAML config path reaches routing through config.extra."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    adapter.config.extra["auto_thread_free_response"] = True
+    thread = FakeThread(channel_id=456, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="new task from YAML config",
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once_with(message)
+    assert adapter.handle_message.await_args.args[0].source.chat_id == "456"
 
 
 @pytest.mark.asyncio

@@ -89,36 +89,9 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
-def _add_context_variants(model_ids: List[str]) -> List[str]:
-    """Insert ``-900k`` large-context picker variants after eligible base slugs.
-
-    The ChatGPT Codex backend advertises 272K for the gpt-5.4 / gpt-5.6
-    families but accepts ~911K (live-verified Aug 2026). The base slugs keep
-    the cheaper advertised 272K limit by default; each verified slug gets an
-    explicit ``<slug>-900k`` picker entry that opts into the large window.
-    The suffix is Hermes-side only — it is stripped before the model id hits
-    the wire (agent/transports/codex.py, agent/auxiliary_client.py).
-    """
-    from agent.model_metadata import (
-        CODEX_CONTEXT_VARIANT_SUFFIX,
-        has_codex_context_variant,
-    )
-
-    out: List[str] = []
-    present = set(model_ids)
-    for model_id in model_ids:
-        out.append(model_id)
-        variant = model_id + CODEX_CONTEXT_VARIANT_SUFFIX
-        if variant in present or variant in out:
-            continue
-        if has_codex_context_variant(model_id):
-            out.append(variant)
-    return out
-
-
 def _finalize_codex_models(model_ids: List[str]) -> List[str]:
-    """Forward-compat synthesis + large-context variant synthesis."""
-    return _add_context_variants(_add_forward_compat_models(model_ids))
+    """Forward-compat synthesis for the Codex picker catalog."""
+    return _add_forward_compat_models(model_ids)
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:

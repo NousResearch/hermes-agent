@@ -207,26 +207,33 @@ To keep the 85% autoraise but hide only the one-time notice:
 hermes config set compression.codex_gpt55_autoraise_notice false
 ```
 
-### Codex large-context `-900k` picker variants (opt-in)
+### Codex OAuth extended window for `gpt-5.6-sol`
 
-The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4 and
-gpt-5.6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens
-for ChatGPT-subscription accounts (live-verified Aug 2026). Hermes keeps the
-**advertised 272K as the default** for the base slugs — a bigger window means
-more tokens per request and much faster subscription-usage burn, so the large
-window is strictly opt-in.
+Two different windows circulate for `gpt-5.6-sol`, and Hermes keeps them
+distinct:
 
-To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
-`gpt-5.6-sol-900k`, `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`,
-`gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
-the model id is sent to the backend, and pricing/usage accounting treats them
-as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
-have no `-900k` variant.
+- **Direct OpenAI API (untouched).** Sol's documented maximum there is
+  1.05M; OpenAI's own Codex client configures a requested 1M window
+  (`model_context_window = 1000000`) against it. Hermes resolves the direct
+  route through models.dev / its static table and does not clamp it.
+- **OAuth catalog maximum (872K today).** The authenticated
+  `/backend-api/codex/models` catalog advertises a conservative default
+  `context_window` (272K) alongside the server-released `max_context_window`
+  — 872,000 as of the 2026-09-03 catalog, after openai/codex#40258 closed
+  the originator-gated history on 2026-09-02. On `openai-codex`, base
+  `gpt-5.6-sol` resolves that live `max_context_window` directly — 872,000
+  today — derived from every authenticated probe, never a hardcoded Hermes
+  number, so the window tracks the provider in both directions.
 
-Compaction thresholds follow the window: base slugs (272K) get the **85%
-autoraise** described above, while `-900k` variants keep your global
-`compression.threshold` (default 50%, ~450K) — the autoraise exists to stop
-wasting a small window, which a 900K window doesn't need.
+There are no `-900k`-style aliases: the picker lists exactly one real
+`gpt-5.6-sol`, and the model id on the wire is the provider's id.
+Compaction thresholds derive from the resolved window as usual (the Codex
+gpt-5.x autoraise to 85% applies on the OAuth route), and probed values
+persist through the normal context-length cache. When the catalog lacks a
+usable `max_context_window` (older endpoint, unauthenticated fallback), Sol
+keeps the advertised 272K default. The safety margin under the ceiling is
+Hermes's generic compaction/headroom machinery — no Sol-specific scaling is
+applied to the resolved window.
 
 ### Codex app-server thread compaction
 

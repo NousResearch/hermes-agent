@@ -12,6 +12,7 @@ Covers three layers:
 
 from __future__ import annotations
 
+import subprocess
 import sqlite3
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import goals
+import cli
 
 
 @pytest.fixture
@@ -126,6 +128,121 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     )
     assert res["outcome"] == "completed_by_worker"
     assert turns == []  # no extra turns
+
+
+def test_loop_blocks_at_budget_without_progress_signal(monkeypatch):
+    """Fail-closed: no progress_check_fn (or a falsy result) blocks exactly
+    like before this feature existed — no silent extension."""
+    _patch_judge(monkeypatch, ["continue"])
+    blocked = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: pytest.fail("should not run another turn"),
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: blocked.append(r),
+        max_turns=1,
+        first_response="working on it",
+        progress_check_fn=lambda: False,
+    )
+    assert res["outcome"] == "blocked_budget"
+    assert res["turns_used"] == 1
+    assert len(blocked) == 1
+
+
+# ---------------------------------------------------------------------------
+# cli.py's real progress_check_fn wiring (heartbeat is NOT a progress
+# signal — see #81990 review; git HEAD movement is what actually gets
+# checked for workspace-backed tasks).
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(path: Path) -> None:
+    for args in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=path, check=True, capture_output=True)
+
+
+def _git_commit(path: Path, filename: str, content: str) -> None:
+    (path / filename).write_text(content)
+    subprocess.run(["git", "add", filename], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", f"add {filename}"], cwd=path, check=True, capture_output=True,
+    )
+
+
+def test_workspace_git_head_detects_new_commit(tmp_path):
+    """The real signal cli.py wires in: HEAD moving means a commit landed —
+    unlike a heartbeat, this can't be true for a worker that is merely
+    alive and thrashing without producing anything."""
+    _init_git_repo(tmp_path)
+    _git_commit(tmp_path, "a.txt", "1")
+    initial_head = cli._kanban_workspace_git_head(str(tmp_path))
+    assert initial_head
+
+    # No new commit yet — HEAD hasn't moved, so there is no progress signal.
+    assert cli._kanban_workspace_git_head(str(tmp_path)) == initial_head
+
+    _git_commit(tmp_path, "b.txt", "2")
+    new_head = cli._kanban_workspace_git_head(str(tmp_path))
+    assert new_head and new_head != initial_head
+
+
+def test_workspace_git_head_none_for_non_git_dir(tmp_path):
+    (tmp_path / "not_a_repo").mkdir()
+    assert cli._kanban_workspace_git_head(str(tmp_path / "not_a_repo")) is None
+
+
+def test_workspace_git_head_none_for_missing_dir(tmp_path):
+    assert cli._kanban_workspace_git_head(str(tmp_path / "does_not_exist")) is None
+
+
+def test_goal_max_turns_ceiling_leaves_room_for_extension_above_configured_budget():
+    """A card whose goal_max_turns already meets or exceeds the default
+    ceiling must still get at least one extension's worth of headroom,
+    or the extension mechanism is a no-op for it (#81990 review: a card
+    budgeted at exactly the 200-turn default ceiling was blocked before
+    the progress signals ever ran)."""
+    from hermes_cli.goals import DEFAULT_GOAL_EXTENSION_TURNS, DEFAULT_GOAL_MAX_TURNS_CEILING
+
+    assert cli._kanban_goal_max_turns_ceiling(DEFAULT_GOAL_MAX_TURNS_CEILING) == (
+        DEFAULT_GOAL_MAX_TURNS_CEILING + DEFAULT_GOAL_EXTENSION_TURNS
+    )
+    assert cli._kanban_goal_max_turns_ceiling(DEFAULT_GOAL_MAX_TURNS_CEILING + 50) == (
+        DEFAULT_GOAL_MAX_TURNS_CEILING + 50 + DEFAULT_GOAL_EXTENSION_TURNS
+    )
+    # Small configured budgets keep the default ceiling unchanged.
+    assert cli._kanban_goal_max_turns_ceiling(20) == DEFAULT_GOAL_MAX_TURNS_CEILING
+
+
+def test_loop_extends_budget_when_progress_detected(monkeypatch):
+    """A worker that hits its turn budget but is showing observable
+    progress gets a bounded extension instead of an immediate block, but
+    never past ``max_turns_ceiling``."""
+    _patch_judge(monkeypatch, ["continue"] * 5)
+    turns = []
+    blocked = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: turns.append(p) or "still working",
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: blocked.append(r),
+        max_turns=1,
+        first_response="working on it",
+        progress_check_fn=lambda: True,
+        extension_turns=1,
+        max_turns_ceiling=2,
+    )
+    assert res["outcome"] == "blocked_budget"
+    assert res["turns_used"] == 2  # one extended turn was granted, then the ceiling hit
+    assert len(turns) == 1
+    assert len(blocked) == 1
 
 
 

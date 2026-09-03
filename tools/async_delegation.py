@@ -171,7 +171,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             task_json TEXT,
             delivery_claim TEXT,
             delivery_claimed_at REAL,
-            origin_session_id TEXT NOT NULL DEFAULT ''
+            origin_session_id TEXT NOT NULL DEFAULT '',
+            owner_profile TEXT NOT NULL DEFAULT ''
         )"""
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
@@ -186,6 +187,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         # completions recovered after a process restart are unroutable on
         # api_server (the in-memory record that carried it is gone).
         ("origin_session_id", "TEXT"),
+        # Durable profile owner of the delegation — used to scope interrupts
+        # so deleting a session in one profile never stops a live delegation
+        # belonging to a different profile.
+        ("owner_profile", "TEXT"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
@@ -238,6 +243,17 @@ def _capture_routing_origin() -> Dict[str, Any]:
                 origin[evt_key] = value
     except Exception:  # noqa: BLE001 - routing origin is additive, never fatal
         pass
+    # Capture the active profile name for delegation ownership scoping.
+    # This ensures async delegations are bound to the profile that spawned them,
+    # preventing cross-profile interference when session keys collide.
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile = get_active_profile_name()
+        if profile:
+            origin["owner_profile"] = profile
+    except Exception:  # noqa: BLE001 - profile is additive, never fatal
+        pass
     return origin
 
 
@@ -256,6 +272,9 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
             # restart-recovered completion can reconstruct a full
             # SessionSource — see _capture_routing_origin.
             "scope_id", "user_id", "user_name",
+            # owner_profile: persisted so restart-recovered delegations retain
+            # their profile ownership for correct interrupt scoping.
+            "owner_profile",
         )
         if key in record
     }
@@ -265,13 +284,13 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id, owner_profile)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
-             record.get("origin_session_id", "")),
+             record.get("origin_session_id", ""), record.get("owner_profile", "")),
         )
     _prune_durable_records()
 
@@ -352,12 +371,12 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id, owner_profile
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json, origin_session_id, owner_profile) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -386,6 +405,9 @@ def recover_abandoned_delegations() -> int:
             for _k in ("scope_id", "user_id", "user_name"):
                 if task.get(_k):
                     event[_k] = task[_k]
+            # Restore owner_profile for correct interrupt scoping after restart.
+            if owner_profile:
+                event["owner_profile"] = owner_profile
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
@@ -583,7 +605,7 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
             """SELECT origin_session, state, dispatched_at, completed_at,
                       result_json, delivery_state, delivery_attempts,
-                      origin_session_id
+                      origin_session_id, owner_profile
                FROM async_delegations WHERE delegation_id=?""", (delegation_id,),
         ).fetchone()
     if row is None:
@@ -593,7 +615,7 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         "dispatched_at": row[2], "completed_at": row[3],
         "result": json.loads(row[4]) if row[4] else None,
         "delivery_state": row[5], "delivery_attempts": row[6],
-        "origin_session_id": row[7] or "",
+        "origin_session_id": row[7] or "", "owner_profile": row[8] or "",
     }
 
 
@@ -675,18 +697,27 @@ def _matches_session_selectors(
     session_key: str = "",
     origin_ui_session_id: str = "",
     parent_session_id: str = "",
+    owner_profile: str = "",
 ) -> bool:
-    return (
+    # When owner_profile is provided, require an exact match AND at least one
+    # of the other selectors. This prevents cross-profile interference when
+    # session keys / UI ids collide across profiles. When owner_profile is
+    # not provided, preserve the original OR semantics for backward compat.
+    selectors_match = (
         (origin_ui_session_id and str(record.get("origin_ui_session_id") or "") == origin_ui_session_id)
         or (session_key and str(record.get("session_key") or "") == session_key)
         or (parent_session_id and str(record.get("parent_session_id") or "") == parent_session_id)
     )
+    if owner_profile:
+        return str(record.get("owner_profile") or "") == owner_profile and bool(selectors_match)
+    return bool(selectors_match)
 
 
 def has_live_for_session(
     session_key: str = "",
     origin_ui_session_id: str = "",
     parent_session_id: str = "",
+    owner_profile: str = "",
 ) -> bool:
     """Whether a session still owns any live async delegation.
 
@@ -703,6 +734,7 @@ def has_live_for_session(
                 session_key=session_key,
                 origin_ui_session_id=origin_ui_session_id,
                 parent_session_id=parent_session_id,
+                owner_profile=owner_profile,
             )
             for r in _records.values()
         )
@@ -1540,6 +1572,7 @@ def interrupt_for_session(
     session_key: str = "",
     origin_ui_session_id: str = "",
     parent_session_id: str = "",
+    owner_profile: str = "",
     reason: str = "session_end",
 ) -> int:
     """Signal running async delegations owned by ONE session to stop.
@@ -1558,6 +1591,11 @@ def interrupt_for_session(
       platform conversation key) SURVIVES a ``/new`` reset while the
       session id rotates.
 
+    When ``owner_profile`` is provided, the interruption is scoped to that
+    profile: only delegations with a matching ``owner_profile`` AND at least
+    one matching selector are interrupted. This prevents cross-profile
+    interference when session keys / UI ids collide across profiles.
+
     Returns how many were interrupted.
     """
     if not session_key and not origin_ui_session_id and not parent_session_id:
@@ -1572,6 +1610,7 @@ def interrupt_for_session(
                 session_key=session_key,
                 origin_ui_session_id=origin_ui_session_id,
                 parent_session_id=parent_session_id,
+                owner_profile=owner_profile,
             )
         ]
     for r in targets:

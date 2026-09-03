@@ -69,7 +69,7 @@ class TestSessionOwnsNotificationEvent:
 
 
 class TestInterruptForSession:
-    def _seed_record(self, delegation_id, session_key="", origin_ui_session_id="", status="running"):
+    def _seed_record(self, delegation_id, session_key="", origin_ui_session_id="", status="running", owner_profile=""):
         fn = MagicMock()
         with ad._records_lock:
             ad._records[delegation_id] = {
@@ -77,6 +77,7 @@ class TestInterruptForSession:
                 "status": status,
                 "session_key": session_key,
                 "origin_ui_session_id": origin_ui_session_id,
+                "owner_profile": owner_profile,
                 "interrupt_fn": fn,
             }
         return fn
@@ -106,6 +107,64 @@ class TestInterruptForSession:
         fn = self._seed_record("d1", session_key="sess_A", status="completed")
         assert ad.interrupt_for_session(session_key="sess_A") == 0
         fn.assert_not_called()
+
+    def test_owner_profile_isolation(self):
+        """Two profiles with same session_key — interrupt scoped to profile A only stops A's delegation."""
+        fn_a = self._seed_record("d1", session_key="shared_key", owner_profile="profile_A")
+        fn_b = self._seed_record("d2", session_key="shared_key", owner_profile="profile_B")
+        # Interrupt with owner_profile="profile_A" should only hit d1
+        n = ad.interrupt_for_session(session_key="shared_key", owner_profile="profile_A")
+        assert n == 1
+        fn_a.assert_called_once()
+        fn_b.assert_not_called()
+        # Interrupt with owner_profile="profile_B" should only hit d2
+        fn_b.reset_mock()
+        n = ad.interrupt_for_session(session_key="shared_key", owner_profile="profile_B")
+        assert n == 1
+        fn_b.assert_called_once()
+
+    def test_owner_profile_backward_compat(self):
+        """Without owner_profile, the original OR semantics are preserved."""
+        fn_a = self._seed_record("d1", session_key="shared_key", owner_profile="profile_A")
+        fn_b = self._seed_record("d2", session_key="shared_key", owner_profile="profile_B")
+        # No owner_profile passed → both match (old OR behavior)
+        n = ad.interrupt_for_session(session_key="shared_key")
+        assert n == 2
+        fn_a.assert_called_once()
+        fn_b.assert_called_once()
+
+    def test_has_live_for_session_owner_profile_isolation(self):
+        """has_live_for_session respects owner_profile scoping."""
+        self._seed_record("d1", session_key="shared_key", owner_profile="profile_A")
+        self._seed_record("d2", session_key="shared_key", owner_profile="profile_B")
+        # With owner_profile, only profile_A's delegation is live
+        assert ad.has_live_for_session(session_key="shared_key", owner_profile="profile_A") is True
+        assert ad.has_live_for_session(session_key="shared_key", owner_profile="profile_B") is True
+        assert ad.has_live_for_session(session_key="shared_key", owner_profile="profile_C") is False
+        # Without owner_profile, OR semantics (backward compat)
+        assert ad.has_live_for_session(session_key="shared_key") is True
+
+    def test_matches_session_selectors_owner_profile_and_logic(self):
+        """_matches_session_selectors requires owner_profile AND (OR of selectors) when owner_profile provided."""
+        record = {
+            "session_key": "sess_A",
+            "origin_ui_session_id": "tab1",
+            "parent_session_id": "parent1",
+            "owner_profile": "profile_A",
+        }
+        # With owner_profile: must match profile AND at least one selector
+        assert ad._matches_session_selectors(record, session_key="sess_A", owner_profile="profile_A") is True
+        assert ad._matches_session_selectors(record, origin_ui_session_id="tab1", owner_profile="profile_A") is True
+        assert ad._matches_session_selectors(record, parent_session_id="parent1", owner_profile="profile_A") is True
+        # Wrong profile → no match even with correct selector
+        assert ad._matches_session_selectors(record, session_key="sess_A", owner_profile="profile_B") is False
+        # Correct profile but no selector → no match
+        assert ad._matches_session_selectors(record, owner_profile="profile_A") is False
+        # Without owner_profile: OR semantics preserved
+        assert ad._matches_session_selectors(record, session_key="sess_A") is True
+        assert ad._matches_session_selectors(record, origin_ui_session_id="tab1") is True
+        assert ad._matches_session_selectors(record, parent_session_id="parent1") is True
+        assert ad._matches_session_selectors(record, session_key="wrong") is False
 
 
 class TestFinalizeInterruptsOwnDelegations:

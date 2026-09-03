@@ -268,7 +268,7 @@ def build_sudo_argv(
     if not inner_argv:
         raise ValueError("inner argv must not be empty")
     inner = [str(part) for part in inner_argv]
-    if any(part is None for part in inner_argv):  # type: ignore[comparison-overlap]
+    if any(part is None for part in inner_argv):
         raise ValueError("inner argv must not contain None")
     sudo = sudo_bin or DEFAULT_SUDO_BIN
     if not sudo or sudo != str(sudo):
@@ -285,7 +285,7 @@ def is_sudo_wrapped(argv: Sequence[str]) -> bool:
         return False
     return (
         os.path.basename(str(argv[0])) == "sudo"
-        and "-n" in argv[:u_idx + 1]
+        and "-n" in argv[: u_idx + 1]
         and "--" in argv
     )
 
@@ -442,9 +442,7 @@ def preflight_mapped_user(
             f"Install sudoers via: sudo hermes kanban os-users setup --apply"
         ) from exc
     except Exception as exc:
-        raise MappedLaunchError(
-            f"sudo -n -u {user} -- id -u failed: {exc}"
-        ) from exc
+        raise MappedLaunchError(f"sudo -n -u {user} -- id -u failed: {exc}") from exc
     rc = int(getattr(proc, "returncode", 1))
     stdout = str(getattr(proc, "stdout", None) or "")
     stderr = str(getattr(proc, "stderr", None) or "")
@@ -511,9 +509,7 @@ def _preflight_paths(
         db_path = Path(board_db)
         parent = db_path.parent
         if not parent.is_dir():
-            raise MappedLaunchError(
-                f"Shared Kanban DB parent {parent} is missing"
-            )
+            raise MappedLaunchError(f"Shared Kanban DB parent {parent} is missing")
 
 
 def apply_mapped_worker_launch(
@@ -574,7 +570,9 @@ def apply_mapped_worker_launch(
     if not is_sudo_wrapped(wrapped):
         raise MappedLaunchError("internal error: sudo wrap produced unwrapped argv")
     if wrapped == inner:
-        raise MappedLaunchError("internal error: refusing to launch mapped worker unwrapped")
+        raise MappedLaunchError(
+            "internal error: refusing to launch mapped worker unwrapped"
+        )
     return wrapped, mapped_env
 
 
@@ -629,7 +627,9 @@ def shared_board_paths() -> dict[str, Path]:
         "kanban_db": db,
         "kanban_dir": root / "kanban",
         "workspaces": Path(workspaces_root()),
-        "logs": db.parent / "kanban" / "logs" if db.name != "kanban.db" else root / "kanban" / "logs",
+        "logs": db.parent / "kanban" / "logs"
+        if db.name != "kanban.db"
+        else root / "kanban" / "logs",
     }
 
 
@@ -657,7 +657,7 @@ def render_sudoers(
         f"# Install: sudo install -m 0440 this-file {DEFAULT_SUDOERS_PATH}",
         f"# Then: sudo visudo -c -f {DEFAULT_SUDOERS_PATH}",
         f"Defaults:{gw} !requiretty",
-        f"Defaults:{gw} env_keep += \"{keep}\"",
+        f'Defaults:{gw} env_keep += "{keep}"',
         f"{gw} ALL=({runas}) NOPASSWD:SETENV: {id_cmd}",
         f"{gw} ALL=({runas}) NOPASSWD:SETENV: {cmd}",
         "",
@@ -688,21 +688,43 @@ def plan_setup_steps(
             SetupStep(
                 f"create {user}",
                 [
-                    "useradd", "--system", "--create-home",
-                    "--home-dir", home,
-                    "--shell", "/usr/sbin/nologin",
-                    "--gid", group,
+                    "useradd",
+                    "--system",
+                    "--create-home",
+                    "--home-dir",
+                    home,
+                    "--shell",
+                    "/usr/sbin/nologin",
+                    "--gid",
+                    group,
                     user,
                 ],
             ),
             SetupStep(
                 f"private Hermes root for {user}",
-                ["install", "-d", "-m", "0700", "-o", user, "-g", user, f"{home}/.hermes"],
+                [
+                    "install",
+                    "-d",
+                    "-m",
+                    "0700",
+                    "-o",
+                    user,
+                    "-g",
+                    user,
+                    f"{home}/.hermes",
+                ],
             ),
             SetupStep(
                 f"private profile dir for {profile}",
                 [
-                    "install", "-d", "-m", "0700", "-o", user, "-g", user,
+                    "install",
+                    "-d",
+                    "-m",
+                    "0700",
+                    "-o",
+                    user,
+                    "-g",
+                    user,
                     f"{home}/.hermes/profiles/{profile}",
                 ],
             ),
@@ -716,7 +738,10 @@ def plan_setup_steps(
         db = str(paths["kanban_db"])
         kdir = str(paths["kanban_dir"])
         steps.extend([
-            SetupStep("kanban metadata dir", ["install", "-d", "-m", "2770", "-o", gw, "-g", group, kdir]),
+            SetupStep(
+                "kanban metadata dir",
+                ["install", "-d", "-m", "2770", "-o", gw, "-g", group, kdir],
+            ),
             SetupStep(
                 "ACL on shared board dir (group + defaults for WAL/shm)",
                 ["setfacl", "-m", f"g:{group}:rwx,d:g:{group}:rwx", kdir],
@@ -748,14 +773,25 @@ def plan_setup_steps(
         )
     )
     sudoers_body = render_sudoers(
-        gateway_user=gw, mapping=targets, hermes_argv=hermes_argv,
+        gateway_user=gw,
+        mapping=targets,
+        hermes_argv=hermes_argv,
     )
     # install via visudo check; body is written to a temp path by the CLI
     steps.append(
         SetupStep(
             "install sudoers drop-in (after visudo -c)",
-            ["install", "-m", "0440", "-o", "root", "-g", "root",
-             "<generated-sudoers>", DEFAULT_SUDOERS_PATH],
+            [
+                "install",
+                "-m",
+                "0440",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                "<generated-sudoers>",
+                DEFAULT_SUDOERS_PATH,
+            ],
         )
     )
     _ = sudoers_body  # generated by the CLI printer, not interpolated here
@@ -778,13 +814,20 @@ def plan_rollback_steps(
 
 
 def format_plan(steps: Sequence[SetupStep], *, heading: str) -> str:
-    lines = [heading, "", "All commands are argv (no shell). Review, then run as root.", ""]
+    lines = [
+        heading,
+        "",
+        "All commands are argv (no shell). Review, then run as root.",
+        "",
+    ]
     for i, step in enumerate(steps, 1):
         lines.append(f"{i}. {step.title}")
         lines.append(f"   {_quote_cmd(step.argv)}")
     lines.append("")
     lines.append("Do not cat/print .env, auth.json, or SSH keys. Copy with install(1):")
-    lines.append("   sudo install -m 0600 -o <user> -g <user> <src-env> /home/<user>/.hermes/profiles/<profile>/.env")
+    lines.append(
+        "   sudo install -m 0600 -o <user> -g <user> <src-env> /home/<user>/.hermes/profiles/<profile>/.env"
+    )
     lines.append("Config (not secrets) may be copied the same way for config.yaml.")
     return "\n".join(lines)
 
@@ -813,8 +856,15 @@ def migrate_profile_files_commands(
             mode = "0600" if name == ".env" else "0600"
             lines.append(
                 _quote_cmd([
-                    "install", "-m", mode, "-o", user, "-g", user,
-                    str(src / name), str(dst / name),
+                    "install",
+                    "-m",
+                    mode,
+                    "-o",
+                    user,
+                    "-g",
+                    user,
+                    str(src / name),
+                    str(dst / name),
                 ])
             )
     return lines
@@ -855,24 +905,32 @@ def audit_mapping(
             homes = loaded_homes
     targets = dict(mapping or {})
     if not targets:
-        items.append(AuditItem(
-            "mapping", True,
-            "empty mapping — trusted-local-user (not isolation)",
-        ))
+        items.append(
+            AuditItem(
+                "mapping",
+                True,
+                "empty mapping — trusted-local-user (not isolation)",
+            )
+        )
         return items
     h = _hooks_or_defaults(hooks)
     pw_by_user: dict[str, PasswdEntry] = {}
     for profile, user in targets.items():
         try:
             pw = preflight_mapped_user(
-                user, hooks=h, require_paths=False,
+                user,
+                hooks=h,
+                require_paths=False,
             )
             pw_by_user[user] = pw
-            items.append(AuditItem(
-                f"user:{user}", True,
-                f"uid={pw.pw_uid} home={pw.pw_dir} sudo -n ok",
-                isolation=True,
-            ))
+            items.append(
+                AuditItem(
+                    f"user:{user}",
+                    True,
+                    f"uid={pw.pw_uid} home={pw.pw_dir} sudo -n ok",
+                    isolation=True,
+                )
+            )
         except (MappedLaunchError, ValueError) as exc:
             items.append(AuditItem(f"user:{user}", False, str(exc)))
             continue
@@ -882,32 +940,49 @@ def audit_mapping(
         env_path = Path(hermes_home) / ".env"
         if env_path.exists():
             ok_e, detail_e = _mode_ok(env_path, max_other=0)
-            items.append(AuditItem(f"secrets:{profile}", ok_e, detail_e, isolation=ok_e))
+            items.append(
+                AuditItem(f"secrets:{profile}", ok_e, detail_e, isolation=ok_e)
+            )
     # Cross-profile path inequality
     homes_resolved = []
     for profile, user in targets.items():
         pw = pw_by_user.get(user)
         if pw is None:
             continue
-        homes_resolved.append((profile, resolve_mapped_hermes_home(profile, pw.pw_dir, homes=homes or {})))
+        homes_resolved.append((
+            profile,
+            resolve_mapped_hermes_home(profile, pw.pw_dir, homes=homes or {}),
+        ))
     for i, (p_a, h_a) in enumerate(homes_resolved):
-        for p_b, h_b in homes_resolved[i + 1:]:
+        for p_b, h_b in homes_resolved[i + 1 :]:
             same = os.path.realpath(h_a) == os.path.realpath(h_b)
-            items.append(AuditItem(
-                f"cross:{p_a}!={p_b}",
-                not same,
-                "distinct runtime homes" if not same else f"COLLISION {h_a}",
-                isolation=not same,
-            ))
+            items.append(
+                AuditItem(
+                    f"cross:{p_a}!={p_b}",
+                    not same,
+                    "distinct runtime homes" if not same else f"COLLISION {h_a}",
+                    isolation=not same,
+                )
+            )
     try:
         paths = shared_board_paths()
         db = paths["kanban_db"]
         ok, detail = _mode_ok(db.parent, max_other=0)
-        items.append(AuditItem("board-parent", ok or db.parent.is_dir(), f"board parent {db.parent}"))
+        items.append(
+            AuditItem(
+                "board-parent", ok or db.parent.is_dir(), f"board parent {db.parent}"
+            )
+        )
         if db.exists():
-            items.append(AuditItem("board-db", True, f"{db} present (WAL sidecars use default ACL)"))
+            items.append(
+                AuditItem(
+                    "board-db", True, f"{db} present (WAL sidecars use default ACL)"
+                )
+            )
         else:
-            items.append(AuditItem("board-db", False, f"{db} missing — run hermes kanban init"))
+            items.append(
+                AuditItem("board-db", False, f"{db} missing — run hermes kanban init")
+            )
     except Exception as exc:
         items.append(AuditItem("board", False, str(exc)))
     return items
@@ -924,10 +999,16 @@ def format_audit(items: Sequence[AuditItem]) -> str:
         lines.append(f"  [{mark}] {item.name}{iso}: {item.detail}")
     lines.append("")
     if failed:
-        lines.append(f"{failed} check(s) failed. Do not enable kanban.profile_os_users yet.")
+        lines.append(
+            f"{failed} check(s) failed. Do not enable kanban.profile_os_users yet."
+        )
     else:
-        lines.append("All checks passed. Enable mappings in the *gateway* config.yaml only after review.")
-        lines.append("Do not restart the gateway from this worker; Matt enables mappings manually.")
+        lines.append(
+            "All checks passed. Enable mappings in the *gateway* config.yaml only after review."
+        )
+        lines.append(
+            "Do not restart the gateway from this worker; Matt enables mappings manually."
+        )
     return "\n".join(lines)
 
 
@@ -945,13 +1026,23 @@ def run_os_users_cli(args: Any) -> int:
         if getattr(args, "json", False):
             import json
 
-            print(json.dumps({
-                "items": [
-                    {"name": i.name, "ok": i.ok, "detail": i.detail, "isolation": i.isolation}
-                    for i in items
-                ],
-                "ok": all(i.ok for i in items),
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "name": i.name,
+                                "ok": i.ok,
+                                "detail": i.detail,
+                                "isolation": i.isolation,
+                            }
+                            for i in items
+                        ],
+                        "ok": all(i.ok for i in items),
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(format_audit(items))
         return 0 if all(i.ok for i in items) else 1
@@ -960,7 +1051,9 @@ def run_os_users_cli(args: Any) -> int:
         return 0
     if action == "rollback":
         steps = plan_rollback_steps(mapping=mapping or None)
-        print(format_plan(steps, heading="Kanban profile_os_users rollback (destructive)"))
+        print(
+            format_plan(steps, heading="Kanban profile_os_users rollback (destructive)")
+        )
         return 0
     if action == "setup":
         gw = getattr(args, "gateway_user", None)
@@ -972,7 +1065,11 @@ def run_os_users_cli(args: Any) -> int:
         )
         print(format_plan(steps, heading="Kanban profile_os_users setup (dry-run)"))
         print("")
-        print("\n".join(migrate_profile_files_commands(mapping or default_mapping_example())))
+        print(
+            "\n".join(
+                migrate_profile_files_commands(mapping or default_mapping_example())
+            )
+        )
         print("")
         print("Sudoers snippet:")
         print(render_sudoers(mapping=mapping or None, gateway_user=gw))
@@ -994,7 +1091,10 @@ def run_os_users_cli(args: Any) -> int:
         for step in steps:
             if "<generated-sudoers>" in step.argv:
                 tmp = Path("/tmp/hermes-kanban-os-users.sudoers")
-                tmp.write_text(render_sudoers(mapping=mapping or None, gateway_user=gw), encoding="utf-8")
+                tmp.write_text(
+                    render_sudoers(mapping=mapping or None, gateway_user=gw),
+                    encoding="utf-8",
+                )
                 os.chmod(tmp, 0o600)
                 check = subprocess.run(  # noqa: S603
                     ["visudo", "-c", "-f", str(tmp)],
@@ -1006,8 +1106,15 @@ def run_os_users_cli(args: Any) -> int:
                     print(f"visudo -c failed: {check.stderr}", file=sys.stderr)
                     return 1
                 argv = [
-                    "install", "-m", "0440", "-o", "root", "-g", "root",
-                    str(tmp), DEFAULT_SUDOERS_PATH,
+                    "install",
+                    "-m",
+                    "0440",
+                    "-o",
+                    "root",
+                    "-g",
+                    "root",
+                    str(tmp),
+                    DEFAULT_SUDOERS_PATH,
                 ]
             else:
                 argv = step.argv
@@ -1015,7 +1122,10 @@ def run_os_users_cli(args: Any) -> int:
             proc = subprocess.run(argv, check=False)  # noqa: S603
             # useradd/groupadd EEXIST is idempotent success
             if proc.returncode != 0 and not _idempotent_ok(argv, proc.returncode):
-                print(f"command failed ({proc.returncode}): {_quote_cmd(argv)}", file=sys.stderr)
+                print(
+                    f"command failed ({proc.returncode}): {_quote_cmd(argv)}",
+                    file=sys.stderr,
+                )
                 return 1
         print("Apply complete. Run: hermes kanban os-users check")
         print("Do not enable profile_os_users until check passes.")

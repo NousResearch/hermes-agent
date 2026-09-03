@@ -77,14 +77,26 @@ def test_parse_empty_mapping_is_trusted_local():
 
 
 def test_parse_valid_mapping():
-    parsed = parse_profile_os_users({"dev": "hermes-dev", "sysadmin": "hermes-sysadmin"})
+    parsed = parse_profile_os_users({
+        "dev": "hermes-dev",
+        "sysadmin": "hermes-sysadmin",
+    })
     assert parsed == {"dev": "hermes-dev", "sysadmin": "hermes-sysadmin"}
     assert lookup_mapped_os_user("Dev", parsed) == "hermes-dev"
 
 
 @pytest.mark.parametrize(
     "raw",
-    ["root", "toor", "ROOT", "hermes-dev;id", "hermes-dev$(id)", "a b", "../etc", "matt\nroot"],
+    [
+        "root",
+        "toor",
+        "ROOT",
+        "hermes-dev;id",
+        "hermes-dev$(id)",
+        "a b",
+        "../etc",
+        "matt\nroot",
+    ],
 )
 def test_validate_username_rejects_root_and_injection(raw):
     with pytest.raises(ValueError):
@@ -109,7 +121,14 @@ def test_parse_homes_requires_absolute():
 
 
 def test_build_sudo_argv_is_list_no_shell():
-    inner = ["/opt/hermes bin/hermes", "-p", "dev", "chat", "-q", "work kanban task t_1"]
+    inner = [
+        "/opt/hermes bin/hermes",
+        "-p",
+        "dev",
+        "chat",
+        "-q",
+        "work kanban task t_1",
+    ]
     argv = build_sudo_argv("hermes-dev", inner)
     assert argv[0] == "/usr/bin/sudo"
     assert argv[1:7] == ["-n", "-H", "-E", "-u", "hermes-dev", "--"]
@@ -132,7 +151,12 @@ def test_unmapped_apply_is_identity():
     argv = ["hermes", "-p", "elias", "chat", "-q", "work"]
     env = {"HERMES_HOME": "/tmp/h", "SSH_AUTH_SOCK": "/run/ssh"}
     out_argv, out_env = apply_mapped_worker_launch(
-        profile="elias", argv=argv, env=env, mapping={}, homes={}, preflight=False,
+        profile="elias",
+        argv=argv,
+        env=env,
+        mapping={},
+        homes={},
+        preflight=False,
     )
     assert out_argv == argv
     assert out_env == env
@@ -202,7 +226,9 @@ def test_preflight_rejects_missing_user():
 def test_preflight_rejects_same_uid_and_does_not_call_it_isolation():
     pw = _pw(uid=1000)
     with pytest.raises(MappedLaunchError, match="not isolation"):
-        preflight_mapped_user("hermes-dev", hooks=_hooks(pw, euid=1000), require_paths=False)
+        preflight_mapped_user(
+            "hermes-dev", hooks=_hooks(pw, euid=1000), require_paths=False
+        )
 
 
 def test_preflight_rejects_wrong_reported_uid():
@@ -245,12 +271,22 @@ def test_retries_remain_mapped():
     hooks = _hooks(pw)
     mapping = {"dev": "hermes-dev"}
     first, _ = apply_mapped_worker_launch(
-        profile="dev", argv=["hermes", "-p", "dev"], env={},
-        mapping=mapping, homes={}, hooks=hooks, preflight=False,
+        profile="dev",
+        argv=["hermes", "-p", "dev"],
+        env={},
+        mapping=mapping,
+        homes={},
+        hooks=hooks,
+        preflight=False,
     )
     second, _ = apply_mapped_worker_launch(
-        profile="dev", argv=["hermes", "-p", "dev"], env={},
-        mapping=mapping, homes={}, hooks=hooks, preflight=False,
+        profile="dev",
+        argv=["hermes", "-p", "dev"],
+        env={},
+        mapping=mapping,
+        homes={},
+        hooks=hooks,
+        preflight=False,
     )
     assert is_sudo_wrapped(first) and is_sudo_wrapped(second)
     assert first[5] == second[5] == "hermes-dev"
@@ -267,7 +303,9 @@ def test_sudoers_and_migrate_never_print_secret_values(tmp_path):
     src = tmp_path / "profiles" / "dev"
     src.mkdir(parents=True)
     src.joinpath(".env").write_text("CURSOR_API_KEY=super-secret\n", encoding="utf-8")
-    text = "\n".join(migrate_profile_files_commands({"dev": "hermes-dev"}, source_root=tmp_path))
+    text = "\n".join(
+        migrate_profile_files_commands({"dev": "hermes-dev"}, source_root=tmp_path)
+    )
     sudoers = render_sudoers(
         gateway_user="matt",
         mapping={"dev": "hermes-dev", "sysadmin": "hermes-sysadmin"},
@@ -436,8 +474,14 @@ def test_default_spawn_mapped_reports_target_user(monkeypatch, tmp_path):
     assert pid == 9001
     assert is_sudo_wrapped(captured["cmd"])
     assert captured["cmd"][5] == "hermes-dev"
-    assert captured["env"]["HOME"].endswith("hermes-dev") or "hermes-dev" in captured["env"]["HOME"]
-    assert "SSH_AUTH_SOCK" not in captured["env"] or captured["env"].get("SSH_AUTH_SOCK") is None
+    assert (
+        captured["env"]["HOME"].endswith("hermes-dev")
+        or "hermes-dev" in captured["env"]["HOME"]
+    )
+    assert (
+        "SSH_AUTH_SOCK" not in captured["env"]
+        or captured["env"].get("SSH_AUTH_SOCK") is None
+    )
 
 
 def test_cross_profile_homes_are_distinct_and_private(tmp_path):

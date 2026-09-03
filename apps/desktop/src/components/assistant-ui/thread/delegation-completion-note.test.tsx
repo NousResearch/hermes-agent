@@ -116,6 +116,21 @@ describe('async delegation completion transcript card', () => {
     expect(screen.queryByText(BATCH_PAYLOAD)).toBeNull()
   })
 
+  it('surfaces a batch failure formatted without TASK headers instead of an empty card', () => {
+    const errorPayload = `[ASYNC DELEGATION BATCH COMPLETE — deleg_err]
+A background fan-out of 2 subagent(s) you dispatched earlier has finished.
+
+Context you provided: compare both render paths
+Role: leaf   Model: gpt-test   Total duration: 4.2s
+--- ERROR ---
+The batch did not complete successfully: delegation model not available`
+    render(<Harness message={userMessage(errorPayload)} />)
+
+    expect(screen.getByText('Subagents completed')).toBeTruthy()
+    expect(screen.getByText('failed')).toBeTruthy()
+    expect(screen.getByText('The batch did not complete successfully: delegation model not available')).toBeTruthy()
+  })
+
   it('keeps a marker-matched malformed payload usable and expandable', () => {
     const malformed = '[ASYNC DELEGATION COMPLETE — deleg_broken]\nnot structured, but still important'
     render(<Harness message={userMessage(malformed)} />)

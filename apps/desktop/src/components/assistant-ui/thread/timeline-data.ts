@@ -1,5 +1,7 @@
 // Pure timeline helpers — no React/DOM; tested in thread-timeline-data.test.ts.
 
+import { isDelegationCompletionText } from './delegation-completion'
+
 export interface TimelineSourceMessage {
   id: string
   role: string
@@ -36,7 +38,10 @@ export function deriveTimelineEntries(messages: readonly TimelineSourceMessage[]
 
     const text = message.text.trim()
 
-    if (!text || PROCESS_NOTIFICATION_RE.test(text)) {
+    // Delegation completions ride the transcript as synthetic user turns
+    // (user-message.tsx renders them as collapsed cards); they are not human
+    // prompts, so the rail must not list them either.
+    if (!text || PROCESS_NOTIFICATION_RE.test(text) || isDelegationCompletionText(text)) {
       continue
     }
 

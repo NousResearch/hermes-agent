@@ -3,10 +3,8 @@ import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } fro
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
-import {
-  DelegationCompletionNote,
-  parseDelegationCompletion
-} from '@/components/assistant-ui/thread/delegation-completion-note'
+import { parseDelegationCompletion } from '@/components/assistant-ui/thread/delegation-completion'
+import { DelegationCompletionNote } from '@/components/assistant-ui/thread/delegation-completion-note'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'

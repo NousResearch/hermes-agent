@@ -1214,12 +1214,27 @@ def _run_command_tts(
 
     Child env is scrubbed of Hermes secrets (salvage of #56332) while still
     propagating delegated-child lineage markers when applicable.
+
+    ``PYTHONPATH`` is always dropped from the child env: command templates
+    pin their own interpreter (often a different CPython version than the
+    gateway's), so a launcher-injected ``PYTHONPATH`` entry built for the
+    gateway interpreter makes the child import foreign-version compiled
+    extensions and crash (``PIL._imaging``, ``numpy._core._multiarray_umath``,
+    ``cryptography``). The Hermes-owned entries are already stripped by
+    ``hermes_subprocess_env``; the remaining user-owned entries are exactly
+    the foreign-shim class a pinned-interpreter template cannot survive.
+    Config templates that genuinely need a path on the child's ``sys.path``
+    can add it in the command itself (``PYTHONPATH=/path cmd``) — explicit
+    and version-matched, unlike an inherited value.
     """
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import hermes_subprocess_env
 
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
+    scrubbed.pop("PYTHONPATH", None)
     for key in env_passthrough or []:
+        if key == "PYTHONPATH":
+            continue
         value = os.environ.get(key)
         if value is not None:
             scrubbed[key] = value

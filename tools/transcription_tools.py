@@ -720,12 +720,18 @@ def _run_command_stt(
     (same progress-based stuck detection as the TTS runner, #50081).
     Child env is scrubbed of Hermes secrets (salvage of #56332) while still
     propagating delegated-child lineage markers when applicable.
+    ``PYTHONPATH`` is dropped like the TTS runner: command templates pin
+    their own interpreter, so inherited foreign-version path entries crash
+    the child at import (see _run_command_tts in tools/tts_tool.py).
     """
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import hermes_subprocess_env
 
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
+    scrubbed.pop("PYTHONPATH", None)
     for key in env_passthrough or []:
+        if key == "PYTHONPATH":
+            continue
         value = os.environ.get(key)
         if value is not None:
             scrubbed[key] = value
@@ -2125,10 +2131,14 @@ def _transcribe_local_command(
             )
             # Scrub Hermes secrets from the child env (sibling path to #56332 /
             # _run_command_stt — this local-whisper path previously inherited
-            # the full process environment).
+            # the full process environment). PYTHONPATH is dropped too: the
+            # template runs a pinned whisper interpreter, and inherited
+            # foreign-version path entries crash it at import (see
+            # _run_command_tts in tools/tts_tool.py).
             from tools.environments.local import hermes_subprocess_env
 
             child_env = hermes_subprocess_env(inherit_credentials=False)
+            child_env.pop("PYTHONPATH", None)
             subprocess.run(
                 shlex.split(command),
                 check=True,

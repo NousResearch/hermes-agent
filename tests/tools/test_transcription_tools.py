@@ -259,6 +259,46 @@ class TestTranscribeLocalCommand:
         assert "OPENAI_API_KEY" not in env
         assert env["MY_SAFE_STT_VAR"] == "keep"
 
+    def test_command_stt_strips_pythonpath_from_child_env(self, monkeypatch):
+        """Command STT providers must not inherit PYTHONPATH.
+
+        The template pins its own interpreter (often a different CPython
+        version than the gateway's); an inherited launcher-injected
+        PYTHONPATH makes the child import foreign-version compiled
+        extensions and crash (mirror of the TTS-side fix in
+        tools/tts_tool.py).
+        """
+        monkeypatch.setenv("PYTHONPATH", "/opt/hermes-shims/py313/site-packages")
+
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc()
+
+        monkeypatch.setattr(
+            "tools.transcription_tools.subprocess.Popen", fake_popen
+        )
+
+        from tools.transcription_tools import _run_command_stt
+
+        result = _run_command_stt("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        assert "PYTHONPATH" not in captured["env"]
+
     def test_local_whisper_subprocess_uses_sanitized_env(
         self, monkeypatch, sample_wav, tmp_path
     ):

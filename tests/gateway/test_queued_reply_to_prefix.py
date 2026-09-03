@@ -13,6 +13,9 @@ promised ("reply context ... all behave the same").
 """
 
 import asyncio
+import inspect
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -157,15 +160,42 @@ class TestQueuedFollowupLogging:
     def test_queued_path_has_inbound_log_line(self):
         """Source-shape guard: the queued follow-up site must emit the
         inbound log line with reply context and queued=True (#101866's
-        second complaint — these messages were invisible in the log)."""
-        import inspect
-
+        second complaint — these messages were invisible in the log).
+        The audit line is owned by gateway.inbound_context; run.py
+        delegates for both paths."""
+        from gateway import inbound_context
         from gateway import run as run_mod
 
-        # The queued-delivery block lives in the runner's message handler
-        # that contains the follow-up recursion — search the module source
-        # rather than one method (the recursion site moved historically).
-        src = inspect.getsource(run_mod)
+        src = inspect.getsource(inbound_context)
         assert "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r queued=%s" in src
-        # And it must be the queued-path variant (queued=True marker).
-        assert "queued=%s" in src
+        # And run.py delegates for BOTH paths — no second inline copy.
+        run_src = inspect.getsource(run_mod)
+        assert "log_inbound_reply_context(" in run_src
+        assert "reply_to_id=%s" not in run_src, (
+            "run.py must not carry a second inline implementation of the audit line"
+        )
+
+    def test_run_py_net_shrank_not_grew(self):
+        """Reviewer acceptance (6): gateway/run.py must not grow from this
+        PR — the reply-context concern moved to its bounded owner; run.py
+        only delegates. Guarded against the PR's own diff."""
+        diff = subprocess.run(
+            ["git", "diff", "HEAD", "--numstat", "--", "gateway/run.py"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        if diff:
+            added, removed, _ = diff.split(maxsplit=2)
+            assert int(added) <= int(removed), (
+                f"gateway/run.py net-grew by this PR (+{added}/-{removed}) — "
+                "the reply-context concern must live in inbound_context, "
+                "run.py must only delegate"
+            )
+
+    def test_inbound_context_module_is_bounded(self):
+        """Reviewer acceptance (6): every modified file <= 2,000 lines."""
+        from gateway import inbound_context
+
+        line_count = len(
+            Path(inbound_context.__file__).read_text(encoding="utf-8").splitlines()
+        )
+        assert line_count <= 2000

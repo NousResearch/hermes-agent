@@ -20793,12 +20793,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
-        if getattr(event, "reply_to_text", None) and getattr(event, "reply_to_message_id", None):
-            # The reply-to prefix now lives in _prepare_inbound_message_text
-            # (moved for #101866) so the queued/steered follow-up path gets
-            # the same pointer as this idle path — see the comment there.
-            pass
-
         if "@" in message_text:
             try:
                 from agent.context_references import preprocess_context_references_async
@@ -20908,32 +20902,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("@ context reference expansion failed: %s", exc)
                 logger.debug("@ context reference expansion failure detail", exc_info=True)
 
-        if getattr(event, "reply_to_text", None) and getattr(event, "reply_to_message_id", None):
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            #
-            # Lives in _prepare_inbound_message_text — NOT in the idle-path
-            # caller — so queued/steered follow-ups get the same pointer.
-            # A Telegram message arriving mid-turn used to reach the agent
-            # bare: the queued path builds next_message from the pending
-            # event but never injected the prefix, so "yes, send the same"
-            # reply-quoted at draft A resolved to the newest draft B and
-            # went to the wrong recipient — the exact disambiguation
-            # failure the prefix exists for (#101866).
-            reply_snippet = event.reply_to_text[:500]
-            if getattr(event, "reply_to_is_own_message", False):
-                message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
-                )
-            else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+        # Reply-context projection is owned by gateway.inbound_context
+        # (#101866): the queued/steered follow-up path shares this
+        # function, so the pointer must be built here — not in the idle
+        # caller. Delegation keeps run.py free of a second prefix
+        # implementation; injected exactly once by construction.
+        from gateway.inbound_context import apply_reply_to_prefix
 
-        return message_text
+        return apply_reply_to_prefix(message_text, event)
 
     async def _prepare_profile_scoped_inbound_message_text(
         self,
@@ -21246,14 +21222,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
-        _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
-        _reply_id = getattr(event, "reply_to_message_id", None)
-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
-        logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
+        # One audit implementation for both paths (#101866): the idle path
+        # previously carried its own inline copy of this line.
+        from gateway.inbound_context import log_inbound_reply_context
+
+        log_inbound_reply_context(
+            source=source,
+            message_text=(event.text or ""),
+            event=event,
+            queued=False,
         )
 
         # Get or create session
@@ -32835,25 +32812,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
-                # Queued follow-ups used to skip the inbound log line entirely
-                # (#101866): an operator tracing "did the mid-turn message
-                # arrive, and with what reply context?" saw nothing for
-                # exactly the messages whose context mattered most. Log the
-                # same shape as the idle path's :21226 line, marked queued.
-                _q_reply_id = getattr(pending_event, "reply_to_message_id", None) if pending_event else None
-                _q_reply_txt = (
-                    (getattr(pending_event, "reply_to_text", None) or "")[:80].replace("\n", " ")
-                    if pending_event else ""
-                )
-                logger.info(
-                    "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r queued=%s",
-                    getattr(source, "platform", None),
-                    getattr(source, "user_id", None),
-                    getattr(source, "chat_id", None),
-                    (next_message or "")[:80],
-                    _q_reply_id,
-                    _q_reply_txt,
-                    True,
+                # Queued follow-ups used to skip the inbound audit line
+                # entirely (#101866) — invisible exactly when reply context
+                # mattered most. Delegated to the inbound_context owner.
+                from gateway.inbound_context import log_inbound_reply_context
+
+                log_inbound_reply_context(
+                    source=source,
+                    message_text=next_message,
+                    event=pending_event,
+                    queued=True,
                 )
 
                 # Clear the completed streaming marker from the prior logical

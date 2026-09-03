@@ -23,7 +23,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
+import type { Msg, SubagentOutcome, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -405,6 +405,8 @@ const KNOWN_SUBAGENT_STATUSES = new Set<SubagentStatus>([
   'timeout'
 ])
 
+const KNOWN_SUBAGENT_OUTCOMES = new Set<SubagentOutcome>(['failed', 'partial', 'unknown', 'unverified'])
+
 const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): SubagentStatus => {
   if (typeof status !== 'string') {
     return fallback
@@ -413,6 +415,16 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   const normalized = status.toLowerCase() as SubagentStatus
 
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
+}
+
+const normalizeSubagentOutcome = (outcome: unknown): SubagentOutcome | undefined => {
+  if (typeof outcome !== 'string') {
+    return undefined
+  }
+
+  const normalized = outcome.toLowerCase() as SubagentOutcome
+
+  return KNOWN_SUBAGENT_OUTCOMES.has(normalized) ? normalized : undefined
 }
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
@@ -1426,6 +1438,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload,
           c => ({
             durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
+            outcome: normalizeSubagentOutcome(ev.payload.outcome) ?? c.outcome,
             status: normalizeSubagentStatus(ev.payload.status, 'completed'),
             summary: ev.payload.summary || ev.payload.text || c.summary
           }),

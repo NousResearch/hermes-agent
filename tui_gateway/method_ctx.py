@@ -51,3 +51,13 @@ class HandlerRegistry:
             if getattr(fn, "_hermes_profile_scoped", False):
                 real = server._profile_scoped(real)
             server._methods[name] = real
+
+        # server.py is an oversized compatibility owner. Bounded callback
+        # overlays install through this existing end-of-import seam so a focused
+        # behavior change does not need to keep that god-file in its FILE-LIST.
+        # The installer is idempotent because every methods_* registry reaches
+        # this hook during server import.
+        if getattr(server, "__name__", "") == "tui_gateway.server":
+            from . import subagent_progress
+
+            subagent_progress.install_server_overlay(server)

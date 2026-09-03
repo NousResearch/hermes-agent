@@ -221,7 +221,8 @@ Subagent hooks describe delegated child-agent work:
 and `child_goal`.
 
 `subagent_stop` fields include parent/child session IDs, role/status fields,
-`child_summary`, `duration_ms`, and a metadata-only `tool_call_history`. Each
+`child_outcome`, bounded schema/error/exit evidence, `child_summary`,
+`duration_ms`, and a metadata-only `tool_call_history`. Each
 history entry contains the tool name, argument names, bounded side-effect
 targets, input/output byte counts, and outcome. URL query strings and fragments
 are removed; raw arguments, prompts, commands, contents, headers, and results

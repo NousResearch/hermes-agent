@@ -41,7 +41,14 @@ The stable states are `PENDING`, `STARTING`, `RUNNING`, `SUCCEEDED`, `FAILED`,
 interrupt at its next safe boundary and returns `CANCEL_REQUESTED`; it never
 claims completion until `wait` or `result` observes a terminal state. Terminal
 results are immutable, idempotent, bounded to 32k characters, omit transcripts
-and hidden reasoning, and include a stable result hash.
+and hidden reasoning, and include a stable result hash. `SubagentResult`
+preserves both axes: `lifecycle_status` reports how the child loop ended, while
+`outcome` reports `failed`, `partial`, `unverified`, or `unknown`. Schema proof,
+authoritative-error state, exit reason, interruption state, and aggregate versus
+terminal-attempt tool-error counts remain available as bounded result fields and
+in `structured_payload`. A completed lifecycle with authoritative
+`outcome="failed"` returns terminal state `FAILED`, never unqualified
+`SUCCEEDED`.
 
 This API is lifecycle-managed asynchronous execution. Child construction and
 completion use the same host-owned path as `delegate_task`, including parent

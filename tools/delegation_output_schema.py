@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from tools.delegation_outcome import delegation_schema_retry_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,7 @@ def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[s
             f"output_schema must be a JSON Schema object, got {type(raw).__name__}."
         )
     try:
-        from jsonschema.validators import validator_for  # type: ignore[import-untyped]
+        from jsonschema.validators import validator_for
 
         validator_for(raw).check_schema(raw)
     except ImportError:
@@ -118,7 +121,7 @@ def validate_output(
     except (ValueError, TypeError) as exc:
         return False, [f"Response is not valid JSON: {exc}"]
     try:
-        from jsonschema.validators import validator_for  # type: ignore[import-untyped]
+        from jsonschema.validators import validator_for
     except ImportError:
         logger.debug("jsonschema unavailable; accepting parsed JSON without validation")
         return True, []
@@ -148,4 +151,85 @@ def build_retry_message(errors: List[str]) -> str:
         f"{error_block}\n\n"
         "Reply with ONLY the corrected JSON object matching the OUTPUT "
         "CONTRACT schema from your task context. No prose, no explanations."
+    )
+
+
+@dataclass(frozen=True)
+class SchemaRepairResult:
+    """Aggregate and terminal evidence after bounded schema validation."""
+
+    aggregate_result: Dict[str, Any]
+    terminal_result: Dict[str, Any]
+    schema_valid: bool
+    schema_errors: List[str]
+    schema_retries: int
+
+
+def _coerce_api_calls(value: Any) -> int:
+    """Best-effort integer conversion for heterogeneous runtime envelopes."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def validate_and_repair_output(
+    result: Dict[str, Any],
+    schema: Dict[str, Any],
+    *,
+    retry: Callable[[str], Dict[str, Any]],
+) -> SchemaRepairResult:
+    """Validate one child result and perform the single allowed repair turn.
+
+    ``aggregate_result`` retains messages and API calls from every attempt;
+    ``terminal_result`` identifies the attempt whose lifecycle/outcome evidence
+    is authoritative. Runtime failures never authorize schema repair.
+    """
+    terminal_result = result
+    first_value = result.get("final_response")
+    first_text = first_value if isinstance(first_value, str) else ""
+    schema_valid, schema_errors = validate_output(first_text, schema)
+    schema_retries = 0
+
+    if (
+        not schema_valid
+        and first_text.strip()
+        and delegation_schema_retry_allowed(result)
+    ):
+        schema_retries = 1
+        try:
+            retry_result = retry(build_retry_message(schema_errors))
+        except Exception as exc:
+            logger.warning("Subagent schema-retry turn failed: %s", exc)
+            retry_result = {
+                "completed": False,
+                "failed": True,
+                "error": f"Schema retry failed: {exc}",
+                "turn_exit_reason": "schema_retry_exception",
+                "final_response": "",
+                "messages": [],
+            }
+
+        if isinstance(retry_result, dict):
+            terminal_result = retry_result
+            retry_value = retry_result.get("final_response")
+            retry_text = retry_value if isinstance(retry_value, str) else ""
+            if retry_text.strip():
+                result["final_response"] = retry_text
+            result["api_calls"] = _coerce_api_calls(
+                result.get("api_calls", 0)
+            ) + _coerce_api_calls(retry_result.get("api_calls", 0))
+            retry_messages = retry_result.get("messages")
+            if isinstance(retry_messages, list) and isinstance(
+                result.get("messages"), list
+            ):
+                result["messages"] = result["messages"] + retry_messages
+            schema_valid, schema_errors = validate_output(retry_text, schema)
+
+    return SchemaRepairResult(
+        aggregate_result=result,
+        terminal_result=terminal_result,
+        schema_valid=schema_valid,
+        schema_errors=schema_errors,
+        schema_retries=schema_retries,
     )

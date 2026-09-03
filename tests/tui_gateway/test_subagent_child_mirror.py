@@ -204,6 +204,59 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
     assert "child-1" not in server._active_child_runs
 
 
+def test_parent_relay_preserves_delegation_outcome_evidence(server, emits):
+    _relay(
+        server,
+        "subagent.complete",
+        child_session_id="child-1",
+        status="completed",
+        outcome="unverified",
+        exit_reason="completed",
+        interrupted=False,
+        tool_error_count=1,
+        summary="self-report",
+    )
+
+    payload = next(
+        payload
+        for event, sid, payload in emits
+        if event == "subagent.complete" and sid == "parent-sid"
+    )
+    assert payload["outcome"] == "unverified"
+    assert payload["exit_reason"] == "completed"
+    assert payload["interrupted"] is False
+    assert payload["tool_error_count"] == 1
+
+
+def test_parent_relay_preserves_schema_failure_evidence(server, emits):
+    schema_errors = ["'city' is a required property"]
+    _relay(
+        server,
+        "subagent.complete",
+        child_session_id="child-1",
+        status="completed",
+        outcome="failed",
+        schema_valid=False,
+        schema_errors=schema_errors,
+        schema_retries=1,
+        error="Final answer does not satisfy the declared output_schema.",
+        error_authoritative=True,
+        summary="{}",
+    )
+
+    payload = next(
+        payload
+        for event, sid, payload in emits
+        if event == "subagent.complete" and sid == "parent-sid"
+    )
+    assert payload["status"] == "completed"
+    assert payload["outcome"] == "failed"
+    assert payload["schema_valid"] is False
+    assert payload["schema_errors"] == schema_errors
+    assert payload["schema_retries"] == 1
+    assert payload["error_authoritative"] is True
+
+
 def test_start_mirrors_as_immediate_header_line(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
 

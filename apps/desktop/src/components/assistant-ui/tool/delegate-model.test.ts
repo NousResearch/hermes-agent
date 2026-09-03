@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SubagentProgress } from '@/store/subagents'
 
-import { delegateGoals, delegateRowsFromCall, mergeDelegateRows } from './delegate-model'
+import { delegateGoals, delegateRowsFromCall, delegateRowTone, mergeDelegateRows } from './delegate-model'
 
 const subagent = (overrides: Partial<SubagentProgress>): SubagentProgress => ({
   filesRead: [],
@@ -75,6 +75,76 @@ describe('delegateRowsFromCall', () => {
   it('still lists a background dispatch whose goals only survive in the result', () => {
     expect(delegateRowsFromCall({}, { status: 'dispatched', goals: ['A', 'B'] }).map(r => r.goal)).toEqual(['A', 'B'])
   })
+
+  it('carries the logical outcome through, apart from the lifecycle status', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }, { goal: 'C' }, { goal: 'D' }] },
+      {
+        results: [
+          { status: 'completed', outcome: 'unverified', summary: 'here is what I found' },
+          { status: 'completed', outcome: 'partial', summary: 'got halfway' },
+          {
+            error: 'Final answer does not satisfy the declared output_schema.',
+            error_authoritative: true,
+            outcome: 'failed',
+            schema_errors: ["'city' is a required property"],
+            schema_retries: 1,
+            schema_valid: false,
+            status: 'completed',
+            summary: '{}'
+          },
+          { status: 'timeout', summary: 'ran out of time' }
+        ]
+      }
+    )
+
+    // Logical outcome stays separate while current lifecycle normalization
+    // still maps backend timeout/error words to terminal failure.
+    expect(rows.map(r => r.status)).toEqual(['completed', 'completed', 'completed', 'failed'])
+    expect(rows.map(r => r.outcome)).toEqual(['unverified', 'partial', 'failed', undefined])
+    expect(rows[2]).toMatchObject({
+      errorAuthoritative: true,
+      schemaErrors: ["'city' is a required property"],
+      schemaRetries: 1,
+      schemaValid: false
+    })
+  })
+
+  it('drops an outcome word it does not recognize rather than trusting it', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { results: [{ status: 'completed', outcome: 'success', summary: 'trust me' }] }
+    )
+
+    expect(rows[0]!.outcome).toBeUndefined()
+    expect(delegateRowTone(rows[0]!)).toBe('unverified')
+  })
+})
+
+describe('delegateRowTone', () => {
+  it('never reads a completed lifecycle as a verified success', () => {
+    // The regression this exists for: `status: 'completed'` says the child's
+    // loop ended, not that the task was accepted. Every settled shape below is
+    // non-success, and none of them may render as done.
+    expect(delegateRowTone({ status: 'completed', outcome: 'unverified' })).toBe('unverified')
+    expect(delegateRowTone({ status: 'completed', outcome: 'partial' })).toBe('partial')
+    expect(delegateRowTone({ status: 'completed', outcome: 'unknown' })).toBe('unverified')
+    // An envelope too old to carry an outcome is unverified, not successful.
+    expect(delegateRowTone({ status: 'completed', outcome: undefined })).toBe('unverified')
+  })
+
+  it('reads every proven failure as failed, whichever side proves it', () => {
+    expect(delegateRowTone({ status: 'completed', outcome: 'failed' })).toBe('failed')
+    expect(delegateRowTone({ status: 'failed', outcome: undefined })).toBe('failed')
+    expect(delegateRowTone({ status: 'error', outcome: undefined })).toBe('failed')
+    expect(delegateRowTone({ status: 'timeout', outcome: undefined })).toBe('failed')
+  })
+
+  it('keeps live and parked rows out of the settled vocabulary', () => {
+    expect(delegateRowTone({ status: 'running', outcome: undefined })).toBe('live')
+    expect(delegateRowTone({ status: 'queued', outcome: undefined })).toBe('live')
+    expect(delegateRowTone({ status: 'dispatched', outcome: undefined })).toBe('parked')
+  })
 })
 
 describe('mergeDelegateRows', () => {
@@ -133,6 +203,60 @@ describe('mergeDelegateRows', () => {
 
     expect(merged[0]!.goal).toBe('C')
     expect(merged[0]!.model).toBeUndefined()
+  })
+
+  it('does not let lifecycle-only live state erase a known non-success outcome', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { results: [{ status: 'completed', outcome: 'partial', summary: 'got halfway' }] },
+      'call-4'
+    )
+
+    // The store relays `subagent.complete` with a lifecycle status and no
+    // outcome of its own. Clobbering here would repaint a proven-partial row
+    // as merely unverified — the false green, one layer up.
+    const merged = mergeDelegateRows(
+      rows,
+      [subagent({ id: 'delegate-tool:call-4:0', goal: 'A', status: 'completed' })],
+      'call-4'
+    )
+
+    expect(merged[0]!.outcome).toBe('partial')
+    expect(delegateRowTone(merged[0]!)).toBe('partial')
+  })
+
+  it('lets live state that carries outcome and schema evidence win over the parsed one', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { results: [{ status: 'completed', outcome: 'unverified', summary: 'looked fine' }] },
+      'call-5'
+    )
+
+    const merged = mergeDelegateRows(
+      rows,
+      [
+        subagent({
+          errorAuthoritative: true,
+          id: 'delegate-tool:call-5:0',
+          goal: 'A',
+          outcome: 'failed',
+          schemaErrors: ["'city' is a required property"],
+          schemaRetries: 1,
+          schemaValid: false,
+          status: 'completed'
+        })
+      ],
+      'call-5'
+    )
+
+    expect(merged[0]!.outcome).toBe('failed')
+    expect(merged[0]).toMatchObject({
+      errorAuthoritative: true,
+      schemaErrors: ["'city' is a required property"],
+      schemaRetries: 1,
+      schemaValid: false
+    })
+    expect(delegateRowTone(merged[0]!)).toBe('failed')
   })
 
   it('falls back to task order only when both sides agree on the shape', () => {

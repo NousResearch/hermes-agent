@@ -376,8 +376,10 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None,
+                "status": "unknown", "outcome": "unknown", "summary": None,
+                "exit_reason": "unknown",
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
+                "error_authoritative": False,
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
             # Routing origin persisted at dispatch (see _capture_routing_origin):
@@ -386,7 +388,14 @@ def recover_abandoned_delegations() -> int:
             for _k in ("scope_id", "user_id", "user_name"):
                 if task.get(_k):
                     event[_k] = task[_k]
-            result = {"status": "unknown", "summary": None, "error": event["error"]}
+            result = {
+                "status": "unknown",
+                "outcome": "unknown",
+                "summary": None,
+                "exit_reason": "unknown",
+                "error": event["error"],
+                "error_authoritative": False,
+            }
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
@@ -874,8 +883,12 @@ def dispatch_async_delegation(
             logger.exception("Async delegation %s crashed", delegation_id)
             result = {
                 "status": "error",
+                "outcome": "failed",
                 "summary": None,
                 "error": f"{type(exc).__name__}: {exc}",
+                "exit_reason": "error",
+                "interrupted": False,
+                "tool_error_count": 0,
                 "api_calls": 0,
                 "duration_seconds": round(time.time() - dispatched_at, 2),
             }
@@ -983,6 +996,7 @@ def _push_completion_event(
         "role": record.get("role"),
         "model": result.get("model") or record.get("model"),
         "status": status,
+        "outcome": result.get("outcome"),
         "summary": summary,
         "error": error,
         "api_calls": result.get("api_calls", 0),
@@ -992,7 +1006,19 @@ def _push_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
+        "interrupted": bool(result.get("interrupted", False)),
+        "tool_error_count": result.get("tool_error_count", 0),
     }
+    # Parent-side output-contract evidence is authoritative and must survive
+    # background delivery instead of being reduced to a generic completion.
+    for _k in (
+        "schema_valid",
+        "schema_errors",
+        "schema_retries",
+        "error_authoritative",
+    ):
+        if _k in result:
+            evt[_k] = result[_k]
     # Routing origin captured at dispatch (see _capture_routing_origin):
     # additive, lets the gateway reconstruct a full SessionSource (incl.
     # scope_id for relay tenant egress) when its own caches are cold.

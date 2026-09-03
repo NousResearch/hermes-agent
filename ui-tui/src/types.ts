@@ -21,6 +21,7 @@ export interface ActivityItem {
 }
 
 export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
+export type SubagentOutcome = 'failed' | 'partial' | 'unknown' | 'unverified'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -30,6 +31,8 @@ export interface SubagentProgress {
   delegationId?: string
   depth: number
   durationSeconds?: number
+  error?: string
+  errorAuthoritative?: boolean
   filesRead?: string[]
   filesWritten?: string[]
   goal: string
@@ -39,10 +42,14 @@ export interface SubagentProgress {
   iteration?: number
   model?: string
   notes: string[]
+  outcome?: SubagentOutcome
   outputTail?: SubagentOutputEntry[]
   outputTokens?: number
   parentId: null | string
   reasoningTokens?: number
+  schemaErrors?: string[]
+  schemaRetries?: number
+  schemaValid?: boolean
   startedAt?: number
   status: SubagentStatus
   summary?: string

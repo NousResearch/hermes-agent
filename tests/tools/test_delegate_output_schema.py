@@ -14,13 +14,17 @@ ONLY, zero code/prompt text copied (proprietary).
 
 import json
 import threading
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
     delegate_task,
 )
+from tools.delegation_outcome import delegation_batch_icon
 from tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
@@ -151,7 +155,7 @@ class TestToolSchemaSurface:
 class _StubChild:
     """Minimal child agent double (mirrors test_delegate_kanban_isolation)."""
 
-    tool_progress_callback = None
+    tool_progress_callback: Callable[..., None] | None = None
     _delegate_saved_tool_names: list = []
     _credential_pool = None
     _subagent_id = None  # skip registry
@@ -203,8 +207,10 @@ class TestRunSingleChildSchemaValidation:
         child._delegate_output_schema = ADDRESS_SCHEMA
         entry = _run(child)
         assert entry["status"] == "completed"
+        assert entry["outcome"] == "unverified"
         assert entry["schema_valid"] is True
         assert "schema_errors" not in entry
+        assert "error" not in entry
         assert len(child.calls) == 1
 
     def test_invalid_then_retry_then_valid(self):
@@ -221,11 +227,28 @@ class TestRunSingleChildSchemaValidation:
 
     def test_invalid_twice_surfaces_errors_and_stops(self):
         child = _StubChild(["nope", "still nope"])
+        events = []
+        child.tool_progress_callback = lambda event_type, **kwargs: events.append(
+            (event_type, kwargs)
+        )
         child._delegate_output_schema = ADDRESS_SCHEMA
         entry = _run(child)
+        # The child loop completed, but the parent-side contract verdict is an
+        # authoritative logical failure. Keep both facts in the envelope.
+        assert entry["status"] == "completed"
+        assert entry["outcome"] == "failed"
         assert entry["schema_valid"] is False
         assert entry["schema_errors"]
         assert entry["schema_retries"] == 1
+        assert entry["error_authoritative"] is True
+        assert "output_schema" in entry["error"]
+        complete = next(kwargs for event, kwargs in events if event == "subagent.complete")
+        assert complete["outcome"] == "failed"
+        assert complete["status"] == "completed"
+        assert complete["schema_valid"] is False
+        assert complete["schema_errors"] == entry["schema_errors"]
+        assert complete["schema_retries"] == 1
+        assert complete["error_authoritative"] is True
         # exactly ONE retry — bounded
         assert len(child.calls) == 2
 
@@ -242,8 +265,210 @@ class TestRunSingleChildSchemaValidation:
 
         child.run_conversation = flaky
         entry = _run(child)
+        assert entry["status"] == "failed"
+        assert entry["outcome"] == "failed"
         assert entry["schema_valid"] is False
         assert entry["schema_errors"]
+        assert entry["exit_reason"] == "schema_retry_exception"
+        assert entry["error"] == "Schema retry failed: child died on retry"
+
+    def test_retry_runtime_failure_replaces_first_attempt_evidence(self):
+        child = _StubChild([])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        responses = [
+            {
+                "final_response": "first invalid payload",
+                "completed": True,
+                "failed": False,
+                "interrupted": False,
+                "turn_exit_reason": "text_response",
+                "tool_error_count": 0,
+                "api_calls": 1,
+                "messages": [],
+            },
+            {
+                "final_response": "retry invalid payload",
+                "completed": False,
+                "failed": True,
+                "interrupted": False,
+                "error": "retry provider failed",
+                "turn_exit_reason": "provider_error",
+                "tool_error_count": 2,
+                "api_calls": 1,
+                "messages": [],
+            },
+        ]
+
+        def staged_run(user_message, task_id=None, **_kw):
+            child.calls.append(user_message)
+            return responses.pop(0)
+
+        child.run_conversation = staged_run
+        entry = _run(child)
+
+        assert entry["status"] == "failed"
+        assert entry["outcome"] == "failed"
+        assert entry["error"] == "retry provider failed"
+        assert entry["exit_reason"] == "provider_error"
+        assert entry["tool_error_count"] == 0
+        assert entry["terminal_tool_error_count"] == 2
+        assert entry["schema_valid"] is False
+        assert entry["schema_retries"] == 1
+        assert entry["api_calls"] == 2
+
+    def test_retry_interruption_replaces_first_attempt_evidence(self):
+        child = _StubChild([])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        responses = [
+            {
+                "final_response": "first invalid payload",
+                "completed": True,
+                "interrupted": False,
+                "turn_exit_reason": "text_response",
+                "tool_error_count": 0,
+                "api_calls": 1,
+                "messages": [],
+            },
+            {
+                "final_response": "interrupted invalid payload",
+                "completed": False,
+                "interrupted": True,
+                "partial": True,
+                "turn_exit_reason": "interrupted",
+                "tool_error_count": 1,
+                "api_calls": 1,
+                "messages": [],
+            },
+        ]
+
+        def staged_run(user_message, task_id=None, **_kw):
+            child.calls.append(user_message)
+            return responses.pop(0)
+
+        child.run_conversation = staged_run
+        entry = _run(child)
+
+        assert entry["status"] == "interrupted"
+        assert entry["outcome"] == "failed"
+        assert entry["exit_reason"] == "interrupted"
+        assert entry["interrupted"] is True
+        assert entry["tool_error_count"] == 0
+        assert entry["terminal_tool_error_count"] == 1
+        assert entry["schema_valid"] is False
+
+    def test_runtime_failure_reason_survives_concurrent_schema_failure(self):
+        child = _StubChild([])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        def failed_run(user_message, task_id=None, **kw):
+            child.calls.append(user_message)
+            return {
+                "api_calls": 1,
+                "completed": False,
+                "error": "provider transport failed",
+                "failed": True,
+                "final_response": "still not json",
+                "messages": [],
+            }
+
+        child.run_conversation = failed_run
+        entry = _run(child)
+
+        assert entry["outcome"] == "failed"
+        assert entry["schema_valid"] is False
+        assert entry["error"] == "provider transport failed"
+        assert entry["error_authoritative"] is True
+        assert "schema_retries" not in entry
+        assert len(child.calls) == 1
+
+    @pytest.mark.parametrize(
+        "runtime_fields",
+        [
+            {"completed": False, "failed": True},
+            {"completed": True, "error": "provider transport failed"},
+            {
+                "completed": True,
+                "turn_exit_reason": "all_retries_exhausted_no_response",
+            },
+        ],
+    )
+    def test_runtime_failure_with_invalid_text_never_authorizes_schema_retry(
+        self, runtime_fields
+    ):
+        child = _StubChild([])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        def failed_run(user_message, task_id=None, **_kw):
+            child.calls.append(user_message)
+            return {
+                "api_calls": 1,
+                "completed": True,
+                "failed": False,
+                "final_response": "invalid diagnostic text",
+                "messages": [],
+                **runtime_fields,
+            }
+
+        child.run_conversation = failed_run
+        entry = _run(child)
+
+        assert entry["outcome"] == "failed"
+        assert entry["schema_valid"] is False
+        assert "schema_retries" not in entry
+        assert len(child.calls) == 1
+
+    def test_tool_error_count_remains_aggregate_across_clean_schema_retry(self):
+        child = _StubChild([])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        responses = [
+            {
+                "final_response": "first invalid payload",
+                "completed": True,
+                "failed": False,
+                "api_calls": 1,
+                "tool_error_count": 1,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "attempt-1",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "attempt-1",
+                        "content": "Error: command failed",
+                    },
+                ],
+            },
+            {
+                "final_response": '{"city": "Oslo"}',
+                "completed": True,
+                "failed": False,
+                "api_calls": 1,
+                "tool_error_count": 0,
+                "messages": [],
+            },
+        ]
+
+        def staged_run(user_message, task_id=None, **_kw):
+            child.calls.append(user_message)
+            return responses.pop(0)
+
+        child.run_conversation = staged_run
+        entry = _run(child)
+
+        assert entry["schema_valid"] is True
+        assert entry["schema_retries"] == 1
+        assert entry["tool_error_count"] == 1
+        assert entry["terminal_tool_error_count"] == 0
+        assert any(item.get("status") == "error" for item in entry["tool_trace"])
 
     def test_no_schema_keeps_legacy_result_shape(self):
         """Schema-less calls must not gain new keys (wire-shape pinning)."""
@@ -263,20 +488,20 @@ class TestRunSingleChildSchemaValidation:
         assert len(child.calls) == 1
         assert entry.get("schema_valid") is False
 
-    def test_schema_failure_reported_as_failed_not_completed(self):
+    def test_schema_failure_has_failed_outcome_without_false_green(self):
         """Regression: a final answer that still violates the declared
         output contract after the bounded retry (here the classic empty
-        ``{}`` fallback) must be reported status="failed", not
-        "completed". Otherwise the batch report prints a ✓ and
-        orchestrators that read only status/icon accept an empty verdict
-        — schema_valid/schema_errors carry the detail, but status must
-        agree with them."""
+        ``{}`` fallback) must have outcome="failed" even though its child
+        lifecycle completed. The outcome-aware batch renderer must never
+        print a false-green check for that envelope."""
         child = _StubChild(["not json at all", "{}"])
         child._delegate_output_schema = ADDRESS_SCHEMA
         entry = _run(child)
         assert entry["schema_valid"] is False
         assert entry["schema_errors"]
-        assert entry["status"] == "failed"
+        assert entry["status"] == "completed"
+        assert entry["outcome"] == "failed"
+        assert delegation_batch_icon(entry) == "✗"
         # the failed entry names the schema violation, not the generic
         # "no response" error — the child DID respond, unusably
         assert "output_schema" in entry.get("error", "")

@@ -15,9 +15,16 @@ npx PID — on timeout.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
+from contextlib import contextmanager, nullcontext
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+import tools.browser_tool as bt
 from tools.browser_tool import (
     AGENT_BROWSER_NPX_SPEC,
     _legacy_kill_process_tree,
@@ -34,6 +41,138 @@ def _mock_proc(returncode=0, communicate_side_effect=None, pid=4242):
         proc.communicate.return_value = ("", "")
     proc.returncode = returncode
     return proc
+
+
+def test_lock_path_is_shared_by_profiles_using_the_same_npm_cache(tmp_path):
+    cache = tmp_path / "shared-npm-cache"
+    first = bt._agent_browser_npx_lock_path(
+        {"NPM_CONFIG_CACHE": str(cache), "HERMES_HOME": str(tmp_path / "profile-a")}
+    )
+    second = bt._agent_browser_npx_lock_path(
+        {"NPM_CONFIG_CACHE": str(cache), "HERMES_HOME": str(tmp_path / "profile-b")}
+    )
+
+    assert first == second
+    assert first.parent == cache
+
+
+def test_warmup_holds_shared_cache_lock_until_npx_exits():
+    state = {"held": False}
+
+    @contextmanager
+    def fake_lock(_env):
+        state["held"] = True
+        try:
+            yield True
+        finally:
+            state["held"] = False
+
+    proc = _mock_proc()
+
+    def communicate(*, timeout):
+        assert timeout == 60.0
+        assert state["held"] is True
+        return "", ""
+
+    proc.communicate.side_effect = communicate
+    with patch("tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"), \
+         patch("tools.browser_tool._agent_browser_npx_cache_lock", side_effect=fake_lock), \
+         patch("subprocess.Popen", return_value=proc):
+        assert warm_agent_browser_npx_cache() is True
+
+    assert state["held"] is False
+
+
+def test_lock_failure_fails_closed_without_spawning():
+    @contextmanager
+    def unavailable_lock(_env):
+        yield False
+
+    with patch("tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"), \
+         patch("tools.browser_tool._agent_browser_npx_cache_lock", side_effect=unavailable_lock), \
+         patch("subprocess.Popen") as mock_popen:
+        assert warm_agent_browser_npx_cache() is False
+
+    mock_popen.assert_not_called()
+
+
+def test_posix_default_lock_path_follows_npm_home_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("os.name", "posix")
+    path = bt._agent_browser_npx_lock_path({"HOME": str(tmp_path)})
+
+    assert path == Path(tmp_path) / ".npm" / ".hermes-agent-browser-warmup.lock"
+
+
+def test_windows_cache_lock_retries_transient_contention(tmp_path, monkeypatch):
+    """msvcrt.LK_LOCK gives up after about ten seconds, while a valid cold
+    warm-up can take longer.  The lock layer must keep serializing instead of
+    letting the caller fall through to a concurrent npx invocation."""
+    fake_msvcrt = MagicMock()
+    fake_msvcrt.LK_NBLCK = 1
+    fake_msvcrt.LK_UNLCK = 2
+    fake_msvcrt.locking.side_effect = [
+        OSError(13, "lock held by another process"),
+        None,
+        None,
+    ]
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(
+        bt,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            path=os.path,
+            environ=os.environ,
+            SEEK_END=os.SEEK_END,
+        ),
+    )
+
+    with patch("tools.browser_tool.time.sleep") as sleep:
+        with bt._agent_browser_npx_cache_lock(
+            {"NPM_CONFIG_CACHE": str(tmp_path / "shared-cache")}
+        ) as acquired:
+            assert acquired is True
+
+    assert [call.args[1] for call in fake_msvcrt.locking.call_args_list] == [1, 1, 2]
+    sleep.assert_called_once_with(0.1)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX flock regression")
+def test_cache_lock_serializes_two_processes(tmp_path):
+    trace = tmp_path / "trace.log"
+    cache = tmp_path / "shared-cache"
+    script = (
+        "import sys,time\n"
+        "from tools.browser_tool import _agent_browser_npx_cache_lock\n"
+        "env={'NPM_CONFIG_CACHE': sys.argv[1]}\n"
+        "with _agent_browser_npx_cache_lock(env) as acquired:\n"
+        " assert acquired\n"
+        " with open(sys.argv[2], 'a', encoding='utf-8', buffering=1) as f:\n"
+        "  f.write('enter ' + sys.argv[3] + '\\n')\n"
+        "  time.sleep(0.2)\n"
+        "  f.write('exit ' + sys.argv[3] + '\\n')\n"
+    )
+    env = dict(os.environ)
+    repo_root = str(Path(__file__).resolve().parents[2])
+    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(cache), str(trace), label],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for label in ("a", "b")
+    ]
+    results = [process.communicate(timeout=10) for process in processes]
+
+    assert [process.returncode for process in processes] == [0, 0], results
+    events = trace.read_text(encoding="utf-8").splitlines()
+    assert events in (
+        ["enter a", "exit a", "enter b", "exit b"],
+        ["enter b", "exit b", "enter a", "exit a"],
+    )
 
 
 def test_returns_false_without_spawning_when_npx_unresolvable():
@@ -141,6 +280,7 @@ def test_uses_new_process_group_creationflag_on_windows_instead_of_start_new_ses
          patch("tools.browser_tool._resolve_npx_bin", return_value="C:\\npx.cmd"), \
          patch("tools.browser_tool._build_browser_env", return_value={"PATH": "C:\\Windows"}), \
          patch("tools.browser_tool._merge_browser_path", side_effect=lambda p: p), \
+         patch("tools.browser_tool._agent_browser_npx_cache_lock", return_value=nullcontext(True)), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
         warm_agent_browser_npx_cache()
 

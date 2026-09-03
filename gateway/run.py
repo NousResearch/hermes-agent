@@ -8,9 +8,9 @@ This module provides:
 Usage:
     # Start the gateway
     python -m gateway.run
-    
+
     # Or from CLI
-    python cli.py --gateway
+    hermes gateway run
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio

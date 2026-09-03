@@ -87,6 +87,7 @@ from hermes_cli.config import (
     read_raw_config,
     require_readable_config_before_write,
 )
+from hermes_cli.oauth_callback_page import render_callback_page
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
@@ -3786,9 +3787,16 @@ def _make_spotify_callback_handler(expected_path: str) -> tuple[type[BaseHTTPReq
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             if result["error"]:
-                body = "<html><body><h1>Spotify authorization failed.</h1>You can close this tab.</body></html>"
+                body = render_callback_page(
+                    "Spotify authorization failed",
+                    "You can close this tab and re-run setup.",
+                    status="error",
+                )
             else:
-                body = "<html><body><h1>Spotify authorization received.</h1>You can close this tab.</body></html>"
+                body = render_callback_page(
+                    "Spotify authorization received",
+                    "You can close this tab and return to Hermes.",
+                )
             self.wfile.write(body.encode("utf-8"))
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003

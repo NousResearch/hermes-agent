@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from hermes_cli.oauth_callback_page import render_callback_page_bytes
 from plugins.memory.honcho import oauth
 from plugins.memory.honcho.client import resolve_active_host, resolve_config_path
 
@@ -237,21 +238,19 @@ def complete_authorization(
     return cred
 
 
-_CALLBACK_HTML = (
-    b"<!doctype html><meta charset=utf-8>"
-    b"<title>Honcho connected</title>"
-    b"<body style='font:14px ui-monospace,monospace;background:#0b0e14;color:#c9d1d9;"
-    b"display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
-    b"<div>Connected to Honcho. You can close this tab and return to Hermes.</div>"
-)
+def _callback_page() -> bytes:
+    return render_callback_page_bytes(
+        "Connected to Honcho",
+        "You can close this tab and return to Hermes.",
+    )
 
-_CALLBACK_ERROR_HTML = (
-    "<!doctype html><meta charset=utf-8>"
-    "<title>Honcho sign-in failed</title>"
-    "<body style='font:14px ui-monospace,monospace;background:#0b0e14;color:#c9d1d9;"
-    "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
-    "<div>Sign-in was not completed ({error}). You can close this tab and re-run setup.</div>"
-)
+
+def _callback_error_page(error: str) -> bytes:
+    return render_callback_page_bytes(
+        "Honcho sign-in failed",
+        f"Sign-in was not completed ({error}). You can close this tab and re-run setup.",
+        status="error",
+    )
 
 
 def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
@@ -280,12 +279,9 @@ def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             if captured["error"]:
-                import html as _html
-
-                page = _CALLBACK_ERROR_HTML.format(error=_html.escape(captured["error"]))
-                self.wfile.write(page.encode("utf-8"))
+                self.wfile.write(_callback_error_page(captured["error"]))
             else:
-                self.wfile.write(_CALLBACK_HTML)
+                self.wfile.write(_callback_page())
 
         def log_message(self, *args):  # silence stdlib request logging
             return

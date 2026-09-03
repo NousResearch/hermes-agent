@@ -89,6 +89,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from hermes_cli.kanban_exit_codes import (
+    KANBAN_PROTOCOL_EXIT_CODE,
+    KANBAN_RATE_LIMIT_EXIT_CODE,
+)
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
@@ -419,15 +423,8 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
 DEFAULT_CRASH_GRACE_SECONDS = 30
 
 
-# Sentinel exit code a kanban worker uses to signal "I bailed because the
-# provider rate-limited / exhausted quota, not because the task failed."
-# The dispatcher's reap classifier maps this to a ``rate_limited`` exit kind
-# so ``detect_crashed_workers`` can release the task back to ``ready``
-# WITHOUT counting a failure (the circuit breaker must never trip on a
-# transient throttle). 75 == BSD ``EX_TEMPFAIL`` (sysexits.h) — the
-# conventional "temporary failure, retry later" code, and well clear of the
-# 0/1/2 codes the worker uses for success / generic failure / usage error.
-KANBAN_RATE_LIMIT_EXIT_CODE = 75
+# Worker sentinel exit codes are imported from ``kanban_exit_codes`` so the
+# quiet CLI and this reap classifier share one source of truth.
 
 
 def _resolve_crash_grace_seconds() -> int:
@@ -8062,6 +8059,8 @@ class DispatchResult:
     "task is genuinely stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
+    protocol_violations: list[str] = field(default_factory=list)
+    """Reclaimed worker ids whose turn ended without one valid durable handoff."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
@@ -8140,6 +8139,9 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       task is still ``running`` in the DB, this is a protocol violation
       (worker exited without calling ``kanban_complete`` / ``kanban_block``)
       and should be auto-blocked immediately — retrying will just loop.
+    * ``"protocol_violation"`` — ``WIFEXITED`` with the explicit
+      ``KANBAN_PROTOCOL_EXIT_CODE`` sentinel. The conversation loop exhausted
+      its terminal-handoff guard and refused a clean exit.
     * ``"rate_limited"`` — ``WIFEXITED`` with status
       ``KANBAN_RATE_LIMIT_EXIT_CODE``. The worker bailed because the
       provider rate-limited / exhausted quota, NOT because the task failed.
@@ -8151,9 +8153,9 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       something else, or died between reap tick and liveness check). Fall
       back to existing crashed-counter behavior.
 
-    ``code`` is the exit status (for ``clean_exit`` / ``rate_limited`` /
-    ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
-    for ``unknown``.
+    ``code`` is the exit status (for ``clean_exit`` /
+    ``protocol_violation`` / ``rate_limited`` / ``nonzero_exit``), the signal
+    number (for ``signaled``), or ``None`` for ``unknown``.
     """
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
@@ -8164,6 +8166,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
             code = os.WEXITSTATUS(raw)
             if code == 0:
                 return ("clean_exit", 0)
+            if code == KANBAN_PROTOCOL_EXIT_CODE:
+                return ("protocol_violation", code)
             if code == KANBAN_RATE_LIMIT_EXIT_CODE:
                 return ("rate_limited", code)
             return ("nonzero_exit", code)
@@ -8841,10 +8845,10 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
         outcome = row["outcome"] or ""
         if outcome == "rate_limited":
             continue
-        if outcome == "crashed":
-            is_violation = False
+        if outcome in {"crashed", "protocol_violation"}:
+            is_violation = outcome == "protocol_violation"
             raw_meta = row["metadata"]
-            if raw_meta:
+            if raw_meta and not is_violation:
                 try:
                     is_violation = bool(
                         json.loads(raw_meta).get("protocol_violation")
@@ -8889,6 +8893,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     (the public return stays the crashed-only ``list[str]``).
     """
     crashed: list[str] = []
+    protocol_violations: list[str] = []
     rate_limited: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
@@ -8927,28 +8932,31 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
-            if kind == "clean_exit":
-                # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
-                # work itself succeeded and only the paperwork was skipped, so
-                # a retry usually completes; the corrective sentence below is
-                # surfaced to the retry worker via the prior-attempt error in
-                # ``build_worker_context`` (guidance approach from #61817).
+            if kind in {"clean_exit", "protocol_violation"}:
+                # Either the explicit EX_PROTOCOL sentinel or the legacy rc=0
+                # backstop reached the reaper while the task was still running.
+                # The sentinel proves the agent exhausted its own fail-closed
+                # terminal-receipt guard; rc=0 remains a compatibility backstop.
                 protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation. "
-                    "If the prior run already did the work, verify it and "
-                    "report the result via kanban_complete; a run that ends "
-                    "without a terminal kanban call counts as failed no "
-                    "matter what it did."
-                )
+                if kind == "protocol_violation":
+                    error_text = (
+                        f"worker refused clean exit with rc={code}: terminal "
+                        "Kanban retry budget exhausted without exactly one "
+                        "successful durable handoff receipt — protocol violation."
+                    )
+                else:
+                    error_text = (
+                        "worker exited cleanly (rc=0) without exactly one "
+                        "successful durable terminal Kanban handoff — protocol "
+                        "violation. If the prior run already did the work, verify "
+                        "it and submit one successful lifecycle tool call."
+                    )
                 event_kind = "protocol_violation"
                 event_payload = {
                     "pid": pid,
                     "claimer": row["claim_lock"],
                     "exit_code": code,
+                    "exit_kind": kind,
                     # Durable marker for _protocol_violation_streak: _end_run
                     # copies this payload into the run metadata, which is how
                     # the violation-only retry budget is derived later.
@@ -9001,7 +9009,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                if rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                elif protocol_violation:
+                    _run_outcome = "protocol_violation"
+                else:
+                    _run_outcome = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -9036,6 +9049,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     rate_limited.append(row["id"])
                 else:
                     if protocol_violation:
+                        protocol_violations.append(row["id"])
                         # Stamp the failure error now: a below-budget
                         # violation never reaches ``_record_task_failure``
                         # (which stamps this column for every other failure
@@ -9107,7 +9121,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 tripped = _record_task_failure(
                     conn, tid,
                     error=error_text,
-                    outcome="crashed",
+                    outcome="protocol_violation",
                     failure_limit=violation_limit,
                     force_trip=True,
                     release_claim=False,
@@ -9140,6 +9154,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # and tests that destructure the result; ``dispatch_once`` reads this
     # side-channel attribute to populate ``DispatchResult.auto_blocked``.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
+    # Explicit subset for telemetry: these are lifecycle protocol failures,
+    # not execution crashes, even though they remain in the compatibility
+    # ``crashed`` return list because their worker process was reclaimed.
+    setattr(
+        detect_crashed_workers,
+        "_last_protocol_violations",
+        protocol_violations,
+    )
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
@@ -9963,6 +9985,9 @@ def _dispatch_once_locked(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
     result.crashed = detect_crashed_workers(conn)
+    result.protocol_violations = list(
+        getattr(detect_crashed_workers, "_last_protocol_violations", [])
+    )
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.

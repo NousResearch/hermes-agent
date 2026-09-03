@@ -2205,6 +2205,7 @@ def run_conversation(
     final_response = None
     interrupted = False
     failed = False
+    _failure_reason: Optional[str] = None
     codex_ack_continuations = 0
     length_continue_retries = 0
     # One-shot "continue without thinking" override is turn-scoped: a
@@ -9021,17 +9022,15 @@ def run_conversation(
                 # Models sometimes narrate the next step ("Let me write the
                 # report") and stop with finish_reason=stop — a clean exit
                 # that the dispatcher records as protocol_violation. Nudge
-                # once or twice before allowing that exit.
-                try:
-                    from agent.kanban_stop import build_kanban_stop_nudge
+                # once or twice, then fail closed with a structured protocol
+                # result instead of permitting rc=0.
+                from agent.kanban_stop import StopAction, evaluate_kanban_stop
 
-                    _kanban_nudge = build_kanban_stop_nudge(
-                        messages=messages,
-                        attempts=getattr(agent, "_kanban_stop_nudges", 0),
-                    )
-                except Exception:
-                    logger.debug("kanban stop-loop check failed", exc_info=True)
-                    _kanban_nudge = None
+                _kanban_decision = evaluate_kanban_stop(
+                    messages=messages,
+                    attempts=getattr(agent, "_kanban_stop_nudges", 0),
+                )
+                _kanban_nudge = _kanban_decision.nudge
 
                 if _kanban_nudge:
                     agent._kanban_stop_nudges = (
@@ -9052,8 +9051,8 @@ def run_conversation(
                         os.environ.get("HERMES_KANBAN_TASK", ""),
                     )
                     agent._emit_status(
-                        "⚠️ Kanban worker tried to exit without "
-                        "kanban_complete/kanban_block — nudging to finish"
+                        "⚠️ Kanban worker tried to exit without a valid "
+                        "terminal lifecycle receipt — nudging to finish"
                     )
                     # Same finalizer contract as verify-on-stop: clear
                     # final_response while continuing so a later budget
@@ -9065,6 +9064,26 @@ def run_conversation(
                     )
                     final_response = None
                     continue
+
+                if _kanban_decision.action is StopAction.VIOLATION:
+                    failed = True
+                    _failure_reason = "kanban_protocol"
+                    _turn_exit_reason = "kanban_protocol_violation"
+                    final_response = (
+                        "Kanban protocol violation: "
+                        + _kanban_decision.reason
+                    )
+                    final_msg["content"] = final_response
+                    final_msg["finish_reason"] = "kanban_protocol_violation"
+                    final_msg["_kanban_stop_synthetic"] = True
+                    append_message(messages, final_msg)
+                    logger.error(
+                        "kanban worker refused clean exit task=%s reason=%s",
+                        os.environ.get("HERMES_KANBAN_TASK", ""),
+                        _kanban_decision.reason,
+                    )
+                    agent._emit_status("❌ Kanban terminal handoff protocol violation")
+                    break
 
                 append_message(messages, final_msg)
                 # Make the completed answer durable before leaving the loop —
@@ -9267,6 +9286,7 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        failure_reason=_failure_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )

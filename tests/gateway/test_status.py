@@ -1253,6 +1253,130 @@ class TestPermissionErrorOnLockFile:
             status.release_gateway_runtime_lock()
 
 
+class TestLiveGatewayIdentityPreserved:
+    """A lock-probe miss must never destroy a live gateway's identity files.
+
+    Regression coverage for #101532: on macOS, unlinking a file a live
+    process holds under flock silently releases the lock, so a single
+    transient/false probe miss permanently destroyed a LIVE gateway's
+    lock + pid metadata and every later probe returned None.
+    """
+
+    @staticmethod
+    def _live_record() -> dict:
+        return {
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": None,
+        }
+
+    def test_lock_probe_miss_preserves_live_gateway_identity(self, tmp_path, monkeypatch):
+        """A transient/false lock-probe miss must keep the live gateway's files."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        record = self._live_record()
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        lock_path.write_text(json.dumps(record), encoding="utf-8")
+
+        # The probe transiently reports the lock as inactive even though the
+        # recorded gateway process is alive.
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda path=None: False)
+        # Cmdline unreadable (e.g. cross-user ps restriction): identity falls
+        # back to the persisted record, exactly as in the lock-active branch.
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid() == os.getpid()
+        assert pid_path.exists(), "probe miss must not unlink a live gateway's PID file"
+        assert lock_path.exists(), "probe miss must not unlink a live gateway's lock file"
+
+    def test_dead_gateway_records_are_still_cleaned_up(self, tmp_path, monkeypatch):
+        """Genuinely stale metadata (dead pid, unheld lock) is still reaped."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        stale_record = {
+            "pid": 99999,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(stale_record), encoding="utf-8")
+        lock_path.write_text(json.dumps(stale_record), encoding="utf-8")
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists(), "stale PID file of a dead gateway must be reaped"
+        # The lock path is a stable rendezvous file: it stays on disk (the
+        # next owner overwrites its record after acquiring it) and is free.
+        assert status.is_gateway_runtime_lock_active(lock_path) is False
+
+    def test_permission_error_probe_preserves_lock_with_live_owner(self, tmp_path, monkeypatch):
+        """The PermissionError probe branch must not unlink a live gateway's lock."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text(json.dumps(self._live_record()), encoding="utf-8")
+
+        real_open = open
+
+        def deny_open(path, *args, **kwargs):
+            # Simulate a lock file this process cannot open (e.g. root-owned
+            # from a launchd Background session) while its record remains
+            # readable through Path.read_text (io.open).
+            if str(path) == str(lock_path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_open)
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is True
+        assert lock_path.exists(), "a lock whose recorded owner is alive must never be unlinked"
+
+    def test_acquire_refuses_to_unlink_lock_with_live_owner(self, tmp_path, monkeypatch):
+        """acquire_gateway_runtime_lock must not release a live owner's flock
+        by unlinking an unopenable lock file."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps(self._live_record()), encoding="utf-8")
+
+        real_open = open
+
+        def deny_open(path, *args, **kwargs):
+            if str(path) == str(lock_path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_open)
+
+        try:
+            assert status.acquire_gateway_runtime_lock() is False
+            assert lock_path.exists(), "acquire must not unlink a live gateway's lock file"
+        finally:
+            status.release_gateway_runtime_lock()
+
+    def test_active_lock_with_incomplete_metadata_is_never_unlinked(self, tmp_path, monkeypatch):
+        """A reader may land between lock acquisition and PID publication;
+        a read-side metadata failure must not unlink while the lock is held."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            # Simulate the mid-startup window: lock held, record not yet written.
+            handle = status._gateway_lock_handle
+            handle.seek(0)
+            handle.truncate()
+            handle.flush()
+
+            assert status.get_running_pid(pid_path) is None
+            assert lock_path.exists(), "an owned lock must survive read-side metadata failures"
+            assert status.is_gateway_runtime_lock_active(lock_path) is True
+        finally:
+            status.release_gateway_runtime_lock()
+
+
 class TestNormalizeUpdatedAt:
     """Unit tests for the updated_at RFC3339|None normalization funnel."""
 

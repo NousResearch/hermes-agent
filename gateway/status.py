@@ -864,27 +864,127 @@ def _running_pid_cache_signature(
     return tuple(parts)
 
 
-def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
-    """Delete a stale gateway PID file (and its sibling lock metadata).
+def _live_gateway_pid_from_records(
+    primary_record: Optional[dict[str, Any]],
+    fallback_record: Optional[dict[str, Any]],
+) -> Optional[int]:
+    """Return the PID both records vouch for when it names a live gateway.
 
-    Called from ``get_running_pid()`` after the runtime lock has already been
-    confirmed inactive, so the on-disk metadata is known to belong to a dead
-    process.  Unlike ``remove_pid_file()`` (which defensively refuses to delete
-    a PID file whose ``pid`` field differs from ``os.getpid()`` to protect
-    ``--replace`` handoffs), this path force-unlinks both files so the next
+    This is the single validation funnel for gateway identity records: a
+    recorded PID is only trusted when the process exists, its start_time
+    matches (when both sides know it), the record belongs to the current
+    profile, and the live process still identifies as a gateway.
+    """
+    for record in (primary_record, fallback_record):
+        pid = _pid_from_record(record)
+        if pid is None:
+            continue
+
+        if not _pid_exists(pid):
+            continue
+
+        recorded_start = record.get("start_time")
+        current_start = _get_process_start_time(pid)
+        if recorded_start is not None and current_start is not None and current_start != recorded_start:
+            continue
+
+        if not _pid_record_belongs_to_current_profile(record):
+            continue
+
+        if _record_matches_live_gateway_pid(record, pid):
+            return pid
+    return None
+
+
+def _lock_records_show_live_owner(lock_path: Path) -> bool:
+    """Return True when persisted identity records name a still-live process.
+
+    Used when the lock file itself cannot be opened (e.g. a root-owned file
+    left by a launchd Background session).  Unlinking a lock file a live
+    process holds under flock silently releases that lock on macOS, so an
+    unopenable lock must only be reaped when nothing alive claims it.  The
+    lock record is checked first, then the sibling PID record — either may
+    be readable when the other is not.  A live recorded PID is treated as
+    positive proof of ownership: conservatively preserving a stale file is
+    recoverable, while destroying a live gateway's metadata is not (#101532).
+    """
+    for record in (
+        _read_gateway_lock_record(lock_path),
+        _read_pid_record(lock_path.with_name("gateway.pid")),
+    ):
+        pid = _pid_from_record(record)
+        if pid is not None and _pid_exists(pid):
+            return True
+    return False
+
+
+def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> bool:
+    """Delete a stale gateway PID file, but only while holding the runtime lock.
+
+    A prior lock probe is not authority to unlink later: a new gateway can
+    acquire the lock and publish its PID between the probe and the cleanup,
+    and unlinking a lock file a live process holds under flock silently
+    releases that lock on macOS (#101532).  So claim the same lock inode
+    again and keep it held through PID removal — a live or concurrently
+    starting owner either wins first (and cleanup does nothing) or waits for
+    cleanup to finish.  The lock path itself is a stable rendezvous file and
+    is never removed here; the next owner overwrites its record after
+    acquiring it.
+
+    Unlike ``remove_pid_file()`` (which defensively refuses to delete a PID
+    file whose ``pid`` field differs from ``os.getpid()`` to protect
+    ``--replace`` handoffs), this path force-unlinks the PID file so the next
     startup sees a clean slate.
+
+    Returns ``True`` only when cleanup ran while holding the lock.  ``False``
+    means a live or concurrently starting gateway may own the lock, so
+    callers must not treat their earlier "inactive" observation as proof of
+    a dead runtime.
     """
     if not cleanup_stale:
-        return
-    _clear_running_pid_cache()
+        return False
+    if not pid_path.exists():
+        # Nothing to reap — do not create a lock file as a side effect of
+        # opening it (``a+`` creates), and never manufacture metadata where
+        # no gateway record exists.
+        return False
+    lock_path = _get_gateway_lock_path(pid_path)
+
+    # A pid record explicitly stamped with a FOREIGN profile's home is not
+    # "maybe ours, probe uncertain" — it is positive proof of cross-profile
+    # contamination, and the owning profile reaps it even when the foreign
+    # gateway is alive and holding the lock (#89315).  Releasing our attempt
+    # immediately after the unlink keeps the window atomic-enough: the
+    # foreign owner's next write re-creates its record, and crucially we
+    # never unlink the LOCK file itself (a stable rendezvous), so no live
+    # flock is silently released (#101532).
+    pid_record = _read_pid_record(pid_path)
+    foreign_record = pid_record is not None and not _pid_record_belongs_to_current_profile(pid_record)
+
     try:
-        pid_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+        handle = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        # The lock cannot even be opened (e.g. root-owned) — stay
+        # non-destructive rather than guessing at ownership.
+        return False
+    lock_acquired = False
     try:
-        _get_gateway_lock_path(pid_path).unlink(missing_ok=True)
-    except Exception:
-        pass
+        lock_acquired = _try_acquire_file_lock(handle)
+        if not lock_acquired and not foreign_record:
+            return False
+        _clear_running_pid_cache()
+        try:
+            pid_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+    finally:
+        if lock_acquired:
+            _release_file_lock(handle)
+        try:
+            handle.close()
+        except OSError:
+            pass
 
 
 def _write_gateway_lock_record(handle) -> None:
@@ -1059,11 +1159,16 @@ def acquire_gateway_runtime_lock() -> bool:
     try:
         handle = open(path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock file from a previous launchd Background
-        # session that ran as root (same failure mode handled in
-        # is_gateway_runtime_lock_active).  The parent directory owner can
-        # unlink files even when they don't own them, so remove the stale
-        # lock and retry once with a fresh file.
+        # Root-owned lock file from a previous launchd Background session
+        # that ran as root (same failure mode handled in
+        # is_gateway_runtime_lock_active).  Unlinking a lock file a live
+        # process holds under flock silently releases that lock on macOS,
+        # so refuse to start when a live process claims the file (#101532);
+        # only reap it when nothing alive vouches for it.
+        if _lock_records_show_live_owner(path):
+            return False
+        # The parent directory owner can unlink files even when they don't
+        # own them, so remove the stale lock and retry once with a fresh file.
         try:
             path.unlink()
         except OSError:
@@ -1123,10 +1228,16 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     try:
         handle = open(resolved_lock_path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock file from a previous launchd Background
-        # session that ran as root.  The parent directory owner can unlink
-        # files even when they don't own them, so remove the stale lock
-        # and report inactive — the new process will create a fresh one.
+        # Root-owned lock file from a previous launchd Background session
+        # that ran as root.  Unlinking a lock file a live process holds
+        # under flock silently releases that lock on macOS, so only reap
+        # the file when no live process claims it (#101532); otherwise
+        # treat the unopenable lock as owned.
+        if _lock_records_show_live_owner(resolved_lock_path):
+            return True
+        # The parent directory owner can unlink files even when they don't
+        # own them, so remove the stale lock and report inactive — the new
+        # process will create a fresh one.
         try:
             resolved_lock_path.unlink()
         except OSError:
@@ -2479,30 +2590,26 @@ def get_running_pid(
             runtime_pid = get_runtime_status_running_pid()
             if runtime_pid is not None:
                 return runtime_pid
+        # A lock-probe miss is not proof of a dead gateway: the probe can
+        # fail transiently (or falsely) while the recorded process is alive,
+        # and unlinking a live gateway's metadata is unrecoverable (#101532).
+        # Trust a fully validated live record over the probe; only reap when
+        # nothing alive vouches for the files.
+        live_pid = _live_gateway_pid_from_records(
+            _read_pid_record(resolved_pid_path),
+            _read_gateway_lock_record(resolved_lock_path),
+        )
+        if live_pid is not None:
+            return live_pid
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     primary_record = _read_pid_record(resolved_pid_path)
     fallback_record = _read_gateway_lock_record(resolved_lock_path)
 
-    for record in (primary_record, fallback_record):
-        pid = _pid_from_record(record)
-        if pid is None:
-            continue
-
-        if not _pid_exists(pid):
-            continue
-
-        recorded_start = record.get("start_time")
-        current_start = _get_process_start_time(pid)
-        if recorded_start is not None and current_start is not None and current_start != recorded_start:
-            continue
-
-        if not _pid_record_belongs_to_current_profile(record):
-            continue
-
-        if _record_matches_live_gateway_pid(record, pid):
-            return pid
+    live_pid = _live_gateway_pid_from_records(primary_record, fallback_record)
+    if live_pid is not None:
+        return live_pid
 
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     if pid_path is None:

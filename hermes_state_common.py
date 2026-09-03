@@ -7,6 +7,8 @@ hermes_state re-imports every name here for backward compatibility.
 """
 
 import contextlib
+import errno
+import json
 import logging
 import os
 import sys
@@ -352,7 +354,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 30
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -361,9 +363,31 @@ SCHEMA_VERSION = 26
 # reaches the current version when a DB is either born fresh or explicitly
 # optimized via ``hermes sessions optimize-storage``. A legacy DB sits at
 # layout 0 (marker absent) with a working inline index until the user opts in.
-#   1 = v23 external-content layout (content/tool_name/tool_calls,
-#       tool-row-excluded trigram)
-FTS_STORAGE_VERSION = 1
+#   1 = v23 external-content layout with a tool-row-excluded trigram
+#   2 = trigram also excludes structured tool_calls JSON
+FTS_STORAGE_VERSION = 2
+
+# Tool results are often multi-megabyte machine payloads. Index a useful
+# prefix for new tool rows instead of tokenizing the entire body while the
+# canonical message write holds SQLite's single writer lock. The high-water
+# marker lets upgraded databases retain the exact token stream already stored
+# for historical rows, so external-content delete/update commands stay valid
+# without an eager full-index rebuild.
+FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
+FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY = "fts_tool_full_content_high_water"
+
+
+def _fts_indexed_content_sql(alias: str) -> str:
+    return f"""CASE WHEN {alias}.role = 'tool'
+              AND {alias}.id > COALESCE((SELECT CAST(value AS INTEGER)
+                                         FROM state_meta
+                                         WHERE key = '{FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY}'), -1)
+         THEN substr(COALESCE({alias}.content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
+         ELSE {alias}.content END"""
+
+
+_FTS_NEW_INDEXED_CONTENT_SQL = _fts_indexed_content_sql("new")
+_FTS_OLD_INDEXED_CONTENT_SQL = _fts_indexed_content_sql("old")
 
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
@@ -443,12 +467,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_failure_error TEXT,
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
+    compression_recovery_deadline REAL,
     profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
+    tool_names TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
@@ -518,6 +544,35 @@ CREATE TABLE IF NOT EXISTS gateway_routing (
 CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
     session_key TEXT PRIMARY KEY,
     failure_streak INTEGER NOT NULL DEFAULT 0
+);
+
+-- Monotonic conversation generation per routing peer (#96811).
+--
+-- A host-declared conversation key (X-Hermes-Session-Key / build_session_key)
+-- is per-CHAT and outlives any single conversation on it, so the prompt-cache
+-- affinity scope derived from it must be qualified by which conversation is
+-- currently live. Deriving that from the session rows themselves
+-- (COUNT/MAX over _RESET_END_REASONS boundaries) cannot prove non-reuse:
+-- delete_session() and bulk pruning remove ended rows, so an aggregate can
+-- return a pair it already emitted and hand a new conversation a retired
+-- affinity identity.
+--
+-- This counter lives outside prunable session history and only ever
+-- increments, once per boundary actually written, so a generation can never
+-- be reused for a peer even if every session row behind it is deleted.
+--
+-- These rows are deliberately NEVER garbage-collected, including when every
+-- session row for the peer is gone. Collecting one resets that peer to "no
+-- generation", so its next boundary writes generation = 1 again and re-issues
+-- a gwk_ scope a retired conversation already used — exactly the ABA this
+-- table exists to close. Do not add it to delete_session()'s cascade or to any
+-- prune sweep. One (TEXT, TEXT, INTEGER) row per routing peer is the intended,
+-- bounded cost.
+CREATE TABLE IF NOT EXISTS conversation_generations (
+    source TEXT NOT NULL,
+    session_key TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (source, session_key)
 );
 
 -- Per-backend liveness heartbeat (#94895). Each serve / tui_gateway process
@@ -612,6 +667,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+-- Recent-session browsing must never derive recency by scanning messages.
+-- This expression is the durable, indexable approximation used to preselect
+-- a small candidate set before compression-chain and preview hydration.
+CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
+    ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
 """
 
 
@@ -634,7 +694,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
 # predicate into a tautology (id > -1 OR id <= -1), i.e. normal operation.
 # The two state_meta PK probes per write are negligible next to the FTS
 # insert itself.
-FTS_SQL = """
+FTS_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     tool_name,
@@ -650,7 +710,12 @@ WHEN (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                           WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+    VALUES (
+        new.id,
+        {_FTS_NEW_INDEXED_CONTENT_SQL},
+        new.tool_name,
+        new.tool_calls
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
@@ -660,82 +725,19 @@ WHEN (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                           WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+    VALUES (
+        'delete',
+        old.id,
+        {_FTS_OLD_INDEXED_CONTENT_SQL},
+        old.tool_name,
+        old.tool_calls
+    );
 END;
 
 -- UPDATE OF skips the trigger entirely for non-content column writes
 -- (status/compacted/observed/etc.), which is stronger than the WHEN gate
 -- alone and avoids FTS I/O saturation on large state.db (#68858 / #73639).
 CREATE TRIGGER IF NOT EXISTS messages_fts_update
-AFTER UPDATE OF content, tool_name, tool_calls ON messages
-WHEN (old.content IS NOT new.content
-    OR old.tool_name IS NOT new.tool_name
-    OR old.tool_calls IS NOT new.tool_calls)
-   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_rebuild_high_water'), -1)
-     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
-    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
-END;
-"""
-
-
-# Trigram FTS5 table for CJK substring search.  The default unicode61
-# tokenizer splits CJK characters into individual tokens, breaking phrase
-# matching.  The trigram tokenizer creates overlapping 3-byte sequences so
-# substring queries work natively for any script (CJK, Thai, etc.).
-#
-# The trigram index is the most expensive index in state.db (~2.6x the size
-# of the text it covers), and ``role='tool'`` rows are ~90% of message bytes
-# while being almost entirely machine noise (base64 payloads, file dumps,
-# delegation transcripts).  The index therefore reads through
-# ``messages_fts_trigram_src``, a view that excludes tool rows — they stay
-# fully stored in ``messages`` and fully searchable via the standard
-# ``messages_fts`` index; they just don't get trigram (CJK substring)
-# treatment.  ``search_messages`` routes CJK queries that filter on
-# ``role='tool'`` to the LIKE fallback for the same reason.
-FTS_TRIGRAM_SQL = """
-CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
-    SELECT id, role, content, tool_name, tool_calls
-    FROM messages
-    WHERE role <> 'tool';
-
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
-    content,
-    tool_name,
-    tool_calls,
-    content='messages_fts_trigram_src',
-    content_rowid='id',
-    tokenize='trigram'
-);
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
-WHEN new.role <> 'tool'
-   AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_rebuild_high_water'), -1)
-     OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
-WHEN old.role <> 'tool'
-   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_rebuild_high_water'), -1)
-     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
 AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
 WHEN (old.content IS NOT new.content
     OR old.tool_name IS NOT new.tool_name
@@ -746,12 +748,129 @@ WHEN (old.content IS NOT new.content
      OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                             WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
-    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
-    WHERE old.role <> 'tool';
-    INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
-    SELECT new.id, new.content, new.tool_name, new.tool_calls
-    WHERE new.role <> 'tool';
+    INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls)
+    VALUES (
+        'delete',
+        old.id,
+        {_FTS_OLD_INDEXED_CONTENT_SQL},
+        old.tool_name,
+        old.tool_calls
+    );
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls)
+    VALUES (
+        new.id,
+        {_FTS_NEW_INDEXED_CONTENT_SQL},
+        new.tool_name,
+        new.tool_calls
+    );
+END;
+"""
+
+
+# Trigram FTS5 table for CJK substring search.  The default unicode61
+# tokenizer splits CJK characters into individual tokens, breaking phrase
+# matching.  The trigram tokenizer creates overlapping 3-byte sequences so
+# substring queries work natively for any script (CJK, Thai, etc.).
+#
+# The trigram index is the most expensive index in state.db (~2.6x the size
+# of the text it covers). Tool output (~90% of message bytes, machine noise)
+# and cron transcripts are excluded: the index reads through
+# ``messages_fts_trigram_src``, a view that skips both classes. They stay
+# fully stored in ``messages`` and searchable via the standard
+# ``messages_fts`` index; they just don't get trigram (CJK substring)
+# treatment. ``search_messages`` routes explicit tool/cron CJK searches to
+# LIKE for the same reason. Structured ``tool_calls`` JSON likewise stays
+# searchable through ``messages_fts``; excluding it here avoids indexing
+# repetitive JSON syntax as trigrams (FTS_STORAGE_VERSION 2).
+#
+# Delegate-child (subagent) transcripts are excluded the same way (v30):
+# on a fan-out-heavy install they were ~70% of all message bytes and
+# ``session_search`` hides ``source='subagent'`` sessions anyway. A child
+# is recognised by its source OR by the ``_delegate_from`` creation marker
+# (children spawned under a gateway turn inherit the gateway's source).
+# Compression/branch continuations of interactive sessions also carry
+# ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
+FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
+
+# Predicate over a ``sessions`` row (unqualified column names) selecting
+# sessions whose rows belong in the trigram index. Shared by the view, the
+# sync triggers, and the deferred-backfill INSERT ... SELECTs so they can
+# never disagree about the index boundary.
+FTS_TRIGRAM_SESSION_SQL = (
+    "source NOT IN ("
+    + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
+    + ") AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL"
+)
+
+
+def fts_trigram_session_sql(alias: str) -> str:
+    """``FTS_TRIGRAM_SESSION_SQL`` with every column qualified by ``alias``."""
+    return FTS_TRIGRAM_SESSION_SQL.replace("source ", f"{alias}.source ").replace(
+        "COALESCE(model_config", f"COALESCE({alias}.model_config"
+    )
+
+
+FTS_TRIGRAM_SQL = f"""
+CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
+    SELECT m.id, m.role, m.content, m.tool_name
+    FROM messages AS m
+    JOIN sessions AS s ON s.id = m.session_id
+    WHERE m.role <> 'tool' AND {fts_trigram_session_sql('s')};
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
+    content,
+    tool_name,
+    content='messages_fts_trigram_src',
+    content_rowid='id',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
+WHEN new.role <> 'tool'
+   AND EXISTS (SELECT 1 FROM sessions
+               WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL})
+   AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                           WHERE key = 'fts_rebuild_high_water'), -1)
+     OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                            WHERE key = 'fts_rebuild_progress'), -1))
+BEGIN
+    INSERT INTO messages_fts_trigram(rowid, content, tool_name)
+    VALUES (new.id, new.content, new.tool_name);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
+WHEN old.role <> 'tool'
+   AND EXISTS (SELECT 1 FROM sessions
+               WHERE id = old.session_id AND {FTS_TRIGRAM_SESSION_SQL})
+   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                           WHERE key = 'fts_rebuild_high_water'), -1)
+     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                            WHERE key = 'fts_rebuild_progress'), -1))
+BEGIN
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name)
+    VALUES ('delete', old.id, old.content, old.tool_name);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
+AFTER UPDATE OF content, tool_name, role ON messages
+WHEN (old.content IS NOT new.content
+    OR old.tool_name IS NOT new.tool_name
+    OR old.role IS NOT new.role)
+   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                           WHERE key = 'fts_rebuild_high_water'), -1)
+     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                            WHERE key = 'fts_rebuild_progress'), -1))
+BEGIN
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name)
+    SELECT 'delete', old.id, old.content, old.tool_name
+    WHERE old.role <> 'tool'
+      AND EXISTS (SELECT 1 FROM sessions
+                  WHERE id = old.session_id AND {FTS_TRIGRAM_SESSION_SQL});
+    INSERT INTO messages_fts_trigram(rowid, content, tool_name)
+    SELECT new.id, new.content, new.tool_name
+    WHERE new.role <> 'tool'
+      AND EXISTS (SELECT 1 FROM sessions
+                  WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL});
 END;
 """
 
@@ -792,7 +911,7 @@ FTS_REBUILD_DEFERRAL_KEY = "fts_rebuild_deferral"
 # (which would create the external-content trigram source VIEW and leave the
 # DB in a mixed, broken state). `optimize_fts_storage()` is what migrates a
 # legacy DB to the v23 shape.
-LEGACY_FTS_SQL = """
+LEGACY_FTS_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content
 );
@@ -800,7 +919,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        COALESCE({_FTS_NEW_INDEXED_CONTENT_SQL}, '')
+        || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
     );
 END;
 
@@ -809,17 +929,18 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_update
-AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
+AFTER UPDATE OF content, tool_name, tool_calls, role ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        COALESCE({_FTS_NEW_INDEXED_CONTENT_SQL}, '')
+        || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
     );
 END;
 """
 
 
-LEGACY_FTS_TRIGRAM_SQL = """
+LEGACY_FTS_TRIGRAM_SQL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
     tokenize='trigram'
@@ -828,7 +949,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        COALESCE({_FTS_NEW_INDEXED_CONTENT_SQL}, '')
+        || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
     );
 END;
 
@@ -837,11 +959,12 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON message
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
-AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
+AFTER UPDATE OF content, tool_name, tool_calls, role ON messages BEGIN
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        COALESCE({_FTS_NEW_INDEXED_CONTENT_SQL}, '')
+        || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
     );
 END;
 """
@@ -868,9 +991,15 @@ END;
 # Semantics mirror `hermes_state._cross_process_repair_lock` (the schema-
 # surgery authority): portable (msvcrt on Windows, flock elsewhere), bounded
 # wait, and FAIL CLOSED — a caller that cannot acquire the lock must NOT
-# rebuild. The kernel drops both lock types when the holder dies, so a crashed
-# rebuilder cannot wedge future rebuilds. It lives here (not hermes_state)
-# because the search/schema mixins cannot import hermes_state (cycle).
+# rebuild. The kernel drops both lock types when the holder dies — UNLESS a
+# forked child inherited the lock fd (flock rides the open file description,
+# which fork() duplicates), in which case the orphaned descriptor holds the
+# lock forever (issue #100108). `_acquire_db_flock` therefore records the
+# holder's pid + start time under the lock and, when the recorded holder is
+# provably dead, breaks the orphaned lock by unlinking and retaking it on a
+# fresh inode; indeterminate liveness still defers. It lives here (not
+# hermes_state) because the search/schema mixins cannot import hermes_state
+# (cycle).
 #
 # The lock file is `<db>.fts_rebuild.lock`, distinct from `<db>.repair.lock`:
 # schema surgery runs on an EXCLUSIVE offline connection and can legitimately
@@ -883,64 +1012,365 @@ _FTS_REBUILD_LOCK_TIMEOUT_SECONDS = 120.0
 _FTS_REBUILD_LOCK_POLL_SECONDS = 0.1
 _IS_WINDOWS = sys.platform == "win32"
 
+# Post-break re-acquire budget: once a provably-orphaned lock has been broken
+# the fresh inode is uncontended (or contended only by live processes), so a
+# short bounded wait suffices — never re-enter the full timeout.
+_LOCK_BREAK_REACQUIRE_SECONDS = 5.0
+
+# errno set for "another process holds this advisory lock". flock() reports
+# contention as EWOULDBLOCK/EAGAIN; msvcrt.locking() as EACCES (and EDEADLK
+# when its internal retry gives up). Anything else — ESTALE on a dropped NFS
+# handle, ENOTSUP/ENOLCK on a filesystem without advisory locks, EIO — is a
+# persistent environment failure that no amount of polling turns into an
+# acquire. Treating every OSError as contention made such a failure look
+# like a live holder and burned the full 120s admission timeout on every
+# attempt (#100108, PR #100130).
+_LOCK_CONTENTION_ERRNOS = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK}
+if hasattr(errno, "EDEADLK"):
+    _LOCK_CONTENTION_ERRNOS.add(errno.EDEADLK)
+
+
+def is_advisory_lock_contention(exc: BaseException) -> bool:
+    """True when *exc* means another process holds the advisory lock.
+
+    False for every other ``OSError`` (ESTALE, ENOTSUP, ENOLCK, EIO, ...):
+    callers must fail closed IMMEDIATELY rather than poll to the deadline,
+    because retrying cannot succeed and the wait only stalls the caller.
+    """
+    if isinstance(exc, BlockingIOError):
+        return True
+    if not isinstance(exc, OSError):
+        return False
+    return exc.errno in _LOCK_CONTENTION_ERRNOS
+
+
+def _proc_start_ticks(pid: int):
+    """Kernel start time of *pid* in clock ticks, or None when unknowable.
+
+    Field 22 of ``/proc/<pid>/stat`` (``starttime``) uniquely identifies a
+    process together with its PID: a recycled PID gets a different start
+    time. Returns None off Linux or on any read/parse failure — callers must
+    treat None as "unknowable" and FAIL CLOSED.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            stat = fh.read()
+        # comm (field 2) may contain spaces/parens; split after the LAST ')'.
+        return int(stat.rsplit(b")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _read_lock_holder_record(handle):
+    """Best-effort parse of the holder metadata JSON in a lock file."""
+    try:
+        handle.seek(0)
+        raw = handle.read(4096)
+    except (OSError, ValueError):
+        return None
+    if not raw:
+        return None
+    try:
+        record = json.loads(raw.decode("utf-8", "replace"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _write_lock_holder_record(handle) -> None:
+    """Record this process as the lock holder (advisory, best effort).
+
+    Written under the flock so contenders that time out can tell an
+    orphaned-fd holder (recorded process dead, flock inherited by a forked
+    child — issue #100108) from a live wedged holder.
+    """
+    try:
+        record = {
+            "pid": os.getpid(),
+            "start_ticks": _proc_start_ticks(os.getpid()),
+            "acquired_at": time.time(),
+        }
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps(record, sort_keys=True).encode("utf-8"))
+        handle.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _clear_lock_holder_record(handle) -> None:
+    """Erase holder metadata before a normal release.
+
+    Guarantees that a surviving record always describes an ABNORMAL exit
+    (holder died without releasing), which is the only condition under which
+    a contender may break the lock.
+    """
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _lock_holder_provably_dead(record) -> bool:
+    """True ONLY when the recorded holder is provably dead or PID-recycled.
+
+    Any indeterminate state (no record, malformed record, PID owned by
+    another user, /proc unavailable, start-time unknowable) returns False —
+    the caller must FAIL CLOSED and defer, never break a possibly-live
+    holder's lock.
+    """
+    if not isinstance(record, dict):
+        return False
+    try:
+        pid = int(record["pid"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        # PermissionError et al.: the PID exists (or is unknowable) — closed.
+        return False
+    recorded_ticks = record.get("start_ticks")
+    if recorded_ticks is None:
+        return False
+    current_ticks = _proc_start_ticks(pid)
+    if current_ticks is None:
+        return False
+    # Same PID, different kernel start time: the recorded holder is dead and
+    # its PID was recycled by an unrelated process.
+    return current_ticks != recorded_ticks
+
+
+def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, description):
+    """Bounded POSIX flock acquire with orphaned-holder staleness break.
+
+    Returns ``(acquired, handle)``; *handle* may have been re-opened (the
+    caller owns closing whichever handle comes back). *acquired* is True on
+    success, False when a holder kept the lock past the deadline, and None
+    when a non-contention ``OSError`` (ESTALE/ENOTSUP/EIO) made acquisition
+    impossible — already logged here; callers treat None as "not acquired"
+    without emitting the held-by-another-process warning.
+
+    Why breaking exists at all (issue #100108): ``flock`` belongs to the open
+    file DESCRIPTION, which ``fork()`` duplicates into every child. A holder
+    that forks (multiprocessing worker, daemonized helper) and then dies
+    leaves the flock held by a child that will never release it — the
+    kernel's holder-death release never triggers, and every contender defers
+    forever. The recorded-holder liveness check distinguishes exactly that
+    case: the process that ACQUIRED is provably dead (so its critical section
+    died with it), yet the flock is still held. Only then is the lock file
+    unlinked and retaken on a fresh inode; the orphan's flock stays on the
+    old unlinked inode where it blocks nobody. Every successful acquire
+    verifies its inode still names *lock_path*, so a racer that locked a dead
+    inode retries instead of running concurrently with the breaker.
+    Indeterminate liveness always defers (fail closed).
+    """
+    import fcntl
+
+    deadline = time.monotonic() + timeout_seconds
+    broke_lock = False
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            if not is_advisory_lock_contention(exc):
+                # ESTALE / ENOTSUP / EIO: not a holder, and polling cannot
+                # fix it. Defer NOW instead of pretending a live process
+                # held the lock for the whole timeout (#100108).
+                logger.warning(
+                    "Could not acquire %s %s (%s) — deferring rather than "
+                    "waiting out the %.0fs holder timeout on a "
+                    "non-contention error.",
+                    description,
+                    lock_path,
+                    exc,
+                    timeout_seconds,
+                )
+                return None, handle
+            if time.monotonic() < deadline:
+                time.sleep(poll_seconds)
+                continue
+            if broke_lock:
+                return False, handle
+            record = _read_lock_holder_record(handle)
+            if not _lock_holder_provably_dead(record):
+                return False, handle
+            logger.warning(
+                "%s %s is held by an orphaned file descriptor (recorded "
+                "holder pid %s is dead — a forked child inherited the lock "
+                "fd); breaking the stale lock and retaking it on a fresh "
+                "file.",
+                description,
+                lock_path,
+                (record or {}).get("pid"),
+            )
+            try:
+                os.unlink(lock_path)
+                handle.close()
+                handle = open(lock_path, "a+b")
+            except OSError as exc:
+                logger.warning(
+                    "Could not break stale %s %s (%s) — deferring.",
+                    description,
+                    lock_path,
+                    exc,
+                )
+                return False, handle
+            broke_lock = True
+            deadline = time.monotonic() + _LOCK_BREAK_REACQUIRE_SECONDS
+            continue
+        # flock acquired — verify the path still names our inode: a breaker
+        # may have unlinked/replaced the file while we waited, and a lock on
+        # a dead inode excludes nobody.
+        try:
+            fd_stat = os.fstat(handle.fileno())
+            path_stat = os.stat(lock_path)
+            same_file = (
+                fd_stat.st_dev == path_stat.st_dev
+                and fd_stat.st_ino == path_stat.st_ino
+            )
+        except OSError:
+            same_file = False
+        if same_file:
+            _write_lock_holder_record(handle)
+            return True, handle
+        try:
+            handle.close()
+            handle = open(lock_path, "a+b")
+        except OSError:
+            return False, handle
+        if time.monotonic() >= deadline:
+            return False, handle
+
+
+def _describe_lock_holder(record) -> str:
+    """Human-readable holder identity for deferral warnings."""
+    if not isinstance(record, dict) or "pid" not in record:
+        return "unknown (no holder record; pre-fix writer or non-Hermes)"
+    pid = record.get("pid")
+    acquired_at = record.get("acquired_at")
+    age = ""
+    try:
+        if acquired_at is not None:
+            age = f", acquired {time.time() - float(acquired_at):.0f}s ago"
+    except (TypeError, ValueError):
+        pass
+    return f"pid {pid}{age}"
+
 
 @contextlib.contextmanager
-def fts_rebuild_admission(db_path):
+def fts_rebuild_admission(db_path, *, timeout_seconds=None):
     """Serialize full structural FTS rebuilds on *db_path* across processes.
 
     Yields True when this process holds the rebuild authority, False when the
-    bounded acquire timed out. A caller that gets False must NOT perform a
-    full rebuild — proceeding is exactly the concurrent-rebuild interleaving
-    this lock exists to prevent (fail closed). The deferred/stale breadcrumb
-    machinery already guarantees a skipped rebuild is retried later.
+    bounded acquire timed out or the lock file could not be opened at all. A
+    caller that gets False must NOT perform a full rebuild — proceeding is
+    exactly the concurrent-rebuild interleaving this lock exists to prevent
+    (fail closed). The deferred/stale breadcrumb machinery already guarantees
+    a skipped rebuild is retried later.
 
     ``db_path`` may be a str or Path; None (in-memory DB / tests without a
     file path) yields True — a private in-memory DB has no cross-process
     surface.
+
+    *timeout_seconds* defaults to ``_FTS_REBUILD_LOCK_TIMEOUT_SECONDS``.
+    Opportunistic in-process retries (``retry_deferred_fts_recovery``) pass
+    ``0`` so a live holder never stalls a long-lived writer for two minutes;
+    the orphaned-holder break still applies on the single attempt.
     """
     if db_path is None:
         yield True
         return
+    timeout = (
+        _FTS_REBUILD_LOCK_TIMEOUT_SECONDS
+        if timeout_seconds is None
+        else max(float(timeout_seconds), 0.0)
+    )
     lock_path = f"{db_path}.fts_rebuild.lock"
     try:
         handle = open(lock_path, "a+b")
     except OSError as exc:
-        # Read-only dir, exhausted fds, exotic filesystem: fall back to the
-        # pre-lock behaviour rather than refusing a rebuild we could run.
+        # Fail closed, exactly as a timed-out acquire does. A lock file we
+        # cannot even open means the filesystem is out of space, inodes or
+        # descriptors — and a sibling process that opened ITS handle before
+        # the disk filled is still holding the authority and rebuilding.
+        # Yielding True here handed every process on a full disk a concurrent
+        # structural rebuild of the same live state.db with no cross-process
+        # authority at all: the disk-full trigger and the re-corruption on
+        # every multi-writer boot in #100368. Deferring costs nothing that
+        # was reachable anyway — the breadcrumb retries, and on a read-only
+        # directory the rebuild's own writes could not have committed either.
         logger.warning(
-            "Could not open FTS rebuild lock %s (%s) — proceeding with "
-            "in-process serialisation only.", lock_path, exc,
+            "Could not open FTS rebuild lock %s (%s) — deferring this rebuild "
+            "rather than running it without cross-process authority.",
+            lock_path, exc,
         )
-        yield True
+        yield False
         return
 
     acquired = False
     try:
-        deadline = time.monotonic() + _FTS_REBUILD_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                if _IS_WINDOWS:
+        if _IS_WINDOWS:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
                     import msvcrt
 
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
-            except (BlockingIOError, OSError):
-                if time.monotonic() >= deadline:
+                    acquired = True
                     break
-                time.sleep(_FTS_REBUILD_LOCK_POLL_SECONDS)
-        if not acquired:
-            logger.warning(
-                "FTS rebuild lock %s held by another process for more than "
-                "%.0fs — deferring this rebuild to avoid racing the holder "
-                "(the stale-FTS breadcrumb keeps it retryable).",
-                lock_path, _FTS_REBUILD_LOCK_TIMEOUT_SECONDS,
+                except (BlockingIOError, OSError) as exc:
+                    if not is_advisory_lock_contention(exc):
+                        logger.warning(
+                            "Could not acquire FTS rebuild lock %s (%s) — "
+                            "deferring on a non-contention error.",
+                            lock_path, exc,
+                        )
+                        acquired = None
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_FTS_REBUILD_LOCK_POLL_SECONDS)
+        else:
+            acquired, handle = _acquire_db_flock(
+                lock_path,
+                handle,
+                timeout,
+                _FTS_REBUILD_LOCK_POLL_SECONDS,
+                "FTS rebuild lock",
             )
+        if acquired is None:
+            # Non-contention failure: already logged with the real errno;
+            # a "held by another process" line here would be a lie.
+            acquired = False
+        elif not acquired:
+            record = None if _IS_WINDOWS else _read_lock_holder_record(handle)
+            if timeout <= 0:
+                # Non-blocking probe from an in-process retry: a busy lock
+                # is expected and will be tried again, so keep it quiet.
+                logger.info(
+                    "FTS rebuild lock %s is busy — deferring this retry "
+                    "(the stale-FTS breadcrumb keeps it retryable). "
+                    "Recorded holder: %s.",
+                    lock_path,
+                    _describe_lock_holder(record),
+                )
+            else:
+                logger.warning(
+                    "FTS rebuild lock %s held by another process for more than "
+                    "%.0fs — deferring this rebuild to avoid racing the holder "
+                    "(the stale-FTS breadcrumb keeps it retryable). "
+                    "Recorded holder: %s.",
+                    lock_path, timeout,
+                    _describe_lock_holder(record),
+                )
         yield acquired
     finally:
         try:
@@ -953,6 +1383,7 @@ def fts_rebuild_admission(db_path):
                 else:
                     import fcntl
 
+                    _clear_lock_holder_record(handle)
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:  # pragma: no cover - best effort release
             pass

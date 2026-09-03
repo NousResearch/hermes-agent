@@ -28,9 +28,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_image_from_bytes,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
 )
 from .media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
@@ -848,7 +848,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     use_mimetypes=False,
                     fallback=".jpg",
                 ) or ".jpg"
-                return cache_image_from_bytes(data, ext)
+                return await cache_image_from_bytes_async(data, ext)
 
             if mime.startswith("audio/"):
                 ext = ext_for_mime(
@@ -860,11 +860,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     use_mimetypes=False,
                     fallback=".mp3",
                 ) or ".mp3"
-                return cache_audio_from_bytes(data, ext)
+                return await cache_audio_from_bytes_async(data, ext)
 
             # Videos, documents, and everything else
             filename = transfer_name or f"file_{uuid.uuid4().hex[:8]}"
-            return cache_document_from_bytes(data, filename)
+            return await cache_document_from_bytes_async(data, filename)
 
         except Exception as exc:
             logger.warning(

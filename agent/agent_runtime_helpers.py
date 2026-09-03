@@ -100,6 +100,17 @@ _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# A tool-call opener with no closer, or GLM-style argument markup
+# (<arg_key>/<arg_value>) outside any closed block, means the stream was
+# cut mid-serialization of a text-channel tool call (#101899). The call
+# can't be recovered; strip from the block-boundary opener (or the line
+# holding the first stray argument tag) to the end of the text.
+_UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
+    r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
@@ -108,7 +119,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "tour", "delegate_task"}
+    {"todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "gui_tour", "delegate_task"}
 )
 
 
@@ -1065,6 +1076,9 @@ def strip_think_blocks(agent, content: str) -> str:
     #     during streaming may still be valuable to the user; matches
     #     OpenClaw's intentional asymmetry.)
     content = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', content)
+    # 3c. Tool-call openers or argument markup surviving 1b belong to a
+    #     block that never closed — a mid-serialization stream cut (#101899).
+    content = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', content)
     return content
 
 
@@ -2709,6 +2723,71 @@ def anthropic_prompt_cache_policy(
 
 
 
+def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
+    """Ask the registered ProviderProfile for a custom client, if any.
+
+    Resolves by provider name first, then by the ``base_url`` scheme prefix so a
+    runtime configured only by URL (``acp://…``) still reaches its profile.
+    A profile that raises is logged and skipped: a third-party plugin must not
+    be able to take the turn down, it can only fail to provide a client.
+    """
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+
+    profile = None
+    provider_name = (getattr(agent, "provider", "") or "").strip()
+    if provider_name:
+        try:
+            profile = get_provider_profile(provider_name)
+        except Exception:
+            profile = None
+    if profile is None:
+        base_url = str(client_kwargs.get("base_url", "") or "").strip()
+        if base_url:
+            profile = _profile_for_base_url(base_url)
+    if profile is None:
+        return None
+
+    try:
+        return profile.create_client(**client_kwargs)
+    except Exception:
+        _ra().logger.warning(
+            "Provider profile %r failed to create a client; falling back to the "
+            "standard client path",
+            getattr(profile, "name", provider_name) or "?",
+            exc_info=True,
+        )
+        return None
+
+
+def _profile_for_base_url(base_url: str) -> Any | None:
+    """Find a registered profile whose own base_url matches ``base_url``.
+
+    Only used when the provider name did not resolve. Matches on exact base_url
+    so a non-HTTP scheme (``acp://copilot``) routes to its profile even when the
+    caller passed no provider name.
+    """
+    try:
+        from providers import list_providers
+    except Exception:
+        return None
+    target = base_url.rstrip("/").lower()
+    try:
+        candidates = list_providers()
+    except Exception:
+        return None
+    for candidate in candidates or []:
+        own = str(getattr(candidate, "base_url", "") or "").rstrip("/").lower()
+        # Prefix match, not equality: the replaced copilot-acp branch keyed on
+        # ``startswith("acp://copilot")``, so a base_url carrying a path or a
+        # user override under the same root must still resolve.
+        if own and (target == own or target.startswith(own + "/")):
+            return candidate
+    return None
+
+
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     from agent.ssl_verify import resolve_httpx_verify
@@ -2737,17 +2816,24 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
-    if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
-        from agent.copilot_acp_client import CopilotACPClient
-
-        client = CopilotACPClient(**client_kwargs)
+    # ── Provider-supplied client (registration seam) ──────────────────────
+    # A provider whose wire protocol is not OpenAI-over-HTTP supplies its own
+    # client from its ProviderProfile.create_client(). Consulted before the
+    # built-in ladder so a profile registered from ~/.hermes/plugins/ or a pip
+    # entry point can ship a transport without editing this function — that is
+    # what makes an out-of-tree ACP provider possible at all. Returning None
+    # (the default) falls through to the paths below, so every existing
+    # provider is unaffected.
+    provider_client = _provider_supplied_client(agent, client_kwargs)
+    if provider_client is not None:
         _ra().logger.info(
-            "Copilot ACP client created (%s, shared=%s) %s",
+            "%s client created from provider profile (%s, shared=%s) %s",
+            agent.provider,
             reason,
             shared,
             agent._client_log_context(),
         )
-        return client
+        return provider_client
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
@@ -2788,6 +2874,12 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # constructs a fresh one — no stale closed transport can be reused.
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
+    # What IS shared across those per-client wrappers is the underlying
+    # connection pool: ``build_keepalive_http_client`` mounts a
+    # process-shared ``HTTPTransport`` behind a per-client view whose
+    # ``close()`` is a no-op for the pool, so a closed wrapper never takes
+    # a sibling's (or the successor's) connections with it
+    # (tests/agent/test_shared_http_transport.py).
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(
             client_kwargs.get("base_url", ""), verify=httpx_verify,
@@ -3529,7 +3621,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
-    if function_name == "todo":
+    if function_name == "todo_list":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
             return _finish_agent_tool(
@@ -3671,7 +3763,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
-    elif function_name == "tour":
+    elif function_name == "gui_tour":
         def _execute(next_args: dict) -> Any:
             from tools.tour_tool import tour_tool as _tour_tool
             return _finish_agent_tool(
@@ -4546,6 +4638,67 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # 4. Align each tool result's wire-visible ``name`` with the function name
+    # of the call it answers. Google matches functionResponse.name against
+    # functionCall.name and rejects a mismatch with HTTP 400 "Request contains
+    # an invalid argument" (INVALID_ARGUMENT); behind an OpenAI-compatible
+    # gateway that surfaces only as a generic "Provider returned error".
+    #
+    # The mismatch is routine, not corruption. When tool_search defers
+    # MCP/plugin tools the model calls the bridge tool ``tool_call``, while
+    # ``make_tool_result_message()`` labels the result with the unwrapped
+    # internal tool name (``mcp__github__create_issue``) that dispatch, hooks,
+    # logging, and guardrails need. #72089 fixed exactly this for the native
+    # Gemini adapter, which now prefers ``tool_name_by_call_id`` over the
+    # result name; requests that reach Gemini through the OpenAI-compatible
+    # path (OpenRouter, Vertex/LiteLLM proxies, any OpenAI-shaped gateway) skip
+    # that translation entirely and still send the internal name on the wire.
+    #
+    # Normalizing here rather than in the OpenAI-compat serializer keeps it
+    # provider-agnostic: Gemini reaches Hermes under many model strings and
+    # base URLs, so sniffing for "is this really Google?" is unreliable, and
+    # every other provider either ignores the field or agrees with the call
+    # name. Runs on the per-call copy, so the stored trajectory keeps the real
+    # tool name for the session DB and the UI — only the wire payload changes.
+    # A no-op for the native Gemini path, which already resolves the same name.
+    # A result whose assistant call frame is missing entirely never reaches
+    # here — pass 1 above drops it as an orphan — so the only results this pass
+    # sees are ones whose call name is knowable.
+    call_names: Dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                # Strip on insert to match the lookup below (and pass 1's
+                # ``result_call_ids``), so an id that arrives padded still
+                # pairs instead of silently skipping realignment.
+                cid = (_ra().AIAgent._get_tool_call_id_static(tc) or "").strip()
+                nm = _ra().AIAgent._get_tool_call_name_static(tc)
+                if cid and nm:
+                    call_names[cid] = nm
+    realigned: List[Tuple[str, str]] = []
+    aligned: List[Dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            expected = call_names.get(cid)
+            current = msg.get("name")
+            # Only rewrite a name that is present and disagrees. A result with
+            # no ``name`` is already valid for Gemini (the id pairs it), so
+            # leave it absent rather than inventing a field: clean transcripts
+            # must still pass through byte-identical for prompt caching.
+            if expected and current and current != expected:
+                msg = {**msg, "name": expected}
+                realigned.append((current, expected))
+        aligned.append(msg)
+    if realigned:
+        messages = aligned
+        _ra().logger.debug(
+            "Pre-call sanitizer: realigned %d tool result name(s) with their "
+            "tool_call function name (%s)",
+            len(realigned),
+            ", ".join(f"{was} -> {now}" for was, now in realigned),
+        )
     return messages
 
 
@@ -4775,8 +4928,8 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     )
 
 
-def _iter_httpx_pool_objects(http_client: Any):
-    """Yield httpcore pool objects reachable from an httpx client.
+def _iter_httpx_pools_with_owner(http_client: Any):
+    """Yield ``(pool, owner)`` pairs reachable from an httpx client.
 
     Hermes' keepalive client (#10324 / ``_build_keepalive_http_client``) and
     any ``HTTP(S)_PROXY`` configuration put live connections on *mounted*
@@ -4785,31 +4938,37 @@ def _iter_httpx_pool_objects(http_client: Any):
     ``force_close_tcp_sockets`` return 0 while a stream is still mid-recv —
     the interrupt logs success and the provider keeps burning the slot
     (#72975).
+
+    ``owner`` is ``None`` for a pool this client owns outright, or the
+    ``_SharedTransport`` view id when the pool is process-shared with other
+    clients (``process_bootstrap.build_keepalive_http_client``). Callers must
+    then touch only the in-flight requests stamped with that owner.
     """
     seen_pools: set[int] = set()
 
-    def _emit(pool: Any):
+    def _emit(pool: Any, owner: Any):
         if pool is None:
             return
         marker = id(pool)
         if marker in seen_pools:
             return
         seen_pools.add(marker)
-        yield pool
+        yield pool, owner
 
     def _pools_for_transport(transport: Any):
         if transport is None:
             return
+        owner = id(transport) if type(transport).__name__ == "_SharedTransport" else None
         # Normal httpx.HTTPTransport / HTTPProxy-as-transport: connections
         # live under ``_pool``. HTTPProxy itself *is* a ConnectionPool and
         # may be mounted directly — then ``_connections`` is on the
         # transport.
         pool = getattr(transport, "_pool", None)
         if pool is not None:
-            yield from _emit(pool)
+            yield from _emit(pool, owner)
             return
         if getattr(transport, "_connections", None) is not None:
-            yield from _emit(transport)
+            yield from _emit(transport, owner)
 
     try:
         yield from _pools_for_transport(getattr(http_client, "_transport", None))
@@ -4818,6 +4977,12 @@ def _iter_httpx_pool_objects(http_client: Any):
             yield from _pools_for_transport(mounted)
     except Exception:
         return
+
+
+def _iter_httpx_pool_objects(http_client: Any):
+    """Yield httpcore pool objects reachable from an httpx client."""
+    for pool, _owner in _iter_httpx_pools_with_owner(http_client):
+        yield pool
 
 
 def _connection_candidates(conn: Any):
@@ -4858,23 +5023,32 @@ def _iter_pool_sockets(client: Any):
             # Some SDK wrappers *are* the httpx client (or expose the pool
             # directly). Fall through so mount-aware discovery still runs.
             http_client = client
-        pools = list(_iter_httpx_pool_objects(http_client))
+        pools = list(_iter_httpx_pools_with_owner(http_client))
     except Exception:
         return
 
     if not pools:
         return
 
+    from agent.process_bootstrap import HERMES_TRANSPORT_OWNER_EXT
+
     seen: set[int] = set()
-    for pool in pools:
+    for pool, owner in pools:
         # Empty-list is falsy: use ``is None`` so an empty ``_connections``
         # still lets us walk in-flight ``_requests`` rather than skipping
         # the pool entirely.
         raw_conns = getattr(pool, "_connections", None)
         if raw_conns is None:
             raw_conns = getattr(pool, "_pool", None)
-        connections = list(raw_conns or [])
+        # A process-shared pool carries other clients' idle + in-flight
+        # connections: only this client's own in-flight requests (stamped by
+        # ``_SharedTransport.handle_request``) may be shut down.
+        connections = [] if owner is not None else list(raw_conns or [])
         for pool_req in list(getattr(pool, "_requests", None) or []):
+            if owner is not None:
+                exts = getattr(getattr(pool_req, "request", None), "extensions", None) or {}
+                if exts.get(HERMES_TRANSPORT_OWNER_EXT) != owner:
+                    continue
             conn = getattr(pool_req, "connection", None)
             if conn is not None:
                 connections.append(conn)

@@ -22,9 +22,14 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from hermes_constants import (
+    _get_platform_default_hermes_home,
+    get_default_hermes_root,
+    get_hermes_home,
+    display_hermes_home,
+)
 from utils import (
     _preserve_file_mode,
     _preserve_file_owner,
@@ -102,7 +107,37 @@ _EXCLUDED_DIRS = {
     ".ruff_cache",
 }
 
+# Hermes-managed runtime downloads that only exist at the top of a profile
+# home: local GGUF models, llama.cpp runtime binaries, and the managed Node
+# installation. All of them are re-downloaded on demand (model catalog,
+# runtime bootstrap, node installer) and routinely reach tens to hundreds of
+# GB, so zipping them turns a backup into an hours-long compress of
+# incompressible weights (the "backup stuck at N files" symptom). Matched
+# ONLY at the root of HERMES_HOME and at ``profiles/<name>/`` — a deeper
+# directory that happens to share one of these names (a skill's ``models/``,
+# a user checkout) is user data and stays in the backup.
+_EXCLUDED_ROOT_DIRS = {
+    "models",
+    "runtimes",
+    "node",
+}
+
+
+def _in_excluded_root_dir(rel_path: Path) -> bool:
+    """True when *rel_path* (relative to HERMES_HOME) is, or sits inside, a
+    Hermes-managed runtime tree at the top of a profile home."""
+    parts = rel_path.parts
+    if not parts:
+        return False
+    if parts[0] in _EXCLUDED_ROOT_DIRS:
+        return True
+    # Named profiles are profile homes too: profiles/<name>/models etc.
+    return len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS
+
+
 # File-name suffixes to skip
+_SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
+
 _EXCLUDED_SUFFIXES = (
     ".pyc",
     ".pyo",
@@ -111,9 +146,7 @@ _EXCLUDED_SUFFIXES = (
     # rollback-journal alongside would pair a fresh snapshot with stale sidecar
     # state and produce a torn restore on the next open. They're transient and
     # regenerated on first connection anyway.
-    ".db-wal",
-    ".db-shm",
-    ".db-journal",
+    *_SQLITE_SIDECAR_SUFFIXES,
 )
 
 # File names to skip (runtime state that's meaningless on another machine)
@@ -122,6 +155,16 @@ _EXCLUDED_NAMES = {
     "gateway.pid",
     "cron.pid",
 }
+
+# File-name prefixes to skip. The desktop updater's pre-flight drops
+# ``state.db.pre-update-emergency-<timestamp>.bak`` at the HERMES_HOME root
+# (apps/desktop/electron/main.ts preflightStateDb) — a backup artifact in
+# the same class as ``backups/`` and ``state-snapshots/``, so a full backup
+# must not re-ship it. Matched by prefix because the name carries a
+# timestamp; a plain ``.bak`` suffix rule would drop user files.
+_EXCLUDED_PREFIXES = (
+    "state.db.pre-update-emergency-",
+)
 
 # File names that ``hermes import`` must never overwrite, matched by basename so
 # they're caught for the root profile (``gateway_state.json``) and for named
@@ -330,6 +373,9 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
+    if _in_excluded_root_dir(rel_path):
+        return True
+
     for part in parts:
         if part not in _EXCLUDED_DIRS:
             continue
@@ -343,6 +389,9 @@ def _should_exclude(rel_path: Path) -> bool:
     name = rel_path.name
 
     if name in _EXCLUDED_NAMES:
+        return True
+
+    if name.startswith(_EXCLUDED_PREFIXES):
         return True
 
     if name.endswith(_EXCLUDED_SUFFIXES):
@@ -365,6 +414,48 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return abs_path.resolve() == out_path.resolve()
     except (OSError, ValueError):
         return False
+
+
+def _iter_backup_files(
+    hermes_root: Path,
+    out_path: Path,
+    skipped_dirs: Optional[set] = None,
+):
+    """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
+
+    The one owner of the backup walk policy: directory pruning (so os.walk
+    never descends a multi-GB excluded tree), the root-only ``hermes-agent``
+    carve-out, profile-home-root runtime trees, and the per-file exclusion
+    rules — shared by the manual ``hermes backup`` path and the automatic
+    pre-update/pre-migration path so the two can never drift.
+
+    ``skipped_dirs``, when given, collects pruned directories (root-relative,
+    as strings) for the end-of-run summary.
+    """
+    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+        rel_dir = Path(dirpath).relative_to(hermes_root)
+
+        # ``hermes-agent`` is only pruned at the root level; nested dirs
+        # with the same name (e.g. in skills/) must be preserved. Managed
+        # runtime trees (models/, runtimes/, node/) are pruned only at a
+        # profile-home root — see _EXCLUDED_ROOT_DIRS.
+        is_root = rel_dir == Path(".")
+        orig_dirnames = dirnames[:]
+        dirnames[:] = [
+            d for d in dirnames
+            if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
+            and not _in_excluded_root_dir(rel_dir / d)
+        ]
+        if skipped_dirs is not None:
+            for removed in set(orig_dirnames) - set(dirnames):
+                skipped_dirs.add(str(rel_dir / removed))
+
+        for fname in filenames:
+            rel = rel_dir / fname
+            fpath = hermes_root / rel
+            if _should_skip_backup_file(fpath, rel, out_path):
+                continue
+            yield fpath, rel
 
 
 # ---------------------------------------------------------------------------
@@ -721,8 +812,10 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     the WAL journal is updated correctly, and all connections (old and
     new) converge on the restored data.
 
-    Falls back to the unlink+move approach on failure so restore never
-    blocks on a transient error.
+    Falls back to the unlink+move approach on failure ONLY when no other
+    process or in-process connection holds the file: replacing the inode
+    under a live holder is the #90950 split-brain, so that branch fails
+    closed (returns ``False``) and the caller reports the file as skipped.
     """
     try:
         dst_conn = sqlite3.connect(str(dst))
@@ -749,6 +842,11 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
+        from hermes_cli.sqlite_safe_read import (
+            LiveConnectionError,
+            offline_file_access,
+        )
+
         try:
             holders = _foreign_db_holder_pids(dst)
             if holders:
@@ -764,23 +862,43 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                     dst, holders,
                 )
                 return False
-            tmp = dst.parent / f".{dst.name}.snap_restore"
-            shutil.copy2(src, tmp)
-            dst.unlink(missing_ok=True)
-            # Drop the destination's sidecars before installing the
-            # snapshot. The snapshot is a checkpointed ``sqlite3.backup()``
-            # image (see ``_safe_copy_db``) that owns no WAL, so any
-            # ``-wal``/``-shm`` still sitting here describes the database we
-            # just unlinked — an ungracefully killed gateway leaves them
-            # behind, which is exactly when a restore gets run. SQLite
-            # replays that foreign WAL over the restored file on the next
-            # open and the database comes up "malformed" (or silently
-            # resurrects post-snapshot rows). Same reasoning as
-            # ``_EXCLUDED_SUFFIXES``, applied to the restore destination.
-            for _sidecar_suffix in ("-wal", "-shm", "-journal"):
-                dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
-            shutil.move(str(tmp), str(dst))
+            # The foreign-pid scan above deliberately excludes THIS process,
+            # but an in-process SessionDB (the agent's own handle during
+            # /snapshot restore, a second SessionDB instance, a read pool)
+            # is exactly as much of a live holder: unlinking the DB and its
+            # sidecars under it leaves this process on deleted-inode fds —
+            # the same #90950 split brain, produced first-party (proven live
+            # on main: `/proc/self/fd` shows `state.db-wal (deleted)` right
+            # after this fallback ran under a tracked connection).
+            # ``offline_file_access`` fails CLOSED when any tracked
+            # connection to *dst* is live and holds the connection-lifecycle
+            # lock across the whole swap so no new connection can appear
+            # mid-replace.
+            with offline_file_access(dst, what="unlink+move restore of"):
+                tmp = dst.parent / f".{dst.name}.snap_restore"
+                shutil.copy2(src, tmp)
+                dst.unlink(missing_ok=True)
+                # Drop the destination's sidecars before installing the
+                # snapshot. The snapshot is a checkpointed ``sqlite3.backup()``
+                # image (see ``_safe_copy_db``) that owns no WAL, so any
+                # ``-wal``/``-shm`` still sitting here describes the database we
+                # just unlinked — an ungracefully killed gateway leaves them
+                # behind, which is exactly when a restore gets run. SQLite
+                # replays that foreign WAL over the restored file on the next
+                # open and the database comes up "malformed" (or silently
+                # resurrects post-snapshot rows). Same reasoning as
+                # ``_EXCLUDED_SUFFIXES``, applied to the restore destination.
+                for _sidecar_suffix in ("-wal", "-shm", "-journal"):
+                    dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
+                shutil.move(str(tmp), str(dst))
             return True
+        except LiveConnectionError as exc2:
+            logger.error(
+                "Refusing unlink+move restore of %s: %s Close the in-process "
+                "database handles (or restart Hermes) and retry.",
+                dst, exc2,
+            )
+            return False
         except Exception as exc2:
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False
@@ -839,33 +957,10 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     scan_started = time.monotonic()
     logger.info("backup phase=scan status=started")
     print(f"Scanning {display_hermes_home()} ...")
-    files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
-    skipped_dirs = set()
-
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-        dp = Path(dirpath)
-        rel_dir = dp.relative_to(hermes_root)
-
-        # Prune excluded directories in-place so os.walk doesn't descend
-        # ``hermes-agent`` is only pruned at the root level; nested dirs
-        # with the same name (e.g. in skills/) must be preserved.
-        is_root = rel_dir == Path(".")
-        orig_dirnames = dirnames[:]
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
-        ]
-        for removed in set(orig_dirnames) - set(dirnames):
-            skipped_dirs.add(str(rel_dir / removed))
-
-        for fname in filenames:
-            fpath = dp / fname
-            rel = fpath.relative_to(hermes_root)
-
-            if _should_skip_backup_file(fpath, rel, out_path):
-                continue
-
-            files_to_add.append((fpath, rel))
+    skipped_dirs: set = set()
+    files_to_add: list[tuple[Path, Path]] = list(
+        _iter_backup_files(hermes_root, out_path, skipped_dirs)
+    )
 
     # External memory-provider state (e.g. ~/.honcho, ~/.hindsight) lives
     # outside HERMES_HOME, so the walk above never sees it. Ask the active
@@ -1193,6 +1288,94 @@ def _extract_member_atomically(
         raise
 
 
+def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
+    """Return ``(sessions, messages)`` stored in the session database *path*.
+
+    Read-only and best effort.  ``None`` means "unknown" — a missing file, a
+    database that is not a Hermes session store, or one that cannot be read.
+    Callers must never read ``None`` as "zero rows": acting on an unreadable
+    database would mask the very loss this count exists to surface.  Same
+    contract as :func:`_count_cron_jobs`.
+    """
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        return int(sessions), int(messages)
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+    finally:
+        conn.close()
+
+
+def _import_db_member(
+    zf: zipfile.ZipFile,
+    member: str,
+    target: Path,
+    new_file_mode: Optional[int] = None,
+) -> None:
+    """Publish a SQLite ``.db`` member onto *target* without replacing its inode.
+
+    ``_extract_member_atomically`` publishes with a rename.  For an ordinary
+    file that is the safest write available; for a live SQLite database it is
+    the #65942 / #90950 corruption class.  A gateway, dashboard, or WebUI
+    process holding the database open keeps its descriptor on the now-unlinked
+    inode: it goes on serving pre-import pages and writing sessions that no
+    other process will ever see, and any sidecar WAL left beside the new file
+    describes the database that was just unlinked.  Nothing fails, so nothing
+    is reported — the sessions simply are not there afterwards (issue #100960).
+
+    ``hermes import`` is the disaster-recovery path, so that failure mode lands
+    on users who have already lost something once.  Route the member through
+    the same ``_safe_restore_db`` page copy that ``/snapshot restore`` has used
+    since #65942: the live inode is preserved, every open connection converges
+    on the imported data, and the sidecars are handled there.  A target that
+    does not exist yet has no holders and no inode worth preserving, so it
+    takes the ordinary atomic publish.
+
+    Raises ``OSError`` when the database could not be replaced safely, so the
+    caller reports a skipped file instead of counting a silent success.
+    """
+    if not target.exists():
+        _extract_member_atomically(zf, member, target, new_file_mode)
+        return
+
+    # The database keeps its own mode/ownership: the bytes come from the
+    # archive but the file does not, so the archive has no say in either.
+    mode = _preserve_file_mode(target)
+    owner = _preserve_file_owner(target)
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".dbimport"
+    )
+    try:
+        with os.fdopen(fd, "wb") as dst:
+            # Stream: a multi-gigabyte state.db member must not be held in
+            # memory in one piece.
+            with zf.open(member) as src:
+                shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())
+        if not _safe_restore_db(Path(tmp_name), target):
+            raise OSError(
+                "live-safe restore refused or failed; the existing database was "
+                "left untouched. Stop the gateway/dashboard processes holding it "
+                "open and re-run the import."
+            )
+        _restore_file_owner(target, owner)
+        _restore_file_mode(target, mode)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+
+
 def run_import(args) -> None:
     """Restore a Hermes backup from a zip file."""
     zip_path = Path(args.zipfile).expanduser().resolve()
@@ -1205,7 +1388,12 @@ def run_import(args) -> None:
         print(f"Error: Not a valid zip file: {zip_path}")
         sys.exit(1)
 
-    hermes_root = get_default_hermes_root()
+    # The restore target must be the home the command operates under — the
+    # same path printed as "Target:" via display_hermes_home(). Resolving
+    # through get_default_hermes_root() instead maps a profile home
+    # (<root>/profiles/<name>) back to <root>, silently retargeting the
+    # restore at the live root while the profile directory stays empty.
+    hermes_root = get_hermes_home()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Validate
@@ -1250,6 +1438,10 @@ def run_import(args) -> None:
         restored = 0
         restored_external = 0
         skipped_runtime: list[str] = []
+        # (rel, live_counts, imported_counts) for every session database the
+        # import replaced with one holding fewer rows. A restore is allowed to
+        # do that — it just must not do it silently (issue #100960).
+        db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
         home_dir = Path.home().resolve()
         # Resolved once: every member is published via a temp file, and mkstemp
         # would otherwise create newly restored files as 0600.
@@ -1307,6 +1499,16 @@ def run_import(args) -> None:
                 skipped_runtime.append(rel)
                 continue
 
+            # A ``.db`` member is page-restored into the live file below; a
+            # WAL/SHM/journal member from the archive describes a different
+            # database image, and installing it beside the restored file (over
+            # a live sidecar, via os.replace) would replay a foreign WAL on
+            # the next open. Current backups never ship these
+            # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
+            if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
+                skipped_runtime.append(rel)
+                continue
+
             target = hermes_root / rel
 
             # Security: reject absolute paths and traversals
@@ -1318,7 +1520,16 @@ def run_import(args) -> None:
 
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                _extract_member_atomically(zf, member, target, new_file_mode)
+                if target.suffix == ".db":
+                    # Count before the write: afterwards the rows this import
+                    # drops are gone and there is nothing left to compare.
+                    before = _count_session_rows(target)
+                    _import_db_member(zf, member, target, new_file_mode)
+                    after = _count_session_rows(target)
+                    if before and after and after[1] < before[1]:
+                        db_shrunk.append((rel, before, after))
+                else:
+                    _extract_member_atomically(zf, member, target, new_file_mode)
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1
@@ -1347,6 +1558,21 @@ def run_import(args) -> None:
                 print(e)
             if len(errors) > 10:
                 print(f"  ... and {len(errors) - 10} more")
+
+        if db_shrunk:
+            # The backup predates work that is now overwritten. Say so: the
+            # reported incident was twelve sessions disappearing with nothing
+            # logged anywhere (issue #100960).
+            print("\n  ⚠ Session data replaced by older backup contents:")
+            for rel, before, after in db_shrunk:
+                print(
+                    f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
+                    f" -> {after[0]} / {after[1]}"
+                )
+            print(
+                "    Anything recorded after the backup was taken is not in it. "
+                "Recover from a newer backup or snapshot: hermes snapshot list"
+            )
 
         if skipped_runtime:
             print(
@@ -1417,15 +1643,33 @@ def run_import(args) -> None:
         # platform-less gateway is a supported mode, so this is safe even
         # for backups with no messaging config). Best-effort and prompt-free;
         # failures print a manual fallback and never fail the import.
-        try:
-            from hermes_cli.gateway import ensure_gateway_service, _is_service_running
+        native_default = _get_platform_default_hermes_home()
+        default_has_install = any(
+            (native_default / marker).exists()
+            for marker in ("config.yaml", ".env", "state.db")
+        )
+        # A restore into a sandbox or profile home must not silently install
+        # a second gateway pointed at it — on the default service name that
+        # would shadow or hijack the machine's primary install. Only revive
+        # the service automatically when the restore landed in the default
+        # home, or when no other install exists on this machine.
+        if hermes_root != native_default and default_has_install:
+            print(
+                "\nRestored into a non-default home; leaving the gateway service "
+                "alone to avoid clashing with the install at "
+                f"{native_default}."
+            )
+            print("To start a gateway for this home, run:  hermes gateway install")
+        else:
+            try:
+                from hermes_cli.gateway import ensure_gateway_service, _is_service_running
 
-            if not _is_service_running():
-                print()
-                ensure_gateway_service(context="import")
-        except Exception:
-            print("\nStart the gateway to activate cron jobs and messaging:")
-            print("  hermes gateway install")
+                if not _is_service_running():
+                    print()
+                    ensure_gateway_service(context="import")
+            except Exception:
+                print("\nStart the gateway to activate cron jobs and messaging:")
+                print("  hermes gateway install")
 
         print("Done. Your Hermes configuration has been restored.")
 
@@ -1818,7 +2062,11 @@ def restore_quick_snapshot(
                 # (gateway, dashboard, another CLI session) see the
                 # restored data instead of continuing to serve stale
                 # cached pages from a replaced inode (issue #65942).
-                _safe_restore_db(src, dst)
+                if not _safe_restore_db(src, dst):
+                    # Refused (live holder) or failed: the destination was
+                    # left as it was. Count it as a failure, not a restore.
+                    logger.error("Failed to restore %s: live-safe restore refused", rel)
+                    continue
             else:
                 shutil.copy2(src, dst)
             restored += 1
@@ -2006,6 +2254,172 @@ def create_pre_update_snapshots_all_profiles(
     return results
 
 
+# Config paths that the update flow must never change (#64160): the model
+# routing keys and the Mixture-of-Agents section are consumed machine-wide
+# (gateway, cron, desktop), so an update/repair cycle that rewrites them
+# silently redirects paid inference. Each entry is a dotted path into the raw
+# config.yaml document; a single-element tuple protects the whole section.
+_PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
+    ("model", "provider"),
+    ("model", "default"),
+    ("model", "base_url"),
+    ("model", "api_key"),
+    ("moa",),
+)
+
+
+def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
+    """Parse ``path`` as a YAML mapping. ``None`` = missing/unreadable/non-dict."""
+    if not path.is_file():
+        return None
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any:
+    node: Any = data
+    for key in dotted:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value: Any) -> None:
+    node = data
+    for key in dotted[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[dotted[-1]] = value
+
+
+def restore_config_model_settings_if_rewritten(
+    snapshot_id: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Safety net for silent config.yaml model/MoA loss across ``hermes update``.
+
+    Desktop update/repair cycles have been observed to rewrite user-set
+    ``model.provider``/``model.default`` and drop the ``moa:`` section
+    entirely (issue #64160; the macOS repair/relaunch variant rewrote a
+    pinned ``model.default`` to a transient composer pick). These keys are
+    consumed by the gateway and unattended cron jobs too, so a rewrite
+    silently changes paid inference behavior machine-wide.
+
+    Mirrors :func:`restore_cron_jobs_if_emptied`: compare the *current*
+    config against the pre-update snapshot taken minutes earlier by this
+    same update run, and restore only the protected keys — never the whole
+    file — when a value the user had set was changed or dropped. Everything
+    the update legitimately wrote (version stamps, new sections) is left in
+    place.
+
+    Args:
+        snapshot_id: The pre-update quick-snapshot id (from
+            :func:`create_quick_snapshot`).
+        hermes_home: Override for the Hermes home directory (tests/siblings).
+
+    Returns:
+        ``None`` when no action was taken (the common, healthy path). On a
+        successful restore, ``{"restored": True, "keys": [...],
+        "snapshot_id": ...}`` so the caller can warn the user.
+    """
+    if not snapshot_id:
+        return None
+
+    home = hermes_home or get_hermes_home()
+    live_path = home / "config.yaml"
+    snap_path = _quick_snapshot_root(home) / snapshot_id / "config.yaml"
+
+    snap = _read_raw_yaml_dict(snap_path)
+    if not snap:
+        return None  # no snapshot copy — nothing to compare against
+    live = _read_raw_yaml_dict(live_path)
+    if live is None:
+        # Missing or unparseable live config is a different failure mode the
+        # user should see rather than have papered over (matches the cron net).
+        return None
+
+    restored_keys: list[str] = []
+    for dotted in _PROTECTED_CONFIG_PATHS:
+        snap_val = _get_config_path_value(snap, dotted)
+        if snap_val in (None, "", {}, []):
+            continue  # user never set it — nothing to protect
+        live_val = _get_config_path_value(live, dotted)
+        if live_val == snap_val:
+            continue
+        _set_config_path_value(live, dotted, snap_val)
+        restored_keys.append(".".join(dotted))
+
+    if not restored_keys:
+        return None
+
+    try:
+        from utils import atomic_yaml_write
+
+        atomic_yaml_write(live_path, live)
+    except (OSError, PermissionError) as exc:
+        logger.error(
+            "config.yaml model settings were rewritten during update but "
+            "auto-restore failed: %s",
+            exc,
+        )
+        return None
+
+    logger.warning(
+        "Restored user config value(s) %s from pre-update snapshot %s — "
+        "the update flow rewrote them (#64160)",
+        ", ".join(restored_keys),
+        snapshot_id,
+    )
+    return {"restored": True, "keys": restored_keys, "snapshot_id": snapshot_id}
+
+
+def restore_config_model_settings_all_profiles(
+    profile_snapshots: Dict[str, str],
+    invoking_home: Optional[Path] = None,
+) -> list[Dict[str, Any]]:
+    """Run the config model-settings safety net for every sibling profile.
+
+    Same contract as :func:`restore_cron_jobs_all_profiles`: each profile's
+    live ``config.yaml`` is compared against ITS OWN same-generation
+    pre-update snapshot. Returns one result dict per restored profile, each
+    with a ``profile`` key added. Never raises.
+    """
+    restored: list[Dict[str, Any]] = []
+    if not profile_snapshots:
+        return restored
+    home = invoking_home or get_hermes_home()
+    by_name = dict(_sibling_profile_homes(home))
+    for name, snap_id in profile_snapshots.items():
+        profile_home = by_name.get(name)
+        if profile_home is None:
+            continue
+        try:
+            result = restore_config_model_settings_if_rewritten(
+                snap_id, hermes_home=profile_home
+            )
+        except Exception as exc:
+            logger.debug(
+                "Config model-settings restore check for profile %s failed: %s",
+                name,
+                exc,
+            )
+            continue
+        if result:
+            result["profile"] = name
+            restored.append(result)
+    return restored
+
+
 def restore_cron_jobs_all_profiles(
     profile_snapshots: Dict[str, str],
     invoking_home: Optional[Path] = None,
@@ -2109,24 +2523,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     """
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
-    files_to_add: list[tuple[Path, Path]] = []
     try:
-        for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-            dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
-
-            for fname in filenames:
-                fpath = dp / fname
-                try:
-                    rel = fpath.relative_to(hermes_root)
-                except ValueError:
-                    continue
-
-                if _should_skip_backup_file(fpath, rel, out_path):
-                    continue
-
-                files_to_add.append((fpath, rel))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None

@@ -486,6 +486,82 @@ class TestInstallSpecs:
 
 
 # ---------------------------------------------------------------------------
+# numpy range specs for wake/STT features (#102304)
+# ---------------------------------------------------------------------------
+
+
+class TestNumpyRangeSpecs:
+    """Every numpy spec must be a floor+ceiling range, not an exact pin.
+
+    The Docker image's sealed venv ships its own locked numpy (2.5.x), and
+    the durable lazy target is append-only — it can never win a version
+    conflict against the venv. An exact ``numpy==X.Y.Z`` pin is therefore
+    permanently unsatisfiable in-container: ``_is_satisfied`` keeps reporting
+    it missing while every reinstall attempt resolves against the read-only
+    venv and fails. The range keeps the ABI floor fail-closed without
+    fighting the venv.
+    """
+
+    @pytest.fixture
+    def numpy_specs(self):
+        specs = {
+            spec
+            for feature_specs in ld.LAZY_DEPS.values()
+            for spec in feature_specs
+            if ld._pkg_name_from_spec(spec).lower() == "numpy"
+        }
+        assert specs, "wake/STT features are expected to carry numpy specs"
+        return specs
+
+    def _fake_version(self, monkeypatch, installed_versions: dict):
+        from importlib.metadata import PackageNotFoundError
+
+        def _version(pkg):
+            if pkg in installed_versions:
+                return installed_versions[pkg]
+            raise PackageNotFoundError(pkg)
+
+        import importlib.metadata as _md
+        monkeypatch.setattr(_md, "version", _version)
+
+    def test_sealed_venv_numpy_satisfies_every_numpy_spec(
+        self, numpy_specs, monkeypatch
+    ):
+        # 2.5.2 is what the published image's uv.lock actually resolves for
+        # the sealed venv — every numpy spec must accept it so ensure() is a
+        # no-op instead of an unsatisfiable resolve loop.
+        self._fake_version(monkeypatch, {"numpy": "2.5.2"})
+        for spec in numpy_specs:
+            assert ld._is_satisfied(spec) is True, spec
+
+    def test_wake_sherpa_is_installable_against_the_sealed_venv(self, monkeypatch):
+        # The full feature gate: every non-numpy spec at its pinned version
+        # plus the venv's newer numpy → feature_missing() must be empty.
+        self._fake_version(monkeypatch, {
+            "numpy": "2.5.2",
+            "sherpa-onnx": "1.13.4",
+            "sentencepiece": "0.2.2",
+            "sounddevice": "0.5.5",
+        })
+        assert ld.feature_missing("wake.sherpa") == ()
+
+    def test_floor_still_fails_closed_on_old_numpy(self, numpy_specs, monkeypatch):
+        # The >=2.4.3 floor is load-bearing: a venv stuck on an older numpy
+        # must keep reporting the spec as missing so ensure() upgrades it
+        # instead of running engines against a pre-2.4 numpy.
+        self._fake_version(monkeypatch, {"numpy": "2.3.1"})
+        for spec in numpy_specs:
+            assert ld._is_satisfied(spec) is False, spec
+
+    def test_ceiling_blocks_numpy_3(self, numpy_specs, monkeypatch):
+        # <3 is also load-bearing: numpy 3.x is an unvetted ABI jump, the
+        # same supply-chain/version-drift risk the exact-pin policy guards.
+        self._fake_version(monkeypatch, {"numpy": "3.0.0"})
+        for spec in numpy_specs:
+            assert ld._is_satisfied(spec) is False, spec
+
+
+# ---------------------------------------------------------------------------
 # Post-install bytecode warm (#100461)
 # ---------------------------------------------------------------------------
 

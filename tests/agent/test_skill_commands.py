@@ -58,6 +58,33 @@ class TestScanSkillCommands:
 
 
 
+    def test_scan_uses_live_profile_skills_dir_after_module_import(self, tmp_path):
+        """A profile switch must not leave slash-command discovery on the old root."""
+        import agent.skill_commands as sc_mod
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile = tmp_path / "profile"
+        profile_skills = profile / "skills"
+        profile.mkdir()
+        _make_skill(profile_skills, "profile-only")
+
+        with (
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(skills_tool_module, "_get_disabled_skill_names", return_value=set()),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("agent.skill_utils.get_project_skills_dirs", return_value=[]),
+        ):
+            token = set_hermes_home_override(profile)
+            try:
+                commands = scan_skill_commands()
+            finally:
+                reset_hermes_home_override(token)
+
+        assert "/profile-only" in commands
+
+
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""
         external_root = tmp_path / "external"

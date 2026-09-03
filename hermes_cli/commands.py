@@ -1088,10 +1088,11 @@ def _collect_gateway_skill_entries(
     skill_entries: list[tuple[str, str, str, str]] = []
     try:
         from agent.skill_commands import get_skill_commands
-        from tools.skills_tool import SKILLS_DIR
+        from tools import skills_tool
         from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-        _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        _active_skills_dir = skills_tool.get_active_skills_dir()
+        _skills_dir = str(_active_skills_dir.resolve())
+        _hub_dir = str((_active_skills_dir / ".hub").resolve()).rstrip("/") + "/"
         # Build set of allowed directory prefixes: local skills dir + any
         # user-configured ``skills.external_dirs`` + trusted project dirs.
         # Ensure each prefix ends
@@ -1291,10 +1292,11 @@ def discord_skill_commands_by_category(
     try:
         from agent.skill_commands import get_skill_commands
         from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-        from tools.skills_tool import SKILLS_DIR
+        from tools import skills_tool
 
-        _skills_dir = SKILLS_DIR.resolve()
-        _hub_dir = (SKILLS_DIR / ".hub").resolve()
+        _active_skills_dir = skills_tool.get_active_skills_dir()
+        _skills_dir = _active_skills_dir.resolve()
+        _hub_dir = (_active_skills_dir / ".hub").resolve()
         # Build list of (resolved_root, is_local) tuples. Each external dir
         # becomes its own scan root for category derivation — a skill at
         # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".

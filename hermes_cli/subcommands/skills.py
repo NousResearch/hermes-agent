@@ -20,7 +20,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
 
     skills_trust = skills_subparsers.add_parser(
         "trust",
-        help="Trust a project so its repo-local skills (./.hermes/skills, ./.agents/skills) load",
+        help="Trust a project so its repo-local skills (./.hermes/skills, ./.agents/skills, ./.codex/skills, ./.claude/skills) load",
     )
     skills_trust.add_argument(
         "path",

@@ -236,13 +236,13 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         return None
 
     try:
-        from tools.skills_tool import _skills_dir, skill_view
+        from tools import skills_tool
         from agent.skill_utils import normalize_skill_lookup_name
 
         normalized = normalize_skill_lookup_name(raw_identifier)
 
         loaded_skill = json.loads(
-            skill_view(normalized, task_id=task_id, preprocess=False)
+            skills_tool.skill_view(normalized, task_id=task_id, preprocess=False)
         )
     except Exception:
         return None
@@ -262,7 +262,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         skill_dir = Path(abs_skill_dir)
     elif skill_path:
         try:
-            skill_dir = _skills_dir() / Path(skill_path).parent
+            skill_dir = skills_tool.get_active_skills_dir() / Path(skill_path).parent
         except Exception:
             skill_dir = None
 
@@ -317,7 +317,8 @@ def _build_skill_message(
     session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import _skills_dir
+    from tools import skills_tool
+    active_skills_dir = skills_tool.get_active_skills_dir()
 
     content = str(loaded_skill.get("content") or "")
 
@@ -386,7 +387,7 @@ def _build_skill_message(
 
     if supporting and skill_dir:
         try:
-            skill_view_target = str(skill_dir.relative_to(_skills_dir()))
+            skill_view_target = str(skill_dir.relative_to(active_skills_dir))
         except ValueError:
             # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
@@ -441,7 +442,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # each naming the same skill as its own incumbent (#74574).
     commands: Dict[str, Dict[str, Any]] = {}
     try:
-        from tools.skills_tool import _skills_dir, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
+        from tools import skills_tool
+        from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import (
             get_external_skills_dirs,
             get_project_skills_dirs,
@@ -456,12 +458,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         # Project dirs iterate through the quarantine chokepoint.
         project_dirs = list(get_project_skills_dirs())
         dirs_to_scan = list(project_dirs)
-        # Resolve at call time: the import-time SKILLS_DIR is frozen to the
-        # launch home, so a multiplexed profile scope (set_hermes_home_override)
-        # would still scan the default profile's skills (#67277).
-        skills_dir = _skills_dir()
-        if skills_dir.exists():
-            dirs_to_scan.append(skills_dir)
+        active_skills_dir = skills_tool.get_active_skills_dir()
+        if active_skills_dir.exists():
+            dirs_to_scan.append(active_skills_dir)
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:

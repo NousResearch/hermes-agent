@@ -26,9 +26,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import (
     _get_platform_default_hermes_home,
+    display_hermes_home,
     get_default_hermes_root,
     get_hermes_home,
-    display_hermes_home,
 )
 from utils import (
     _preserve_file_mode,
@@ -1394,6 +1394,10 @@ def run_import(args) -> None:
     # (<root>/profiles/<name>) back to <root>, silently retargeting the
     # restore at the live root while the profile directory stays empty.
     hermes_root = get_hermes_home()
+    active_home_is_native = (
+        hermes_root.expanduser().resolve(strict=False)
+        == _get_platform_default_hermes_home().expanduser().resolve(strict=False)
+    )
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Validate
@@ -1644,16 +1648,12 @@ def run_import(args) -> None:
         # for backups with no messaging config). Best-effort and prompt-free;
         # failures print a manual fallback and never fail the import.
         native_default = _get_platform_default_hermes_home()
-        default_has_install = any(
-            (native_default / marker).exists()
-            for marker in ("config.yaml", ".env", "state.db")
-        )
         # A restore into a sandbox or profile home must not silently install
         # a second gateway pointed at it — on the default service name that
         # would shadow or hijack the machine's primary install. Only revive
         # the service automatically when the restore landed in the default
         # home, or when no other install exists on this machine.
-        if hermes_root != native_default and default_has_install:
+        if not active_home_is_native:
             print(
                 "\nRestored into a non-default home; leaving the gateway service "
                 "alone to avoid clashing with the install at "

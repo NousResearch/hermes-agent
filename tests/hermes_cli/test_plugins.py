@@ -300,6 +300,94 @@ class TestPluginDiscovery:
         ]
         assert empty.author == ""
 
+    def test_flat_plugin_key_is_directory_derived_not_name_derived(
+        self, tmp_path, monkeypatch
+    ):
+        """Two unrelated top-level directories that declare the same
+        ``name:`` must not collapse onto the same manifest key.
+
+        ``PluginManifest.key``'s own docstring says the key for a flat
+        plugin at ``plugins/disk-cleanup/`` is ``disk-cleanup`` (path
+        derived) — but the parser fell back to the freeform, attacker-
+        controlled ``name:`` field instead of the directory name. Two
+        directories sharing a declared name silently collapsed onto one
+        key in the discovery dedup (`winners[key] = manifest`, last one
+        wins), so a second, unrelated plugin directory could displace an
+        already-installed one and inherit its persisted config/state
+        namespace (both are keyed by ``manifest.key``).
+        """
+        home = tmp_path / "home"
+        first = home / "plugins" / "trusted-plugin"
+        second = home / "plugins" / "totally-different-dir"
+        for plugin_dir in (first, second):
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.safe_dump({"name": "shared-name", "version": "1.0.0"})
+            )
+            (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n")
+        empty_bundled = tmp_path / "bundled"
+        empty_bundled.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(empty_bundled))
+
+        manager = PluginManager()
+        manifests = {
+            m.path: m
+            for m in manager._collect_directory_manifests()
+            if m.name == "shared-name"
+        }
+
+        assert len(manifests) == 2, "both directories must be discovered"
+        keys = {m.key for m in manifests.values()}
+        assert keys == {"trusted-plugin", "totally-different-dir"}, (
+            "manifest.key must be derived from the directory name, not the "
+            f"freeform declared name — got {keys!r}"
+        )
+
+    def test_colliding_declared_names_do_not_hijack_each_others_identity(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end: both plugins load as distinct entries and each gets
+        its own config/state namespace, even though they declare the same
+        ``name:``. Before the fix, the second-scanned directory silently
+        replaced the first in ``self._plugins`` and inherited its
+        ``plugin_id`` — so the first plugin's persisted config/state (keyed
+        by ``plugin_id``) became reachable from the second plugin's code.
+        """
+        home = tmp_path / "home"
+        first = home / "plugins" / "trusted-plugin"
+        second = home / "plugins" / "totally-different-dir"
+        for plugin_dir in (first, second):
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.safe_dump({"name": "shared-name", "version": "1.0.0"})
+            )
+            (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n")
+        empty_bundled = tmp_path / "bundled"
+        empty_bundled.mkdir()
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["shared-name"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(empty_bundled))
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        loaded = {
+            key: plugin
+            for key, plugin in manager._plugins.items()
+            if plugin.manifest.name == "shared-name"
+        }
+        assert set(loaded) == {"trusted-plugin", "totally-different-dir"}, (
+            "both directories must load as independently addressable "
+            f"plugins — got {set(loaded)!r}"
+        )
+        for key, plugin in loaded.items():
+            assert plugin.enabled is True
+            assert plugin.module is not None
+            assert plugin.manifest.key == key
 
     def test_plugin_can_register_and_invoke_middleware(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"

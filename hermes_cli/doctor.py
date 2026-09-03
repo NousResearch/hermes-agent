@@ -308,8 +308,10 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
     try:
         from agent.web_search_registry import (
+            _read_config_key,
             get_active_extract_provider,
             get_active_search_provider,
+            get_provider,
         )
         from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
 
@@ -321,10 +323,26 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     except Exception:
         return rows
 
-    for capability, getter in (
-        ("web search", get_active_search_provider),
-        ("web extract", get_active_extract_provider),
+    for capability, getter, config_keys in (
+        ("web search", get_active_search_provider, ("search_backend", "backend")),
+        ("web extract", get_active_extract_provider, ("extract_backend", "backend")),
     ):
+        configured = None
+        for key in config_keys:
+            configured = _read_config_key("web", key)
+            if configured:
+                break
+        if configured and get_provider(configured) is None:
+            # Explicit pick whose plugin is not in this tree (e.g. tavily
+            # dropped from a stable tag while config still names it, #101865).
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    f"({configured} selected; provider not in this install)",
+                )
+            )
+            continue
         try:
             provider = getter()
         except Exception:

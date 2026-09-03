@@ -88,6 +88,10 @@ class TestDoctorToolAvailabilitySummary:
 
         unavailable = _Unavailable()
         monkeypatch.setattr(
+            "agent.web_search_registry._read_config_key",
+            lambda *_path: None,
+        )
+        monkeypatch.setattr(
             "agent.web_search_registry.get_active_search_provider",
             lambda: unavailable,
         )
@@ -101,6 +105,30 @@ class TestDoctorToolAvailabilitySummary:
         assert all(status == "warn" for status, _, _ in rows)
         assert any("firecrawl selected; provider not configured" in detail for _, _, detail in rows)
 
+    def test_web_capability_rows_warn_when_configured_provider_missing_from_install(
+        self, monkeypatch
+    ):
+        """#101865: web.search_backend names a plugin this tree does not ship."""
+        monkeypatch.setattr(
+            "agent.web_search_registry._read_config_key",
+            lambda *path: "tavily" if path[-1] in ("search_backend", "extract_backend", "backend") else None,
+        )
+        monkeypatch.setattr("agent.web_search_registry.get_provider", lambda _name, **_kw: None)
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: None,
+        )
+
+        rows = doctor._doctor_web_capability_rows()
+
+        assert rows
+        assert all(status == "warn" for status, _, _ in rows)
+        assert any("tavily selected; provider not in this install" in detail for _, _, detail in rows)
+
     def test_web_capability_rows_ok_when_provider_ready(self, monkeypatch):
         class _Ready:
             name = "ddgs"
@@ -109,6 +137,10 @@ class TestDoctorToolAvailabilitySummary:
                 return True
 
         ready = _Ready()
+        monkeypatch.setattr(
+            "agent.web_search_registry._read_config_key",
+            lambda *_path: None,
+        )
         monkeypatch.setattr(
             "agent.web_search_registry.get_active_search_provider",
             lambda: ready,

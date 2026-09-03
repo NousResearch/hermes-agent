@@ -248,7 +248,10 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
     if not api_url:
         return None
     url = api_url.rstrip("/") + "/version"
-    req = urllib.request.Request(url)
+    # Some WAF/CDN frontends reject urllib's default ``Python-urllib`` UA.
+    # A rejected probe silently looks like a legacy Hindsight API and disables
+    # session-scoped append/deduplication, so send the project's explicit UA.
+    req = urllib.request.Request(url, headers={"User-Agent": "HermesAgent/1.0"})
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
     try:

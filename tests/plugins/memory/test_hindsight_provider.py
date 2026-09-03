@@ -29,6 +29,7 @@ from plugins.memory.hindsight import (
     _load_config,
     _load_simple_env,
     _build_embedded_profile_env,
+    _fetch_hindsight_api_version,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -1237,6 +1238,38 @@ class TestUpdateModeAppendCapability:
         from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
         with _append_capability_lock:
             _append_capability_cache.clear()
+
+    def test_version_probe_sends_explicit_user_agent(self, monkeypatch):
+        """WAF-fronted APIs must not see urllib's commonly blocked default UA."""
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"api_version":"0.9.2"}'
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return Response()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+        version = _fetch_hindsight_api_version(
+            "https://memory.example.com/", api_key="test-key", timeout=3.0
+        )
+
+        request = captured["request"]
+        assert version == "0.9.2"
+        assert request.full_url == "https://memory.example.com/version"
+        assert request.get_header("User-agent") == "HermesAgent/1.0"
+        assert request.get_header("Authorization") == "Bearer test-key"
+        assert captured["timeout"] == 3.0
 
     def test_legacy_api_falls_back_to_per_process_doc_id(self, provider, monkeypatch):
         """API returns no /version (or pre-0.5.0) — sync_turn must use the

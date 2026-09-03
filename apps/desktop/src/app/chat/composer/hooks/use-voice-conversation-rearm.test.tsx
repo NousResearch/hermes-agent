@@ -203,9 +203,10 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.continueStreamStart()
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    // The reply is silenced, but the conversation stays live and re-listens.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.stopVoicePlayback).toHaveBeenCalledTimes(2)
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.status).toBe('listening')
   })
 
   it('does not start fallback playback after Stop during stream discovery', async () => {
@@ -221,24 +222,28 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.continueStreamStart()
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    // No fallback playback, but the loop re-arms the mic instead of wedging.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.playSpeechText).not.toHaveBeenCalled()
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.status).toBe('listening')
   })
 
-  it('does not re-arm after an external Stop during streaming playback', async () => {
+  it('re-arms the microphone after an external Stop during streaming playback', async () => {
     const hook = renderRearmConversation('reply-stopped', 'Playing now')
 
     await beginReply(hook)
     await waitFor(() => expect(mocks.startSpeechStream).toHaveBeenCalled())
 
+    // Regression: stopping the reply (playback Stop button) used to wedge the
+    // conversation into idle with the mic never reopening — the user could no
+    // longer speak. An active conversation must keep listening after a stop.
     mocks.stopVoicePlayback()
     await act(async () => {
       mocks.finishSpeech('done')
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
+    expect(hook.result.current.status).toBe('listening')
   })
 
   it('re-arms the microphone after normal fallback playback completes', async () => {

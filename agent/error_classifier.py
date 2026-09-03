@@ -419,6 +419,12 @@ _MODEL_NOT_FOUND_PATTERNS = [
     # and the error surfaces as a confusing "model not found" message
     # instead of automatically failing over.  See PR #58446.
     "no endpoints found that support tool use",
+    # OpenRouter generic "no endpoints found" — returned for unknown model
+    # names (e.g. a typo'd or deleted model slug).  Not retryable; the
+    # model does not exist on any provider.  Without this entry the error
+    # falls through to ``retryable=True`` and burns 3 retry attempts on
+    # a fatal "this model does not exist" response (#97311).
+    "no endpoints found for provider",
 ]
 
 

@@ -519,6 +519,17 @@ class TestSchemaValidation:
         assert saved["desktop"]["macos_signing_identity"] == "Hermes Local Signing"
         assert "not a recognized config key" not in capsys.readouterr().out
 
+    def test_platform_hint_override_is_accepted(self, _isolated_hermes_home, capsys):
+        """Documented per-platform overrides must not emit a false warning."""
+        value = "Use short paragraphs."
+        set_config_value("platform_hints.plugin_platform.append", value)
+
+        import yaml
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["platform_hints"]["plugin_platform"]["append"] == value
+        assert "not a recognized config key" not in capsys.readouterr().out
+
 
 
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
@@ -547,6 +558,10 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "platform_hints",
+        "platform_hints.plugin_platform",
+        "platform_hints.plugin_platform.append",
+        "platform_hints.plugin_platform.replace",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
@@ -557,6 +572,8 @@ class TestValidateConfigKey:
         ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        ("platform_hints.telegram.append.extra", None),
+        ("platform_hints..append", None),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key
@@ -565,6 +582,14 @@ class TestValidateConfigKey:
         if expected_in_suggestion is not None:
             assert suggestion is not None and expected_in_suggestion in suggestion, \
                 f"Expected suggestion to contain {expected_in_suggestion!r}, got {suggestion!r}"
+
+    def test_platform_hint_typo_suggests_fully_qualified_key(self):
+        from hermes_cli.config import _validate_config_key
+
+        assert _validate_config_key("platform_hints.telegram.apend") == (
+            False,
+            "platform_hints.telegram.append",
+        )
 
 
     def test_underscore_only_first_segment_escapes(self):

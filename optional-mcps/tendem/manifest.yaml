@@ -1,0 +1,54 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: tendem
+description: Delegate tasks to vetted human experts - research, writing, analysis, and data work.
+source: https://github.com/Toloka/tendem-mcp
+
+# Tendem ships a hosted remote MCP server with native MCP OAuth 2.0 over
+# Streamable HTTP. Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh - nothing to clone, install, or run
+# locally, so this entry needs no `install:` block.
+transport:
+  type: http
+  url: https://mcp.tendem.ai/mcp?utm_hash=736745e8ff
+
+auth:
+  # No `provider:` - this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect.
+  #
+  # Headless / CI users who would rather not do a browser flow can instead
+  # configure the server by hand with an `Authorization: ApiKey <token>`
+  # header, using a token from https://agent.tendem.ai/tokens.
+  type: oauth
+
+# Tool selection at install time:
+# The server exposes 11 tools covering one task lifecycle - create, scope by
+# chat, read the contract, approve, poll, fetch the result. Spend only ever
+# happens through `approve_task`, and only against a price the caller has
+# already read from `get_contract`, so the mutating tools are not pruned
+# here: pruning them would leave a task stuck mid-lifecycle. `default_enabled`
+# is left unset so the install-time checklist starts with everything
+# pre-checked and users prune what they don't want.
+
+post_install: |
+  On first connection, Hermes will open a browser to sign in to Tendem.
+  After auth, restart your Hermes session so the Tendem tools are loaded.
+
+  How the lifecycle works: `create_task` submits the request in plain
+  language, Tendem's orchestrator scopes it over `read_chat`/`send_message`,
+  and `get_contract` returns the agreed scope plus a price. Nothing is
+  charged until `approve_task` - surface the scope and the price to your
+  user and get an explicit go-ahead first. Poll with
+  `get_task(task_id, wait_for_change_seconds=30)` rather than busy-looping,
+  then collect markdown + files with `get_task_result`.
+
+  Good for work that wants a human in the loop: research and competitive
+  analysis, fact-checking, copywriting and editing, design review,
+  presentation polish, data cleaning and list building. Data scraping is
+  declined by policy.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure tendem

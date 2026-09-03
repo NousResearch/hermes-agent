@@ -49,6 +49,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils import atomic_json_write
 
+from hermes_constants import openrouter_variant_base
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -816,6 +818,17 @@ def lookup_models_dev_context(
                 if ctx:
                     return ctx
 
+    # OpenRouter routing variant (":nitro", ":floor", …) — request-time
+    # modifiers that never appear in the catalog, so retry with the base id.
+    # Last, so a real SKU (":free", ":batch") always wins over its base.
+    routed_base = _openrouter_catalog_lookup_base(provider, model)
+    if routed_base is not None:
+        entry = _find_model_entry(models, routed_base)
+        if entry:
+            ctx = _extract_context(entry)
+            if ctx:
+                return ctx
+
     # Catalog miss — a _default override may fill the gap (#84482).
     return _default_override_context(provider)
 
@@ -1099,6 +1112,37 @@ def _merge_catalog_entry_with_override(
     return merged
 
 
+_OPENROUTER_CATALOG_PROVIDERS = frozenset({"openrouter"})
+
+
+def _openrouter_catalog_lookup_base(provider: str, model: str) -> Optional[str]:
+    """Return the base id to retry a catalog lookup with, or ``None``.
+
+    OpenRouter's ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are
+    request-time routing modifiers: they change which endpoint serves the
+    request, never which model runs. ``/models`` and models.dev list only the
+    base id, so a routed id must resolve to the base model's metadata.
+
+    Scoped to OpenRouter so a genuine ``model:tag`` on another provider (an
+    Ollama tag, a ``:cloud`` catalog key) is never rewritten.
+
+    Deliberately excludes ``:free``, ``:batch``, ``:extended``, and
+    ``:thinking``: those are REAL catalog SKUs with their own entries and
+    their own — sometimes different — context windows. As of the current
+    OpenRouter catalog, 13 such SKUs differ from their base
+    (``z-ai/glm-5.2:free`` is 256K vs the base's 1.05M;
+    ``nvidia/nemotron-3-super-120b-a12b:free`` is 262K vs 1M). Stripping them
+    would report a window LARGER than the model actually has — worse than the
+    under-report this fix exists to correct, because the request then fails at
+    the API instead of merely compacting early. Their real entries are found
+    by the exact/case-insensitive passes above, and a genuinely absent SKU must
+    miss so ``model_overrides`` ``_default`` fill-gap semantics still apply.
+    """
+    if provider not in _OPENROUTER_CATALOG_PROVIDERS:
+        return None
+    return openrouter_variant_base(model)
+
+
 def _get_provider_models(
     provider: str, *, allow_network: bool = False
 ) -> Optional[Dict[str, Any]]:
@@ -1132,7 +1176,9 @@ def _get_provider_models(
     return models
 
 
-def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
+def _find_model_entry(
+    models: Dict[str, Any], model: str, provider: str = ""
+) -> Optional[Dict[str, Any]]:
     """Find a model entry: exact, case-insensitive, then suffix fallback.
 
     The ``:cloud``/``-cloud`` suffix fallback mirrors
@@ -1141,6 +1187,13 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
     fill-gap ``_default`` semantics, where a suffix-keyed catalog model
     (e.g. ``kimi-k2.6:cloud``) must count as KNOWN and keep its catalog
     metadata rather than being displaced by a ``_default``.
+
+    ``provider`` enables the OpenRouter routing-variant fallback
+    (``:nitro``/``:floor``/``:exacto``/``:online``). Those suffixes are
+    request-time routing modifiers that never appear as catalog entries, so a
+    routed id must fall back to its base model's metadata. It is a LAST
+    resort — after exact and case-insensitive matching — so a real catalog
+    SKU always wins over its base (see ``_openrouter_catalog_lookup_base``).
     """
     # Exact match
     entry = models.get(model)
@@ -1163,6 +1216,12 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
         for mid, mdata in models.items():
             if mid.lower() == suffixed_lower and isinstance(mdata, dict):
                 return mdata
+
+    # OpenRouter routing variant — retry with the base id (recursion is
+    # bounded: the base never carries a recognized variant suffix).
+    routed_base = _openrouter_catalog_lookup_base(provider, model)
+    if routed_base is not None:
+        return _find_model_entry(models, routed_base)
 
     return None
 
@@ -1195,7 +1254,7 @@ def get_model_capabilities(
       - family     (str)   → model_family
     """
     models = _get_provider_models(provider, allow_network=allow_network)
-    entry = _find_model_entry(models, model) if models is not None else None
+    entry = _find_model_entry(models, model, provider) if models is not None else None
 
     # Select the override AFTER the catalog lookup: explicit overrides
     # always apply; _default entries only fill gaps for catalog misses.
@@ -1549,6 +1608,18 @@ def get_model_info(
     for mid, mdata in models.items():
         if mid.lower() == model_lower and isinstance(mdata, dict):
             return _with_override(mid, mdata)
+
+    # OpenRouter routing variant (":nitro", ":floor", …) — retry with the base
+    # id. Last, so a real catalog SKU (":free", ":batch") wins over its base.
+    routed_base = _openrouter_catalog_lookup_base(provider_id, model_id)
+    if routed_base is not None:
+        raw = models.get(routed_base)
+        if isinstance(raw, dict):
+            return _with_override(routed_base, raw)
+        routed_lower = routed_base.lower()
+        for mid, mdata in models.items():
+            if mid.lower() == routed_lower and isinstance(mdata, dict):
+                return _with_override(mid, mdata)
 
     # Model not in catalog — an override (explicit or _default) may still
     # provide the metadata.

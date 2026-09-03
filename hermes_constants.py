@@ -1766,6 +1766,45 @@ FINISH_REASON_LENGTH = "length"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
+# OpenRouter request-time routing variants (docs: guides/routing/model-variants).
+# These suffixes are per-request routing modifiers valid on ANY model id —
+# ":nitro" sorts the endpoint pool by throughput and admits priority-tier
+# endpoints, ":floor" sorts by price and admits flex-tier endpoints, ":exacto"
+# applies quality-first provider sorting, ":online" attaches the web plugin.
+# They are never separate catalog entries: /models lists only the base id, so
+# every catalog lookup must key on the BASE while the suffixed id stays on the
+# wire.
+# NOT in this set: ":free", ":batch", ":thinking", ":extended" — those ARE
+# distinct catalog SKUs with their own /models entries (and their own context
+# windows), so stripping them would resolve the wrong window.
+OPENROUTER_VARIANT_SUFFIXES: frozenset[str] = frozenset(
+    {"nitro", "floor", "exacto", "online"}
+)
+
+
+def openrouter_variant_base(model_id: str) -> str | None:
+    """Return the base model id when ``model_id`` carries a recognized
+    OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
+    ``x-ai/grok-4``), else ``None``.
+
+    Lives here rather than in ``hermes_cli.models`` so the metadata layer
+    (``agent.model_metadata``) can share one definition without importing the
+    CLI — this module is dependency-free by contract.
+
+    >>> openrouter_variant_base("x-ai/grok-4:nitro")
+    'x-ai/grok-4'
+    >>> openrouter_variant_base("x-ai/grok-4:free") is None
+    True
+    >>> openrouter_variant_base("x-ai/grok-4") is None
+    True
+    """
+    base, sep, suffix = (model_id or "").rpartition(":")
+    if not sep or not base:
+        return None
+    if suffix.lower() in OPENROUTER_VARIANT_SUFFIXES:
+        return base
+    return None
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 

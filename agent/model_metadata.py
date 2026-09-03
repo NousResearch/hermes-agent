@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -861,6 +861,45 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
         if url_part in host:
             return provider
     return None
+
+
+def _strip_openrouter_routing_variant(
+    model: str, base_url: str = "", provider: str = ""
+) -> str:
+    """Strip an OpenRouter routing-variant suffix for catalog lookup.
+
+    ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are request-time
+    routing modifiers, NOT catalog entries — OpenRouter's ``/models`` lists
+    only the base id, and a variant shares the base model's context window.
+    Without this, every lookup below misses and the resolver falls through to
+    a generic family default (``x-ai/grok-4.6:nitro`` → the 131K ``grok``
+    catch-all instead of its real 2M window).
+
+    Only the id used for LOOKUP is rewritten. The suffixed id the caller holds
+    stays on the wire, so the routing opt-in is preserved — the same rule
+    :func:`hermes_cli.models.validate_requested_model` applies. Sharing the
+    base's cache key is intentional: the window is identical, so a variant and
+    its base must never disagree.
+
+    Narrow by design: only applied when the request actually routes through
+    OpenRouter, so a local ``model:tag`` that happens to end in one of these
+    words is untouched.
+    """
+    if not model:
+        return model
+    is_openrouter = (provider or "").strip().lower() == "openrouter" or (
+        bool(base_url) and _infer_provider_from_url(base_url) == "openrouter"
+    )
+    if not is_openrouter:
+        return model
+    base = openrouter_variant_base(model)
+    if base is None:
+        return model
+    logger.debug(
+        "Resolving context length for OpenRouter routing variant %r via base id %r",
+        model, base,
+    )
+    return base
 
 
 def _lmstudio_server_root(base_url: str) -> str:
@@ -3195,6 +3234,15 @@ def get_model_context_length(
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+
+    # OpenRouter routing variants (":nitro", ":floor", ...) are request-time
+    # modifiers, not catalog entries — resolve the window from the BASE id.
+    # Deliberately placed AFTER the explicit config overrides above (0b/0c) so
+    # a user who pinned the fully-suffixed id keeps winning, and BEFORE every
+    # cache/catalog lookup below so the base's real window is found instead of
+    # a generic family default. Mirrors the validation path's base/suffix split
+    # in hermes_cli.models.validate_requested_model.
+    model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
 
     # Endpoint-scoped provider metadata. Keep this ahead of the persistent
     # cache so a value learned for a multiplexed provider's other endpoint

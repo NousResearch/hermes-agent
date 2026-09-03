@@ -1929,3 +1929,142 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# get_model_context_length — OpenRouter routing-variant suffixes
+# =========================================================================
+
+class TestOpenRouterRoutingVariantContextLength:
+    """OpenRouter's `:nitro`, `:floor`, `:exacto`, `:online` are request-time
+    routing modifiers, not catalog models — /models lists only the base id and
+    a variant runs the same model, so it has the SAME context window.
+
+    The validation path (tests/hermes_cli/test_model_validation.py::
+    TestValidateOpenRouterVariantSuffixes) already preserves the suffixed id;
+    this pins the metadata half. Before the fix, `model:nitro` missed every
+    catalog lookup and fell through to a generic family default — e.g.
+    `x-ai/grok-4.6:nitro` reported the 131K `grok` catch-all instead of 2M,
+    silently shrinking the usable window and triggering early compression.
+
+    The invariant asserted here is a relation, not a snapshot: a variant must
+    resolve to whatever its base resolves to.
+    """
+
+    _CATALOG = {
+        "x-ai/grok-4.6": {"context_length": 2_000_000},
+        "anthropic/claude-opus-4.6": {"context_length": 1_000_000},
+    }
+
+    _VARIANTS = ["nitro", "floor", "exacto", "online"]
+
+    @pytest.mark.parametrize("suffix", _VARIANTS)
+    @pytest.mark.parametrize("model", sorted(_CATALOG))
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_matches_base_context(
+        self, mock_fetch, mock_models_dev, mock_cache, model, suffix
+    ):
+        """A routing variant resolves to exactly its base model's window."""
+        mock_fetch.return_value = self._CATALOG
+
+        base_ctx = get_model_context_length(model, provider="openrouter")
+        variant_ctx = get_model_context_length(
+            f"{model}:{suffix}", provider="openrouter"
+        )
+
+        assert variant_ctx == base_ctx
+        assert variant_ctx == self._CATALOG[model]["context_length"]
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_does_not_fall_back_to_family_default(
+        self, mock_fetch, mock_models_dev, mock_cache
+    ):
+        """The reported symptom: the generic `grok` catch-all (131K) winning
+        over the catalog's real window for a `:nitro` id."""
+        mock_fetch.return_value = self._CATALOG
+
+        result = get_model_context_length(
+            "x-ai/grok-4.6:nitro", provider="openrouter"
+        )
+
+        assert result == 2_000_000
+        assert result != DEFAULT_CONTEXT_LENGTHS.get("grok")
+        assert result != DEFAULT_FALLBACK_CONTEXT
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_uppercase_suffix_resolves(self, mock_fetch, mock_models_dev, mock_cache):
+        """Suffix matching is case-insensitive, matching the validation path."""
+        mock_fetch.return_value = self._CATALOG
+        assert get_model_context_length(
+            "x-ai/grok-4.6:NITRO", provider="openrouter"
+        ) == 2_000_000
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_resolves_via_base_url_without_explicit_provider(
+        self, mock_fetch, mock_models_dev, mock_cache
+    ):
+        """Callers that pass only base_url (no provider=) must strip too —
+        the OpenRouter host is enough to know the suffix is a routing hint."""
+        mock_fetch.return_value = self._CATALOG
+        assert get_model_context_length(
+            "x-ai/grok-4.6:nitro",
+            base_url="https://openrouter.ai/api/v1",
+        ) == 2_000_000
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_free_sku_suffix_is_not_stripped(
+        self, mock_fetch, mock_models_dev, mock_cache
+    ):
+        """`:free` / `:batch` / `:thinking` ARE distinct catalog SKUs with
+        their own windows. Stripping them would report the wrong number, so
+        the SKU's own entry must win over the base's."""
+        mock_fetch.return_value = {
+            "thinkingmachines/inkling": {"context_length": 1_000_000},
+            "thinkingmachines/inkling:free": {"context_length": 64_000},
+        }
+        assert get_model_context_length(
+            "thinkingmachines/inkling:free", provider="openrouter"
+        ) == 64_000
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    def test_non_openrouter_colon_tag_is_untouched(
+        self, mock_fetch, mock_models_dev, mock_cache
+    ):
+        """An Ollama `model:tag` that happens to end in a variant word must
+        keep its full id — the carve-out is OpenRouter-only."""
+        with patch(
+            "agent.model_metadata._query_local_context_length", return_value=None
+        ), patch("agent.model_metadata._query_ollama_api_show", return_value=None):
+            result = get_model_context_length(
+                "mymodel:online",
+                base_url="http://localhost:11434/v1",
+            )
+        assert result == DEFAULT_FALLBACK_CONTEXT
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_explicit_config_override_still_wins(
+        self, mock_fetch, mock_models_dev, mock_cache
+    ):
+        """Stripping happens after step 0 — a user who pinned the suffixed id
+        via model.context_length keeps their value (the documented
+        self-unblock path must not regress)."""
+        mock_fetch.return_value = self._CATALOG
+        assert get_model_context_length(
+            "x-ai/grok-4.6:nitro",
+            provider="openrouter",
+            config_context_length=123_456,
+        ) == 123_456

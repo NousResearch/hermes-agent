@@ -1305,3 +1305,147 @@ class TestModelOverrides:
         assert info is not None
         assert "image" in info.input_modalities
         assert info.attachment is True
+
+
+# =========================================================================
+# OpenRouter routing-variant suffixes — catalog lookup across consumers
+# =========================================================================
+
+class TestOpenRouterRoutingVariantCatalogLookup:
+    """OpenRouter's `:nitro`/`:floor`/`:exacto`/`:online` are request-time
+    routing modifiers, not catalog models. models.dev (like OpenRouter's own
+    /models) lists only the base id, so every catalog consumer must resolve a
+    routed id to the base model's metadata while the suffixed id stays on the
+    wire. See issue #97820.
+
+    The counterpart to the context-length half of this fix lives in
+    tests/agent/test_model_metadata.py::TestOpenRouterRoutingVariantContextLength.
+
+    Critically, `:free` and `:batch` are NOT routing variants — they are real
+    catalog SKUs with their own entries and sometimes their own context
+    windows. Stripping them would report a window LARGER than the model has,
+    which fails at the API rather than merely compacting early.
+    """
+
+    #: Base model plus a `:free` SKU whose window deliberately DIFFERS from
+    #: it — mirrors real catalog entries such as z-ai/glm-5.2 (1.05M) vs
+    #: z-ai/glm-5.2:free (256K).
+    REGISTRY = {
+        "openrouter": {
+            "id": "openrouter",
+            "models": {
+                "z-ai/glm-5.3-flash": {
+                    "id": "z-ai/glm-5.3-flash",
+                    "limit": {"context": 1310720, "output": 131072},
+                    "tool_call": True,
+                    "reasoning": True,
+                },
+                "z-ai/glm-5.2": {
+                    "id": "z-ai/glm-5.2",
+                    "limit": {"context": 1048576, "output": 131072},
+                },
+                "z-ai/glm-5.2:free": {
+                    "id": "z-ai/glm-5.2:free",
+                    "limit": {"context": 256000, "output": 131072},
+                },
+            },
+        },
+    }
+
+    ROUTING_SUFFIXES = ["nitro", "floor", "exacto", "online"]
+
+    def _patch(self):
+        return patch(
+            "agent.models_dev.fetch_models_dev", return_value=self.REGISTRY
+        )
+
+    @pytest.mark.parametrize("suffix", ROUTING_SUFFIXES)
+    def test_context_lookup_matches_base(self, suffix):
+        """A routed id resolves to exactly its base model's context."""
+        with self._patch():
+            base = lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash")
+            routed = lookup_models_dev_context(
+                "openrouter", f"z-ai/glm-5.3-flash:{suffix}"
+            )
+        assert routed == base == 1310720
+
+    @pytest.mark.parametrize("suffix", ROUTING_SUFFIXES)
+    def test_capabilities_match_base(self, suffix):
+        """get_model_capabilities resolves routed ids (not just context)."""
+        with self._patch():
+            base = get_model_capabilities("openrouter", "z-ai/glm-5.3-flash")
+            routed = get_model_capabilities(
+                "openrouter", f"z-ai/glm-5.3-flash:{suffix}"
+            )
+        assert routed is not None
+        assert routed.context_window == base.context_window == 1310720
+        assert routed.supports_tools == base.supports_tools
+        assert routed.supports_reasoning == base.supports_reasoning
+
+    @pytest.mark.parametrize("suffix", ROUTING_SUFFIXES)
+    def test_model_info_matches_base(self, suffix):
+        """get_model_info resolves routed ids."""
+        with self._patch():
+            base = get_model_info("openrouter", "z-ai/glm-5.3-flash")
+            routed = get_model_info("openrouter", f"z-ai/glm-5.3-flash:{suffix}")
+        assert routed is not None
+        assert routed.context_window == base.context_window == 1310720
+
+    def test_suffix_match_is_case_insensitive(self):
+        with self._patch():
+            assert (
+                lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:FLOOR")
+                == 1310720
+            )
+
+    def test_real_free_sku_keeps_its_own_window(self):
+        """REGRESSION GUARD: `:free` is a real SKU, not a routing variant.
+
+        z-ai/glm-5.2:free is 256K while its base is 1.05M. Treating `:free`
+        as strippable would report 1.05M — a window the model does not have,
+        so the request fails at the API instead of compacting early. The SKU's
+        own entry must win.
+        """
+        with self._patch():
+            assert (
+                lookup_models_dev_context("openrouter", "z-ai/glm-5.2:free") == 256000
+            )
+            assert lookup_models_dev_context("openrouter", "z-ai/glm-5.2") == 1048576
+
+    def test_absent_sku_suffix_still_misses(self):
+        """A `:free` id with no catalog entry must MISS rather than fall back
+        to its base — otherwise model_overrides `_default` fill-gap semantics
+        break, and an absent free tier would inherit the paid tier's window."""
+        with self._patch():
+            assert (
+                lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:free")
+                is None
+            )
+
+    def test_non_openrouter_provider_is_never_stripped(self):
+        """The carve-out is OpenRouter-only; another provider's colon-suffixed
+        id (an Ollama tag, a `:cloud` key) keeps exact-match semantics."""
+        registry = {
+            "anthropic": {
+                "id": "anthropic",
+                "models": {"claude-x": {"limit": {"context": 200000}}},
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            assert lookup_models_dev_context("anthropic", "claude-x:floor") is None
+            assert lookup_models_dev_context("anthropic", "claude-x") == 200000
+
+    def test_unknown_suffix_is_not_stripped(self):
+        with self._patch():
+            assert (
+                lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:bogus")
+                is None
+            )
+
+    def test_bare_model_lookup_unaffected(self):
+        """No suffix — behavior is byte-identical to before the change."""
+        with self._patch():
+            assert (
+                lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash") == 1310720
+            )
+            assert lookup_models_dev_context("openrouter", "nope/missing") is None

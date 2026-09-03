@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url, url_origin
+from hermes_constants import OPENROUTER_VARIANT_SUFFIXES, openrouter_variant_base
 from utils import atomic_json_write, base_url_host_matches
 
 logger = logging.getLogger(__name__)
@@ -3718,28 +3719,13 @@ _AGGREGATOR_PROVIDERS = frozenset(
 )
 
 # OpenRouter request-time routing variants (docs: guides/routing/model-variants).
-# These suffixes are per-request routing modifiers valid on ANY model id —
-# ":nitro" sorts the endpoint pool by throughput and admits priority-tier
-# endpoints, ":floor" sorts by price and admits flex-tier endpoints, ":exacto"
-# applies quality-first provider sorting, ":online" attaches the web plugin.
-# They are never separate catalog entries: /models lists only the base id.
-# NOT in this set: ":free", ":batch", ":thinking", ":extended" — those ARE
-# distinct catalog SKUs that appear in /models when they exist, so absence
-# from the listing is authoritative for them and the direct-membership check
-# above handles the valid ones.
-_OPENROUTER_VARIANT_SUFFIXES = frozenset({"nitro", "floor", "exacto", "online"})
-
-
-def _openrouter_variant_base(model_id: str) -> Optional[str]:
-    """Return the base model id when ``model_id`` carries a recognized
-    OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
-    ``x-ai/grok-4``), else ``None``."""
-    base, sep, suffix = (model_id or "").rpartition(":")
-    if not sep or not base:
-        return None
-    if suffix.lower() in _OPENROUTER_VARIANT_SUFFIXES:
-        return base
-    return None
+# Canonical definition lives in ``hermes_constants`` (import-safe, no deps) so
+# the metadata layer can share it without importing the CLI — see
+# ``agent.model_metadata._strip_openrouter_routing_variant``, which needs the
+# same base/suffix split to resolve a variant's context window. Re-exported
+# here under the historical private names.
+_OPENROUTER_VARIANT_SUFFIXES = OPENROUTER_VARIANT_SUFFIXES
+_openrouter_variant_base = openrouter_variant_base
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
 # would be listed here (tried only as a last resort for bare short-alias

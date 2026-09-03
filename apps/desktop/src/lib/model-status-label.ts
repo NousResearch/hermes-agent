@@ -75,12 +75,26 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   let base = modelBaseId(model)
   let tag = ''
 
-  for (const [pattern, label] of VARIANT_TAGS) {
-    if (pattern.test(base)) {
-      tag = label
-      base = base.replace(pattern, '')
+  // Local GGUF ids carry a quant suffix (`…-UD-Q4_K_XL`, `…-Q8_0`). Render it
+  // as a quiet tag — "Qwen3.6 27B · Q4" — never as part of the name. Without
+  // this the composer pill reads raw quant soup ("Qwen3.6 27B UD Q4 K XL").
+  const quant = base.match(/-(?:UD-)?(Q\d(?:_[A-Z0-9]+)*|IQ\d(?:_[A-Z0-9]+)*|F16|BF16)$/i)
 
-      break
+  if (quant) {
+    tag = quant[1].split('_')[0].toUpperCase()
+    base = base.slice(0, -quant[0].length)
+    // Instruct/chat markers are noise once the quant confirmed a local build.
+    base = base.replace(/-(?:Instruct|Chat)(?:-\d{4})?$/i, '')
+  }
+
+  if (!tag) {
+    for (const [pattern, label] of VARIANT_TAGS) {
+      if (pattern.test(base)) {
+        tag = label
+        base = base.replace(pattern, '')
+
+        break
+      }
     }
   }
 

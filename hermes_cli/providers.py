@@ -1023,6 +1023,29 @@ def resolve_provider_full(
     if custom_pdef is not None:
         return custom_pdef
 
+    # 2c. Managed local runtime: the llamacpp aliases are a real provider
+    # whenever the managed server (or a detected external one) resolves —
+    # no credential and no providers: entry required, the credential is
+    # reachability. Without this rung the model-switch path rejected the
+    # very provider the Local Models 'Use' flow writes to config
+    # ("Unknown provider 'llamacpp'" from the desktop dropdown).
+    if raw in ("llamacpp", "llama.cpp", "llama-cpp"):
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            endpoint = resolve_llamacpp_endpoint(wait_for_boot_s=0)
+        except Exception:
+            endpoint = None
+        if endpoint:
+            return ProviderDef(
+                id="llamacpp",
+                name="Local",
+                transport="openai_chat",
+                api_key_env_vars=(),
+                base_url=endpoint["base_url"],
+                source="local-runtime",
+            )
+
     # 3. Try models.dev directly (for providers not in our ALIASES)
     try:
         from agent.models_dev import get_provider_info as _mdev_provider

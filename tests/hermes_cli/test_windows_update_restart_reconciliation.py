@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.gateway as gateway
+import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.main as hm
 from hermes_cli.update_cmd import _resume_windows_gateways_after_update
 from hermes_cli.update_inventory import (
@@ -41,6 +42,21 @@ def _token(profiles: dict) -> dict:
         "unmapped_pids": [],
         "unmapped": [],
     }
+
+
+@pytest.fixture(autouse=True)
+def _stub_post_relaunch_liveness(monkeypatch):
+    """The resume path now verifies a stable gateway process actually exists
+    before vouching for the relaunch (#48820 3rd/4th repro — a parent Job
+    Object killing the respawned gateway made '✓ Restarting' a lie). These
+    reconciliation tests exercise the token bookkeeping, not the liveness
+    poll, so stub it as 'gateway came up'."""
+    monkeypatch.setattr(
+        gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [4242]
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_write_start_attestation", lambda *_a, **_kw: None
+    )
 
 
 def test_resume_records_successfully_relaunched_profiles_on_the_token(monkeypatch):

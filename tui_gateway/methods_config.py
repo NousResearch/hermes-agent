@@ -123,6 +123,9 @@ def _(rid, params: dict) -> dict:
     Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
     """
     try:
+        from tui_gateway.project_tree import stamp_profile
+        from tui_gateway.server import _response_profile_name
+
         with _profile_db(params) as db:
             if db is None:
                 return _ok(
@@ -135,6 +138,9 @@ def _(rid, params: dict) -> dict:
                 hydrate=False,
                 session_limit=int(params.get("session_limit") or 2000),
                 include_discovered=True,
+            )
+            stamp_profile(
+                tree["projects"], _response_profile_name(params.get("profile"))
             )
             return _ok(
                 rid,
@@ -155,6 +161,9 @@ def _(rid, params: dict) -> dict:
     built from the same authoritative grouping as ``projects.tree`` so ids and
     membership match exactly. Used when the user enters a project."""
     try:
+        from tui_gateway.project_tree import stamp_profile
+        from tui_gateway.server import _response_profile_name
+
         project_id = str(params.get("project_id") or "")
         if not project_id:
             return _err(rid, 5063, "project_id required")
@@ -171,6 +180,9 @@ def _(rid, params: dict) -> dict:
                 hydrate=True,
                 session_limit=int(params.get("session_limit") or 5000),
                 include_discovered=False,
+            )
+            stamp_profile(
+                tree["projects"], _response_profile_name(params.get("profile"))
             )
             proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
             return _ok(rid, {"project": proj})
@@ -377,12 +389,49 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
+def _readiness_profile_scope(params: dict):
+    """Resolve the optional ``profile`` param of the setup readiness RPCs.
+
+    Returns ``(profile, scope)`` where ``scope`` is a context manager binding
+    that profile's HERMES_HOME and ``.env`` secret scope (ContextVars, so
+    concurrent checks for different profiles stay isolated). The launch
+    profile / no param yields ``("", nullcontext())``. A profile unknown to
+    this host raises ``FileNotFoundError`` — a readiness check must never
+    quietly answer for the launch profile instead (#94071).
+    """
+    import contextlib
+
+    profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
+    if not profile:
+        return "", contextlib.nullcontext()
+    from hermes_cli import profiles as profiles_mod
+    from tui_gateway import server as _server
+
+    if not profiles_mod.profile_exists(profile):
+        raise FileNotFoundError(f"Profile '{profile}' does not exist on this backend.")
+    home = _server._profile_home(profile)
+    if home is None:
+        return profile, contextlib.nullcontext()
+    return profile, _server._session_profile_runtime_scope({"profile_home": str(home)})
+
+
 @method("setup.status")
 def _(rid, params: dict) -> dict:
+    """Loose provider check; ``profile`` (optional) scopes it to that profile's home."""
     try:
         from hermes_cli.main import _has_any_provider_configured
+        from tui_gateway.methods_config import _readiness_profile_scope
 
-        return _ok(rid, {"provider_configured": bool(_has_any_provider_configured())})
+        try:
+            profile, scope = _readiness_profile_scope(params)
+        except FileNotFoundError as e:
+            return _ok(rid, {"ok": False, "profile": params.get("profile"), "error": str(e)})
+        with scope:
+            configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
+        payload = {"provider_configured": configured}
+        if profile:
+            payload["profile"] = profile
+        return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5016, str(e))
 
@@ -397,15 +446,27 @@ def _(rid, params: dict) -> dict:
     uses on session creation. It returns ok=False with the auth error message
     when the user's configured model cannot actually be served, so UIs can
     surface onboarding before the user submits a doomed prompt.
+
+    ``profile`` (optional): answer for THAT profile's home on this host — its
+    config.yaml model pin and its ``.env`` — instead of the launch profile's
+    (#94071). A profile unknown to this backend answers ``ok=False`` rather
+    than reporting the launch profile's readiness.
     """
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.auth import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
+        from tui_gateway.methods_config import _readiness_profile_scope
 
         requested = str(params.get("provider") or "").strip() or None
-        runtime = resolve_runtime_provider(requested=requested)
-        provider_configured = bool(_has_any_provider_configured())
+        try:
+            profile, scope = _readiness_profile_scope(params)
+        except FileNotFoundError as e:
+            return _ok(rid, {"ok": False, "profile": params.get("profile"), "error": str(e)})
+        with scope:
+            runtime = resolve_runtime_provider(requested=requested)
+            provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
+        scoped = {"profile": profile} if profile else {}
         provider = runtime.get("provider") or "provider"
         source = str(runtime.get("source") or "")
         if (
@@ -425,6 +486,7 @@ def _(rid, params: dict) -> dict:
                     "model": runtime.get("model"),
                     "source": source,
                     "error": "No Hermes provider is configured.",
+                    **scoped,
                 },
             )
 
@@ -446,6 +508,7 @@ def _(rid, params: dict) -> dict:
                     "model": runtime.get("model"),
                     "source": runtime.get("source"),
                     "error": f"No usable credentials found for {provider}.",
+                    **scoped,
                 },
             )
 
@@ -456,6 +519,7 @@ def _(rid, params: dict) -> dict:
                 "provider": runtime.get("provider"),
                 "model": runtime.get("model"),
                 "source": runtime.get("source"),
+                **scoped,
             },
         )
     except Exception as e:

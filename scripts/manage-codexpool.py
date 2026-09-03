@@ -15,9 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, "/root/.hermes/hermes-agent")
 try:
-    from agent.account_usage import fetch_codex_usage_for_token
+    from agent.account_usage import _fetch_codex_account_usage
 except ImportError:
-    fetch_codex_usage_for_token = None
+    _fetch_codex_account_usage = None
 
 AUTH = Path("/root/.hermes/profiles/codexpool/auth.json")
 DEFAULT_ORDER = ["leo", "nocobase", "zeo", "neo", "llgap"]
@@ -30,7 +30,7 @@ def load():
 
 def get_credential_status(entry: dict, raw: bool = False) -> str:
     runtime_status = entry.get("last_status") or "ok"
-    if raw or not fetch_codex_usage_for_token:
+    if raw or not _fetch_codex_account_usage:
         return runtime_status
 
     token = str(entry.get("access_token") or "").strip()
@@ -38,18 +38,21 @@ def get_credential_status(entry: dict, raw: bool = False) -> str:
         return "missing token"
 
     try:
-        snapshot = fetch_codex_usage_for_token(token, entry.get("base_url"), timeout=4.0)
+        snapshot = _fetch_codex_account_usage(base_url=entry.get("base_url"), api_key=token)
         if snapshot and getattr(snapshot, "windows", None):
-            target = next((w for w in snapshot.windows if w.label in ("Weekly", "Monthly")), None)
-            if not target and snapshot.windows:
-                target = snapshot.windows[0]
-            if target and target.used_percent is not None:
-                used = float(target.used_percent)
-                rem = max(0, round(100 - used))
-                plan_tag = f"({snapshot.plan})" if snapshot.plan else ""
-                if rem <= 2:
-                    return f"exhausted  {plan_tag:<10}  0% {target.label.lower()} remaining"
-                return f"ok         {plan_tag:<10}  {rem}% {target.label.lower()} remaining"
+            min_rem = 100
+            worst_window = None
+            for w in snapshot.windows:
+                if w.used_percent is not None:
+                    rem = max(0, round(100 - float(w.used_percent)))
+                    if rem < min_rem:
+                        min_rem = rem
+                        worst_window = w
+            plan_tag = f"({snapshot.plan})" if snapshot.plan else ""
+            if worst_window and min_rem <= 2:
+                return f"exhausted  {plan_tag:<10}  0% {worst_window.label.lower()} remaining"
+            elif worst_window:
+                return f"ok         {plan_tag:<10}  {min_rem}% {worst_window.label.lower()} remaining"
     except Exception:
         pass
 

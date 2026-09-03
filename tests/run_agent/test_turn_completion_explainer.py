@@ -438,3 +438,8 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
     assert result["response_previewed"] is False
 
 
+def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
+    """A quarantined SessionDB raises the typed error; it stays in the corrupt bucket."""
+    from hermes_state import StateDbCorruptError, classify_persistence_error
+
+    assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"

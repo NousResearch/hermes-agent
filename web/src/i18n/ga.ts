@@ -477,6 +477,8 @@ export const ga: Translations = {
     copyCliCommand: "Cóipeáil ordú CLI (le haghaidh úsáide seachtraí / cúltaca)",
     connect: "Ceangail",
     sessionExpires: "Téann an seisiún as feidhm i {time}",
+    sessionExpiredNoError:
+      "Chuaigh an síniú isteach in éag gan an soláthraí a bhaint amach. De ghnáth ciallaíonn sé seo gur stop leathanach an tsínithe isteach sa chluaisín oscailte (fadhb ar thaobh an fhreastalaí) — críochnaigh an síniú isteach ansin, ansin cliceáil Atriail. Má theipeann air i gcónaí, úsáid eochair API nó an CLI ina ionad.",
     initiatingLogin: "Ag tosú an tsreabha logála isteach…",
     exchangingCode: "Ag malartú an chóid ar tokens…",
     connectedClosing: "Ceangailte! Á dhúnadh…",

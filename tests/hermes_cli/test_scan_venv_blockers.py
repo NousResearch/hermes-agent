@@ -363,13 +363,21 @@ def test_updater_owned_backend_dead_spawner_is_deferred(monkeypatch, capsys):
     orphan `_ledger_reapable_backend_pids` reaps — the scan must defer it
     instead of dead-ending the hand-off (#98336)."""
     _patch_ledger(
-        monkeypatch, [{"pid": 78, "purpose": "serve", "spawner_pid": 4242}], dead=True
+        monkeypatch,
+        [{"pid": 78, "purpose": "serve", "spawner_pid": 4242, "port": 9119}],
+        dead=True,
     )
     code, data = _run_main_with_detector(monkeypatch, capsys, [(78, "python.exe", _SERVE_CMD)])
     assert code == 0
     assert data["blocked"] is False
     assert data["processes"] == []
     assert data["deferred_backends"] == 1
+    # Sanitized decision evidence (#98350): structured ledger identity only —
+    # the deferral must explain itself without echoing the command line.
+    assert data["deferred_backend_evidence"] == [
+        {"pid": 78, "purpose": "serve", "port": 9119}
+    ]
+    assert "--host" not in json.dumps(data["deferred_backend_evidence"])
 
 
 def test_updater_owned_backend_unrecorded_spawner_is_deferred(monkeypatch, capsys):

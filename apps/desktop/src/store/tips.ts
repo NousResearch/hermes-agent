@@ -26,7 +26,7 @@
 import { atom } from 'nanostores'
 
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import type { TipSide } from '@/lib/tips/catalog'
+import { TIP_CATALOG, type TipSide } from '@/lib/tips/catalog'
 import { mirrorDisplayToggle } from '@/store/display-toggles'
 
 /** Hours, not minutes. The catalog is ten tips and it should take weeks. */
@@ -34,6 +34,11 @@ const COOLDOWN_MS = 6 * 60 * 60_000
 
 /** A tip as the bubble needs it: resolved copy, resolved anchor. */
 export interface ActiveTip {
+  /** A call to action: one button under the text. What separates a campaign
+   *  tip from the rotation's — the rotation teaches, this one offers to DO
+   *  the thing, and the button is the only path (an ambient bubble must
+   *  never make its whole face clickable). Clicking closes the tip. */
+  action?: { label: string; onSelect: () => void }
   /** Keybind action id whose live combo the bubble prints. */
   keybind?: string
   side: TipSide
@@ -65,6 +70,23 @@ export const $activeTip = atom<ActiveTip | null>(null)
 // model's schema entirely rather than staying on offer and being dropped.
 mirrorDisplayToggle('display.in_app_tips', ENABLED_KEY, $tipsEnabled)
 
+/** When each campaign tip (id outside the rotation catalog) last showed.
+ *  Campaign tips re-offer on their own long clock instead of walking on;
+ *  `$retiredTips` still owns the hard ✕. */
+export const $tipShownAt = persistentAtom<Record<string, number>>(
+  'hermes.desktop.tips.shownAt.v1',
+  {},
+  Codecs.json(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+    )
+  })
+)
+
 export function setTipsEnabled(enabled: boolean): void {
   if (!enabled) {
     // Including whichever one is up: the switch is answering a bubble on
@@ -85,7 +107,14 @@ export function resetTips(): void {
 /** Put a tip on screen, replacing whatever was there. */
 export function showTip(tip: ActiveTip): void {
   if (tip.tipId) {
-    $lastTipId.set(tip.tipId)
+    // The cursor belongs to the rotation's walk. A campaign tip (an id the
+    // catalog doesn't hold) records when it showed but must not move the
+    // cursor — nextTip treats an unknown id as "start over at the top".
+    if (TIP_CATALOG.some(def => def.id === tip.tipId)) {
+      $lastTipId.set(tip.tipId)
+    }
+
+    $tipShownAt.set({ ...$tipShownAt.get(), [tip.tipId]: Date.now() })
   }
 
   // Any tip starts the cooldown, an agent's included: whoever just pointed at

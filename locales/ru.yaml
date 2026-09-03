@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nТекущий режим: `{mode}`\\n\\nВыберите вариант:"
     choice_fast:           "fast — Priority Processing включён"
     choice_normal:         "normal — стандартная обработка"
+    choice_auto:           "auto — быстро в первые секунды каждого хода"
+    choice_cold:           "cold — быстро только на первом ходе сессии"
 
   footer:
     status:                "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"

@@ -132,10 +132,11 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
             code = (qs.get("code") or [None])[0]
             state = (qs.get("state") or [None])[0]
             error = (qs.get("error") or [None])[0]
+            iss = (qs.get("iss") or [None])[0]
             body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
             status = 200
             try:
-                flow.deliver_callback(code=code, state=state, error=error)
+                flow.deliver_callback(code=code, state=state, error=error, iss=iss)
             except Exception:
                 body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
                 status = 400

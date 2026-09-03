@@ -510,6 +510,49 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
+        def _needs_forced_authorization(self, request, outgoing, incoming) -> bool:
+            """True when a server answered the unauthenticated MCP request with
+            2xx although no token exists — Google Workspace MCP servers accept
+            initialize/tools-list anonymously, so the SDK's 401-driven flow
+            would never start. Only in an interactive (login) context."""
+            from tools.mcp_oauth import _is_interactive
+
+            status = getattr(incoming, "status_code", None)
+            if status is None or not 200 <= status < 300:
+                return False
+            if outgoing is not request or self.context.is_token_valid():
+                return False
+            if "authorization" in (getattr(outgoing, "headers", None) or {}):
+                return False
+            if not _is_interactive():
+                return False
+            logger.info(
+                "MCP OAuth '%s': server accepted the request without a token; "
+                "forcing the authorization flow (no cached tokens)",
+                self._hermes_server_name,
+            )
+            return True
+
+        def _normalize_auth_server_url(self) -> None:
+            """Google's PRM lists ``https://accounts.google.com/`` while its AS
+            metadata issuer is ``https://accounts.google.com``; the SDK compares
+            them as plain strings (RFC 8414 §3.3), so drop the slash of a bare
+            origin before the SDK validates."""
+            url = self.context.auth_server_url
+            if not url or not url.endswith("/"):
+                return
+            from urllib.parse import urlparse
+
+            if urlparse(url).path == "/":
+                self.context.auth_server_url = url.rstrip("/")
+
+        @staticmethod
+        def _synthetic_unauthorized(incoming):
+            from tools.mcp_tool import sdk_httpx
+
+            httpx = sdk_httpx()
+            return httpx.Response(401, request=incoming.request)
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with
@@ -580,6 +623,9 @@ def _make_hermes_provider_class() -> Optional[type]:
                     # Sniff the response for a dead-client-registration signal
                     # before handing it back to the SDK (best-effort, GH#36767).
                     await self._maybe_flag_poisoned_client(incoming)
+                    if self._needs_forced_authorization(request, outgoing, incoming):
+                        incoming = self._synthetic_unauthorized(incoming)
+                    self._normalize_auth_server_url()
                     outgoing = await inner.asend(incoming)
             except StopAsyncIteration:
                 # Persist any metadata the SDK discovered lazily during the

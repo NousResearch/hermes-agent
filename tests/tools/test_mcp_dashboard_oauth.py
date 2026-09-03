@@ -114,3 +114,27 @@ def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatc
     storage.restore(backup, only_if_absent=True)
 
     assert storage._tokens_path().read_text() == "FRESH"
+
+
+def test_dashboard_flow_forwards_iss_to_sdk_result():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from tools.mcp_oauth import _make_callback_waiter, _make_redirect_handler
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-5",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="http://127.0.0.1:1/callback",
+    )
+    with dashboard_oauth_flow(flow):
+        asyncio.run(_make_redirect_handler(0)("https://idp.example/authorize?state=state-5"))
+        flow.deliver_callback(
+            code="code-5", state="state-5", error=None, iss="https://accounts.google.com"
+        )
+        result = asyncio.run(_make_callback_waiter(0)())
+        assert (result.code, result.state, result.iss) == (
+            "code-5",
+            "state-5",
+            "https://accounts.google.com",
+        )

@@ -33,6 +33,7 @@ class DashboardOAuthFlow:
     tools: list[dict] = field(default_factory=list)
     expected_state: str | None = field(default=None, init=False)
     _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
+    callback_iss: str | None = field(default=None, init=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -65,6 +66,7 @@ class DashboardOAuthFlow:
         code: str | None,
         state: str | None,
         error: str | None,
+        iss: str | None = None,
     ) -> None:
         with self._lock:
             if self._callback_ready.is_set():
@@ -79,6 +81,7 @@ class DashboardOAuthFlow:
                 self._callback_error = error
             elif code:
                 self._callback = (code, state)
+                self.callback_iss = iss
             else:
                 self._callback_error = "OAuth callback did not include code or error"
             self._callback_ready.set()

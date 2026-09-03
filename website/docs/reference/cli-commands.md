@@ -590,6 +590,15 @@ hermes auth spotify                                      # Authenticate Hermes w
 
 Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
 
+## `hermes credentials`
+
+Read-only credential dependency map: shows every declared consumer (providers, auxiliary tasks, MCP servers, platforms, plugins) of an env-var credential, so you can check what a rotation or removal will affect before touching a key. Never prints credential values.
+
+```bash
+hermes credentials impact OPENAI_API_KEY          # Human-readable report
+hermes credentials impact OPENAI_API_KEY --json   # Machine-readable
+```
+
 ## `hermes status`
 
 ```bash

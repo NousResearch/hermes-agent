@@ -855,6 +855,13 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
+            if not user_id:
+                # Discord may not resend SPEAKING after a voice reconnect.
+                # Infer a sole permitted member before decrypting the first
+                # packet; waiting until check_silence() is too late because
+                # DAVE ciphertext has already been sent through Opus decode
+                # and becomes a silent WAV that VAD correctly rejects.
+                user_id = self._infer_user_for_ssrc(ssrc)
             if user_id:
                 try:
                     import davey
@@ -1155,6 +1162,11 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         self._voice_timeout_seconds = self._load_voice_timeout()
         self._playback_timeout_seconds = self._load_playback_timeout()
+        (
+            self._voice_auto_join_channel_id,
+            self._voice_auto_join_user_ids,
+            self._voice_auto_join_text_channel_id,
+        ) = self._load_voice_auto_join_config()
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -1484,15 +1496,28 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
-                # Only track channels where the bot is connected
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
                 guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
-                # Ignore the bot itself
                 if member == adapter_self._client.user:
+                    # A move performed outside this adapter (for example from
+                    # Discord's UI or REST API) makes discord.py replace the
+                    # UDP packet reader while retaining the VoiceClient.  The
+                    # existing VoiceReceiver remains attached to the old
+                    # reader, so it can still see websocket SPEAKING events
+                    # but receives no audio packets.  Refresh the receiver
+                    # after discord.py has completed its reconnect.
+                    if before.channel != after.channel and after.channel is not None:
+                        asyncio.ensure_future(
+                            adapter_self._refresh_voice_receiver_after_forced_move(guild_id)
+                        )
+                    return
+
+                await adapter_self._auto_join_voice_for_member(member, before, after)
+
+                # Only log ordinary member state changes while the bot is in
+                # this guild. Auto-join above runs before this guard because
+                # it is how an initially disconnected bot enters the room.
+                bot_guild_ids = set(adapter_self._voice_clients.keys())
+                if guild_id not in bot_guild_ids:
                     return
 
                 joined = before.channel is None and after.channel is not None
@@ -2468,6 +2493,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         try:
+            await self._auto_join_configured_voice_channel_if_user_present()
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
@@ -4432,6 +4458,33 @@ class DiscordAdapter(BasePlatformAdapter):
             minimum=0,
         )
 
+    def _load_voice_auto_join_config(self) -> tuple[Optional[int], set[str], Optional[int]]:
+        """Load the voice room, user allowlist, and optional text reply channel.
+
+        Both values must be valid. A partial or malformed configuration stays
+        disabled so Hermes can never join a room merely because voice-state
+        events are enabled.
+        """
+        try:
+            from hermes_cli.config import read_raw_config
+
+            discord_cfg = (read_raw_config() or {}).get("discord") or {}
+            channel_id = int(discord_cfg.get("voice_auto_join_channel_id"))
+            text_channel_id_raw = discord_cfg.get("voice_auto_join_text_channel_id")
+            text_channel_id = int(text_channel_id_raw) if text_channel_id_raw else None
+            raw_user_ids = discord_cfg.get("voice_auto_join_user_ids") or []
+            if isinstance(raw_user_ids, str):
+                raw_user_ids = raw_user_ids.split(",")
+            user_ids = {str(value).strip() for value in raw_user_ids if str(value).strip().isdigit()}
+            if channel_id <= 0 or not user_ids:
+                return None, set(), None
+            if text_channel_id is not None and text_channel_id <= 0:
+                text_channel_id = None
+            return channel_id, user_ids, text_channel_id
+        except Exception as e:
+            logger.debug("Could not load Discord voice auto-join config: %s", e)
+            return None, set(), None
+
     def _load_playback_timeout(self) -> int:
         """Return minimum playback wait seconds for Discord VC audio."""
         return self._load_discord_int_config(
@@ -4684,6 +4737,99 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.warning("Voice mixer failed to start: %s", e)
 
             return True
+
+    async def _refresh_voice_receiver_after_forced_move(self, guild_id: int) -> None:
+        """Attach a new packet receiver after discord.py reconnects a moved bot.
+
+        Discord can force-move a bot without going through ``move_to``.  In
+        that case the VoiceClient survives but its UDP SocketReader changes;
+        the previous VoiceReceiver must be stopped and reattached.
+        """
+        # Give discord.py's voice-state handler time to replace the transport.
+        await asyncio.sleep(0.5)
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            logger.warning("Voice receiver refresh skipped: no connected client for guild %s", guild_id)
+            return
+
+        previous_receiver = self._voice_receivers.pop(guild_id, None)
+        if previous_receiver:
+            previous_receiver.stop()
+        previous_task = self._voice_listen_tasks.pop(guild_id, None)
+        if previous_task:
+            previous_task.cancel()
+
+        try:
+            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+            receiver.start()
+            self._voice_receivers[guild_id] = receiver
+            self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+                self._voice_listen_loop(guild_id)
+            )
+            logger.info("Voice receiver refreshed after forced move (guild=%s)", guild_id)
+        except Exception as e:
+            logger.warning("Voice receiver refresh failed after forced move: %s", e)
+
+    async def _auto_join_voice_for_member(self, member, before, after) -> None:
+        """Join or leave the configured room when its configured user moves."""
+        channel_id = getattr(self, "_voice_auto_join_channel_id", None)
+        user_ids = getattr(self, "_voice_auto_join_user_ids", set())
+        if not channel_id or str(getattr(member, "id", "")) not in user_ids:
+            return
+
+        before_channel = getattr(before, "channel", None)
+        after_channel = getattr(after, "channel", None)
+        was_in_configured_channel = getattr(before_channel, "id", None) == channel_id
+        is_in_configured_channel = getattr(after_channel, "id", None) == channel_id
+
+        if is_in_configured_channel and not was_in_configured_channel:
+            text_channel_id = int(
+                getattr(self, "_voice_auto_join_text_channel_id", None) or channel_id
+            )
+            await self.join_voice_channel(
+                after_channel,
+                text_channel_id=text_channel_id,
+                source=self._voice_auto_join_source(text_channel_id, member.id),
+            )
+            return
+
+        if was_in_configured_channel and not is_in_configured_channel:
+            await self.leave_voice_channel(member.guild.id)
+
+    async def _auto_join_configured_voice_channel_if_user_present(self) -> None:
+        """Restore the configured voice session after Gateway startup."""
+        channel_id = getattr(self, "_voice_auto_join_channel_id", None)
+        user_ids = getattr(self, "_voice_auto_join_user_ids", set())
+        if not channel_id or not user_ids or not self._client:
+            return
+        channel = self._client.get_channel(channel_id)
+        if channel is None:
+            logger.warning("Configured voice auto-join channel %s is unavailable", channel_id)
+            return
+        for member in getattr(channel, "members", []):
+            if str(getattr(member, "id", "")) not in user_ids:
+                continue
+            text_channel_id = int(
+                getattr(self, "_voice_auto_join_text_channel_id", None) or channel_id
+            )
+            await self.join_voice_channel(
+                channel,
+                text_channel_id=text_channel_id,
+                source=self._voice_auto_join_source(text_channel_id, member.id),
+            )
+            return
+
+    @staticmethod
+    def _voice_auto_join_source(text_channel_id: int, user_id: int) -> Dict[str, str]:
+        """Build valid session metadata for a voice auto-join reply destination."""
+        user_id_str = str(user_id)
+        return {
+            "platform": Platform.DISCORD.value,
+            "chat_id": str(text_channel_id),
+            "user_id": user_id_str,
+            "user_name": user_id_str,
+            "chat_type": "channel",
+        }
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
@@ -7004,6 +7150,160 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _specialist_routing_settings(self) -> dict[str, Any]:
+        """Return validated, explicitly opt-in Discord specialist routing settings."""
+        raw = self.config.extra.get("specialist_routing")
+        if not isinstance(raw, dict):
+            return {"enabled": False}
+        enabled = raw.get("enabled", False)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"true", "1", "yes", "on"}
+        if not enabled:
+            return {"enabled": False}
+        board = raw.get("board")
+        if not isinstance(board, str) or not board.strip():
+            return {"enabled": False}
+        board = board.strip()
+        try:
+            threshold = float(raw.get("confidence_threshold", 0.80))
+        except (TypeError, ValueError):
+            threshold = 0.80
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            threshold = 0.80
+        try:
+            timeout = float(raw.get("timeout_seconds", 12))
+        except (TypeError, ValueError):
+            timeout = 12.0
+        return {"enabled": True, "confidence_threshold": threshold,
+                "timeout_seconds": max(1.0, min(30.0, timeout)),
+                "model": str(raw.get("model") or "").strip(), "board": board}
+
+    async def _maybe_answer_progress_event(self, event: MessageEvent) -> bool:
+        """Answer a source-scoped status question before model specialist routing."""
+        settings = self._specialist_routing_settings()
+        if not settings.get("enabled") or event.message_type is not MessageType.TEXT:
+            return False
+        if not (event.text or "").strip() or getattr(event.source, "is_bot", False):
+            return False
+        try:
+            from gateway.progress_queries import (
+                ProgressSource,
+                is_progress_query,
+                resolve_progress_query,
+            )
+
+            if not is_progress_query(event.text):
+                return False
+            platform = getattr(event.source.platform, "value", event.source.platform)
+            source = ProgressSource(
+                platform=str(platform),
+                chat_id=str(event.source.chat_id),
+                thread_id=(str(event.source.thread_id) if event.source.thread_id else None),
+                reply_to_message_id=(
+                    str(event.reply_to_message_id) if event.reply_to_message_id else None
+                ),
+            )
+            result = await asyncio.to_thread(
+                resolve_progress_query,
+                event.text,
+                source=source,
+                board=settings["board"],
+            )
+        except Exception:
+            logger.warning("[Discord] progress query lookup failed", exc_info=True)
+            return False
+        if not result.handled:
+            return False
+        await self.send(event.source.chat_id, content=result.response, reply_to=event.message_id)
+        return True
+
+    async def _classify_specialist_event(self, event: MessageEvent):
+        """Ask the bounded auxiliary router for one typed routing decision."""
+        settings = self._specialist_routing_settings()
+        from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+        from gateway.specialist_routing import classify_specialist_request
+
+        async def _classifier(messages):
+            response = await async_call_llm(
+                task="specialist_router", model=settings["model"] or None,
+                messages=messages, temperature=0.0, max_tokens=180,
+                timeout=settings["timeout_seconds"], reasoning_config={"enabled": False},
+            )
+            return extract_content_or_reasoning(response)
+
+        return await classify_specialist_request(
+            event.text, _classifier, threshold=settings["confidence_threshold"],
+            timeout=settings["timeout_seconds"],
+        )
+
+    async def _maybe_route_specialist_event(self, event: MessageEvent) -> bool:
+        """Create a guarded specialist card, or return false for normal chat."""
+        settings = self._specialist_routing_settings()
+        if not settings.get("enabled") or event.message_type is not MessageType.TEXT:
+            return False
+        if not (event.text or "").strip() or getattr(event.source, "is_bot", False):
+            return False
+        try:
+            decision = await self._classify_specialist_event(event)
+        except Exception:
+            logger.warning("[Discord] specialist routing classifier failed", exc_info=True)
+            return False
+        if decision.kind.value == "general":
+            logger.info("[Discord] specialist routing fell through: %s", decision.audit_reason)
+            return False
+        if decision.kind.value == "clarify":
+            await self.send(
+                event.source.chat_id,
+                content=("Which specialist task should I start: an audit, a narrow patch, "
+                         "acceptance verification, safety review, research, or performance work?"),
+                reply_to=event.message_id,
+            )
+            return True
+        if not decision.dispatches:
+            return False
+        try:
+            from gateway.capability_registry import CapabilityRegistry
+            from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
+            from gateway.specialist_routing import capability_signature_for_profile
+
+            signature = capability_signature_for_profile(decision.profile)
+            if signature is None:
+                logger.warning("[Discord] specialist route had no fixed capability signature")
+                return False
+
+            platform = getattr(event.source.platform, "value", event.source.platform)
+            source = HandoffSource(
+                platform=str(platform), chat_id=str(event.source.chat_id),
+                chat_type=str(event.source.chat_type or "group"),
+                user_id=str(event.source.user_id) if event.source.user_id else None,
+                user_id_alt=str(event.source.user_id_alt) if event.source.user_id_alt else None,
+                guild_id=str(event.source.guild_id) if event.source.guild_id else None,
+                thread_id=str(event.source.thread_id) if event.source.thread_id else None,
+                message_id=str(event.message_id or event.source.message_id or ""),
+                notifier_profile=getattr(event.source, "profile", None) or "default",
+            )
+            result = await asyncio.to_thread(
+                create_specialist_handoff, decision=decision, source=source,
+                request=event.text, router_model=settings["model"] or "configured_auxiliary",
+                board=settings["board"], signature=signature,
+                registry=CapabilityRegistry(board=settings["board"]),
+            )
+        except Exception:
+            logger.warning("[Discord] specialist routing handoff failed", exc_info=True)
+            return False
+        if not result.ok or not result.task_id:
+            logger.warning("[Discord] specialist routing handoff rejected: %s", result.reason)
+            return False
+        await self.send(
+            event.source.chat_id,
+            content=(
+                f"Planning `{result.task_id}` with the task orchestrator. "
+                "I’ll post the worker plan and progress here."
+            ),
+            reply_to=event.message_id,
+        )
+        return True
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -8659,6 +8959,14 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+
+        # A high-confidence natural-language task request becomes one durable,
+        # subscribed Kanban card. General, invalid, unavailable, and failed
+        # classifications return false and preserve the existing chat flow.
+        if not recovered and await self._maybe_answer_progress_event(event):
+            return True
+        if not recovered and await self._maybe_route_specialist_event(event):
+            return True
 
         # Track thread participation so the bot won't require @mention for
         # follow-up messages in threads it has already engaged in.

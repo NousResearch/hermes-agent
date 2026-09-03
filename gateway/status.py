@@ -53,6 +53,37 @@ _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any,
 logger = logging.getLogger(__name__)
 
 
+def specialist_discovery_status(
+    candidate_id: str,
+    *,
+    db_path: Optional[Path] = None,
+    board: Optional[str] = None,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    """Return sanitized specialist-discovery lifecycle rows for diagnostics.
+
+    This status surface only reconstructs existing local durable receipts.  It
+    does not retry any advisory/benchmark operation, issue a canary, dispatch
+    a task, or alter a capability profile.
+    """
+    from gateway.lifecycle_ledger import recover_specialist_discovery
+
+    recovery = recover_specialist_discovery(candidate_id, db_path=db_path, board=board, now=now)
+    return {
+        "candidate_id": recovery.candidate_id,
+        "recovery_action": recovery.recovery_action,
+        "rows": [
+            {
+                "stage": row.stage,
+                "status": row.status,
+                "receipt_hash": row.receipt_hash,
+                "expires_at": row.expires_at,
+            }
+            for row in recovery.rows
+        ],
+    }
+
+
 class StormInfo(NamedTuple):
     """Result of a respawn-storm check: how many starts, over what window, and
     the backoff the caller should sleep to break the storm."""

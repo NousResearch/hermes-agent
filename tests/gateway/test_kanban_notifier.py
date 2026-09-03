@@ -624,6 +624,32 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     assert remaining == []
 
 
+def test_notifier_delivers_decomposition_plan(tmp_path, monkeypatch):
+    db_path = tmp_path / "decomposed.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="coordinated work", assignee="orchestrator")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(
+            conn,
+            tid,
+            "decomposed",
+            {"child_ids": ["t_one", "t_two"]},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert tid in adapter.sent[0]["text"]
+    assert "planned 2 coordinated workers" in adapter.sent[0]["text"]
+
+
 # ---------------------------------------------------------------------------
 # Handoffs that hand a decision back to the origin must wake it, not only ping
 # it: `review_requested` (implementation done, waiting for a reviewer) and

@@ -330,6 +330,10 @@ def _sync_board_default_workdir(proj, board_slug: str) -> None:
             return
         if slug != kb.DEFAULT_BOARD and not kb.board_exists(slug):
             return
-        kb.write_board_metadata(slug, default_workdir=proj.primary_path)
+        kb.write_board_metadata(
+            slug,
+            default_workdir=proj.primary_path,
+            project_id=proj.id,
+        )
     except Exception:
         pass

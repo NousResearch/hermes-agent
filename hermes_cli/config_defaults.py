@@ -1310,6 +1310,17 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
+        # Short, tool-free classifier used by explicitly opted-in specialist
+        # task routing. Invalid/unavailable results always fall back to chat.
+        "specialist_router": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 12,
+            "extra_body": {},
+            "reasoning_effort": "none",
+        },
         # Kanban decomposer — decomposes a triage task into a graph of
         # child tasks routed to specialist profiles by description.
         # Invoked by ``hermes kanban decompose`` and the kanban
@@ -2470,6 +2481,29 @@ DEFAULT_CONFIG = {
         "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        # Disabled by default. When enabled, only high-confidence bounded
+        # task requests create a subscribed Kanban card; all other messages
+        # retain the ordinary chat path.
+        "specialist_routing": {
+            "enabled": False,
+            "confidence_threshold": 0.80,
+            "timeout_seconds": 12,
+            # Optional profile-to-capability map. Defaults stay generic;
+            # deployments can replace them with profiles that actually exist.
+            "profiles": {
+                "task-orchestrator": "broad actionable work needing planning and verification",
+                "patch-steward": "narrow corrective patches with regression evidence",
+                "acceptance-verifier": "acceptance evidence and release-gate verification",
+                "safety-reviewer": "security, privacy, and operational boundary review",
+                "data-quality-auditor": "data quality, freshness, and provenance review",
+                "execution-boundary-auditor": "side-effect boundary verification",
+                "dependency-health-sentinel": "dependency and tooling health",
+                "learning-steward": "governed learning and memory maintenance",
+                "ux-auditor": "operator experience and interface evidence",
+                "research-scout": "read-only research and evidence gathering",
+                "performance-sentinel": "performance and latency diagnostics",
+            },
+        },
         "missed_message_backfill": {
             "enabled": False,             # Replay missed Discord messages after reconnect/startup
             "channels": "",               # Comma-separated channel IDs; empty uses free_response_channels
@@ -2901,6 +2935,13 @@ DEFAULT_CONFIG = {
         # behaviour — e.g. for a profile that prefers explicit
         # ``kanban_notify-subscribe`` calls per task.
         "auto_subscribe_on_create": True,
+        # OAuth-authenticated dashboard subjects allowed to approve generated
+        # specialist promotion. Empty means fail closed. Subjects are exact
+        # ``<dashboard-auth-provider>:<user_id>`` values; a loopback session
+        # token never qualifies because it carries no human identity.
+        "specialist_operator_approvals": {
+            "allowed_subjects": [],
+        },
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false

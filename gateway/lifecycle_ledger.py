@@ -45,7 +45,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -382,3 +382,209 @@ def read_prior_exit_label(profile_home: Path) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+# Specialist discovery uses the Kanban SQLite ledger rather than this process
+# sentinel.  The read model lives here because it has the same crucial
+# property: it is reconstructed from append-only durable evidence at startup,
+# rather than replaying a model/advisory operation after a restart.
+class SpecialistLifecycleRow(NamedTuple):
+    """One sanitized, durable specialist-discovery lifecycle observation."""
+
+    stage: str
+    status: str
+    receipt_hash: Optional[str] = None
+    expires_at: Optional[int] = None
+
+
+class SpecialistDiscoveryRecovery(NamedTuple):
+    """Read-only recovery/status result for one candidate request."""
+
+    candidate_id: str
+    rows: tuple[SpecialistLifecycleRow, ...]
+    recovery_action: str
+
+
+def _specialist_rows_query(conn: Any, candidate_id: str, now: int) -> tuple[SpecialistLifecycleRow, ...]:
+    """Read only the immutable receipts that belong to a candidate.
+
+    The function deliberately has no callback parameter.  A restart must
+    never cause an advisory, benchmark, sandbox, or canary to run again.
+    """
+    candidate = conn.execute(
+        """
+        SELECT request_hash, lifecycle_status FROM candidate_profile_requests
+        WHERE request_id = ?
+        """,
+        (candidate_id,),
+    ).fetchone()
+    if candidate is None:
+        return (SpecialistLifecycleRow("candidate_request", "missing"),)
+    latest_candidate = conn.execute(
+        """
+        SELECT lifecycle_status FROM candidate_profile_requests
+        WHERE request_hash = ? ORDER BY id DESC LIMIT 1
+        """,
+        (candidate["request_hash"],),
+    ).fetchone()
+    rows: list[SpecialistLifecycleRow] = [
+        SpecialistLifecycleRow(
+            "candidate_request",
+            latest_candidate["lifecycle_status"] if latest_candidate is not None else candidate["lifecycle_status"],
+            candidate_id,
+        )
+    ]
+    source_rows = conn.execute(
+        "SELECT body, status FROM tasks WHERE body LIKE ? ORDER BY created_at DESC",
+        (f'%"candidate_request_id": "{candidate_id}"%',),
+    ).fetchall()
+    source_status = "not_found"
+    for source in source_rows:
+        try:
+            payload = json.loads(source["body"] or "")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("candidate_request_id") == candidate_id:
+            source_status = str(source["status"])
+            break
+    rows.insert(0, SpecialistLifecycleRow("source_task", source_status))
+    latest_benchmark = conn.execute(
+        """
+        SELECT result_hash, status, expires_at FROM specialist_benchmark_receipts
+        WHERE candidate_id = ? ORDER BY id DESC LIMIT 1
+        """,
+        (candidate_id,),
+    ).fetchone()
+    if latest_benchmark is not None:
+        benchmark_status = latest_benchmark["status"]
+        if now >= latest_benchmark["expires_at"]:
+            benchmark_status = "expired"
+        rows.append(
+            SpecialistLifecycleRow(
+                "benchmark", benchmark_status, latest_benchmark["result_hash"], latest_benchmark["expires_at"]
+            )
+        )
+    sandbox = conn.execute(
+        """
+        SELECT benchmark_result_hash, disposable, task_count FROM specialist_sandbox_runs
+        WHERE candidate_id = ? ORDER BY id DESC LIMIT 1
+        """,
+        (candidate_id,),
+    ).fetchone()
+    if sandbox is not None:
+        status = "verified_shape" if sandbox["disposable"] == 1 and sandbox["task_count"] == 1 else "rejected"
+        rows.append(SpecialistLifecycleRow("sandbox", status, sandbox["benchmark_result_hash"]))
+    verification = conn.execute(
+        """
+        SELECT result_hash, status, expires_at FROM specialist_verification_receipts
+        WHERE candidate_id = ? ORDER BY id DESC LIMIT 1
+        """,
+        (candidate_id,),
+    ).fetchone()
+    if verification is not None:
+        verification_status = verification["status"]
+        if now >= verification["expires_at"]:
+            verification_status = "expired"
+        rows.append(
+            SpecialistLifecycleRow(
+                "verification", verification_status, verification["result_hash"], verification["expires_at"]
+            )
+        )
+    canary = conn.execute(
+        """
+        SELECT result_hash, status FROM specialist_canary_receipts
+        WHERE candidate_id = ? ORDER BY id DESC LIMIT 1
+        """,
+        (candidate_id,),
+    ).fetchone()
+    rows.append(
+        SpecialistLifecycleRow("canary", canary["status"] if canary is not None else "not_run", canary["result_hash"] if canary else None)
+    )
+    approvals = conn.execute(
+        """
+        SELECT target_state, approval_hash FROM specialist_operator_approvals
+        WHERE candidate_id = ? AND approved = 1 ORDER BY id
+        """,
+        (candidate_id,),
+    ).fetchall()
+    approved_targets = {row["target_state"] for row in approvals}
+    rows.append(SpecialistLifecycleRow("staged_approval", "approved" if "staged" in approved_targets else "missing"))
+    rows.append(SpecialistLifecycleRow("active_approval", "approved" if "active" in approved_targets else "missing"))
+    profile = conn.execute(
+        """
+        SELECT profile_id, signature_hash, expires_at FROM capability_profiles
+        WHERE model_receipt_hash IN (
+            SELECT result_hash FROM specialist_benchmark_receipts WHERE candidate_id = ?
+        ) AND verification_receipt_hash IN (
+            SELECT result_hash FROM specialist_verification_receipts WHERE candidate_id = ?
+        ) ORDER BY id DESC LIMIT 1
+        """,
+        (candidate_id, candidate_id),
+    ).fetchone()
+    if profile is not None:
+        revoked = conn.execute(
+            """
+            SELECT revocation_hash FROM specialist_profile_revocations
+            WHERE profile_id = ? AND signature_hash = ? ORDER BY id DESC LIMIT 1
+            """,
+            (profile["profile_id"], profile["signature_hash"]),
+        ).fetchone()
+        if revoked is not None:
+            rows.append(SpecialistLifecycleRow("rollback", "revoked", revoked["revocation_hash"]))
+            rows.append(SpecialistLifecycleRow("active_profile", "revoked"))
+        elif profile["expires_at"] is not None and now >= profile["expires_at"]:
+            rows.append(SpecialistLifecycleRow("expiry", "expired", expires_at=profile["expires_at"]))
+            rows.append(SpecialistLifecycleRow("active_profile", "expired", expires_at=profile["expires_at"]))
+        else:
+            rows.append(SpecialistLifecycleRow("active_profile", "active"))
+    else:
+        rows.append(SpecialistLifecycleRow("active_profile", "not_active"))
+    return tuple(rows)
+
+
+def recover_specialist_discovery(
+    candidate_id: str, *, db_path: Optional[Path] = None, board: Optional[str] = None, now: Optional[int] = None
+) -> SpecialistDiscoveryRecovery:
+    """Reconcile one candidate exclusively from append-only local evidence.
+
+    Recovery never retries advisory/benchmark work and never dispatches or
+    activates a profile.  Expired/revoked results explicitly direct the caller
+    to the normal task-orchestrator/triage fallback.
+    """
+    if not isinstance(candidate_id, str) or not candidate_id:
+        raise ValueError("candidate_id must be a non-empty string")
+    if now is None:
+        now = int(time.time())
+    if isinstance(now, bool) or not isinstance(now, int):
+        raise ValueError("now must be an integer timestamp")
+    try:
+        from hermes_cli import kanban_db
+
+        path = Path(db_path) if db_path is not None else kanban_db.kanban_db_path(board=board)
+        # `mode=ro` is critical here: the normal Kanban connect helper can
+        # initialize/migrate a DB and create WAL sidecars. Recovery must refuse
+        # a missing/uninitialized ledger rather than making evidence appear.
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        # Always use a fresh ``mode=ro`` snapshot for a mutable Hermes ledger.
+        # Choosing a mode from a prior WAL-path observation races a writer that
+        # commits a revocation immediately afterwards. SQLite may attach or
+        # create a ``-shm`` mapping while observing WAL state, but this reader
+        # never writes the main database or WAL. Any read failure is normal
+        # triage rather than a stale active resolution.
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = _specialist_rows_query(conn, candidate_id, now)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return SpecialistDiscoveryRecovery(
+            candidate_id,
+            (SpecialistLifecycleRow("ledger", f"unavailable:{type(exc).__name__}"),),
+            "normal_triage",
+        )
+    active = next((row for row in rows if row.stage == "active_profile"), None)
+    action = "active_resolution" if active and active.status == "active" else "task_orchestrator"
+    return SpecialistDiscoveryRecovery(candidate_id, rows, action)

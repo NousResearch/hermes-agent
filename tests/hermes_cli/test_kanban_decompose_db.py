@@ -88,5 +88,54 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_inherits_goal_lifecycle_to_children(kanban_home):
+    """A routed goal must not fan out into one-shot child workers."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="durable orchestration root",
+            triage=True,
+            goal_mode=True,
+            goal_max_turns=12,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "first slice", "assignee": "researcher"},
+                {"title": "second slice", "assignee": "engineer"},
+            ],
+            author="decomposer",
+        )
+    assert child_ids is not None
 
+    with kb.connect() as conn:
+        children = [kb.get_task(conn, child_id) for child_id in child_ids]
+
+    assert all(child is not None and child.goal_mode for child in children)
+    assert [child.goal_max_turns for child in children] == [12, 12]
+
+
+def test_decompose_inherits_forced_skills_to_children(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="navigation-bound root",
+            triage=True,
+            skills=["project-worktree-navigation"],
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[{"title": "first slice", "assignee": "researcher"}],
+        )
+    assert child_ids is not None
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_ids[0])
+
+    assert child is not None
+    assert child.skills == ["project-worktree-navigation"]
 

@@ -145,6 +145,7 @@ export type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 's
 
 export interface MemoryProviderFieldOption {
   description: string
+  disabled?: boolean
   label: string
   value: string
 }

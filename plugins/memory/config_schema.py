@@ -82,6 +82,9 @@ class ProviderField:
     info: str = ""
     # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
+    # Conditional visibility: field is only shown when all keys match their expected values
+    # in the stored provider config (e.g. ``when={"mode": "local_embedded"}``).
+    when: dict[str, str] | None = None
 
     @property
     def is_secret(self) -> bool:

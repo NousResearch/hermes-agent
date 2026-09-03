@@ -765,29 +765,32 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    for command_variant in _command_detection_variants(command):
-        variant_lower = command_variant.lower()
-        masked_lower: str | None = None
-        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
-            if quote_masked:
-                # Positionless rules (redirect-to-block-device, fork bomb)
-                # match a quote-masked variant so quoted prose in echo /
-                # git commit -m / gh --body arguments is DATA (#93392).
-                # Shell-carrying commands (sh/bash -c, eval, source) hand
-                # their quoted argument to another parser, so those scan
-                # the raw variant — quoting is not a bypass. bash/sh -c
-                # payloads additionally surface as their own raw variants
-                # via _execution_flag_findings.
-                if masked_lower is None:
-                    if _contains_shell_carrier(command_variant):
-                        masked_lower = variant_lower
-                    else:
-                        masked_lower = _mask_quoted_prose(command_variant).lower()
-                haystack = masked_lower
-            else:
-                haystack = variant_lower
-            if pattern_re.search(haystack):
-                return (True, description)
+    try:
+        for command_variant in _command_detection_variants(command):
+            variant_lower = command_variant.lower()
+            masked_lower: str | None = None
+            for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+                if quote_masked:
+                    # Positionless rules (redirect-to-block-device, fork bomb)
+                    # match a quote-masked variant so quoted prose in echo /
+                    # git commit -m / gh --body arguments is DATA (#93392).
+                    # Shell-carrying commands (sh/bash -c, eval, source) hand
+                    # their quoted argument to another parser, so those scan
+                    # the raw variant — quoting is not a bypass. bash/sh -c
+                    # payloads additionally surface as their own raw variants
+                    # via _execution_flag_findings.
+                    if masked_lower is None:
+                        if _contains_shell_carrier(command_variant):
+                            masked_lower = variant_lower
+                        else:
+                            masked_lower = _mask_quoted_prose(command_variant).lower()
+                    haystack = masked_lower
+                else:
+                    haystack = variant_lower
+                if pattern_re.search(haystack):
+                    return (True, description)
+    except _UnresolvedCommandWalk as unresolved:
+        return (True, unresolved.description)
     return (False, None)
 
 
@@ -815,11 +818,16 @@ def _match_user_deny_rule(command: str) -> str | None:
              if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _command_detection_variants(command):
-        candidate = command_variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
-                return pattern
+    try:
+        for command_variant in _command_detection_variants(command):
+            candidate = command_variant.lower().strip()
+            for pattern in globs:
+                if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                    return pattern
+    except _UnresolvedCommandWalk:
+        # No deny rule can be confirmed on an unresolvable command; the
+        # hardline detector already fails it safe.
+        return None
     return None
 
 
@@ -1500,14 +1508,357 @@ _COMMAND_WRAPPER_WORDS = {
     "time",
     "command",
     "builtin",
+    "timeout",
+    "nice",
+    "stdbuf",
 }
-_SUDO_OPTIONS_WITH_ARG = {
-    "-c", "--close-from",
-    "-g", "--group",
-    "-h", "--host",
-    "-p", "--prompt",
-    "-u", "--user",
+# sudo uses getopt_long and its short options are case-sensitive. Keep the
+# complete option namespace here so unique long abbreviations can be resolved
+# exactly as sudo resolves them. Unknown or ambiguous spellings fail closed.
+_SUDO_LONG_OPTIONS_WITH_ARG = frozenset({
+    "auth-type", "close-from", "login-class", "chdir", "group", "host",
+    "prompt", "chroot", "role", "command-timeout", "type", "other-user",
+    "user",
+})
+_SUDO_LONG_OPTIONS = _SUDO_LONG_OPTIONS_WITH_ARG | frozenset({
+    "background", "preserve-env", "edit", "set-home", "login",
+    "remove-timestamp", "list", "preserve-groups", "shell", "validate",
+    "askpass", "bell", "help", "reset-timestamp", "no-update",
+    "non-interactive", "stdin", "version",
+})
+_SUDO_SHORT_FLAGS = frozenset("ABbEeHiKklNnPSsVv")
+_SUDO_SHORT_OPTIONS_WITH_ARG = frozenset("aCcDgpRrTtUu")
+
+# GNU env has its own case-sensitive getopt grammar. Split-string is not a
+# data operand: env parses it into the argv it executes. Its quoting,
+# expansion, escaping, and comment rules differ from shell parsing, so the
+# safe bounded behavior is to mark every recognized -S/--split-string form
+# unresolved instead of attempting a partial parser here.
+_ENV_LONG_OPTIONS_WITH_ARG = frozenset({"argv0", "unset", "chdir"})
+_ENV_LONG_OPTIONS = _ENV_LONG_OPTIONS_WITH_ARG | frozenset({
+    "null", "ignore-environment", "default-signal", "ignore-signal",
+    "block-signal", "list-signal-handling", "debug", "split-string",
+    "help", "version",
+})
+_ENV_SHORT_FLAGS = frozenset("0iv")
+_ENV_SHORT_OPTIONS_WITH_ARG = frozenset("aCu")
+
+# `command` takes options of its own before the executable, and none of them
+# take a separate operand: `command -p /sbin/reboot` and `command -- ...`
+# both run the executable. `-v`/`-V` are the exception — they only look the
+# command up and print it, so nothing is executed and the walker must stop
+# rather than project a word that never runs. `command`'s only short options
+# are `p`, `v` and `V`, so any cluster carrying v/V (`-pv`) is lookup-only too.
+_COMMAND_LOOKUP_ONLY_SHORT = frozenset("vV")
+_COMMAND_OPTIONS = frozenset({"-p", "-v", "-V"})
+
+# `exec -a NAME` consumes the following word as the argv[0] to use; `-c` and
+# `-l` take no operand. Anything else after `exec` is the program.
+_EXEC_OPTIONS = frozenset({"-a", "-c", "-l"})
+_EXEC_OPTIONS_WITH_ARG = frozenset({"-a"})
+
+# `timeout` consumes one duration operand after its options, then launches the
+# remaining command. Options in this set take their value from the next word
+# unless it is attached with `=`.
+_TIMEOUT_OPTIONS_WITH_ARG = frozenset({
+    "-k", "--kill-after",
+    "-s", "--signal",
+})
+_TIMEOUT_OPTIONS = _TIMEOUT_OPTIONS_WITH_ARG | frozenset({
+    # Short spellings included: coreutils' getopt string is "+k:s:vf" plus
+    # -p for --preserve-status, so `timeout -p 5 cmd` and `timeout -f 5 cmd`
+    # are valid and must not strand the walker on the option word.
+    "-p", "--preserve-status",
+    "-f", "--foreground",
+    "-v", "--verbose",
+})
+
+_NICE_OPTIONS_WITH_ARG = frozenset({"-n", "--adjustment"})
+_NICE_OPTIONS = _NICE_OPTIONS_WITH_ARG
+
+_STDBUF_OPTIONS_WITH_ARG = frozenset({
+    "-i", "-o", "-e",
+    "--input", "--output", "--error",
+})
+_STDBUF_OPTIONS = _STDBUF_OPTIONS_WITH_ARG
+
+# `time` is both a bash reserved word (accepting only -p) and GNU time
+# (-f/--format and -o/--output take an operand; -p -a -v -q -V do not). The
+# walker only sees the spelling, so it accepts the union of both grammars.
+# Option names are matched lowercased, so -V folds onto -v (both take no
+# operand under either spelling).
+_TIME_OPTIONS_WITH_ARG = frozenset({
+    "-f", "--format",
+    "-o", "--output",
+})
+_TIME_OPTIONS = _TIME_OPTIONS_WITH_ARG | frozenset({
+    "-p", "--portability",
+    "-a", "--append",
+    "-v", "--verbose",
+    "-q", "--quiet",
+    "--version",
+    "--help",
+})
+
+# util-linux setsid's getopt string is "+Vhcfw" — every option is a flag,
+# and the leading "+" stops option parsing at the first non-option word.
+_SETSID_OPTIONS = frozenset({
+    "-c", "--ctty",
+    "-f", "--fork",
+    "-w", "--wait",
+    "-v", "--version",
+    "-h", "--help",
+})
+
+# For these wrappers the option grammar above is exhaustive, so an option
+# word outside it means the walker cannot tell where the program word
+# starts. Resolving anyway risks projecting an option (or its operand) as
+# the command word, so the walk reports the command as unresolvable and the
+# caller fails safe.
+_WRAPPERS_UNRESOLVED_ON_UNKNOWN_OPTION = frozenset({"time", "setsid"})
+
+_WRAPPER_SHORT_FLAGS = {
+    "command": frozenset("pv"),
+    "exec": frozenset("cl"),
+    # coreutils' timeout getopt string is "+k:s:vf" and -p is accepted for
+    # --preserve-status, so v/f/p are the no-argument short flags that can
+    # appear bundled (-vpf) ahead of the duration.
+    "timeout": frozenset("vfp"),
+    "time": frozenset("pavq"),
+    "setsid": frozenset("cfwvh"),
 }
+_WRAPPER_SHORT_OPTIONS_WITH_ARG = {
+    "exec": frozenset("a"),
+    "timeout": frozenset("ks"),
+    "nice": frozenset("n"),
+    "stdbuf": frozenset("ioe"),
+    "time": frozenset("fo"),
+}
+
+
+def _is_lookup_only_option(option_name: str) -> bool:
+    if option_name.startswith("--"):
+        return False
+    return bool(set(option_name[1:]) & _COMMAND_LOOKUP_ONLY_SHORT)
+
+
+def _short_wrapper_option_action(
+    wrapper: str, word: str
+) -> tuple[str, bool] | None:
+    """Parse one GNU-style short-option cluster for a wrapper."""
+    if (
+        len(word) <= 1
+        or word.startswith("--")
+        or not word.startswith("-")
+        or "=" in word
+    ):
+        return None
+    flags = _WRAPPER_SHORT_FLAGS.get(wrapper, frozenset())
+    options_with_arg = _WRAPPER_SHORT_OPTIONS_WITH_ARG.get(
+        wrapper, frozenset()
+    )
+    if not flags and not options_with_arg:
+        return None
+
+    cluster = word[1:]
+    for index, option in enumerate(cluster):
+        if option in options_with_arg:
+            return ("skip", index == len(cluster) - 1)
+        if option not in flags:
+            return None
+    return ("skip", False)
+
+
+def _resolve_unique_long_option(
+    word: str, options: frozenset[str]
+) -> str | None:
+    """Resolve an exact or unambiguous getopt_long option name."""
+    option_name = word[2:].split("=", 1)[0]
+    if not option_name:
+        return None
+    if option_name in options:
+        return option_name
+    matches = [option for option in options if option.startswith(option_name)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _sudo_option_action(word: str) -> tuple[str, bool]:
+    """Classify one sudo option using sudo's case-sensitive getopt grammar."""
+    if word.startswith("--"):
+        option = _resolve_unique_long_option(word, _SUDO_LONG_OPTIONS)
+        if option is None:
+            return ("unresolved", False)
+        return (
+            "skip",
+            "=" not in word and option in _SUDO_LONG_OPTIONS_WITH_ARG,
+        )
+
+    cluster = word[1:]
+    if not cluster:
+        return ("unresolved", False)
+    for index, option in enumerate(cluster):
+        has_attached_operand = index < len(cluster) - 1
+        if option in _SUDO_SHORT_OPTIONS_WITH_ARG:
+            return ("skip", not has_attached_operand)
+        if option == "h":
+            if has_attached_operand:
+                return ("skip", False)
+            # Only an exact `-h` may consume the next ordinary word as sudo's
+            # historical remote-host operand. A bundled `-nh` selects help,
+            # and exact `-h` also selects help when the next word is another
+            # option or an environment assignment. The walkers perform that
+            # one-word lookahead before deciding whether execution continues.
+            return (
+                "sudo_host_or_help" if word == "-h" else "stop",
+                False,
+            )
+        if option not in _SUDO_SHORT_FLAGS:
+            return ("unresolved", False)
+    return ("skip", False)
+
+
+def _env_option_action(word: str) -> tuple[str, bool]:
+    """Classify one GNU env option without parsing executable -S payloads."""
+    if word == "-":
+        return ("skip", False)
+    if word.startswith("--"):
+        option = _resolve_unique_long_option(word, _ENV_LONG_OPTIONS)
+        if option is None or option == "split-string":
+            return ("unresolved", False)
+        return (
+            "skip",
+            "=" not in word and option in _ENV_LONG_OPTIONS_WITH_ARG,
+        )
+
+    cluster = word[1:]
+    if not cluster:
+        return ("unresolved", False)
+    for index, option in enumerate(cluster):
+        if option == "S":
+            return ("unresolved", False)
+        if option in _ENV_SHORT_OPTIONS_WITH_ARG:
+            return ("skip", index == len(cluster) - 1)
+        if option not in _ENV_SHORT_FLAGS:
+            return ("unresolved", False)
+    return ("skip", False)
+
+
+def _wrapper_option_action(wrapper: str, word: str) -> tuple[str | None, bool]:
+    """Classify one option-shaped word for a pass-through wrapper.
+
+    The action is ``skip`` for a recognized option, ``end`` for ``--``,
+    ``stop`` for non-executing modes, ``sudo_host_or_help`` when exact ``-h``
+    needs one-word lookahead, ``unresolved`` for an option the wrapper's
+    exhaustive grammar does not know (the walker cannot place the program word
+    and must fail safe), and ``None`` when the word is the program name rather
+    than an option. The boolean reports whether the next word is the option's
+    separate operand.
+    """
+    if word == "--":
+        return ("end", False)
+    if wrapper == "sudo":
+        return _sudo_option_action(word)
+    if wrapper == "env":
+        return _env_option_action(word)
+
+    lowered = word.lower()
+    option_name = lowered.split("=", 1)[0]
+    if wrapper == "command" and _is_lookup_only_option(option_name):
+        return ("stop", False)
+    if wrapper == "nice" and re.fullmatch(r"-\d+", lowered):
+        # GNU nice's obsolete but still-supported `-ADJUSTMENT` spelling.
+        return ("skip", False)
+
+    short_action = _short_wrapper_option_action(wrapper, lowered)
+    if short_action is not None:
+        return short_action
+
+    if wrapper == "command":
+        options = _COMMAND_OPTIONS
+        options_with_arg = frozenset()
+    elif wrapper == "exec":
+        options = _EXEC_OPTIONS
+        options_with_arg = _EXEC_OPTIONS_WITH_ARG
+    elif wrapper == "timeout":
+        options = _TIMEOUT_OPTIONS
+        options_with_arg = _TIMEOUT_OPTIONS_WITH_ARG
+    elif wrapper == "nice":
+        options = _NICE_OPTIONS
+        options_with_arg = _NICE_OPTIONS_WITH_ARG
+    elif wrapper == "stdbuf":
+        options = _STDBUF_OPTIONS
+        options_with_arg = _STDBUF_OPTIONS_WITH_ARG
+    elif wrapper == "time":
+        options = _TIME_OPTIONS
+        options_with_arg = _TIME_OPTIONS_WITH_ARG
+    elif wrapper == "setsid":
+        options = _SETSID_OPTIONS
+        options_with_arg = frozenset()
+    else:
+        options = frozenset()
+        options_with_arg = frozenset()
+
+    if options is not None and option_name not in options:
+        if wrapper in _WRAPPERS_UNRESOLVED_ON_UNKNOWN_OPTION:
+            return ("unresolved", False)
+        return (None, False)
+    return (
+        "skip",
+        "=" not in lowered and option_name in options_with_arg,
+    )
+
+
+def _wrapper_assignment_is_data(
+    wrapper: str, word: str, *, options_enabled: bool
+) -> bool:
+    """Return whether ``word`` is assignment data owned by ``wrapper``.
+
+    Shell assignment prefixes, sudo's interspersed environment entries, and
+    GNU env's NAME=VALUE operands have different grammars. Keep the wrapper
+    grammars here so both command-position walkers make the same transition.
+    """
+    if wrapper == "sudo":
+        # sudo parse_args.c:is_envar. `--` disables this interspersed form.
+        return (
+            options_enabled
+            and bool(word)
+            and word[0] not in {"/", "="}
+            and "=" in word
+        )
+    if wrapper == "env":
+        # GNU env consumes every equals-bearing operand before COMMAND, even
+        # after `--`; putenv itself decides whether the name is acceptable.
+        return "=" in word
+    return False
+
+
+def _wrapper_prefix_action(
+    wrapper: str, word: str, *, options_enabled: bool
+) -> tuple[str | None, bool, bool]:
+    """Classify one wrapper-prefix word at the shared state-machine choke point."""
+    # getopt owns option-shaped words before NAME=VALUE processing. This order
+    # is load-bearing for forms such as `env --split-string=PAYLOAD`.
+    if options_enabled and word.startswith("-"):
+        action, skip_next = _wrapper_option_action(wrapper, word)
+        return (action, skip_next, False if action == "end" else options_enabled)
+    if _wrapper_assignment_is_data(
+        wrapper, word, options_enabled=options_enabled
+    ):
+        # sudo resumes getopt after each interspersed assignment. GNU env's
+        # first NAME=VALUE permanently ends its option phase.
+        return ("skip", False, False if wrapper == "env" else options_enabled)
+    return (None, False, options_enabled)
+
+
+def _sudo_historical_host_follows(command: str, pos: int) -> bool:
+    """Return whether exact ``sudo -h`` consumes the next word as a host."""
+    word_start, word_end, word = _read_shell_word(command, pos)
+    if word_start == word_end:
+        return False
+    deobfuscated = _deobfuscate_shell_word_for_detection(word)
+    return not deobfuscated.startswith("-") and not _wrapper_assignment_is_data(
+        "sudo", deobfuscated, options_enabled=True
+    )
 
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"},
@@ -1575,6 +1926,30 @@ _MAX_SEPARATOR_FREE_COMMAND_CHARS = 4_096
 _MAX_DETECTION_SEGMENTS = 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
+_UNRESOLVED_WRAPPER_OPTION_DESCRIPTION = (
+    "unrecognized wrapper option ahead of the command word"
+)
+
+# Defensive cap on the words a command-position walk may consume per command
+# start. It is not a termination condition — every iteration consumes at
+# least one word, so the walk already terminates on input length — it bounds
+# the work spent on pathological prefixes. Reaching it means the command
+# word was never resolved, and that must surface as "unresolvable" (callers
+# fail safe), never as a silent pass-through.
+_WALKER_MAX_WORDS = 256
+
+
+class _UnresolvedCommandWalk(Exception):
+    """A command-position walk could not resolve the command word.
+
+    Raised when the walk hits ``_WALKER_MAX_WORDS`` or an option the
+    wrapper grammar cannot place. Detection entry points map this to a
+    positive detection: an uninspectable command must not run uninspected.
+    """
+
+    def __init__(self, description: str) -> None:
+        super().__init__(description)
+        self.description = description
 
 
 
@@ -1678,7 +2053,11 @@ def _quoted_grep_pattern_spans(command: str) -> tuple[list[tuple[int, int]], boo
     for segment in _iter_top_level_shell_segments(command):
         segment_at = command.find(segment, offset)
         offset = segment_at + len(segment)
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        try:
+            command_words = list(_iter_shell_command_word_spans(segment))
+        except _UnresolvedCommandWalk:
+            return [], True
+        for start, _, word in command_words:
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() not in {
                 "grep", "egrep",
             }:
@@ -1960,7 +2339,12 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        try:
+            command_words = list(_iter_shell_command_word_spans(segment))
+        except _UnresolvedCommandWalk:
+            yield (_MALFORMED_EXEC_DESCRIPTION, None)
+            continue
+        for start, _, word in command_words:
             executable = _deobfuscate_shell_word_for_detection(word)
             tokens = _shell_segment_tokens(segment, start)
             executable_name = os.path.basename(executable).lower()
@@ -2371,42 +2755,224 @@ def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
-        prefix_words = 0
+        words_walked = 0
+        active_wrapper = ""
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
-        while prefix_words < 12:
+        skip_timeout_duration = False
+        while True:
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
                 break
+            words_walked += 1
+            if words_walked >= _WALKER_MAX_WORDS:
+                raise _UnresolvedCommandWalk(_PARSER_LIMIT_DESCRIPTION)
             deobfuscated = _deobfuscate_shell_word_for_detection(word)
             lower_word = deobfuscated.lower()
             if skip_next_wrapper_arg:
                 skip_next_wrapper_arg = False
                 pos = word_end
-                prefix_words += 1
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
-                option_name = lower_word.split("=", 1)[0]
-                skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+            if active_wrapper:
+                (
+                    action,
+                    skip_next_wrapper_arg,
+                    skip_wrapper_options,
+                ) = _wrapper_prefix_action(
+                    active_wrapper,
+                    deobfuscated,
+                    options_enabled=skip_wrapper_options,
                 )
+                if action == "unresolved":
+                    raise _UnresolvedCommandWalk(
+                        _UNRESOLVED_WRAPPER_OPTION_DESCRIPTION
+                    )
+                if action == "stop":
+                    break
+                if action == "sudo_host_or_help":
+                    if _sudo_historical_host_follows(command, word_end):
+                        skip_next_wrapper_arg = True
+                    else:
+                        break
+                if action is not None:
+                    pos = word_end
+                    continue
+            if skip_timeout_duration:
+                skip_timeout_duration = False
+                skip_wrapper_options = False
                 pos = word_end
-                prefix_words += 1
                 continue
 
             yield (word_start, word_end, word)
-            prefix_words += 1
 
             if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+                active_wrapper = lower_word
+                skip_wrapper_options = True
+                skip_timeout_duration = lower_word == "timeout"
                 pos = word_end
                 continue
-            if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+            if not active_wrapper and _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+                active_wrapper = ""
                 skip_wrapper_options = False
                 pos = word_end
                 continue
             break
+
+
+_EXECUTABLE_LAUNCHER_SUFFIXES = (".exe", ".bat", ".cmd")
+_PROJECTED_BASENAME_RE = re.compile(r"[A-Za-z0-9_][\w.+-]*\Z")
+_WINDOWS_ABSOLUTE_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\")
+# `_read_shell_word` stops at whitespace and `;&|`, so a command that ends
+# at a substitution/subshell closer keeps that byte in the word:
+# `(/sbin/reboot)` reads as `/sbin/reboot)`. Trim the closers before the
+# basename check or the stray byte makes the word look like something other
+# than a program name and the projection silently declines. Only `)` and
+# the backtick qualify: both are shell metacharacters that can never sit
+# inside an unquoted word. `}` is NOT one (`echo foo}` prints `foo}`, and
+# a brace group's `}` is its own word behind `;`), so trimming it would
+# rewrite legitimate names like `/tmp/reboot}`.
+_WORD_TAIL_CLOSERS = ")`"
+
+
+def _projected_executable_basename(word: str) -> str | None:
+    """Reduce one command-position word to the bare program name a shell
+    would resolve, or None when the word already is one (or can't be one).
+
+    A Windows-absolute word (drive or UNC prefix) is split on both
+    separators BEFORE any escape collapsing — the deobfuscation pass treats
+    backslashes as shell escapes and would dissolve the path. Everything
+    else goes through the same quote/escape collapsing the r\\m detection
+    uses, so composed spellings (``'/sbin/'shutdown``, ``/sbin/shut\\down``)
+    reduce like their plain forms."""
+    stripped = _strip_optional_shell_quotes(word)
+    if _WINDOWS_ABSOLUTE_RE.match(stripped):
+        basename = stripped.replace("\\", "/").rsplit("/", 1)[-1]
+    else:
+        collapsed = _deobfuscate_shell_word_for_detection(word) or word
+        basename = _strip_optional_shell_quotes(collapsed).rsplit("/", 1)[-1]
+    lowered = basename.lower()
+    for suffix in _EXECUTABLE_LAUNCHER_SUFFIXES:
+        if lowered.endswith(suffix):
+            basename = basename[: -len(suffix)]
+            break
+    if basename == word:
+        return None  # already a bare name — nothing to project
+    # Refuse anything that doesn't reduce to a plain program name (empty
+    # basename from a trailing slash, expansion debris): projecting those
+    # could only manufacture command words a shell would not actually run.
+    if not _PROJECTED_BASENAME_RE.fullmatch(basename):
+        return None
+    return basename
+
+
+def _project_path_spelled_executables(command: str) -> str | None:
+    """Detection-only variant: rewrite command-position executables that are
+    spelled by path (POSIX or Windows, quoted or bare, with or without a
+    launcher suffix) to ``\\n<basename>`` so the flat ``_CMDPOS``-anchored
+    patterns see the same command word a bare spelling would produce —
+    ``/sbin/shutdown``, ``C:\\Windows\\System32\\shutdown.exe`` and
+    ``"C:\\Program Files\\Git\\usr\\bin\\rm.exe"`` must behave exactly like
+    ``shutdown`` / ``rm``. Must run on the RAW command: the global
+    normalization strips backslashes and fuses a Windows path into one word
+    before the basename could be recovered.
+
+    The walk mirrors ``_iter_shell_command_word_spans`` but recognizes
+    wrappers by their PROJECTED basename, so a path-spelled wrapper chain
+    (``/usr/bin/env /usr/bin/sudo /sbin/shutdown``) resolves in this single
+    pass — no fixpoint, no overlapping re-splice. Assignment-shaped words
+    (``X=/sbin/shutdown``) are prefix data, never executables. Returns None
+    when nothing needed rewriting."""
+    replacements: dict[int, tuple[int, str]] = {}
+    for command_start in _iter_shell_command_starts(command):
+        pos = command_start
+        active_wrapper = ""
+        resolved_through_wrapper = False
+        skip_wrapper_options = False
+        skip_next_wrapper_arg = False
+        skip_timeout_duration = False
+        # Shell grammar puts no limit on assignment prefixes, wrapper chains,
+        # or wrapper option lists, so no fixed budget may end this walk — any
+        # such exit lets a caller push the executable out of the projection.
+        # The walk terminates because every iteration consumes input; the
+        # shared word cap only bounds pathological prefixes and fails safe.
+        words_walked = 0
+        while True:
+            word_start, raw_end, _raw_word = _read_shell_word(command, pos)
+            if word_start == raw_end:
+                break
+            words_walked += 1
+            if words_walked >= _WALKER_MAX_WORDS:
+                raise _UnresolvedCommandWalk(_PARSER_LIMIT_DESCRIPTION)
+            pos = raw_end
+            # Trim group/substitution closers the word reader keeps
+            # (`(/sbin/reboot)` reads as `/sbin/reboot)`); the closer stays
+            # outside the replacement span so the splice preserves it.
+            word_end = raw_end
+            while word_end > word_start and command[word_end - 1] in _WORD_TAIL_CLOSERS:
+                word_end -= 1
+            if word_end == word_start:
+                continue  # bare closer: structure, not a word
+            word = command[word_start:word_end]
+            if skip_next_wrapper_arg:
+                skip_next_wrapper_arg = False
+                continue
+            deobfuscated = _deobfuscate_shell_word_for_detection(word) or word
+            if active_wrapper:
+                (
+                    action,
+                    skip_next_wrapper_arg,
+                    skip_wrapper_options,
+                ) = _wrapper_prefix_action(
+                    active_wrapper,
+                    deobfuscated,
+                    options_enabled=skip_wrapper_options,
+                )
+                if action == "unresolved":
+                    raise _UnresolvedCommandWalk(
+                        _UNRESOLVED_WRAPPER_OPTION_DESCRIPTION
+                    )
+                if action == "stop":
+                    break
+                if action == "sudo_host_or_help":
+                    if _sudo_historical_host_follows(command, pos):
+                        skip_next_wrapper_arg = True
+                    else:
+                        break
+                if action is not None:
+                    continue
+            if not active_wrapper and _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+                continue  # shell VAR=value prefix: data, keep walking
+            if skip_timeout_duration:
+                skip_timeout_duration = False
+                skip_wrapper_options = False
+                continue
+            basename = _projected_executable_basename(word)
+            effective = (basename or deobfuscated).lower()
+            if basename is not None and word_start not in replacements:
+                replacements[word_start] = (word_end, basename)
+            if effective in _COMMAND_WRAPPER_WORDS:
+                active_wrapper = effective
+                resolved_through_wrapper = True
+                skip_wrapper_options = True
+                skip_timeout_duration = effective == "timeout"
+                continue  # wrapper (bare or path-spelled): walk to the command
+            if (
+                resolved_through_wrapper
+                and basename is None
+                and word_start not in replacements
+            ):
+                # Wrappers absent from the flat `_CMDPOS` grammar still need
+                # their resolved bare command surfaced at a real command
+                # position (`timeout 5 nice rm -rf /`).
+                replacements[word_start] = (word_end, deobfuscated)
+            break
+    if not replacements:
+        return None
+    projected = command
+    for word_start in sorted(replacements, reverse=True):
+        word_end, basename = replacements[word_start]
+        projected = projected[:word_start] + "\n" + basename + projected[word_end:]
+    return projected
 
 
 def _command_detection_variants(command: str):
@@ -2455,6 +3021,16 @@ def _command_detection_variants(command: str):
                 if marked_payload != payload and marked_payload not in seen:
                     seen.add(marked_payload)
                     yield marked_payload
+                # A payload's own executable can be path-spelled too
+                # (`bash -c '/sbin/shutdown -h now'`), so it needs the same
+                # basename projection as the outer command. POSIX paths
+                # survive the normalization the payload came through;
+                # backslash Windows paths inside payloads stay out of reach
+                # until normalization preserves separators (#71919).
+                projected_payload = _project_path_spelled_executables(payload)
+                if projected_payload is not None and projected_payload not in seen:
+                    seen.add(projected_payload)
+                    yield projected_payload
                 pending.append(payload)
     # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
     # command position, but the flat `_CMDPOS`-anchored patterns can't see it:
@@ -2471,6 +3047,21 @@ def _command_detection_variants(command: str):
     if marked != grep_safe and marked not in seen:
         seen.add(marked)
         yield marked
+    # Absolute-path spellings bypass every _CMDPOS-anchored rule the same
+    # way subshell openers did: the anchor class knows wrappers but not
+    # paths, so `/sbin/shutdown` or `C:\Windows\System32\shutdown.exe`
+    # never reaches `shutdown\b`. Project command-position executables to
+    # `\n<basename>` from the RAW command (normalization strips backslashes
+    # and fuses Windows paths before a basename could be recovered), then
+    # feed the projection through the standard normalize/grep-safe pipe.
+    projected = _project_path_spelled_executables(command)
+    if projected is not None:
+        projected_variant, _ = _grep_safe_detection_variant(
+            _normalize_command_for_detection(projected)
+        )
+        if projected_variant not in seen:
+            seen.add(projected_variant)
+            yield projected_variant
     # Shell quoting/escaping can spell a dangerous executable name in pieces
     # (for example r\m or r''m). Keep that deobfuscation scoped to command
     # words so similarly shaped arguments do not become false positives.
@@ -2549,12 +3140,15 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
 
-    for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
-        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if pattern_re.search(command_lower):
-                pattern_key = description
-                return (True, pattern_key, description)
+    try:
+        for command_variant in _command_detection_variants(command):
+            command_lower = command_variant.lower()
+            for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+                if pattern_re.search(command_lower):
+                    pattern_key = description
+                    return (True, pattern_key, description)
+    except _UnresolvedCommandWalk as unresolved:
+        return (True, unresolved.description, unresolved.description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

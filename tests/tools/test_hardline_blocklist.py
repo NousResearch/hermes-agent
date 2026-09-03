@@ -807,3 +807,401 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+# Absolute-path invocations must not defeat the floor. _CMDPOS only accepted
+# "start | separator | subshell opener | sudo/env-style wrappers" before the
+# command word, so spelling the binary by path — the natural form on systems
+# where PATH is unreliable, and the default an LLM produces for Windows
+# tools — returned (False, None) for every hardline pattern. Regression set
+# pins both directions: path-spelled commands at command position are
+# blocked, the same strings as data arguments stay allowed.
+_ABS_PATH_BLOCK = [
+    "/sbin/shutdown -h now",
+    "/usr/sbin/reboot",
+    "/sbin/halt",
+    "/sbin/init 6",
+    "/bin/rm -rf /",
+    "sudo /sbin/shutdown -h now",
+    "env LC_ALL=C /sbin/reboot",
+    "echo done; /sbin/shutdown -h now",
+    "true && /usr/sbin/poweroff",
+    r"C:\Windows\System32\shutdown.exe /s /t 0",
+    "C:/Windows/System32/shutdown.exe /s /t 0",
+    r'"C:\Program Files\Git\usr\bin\rm.exe" -rf /',
+    r"C:\Windows\System32\shutdown.EXE /s",
+    # path-spelled wrapper chains resolve in the single projection pass
+    "/usr/bin/sudo /sbin/shutdown -h now",
+    "/usr/bin/env /usr/bin/sudo /sbin/shutdown -h now",
+    "exec /sbin/reboot",
+    "( /sbin/shutdown -h now )",
+    "/sbin/telinit 6",
+    "./shutdown -h now",
+    "shutdown.exe /s",
+    # composed spellings reduce through the same collapsing as r\m detection
+    "'/sbin/'shutdown -h now",
+    "/sbin/shut\\down -h now",
+    # a payload's executable can be path-spelled too
+    "bash -c '/sbin/shutdown -h now'",
+    "exec bash -c '/bin/rm -rf /'",
+    # group/substitution closers stay outside the projected word
+    "(/sbin/reboot)",
+    "$(/sbin/reboot)",
+    "`/sbin/reboot`",
+    "{ /sbin/reboot; }",
+    "env -u FOO /sbin/reboot",
+    # `command` takes options too, and they sit before the executable
+    "command -p /sbin/reboot",
+    "command -- /sbin/reboot",
+    "command -p -- /sbin/reboot",
+    # `--` ends the option list of the wrappers whose options we model, so
+    # the path after it is the program
+    "exec -- /sbin/reboot",
+    "nohup -- /sbin/reboot",
+    "setsid -- /sbin/reboot",
+    "time -- /sbin/reboot",
+    "builtin -- command -p /sbin/reboot",
+    # `exec -a NAME` consumes NAME; -c and -l take no operand
+    "exec -a custom /sbin/reboot",
+    "exec -c /sbin/reboot",
+    "exec -l /sbin/reboot",
+    # assignment prefixes are unbounded in shell grammar, so a fixed walk
+    # budget must not run out and let the executable through unprojected
+    " ".join(f"A{i}=1" for i in range(12)) + " /sbin/reboot",
+    " ".join(f"A{i}=1" for i in range(40)) + " /sbin/reboot",
+]
+
+_ABS_PATH_ALLOW = [
+    # `command -v` / `-V` only look the command up; nothing is executed, and
+    # `command`'s short options are just p/v/V so a cluster carrying v is
+    # lookup-only as well
+    "command -v /sbin/reboot",
+    "command -V /sbin/reboot",
+    "command -pv /sbin/reboot",
+    # a word outside a wrapper's option list is the program name, and the
+    # shell fails to run it — blocking these would be a false positive
+    # (time/setsid are the exception: their unknown options fail safe, see
+    # the time/setsid section below)
+    "exec -x /sbin/reboot",
+    "exec -- -c /sbin/reboot",
+    "nohup -x /sbin/reboot",
+    "nohup -- -x /sbin/reboot",
+    "builtin -x /sbin/reboot",
+    "builtin -- -x /sbin/reboot",
+    "echo /sbin/shutdown",
+    "ls -la /sbin/shutdown",
+    "grep 'shutdown' /var/log/syslog",
+    "stat /usr/sbin/reboot",
+    r"stat C:\Windows\System32\shutdown.exe",
+    "cat /bin/rm",
+    'echo "/sbin/init 6"',
+    "md5sum /sbin/halt",
+    # basename must match the pattern word exactly, not a near-miss
+    "/usr/local/bin/rebooter --dry-run",
+    "./deploy.sh shutdown",
+    "cat /etc/init.d/reboot",
+    # a bare assignment prefix is data — projecting its value manufactured
+    # a False->True flip in the first cut of this fix (Sol round 2)
+    "X=/sbin/shutdown echo ok",
+    # a wrapper option's operand is data, not the command word
+    "env --chdir /tmp/reboot /bin/echo ok",
+    "env --chdir /tmp/reboot echo ok",
+    "env --argv0 /tmp/reboot /bin/echo ok",
+    "env -C /sbin/reboot /bin/echo ok",
+    # sudo option operands are data; only the command after them executes.
+    "sudo -D /sbin/reboot /bin/echo ok",
+    "sudo -D/sbin/reboot /bin/echo ok",
+    "sudo --chdir /sbin/reboot /bin/echo ok",
+    "sudo --chroot=/sbin/reboot /bin/echo ok",
+    # Exact `-h` only consumes a following non-option, non-assignment host.
+    # With an option-looking/assignment next word it selects help mode, so no
+    # later executable runs even when an option operand resembles one.
+    "sudo -h -D /sbin/reboot /bin/echo ok",
+    "sudo -h --chdir /sbin/reboot /bin/echo ok",
+    "sudo -h -D/sbin/reboot /bin/echo ok",
+    "sudo -h VAR=x /sbin/reboot",
+    "sudo -h 1VAR=x /sbin/reboot",
+    "sudo -h -- /sbin/reboot",
+    "sudo -nh host /sbin/reboot",
+    # sudo only treats an equals-bearing word as environment data when its
+    # first byte is neither '/' nor '='; these are command words instead.
+    "sudo /tmp=x /sbin/reboot",
+    "sudo =x /sbin/reboot",
+    "sudo -- 1VAR=x /sbin/reboot",
+    # Shell assignment syntax does not restart after an ordinary wrapper.
+    "exec VAR=x /sbin/reboot",
+    "nohup VAR=x /sbin/reboot",
+    # GNU env stops option parsing at the first NAME=VALUE operand. Later
+    # option-shaped words are a command (or another assignment), not options.
+    "env 1VAR=x -S /sbin/reboot",
+    "env 1VAR=x --split-string /sbin/reboot",
+    "env 1VAR=x --split-string=/sbin/reboot",
+    "/usr/bin/env 1VAR=x -S /sbin/reboot",
+    # `}` is not a shell metacharacter: it can end a legitimate word
+    "/tmp/reboot}",
+]
+
+
+@pytest.mark.parametrize("command", _ABS_PATH_BLOCK)
+def test_abs_path_invocation_is_hardline_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"absolute-path spelling bypassed the floor: {command!r}"
+    assert desc, "hardline match must provide a description"
+
+
+@pytest.mark.parametrize("command", _ABS_PATH_ALLOW)
+def test_abs_path_as_data_is_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"path-as-data false positive: {command!r} (got: {desc})"
+
+
+def test_abs_path_hardline_not_bypassed_by_yolo(clean_session, monkeypatch):
+    """The floor must hold for path-spelled commands under yolo too."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_all_command_guards("/sbin/shutdown -h now", "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True
+
+
+_EXECUTABLE_WRAPPER_OPERAND_BLOCK = [
+    # GNU env -S parses its operand into the command it executes. Until that
+    # separate grammar is modeled, every split-string spelling must fail safe.
+    "env -S /sbin/reboot",
+    "env -S/sbin/reboot",
+    "env -vS'/sbin/reboot -h now'",
+    "env --split-string /sbin/reboot",
+    "env --split-string=/sbin/reboot",
+    "env --sp=/sbin/reboot",
+    # sudo options below consume data before the command word. Short clusters,
+    # attached operands, and unique long-option abbreviations use sudo's real
+    # getopt grammar and must still expose the executable that follows.
+    "sudo -D /tmp /sbin/reboot",
+    "sudo -nD /tmp /sbin/reboot",
+    "sudo -ED /tmp /sbin/reboot",
+    "sudo -D/tmp /sbin/reboot",
+    "sudo --chdir /tmp /sbin/reboot",
+    "sudo --chd /tmp /sbin/reboot",
+    "sudo -R /tmp /sbin/reboot",
+    "sudo -r staff_r /sbin/reboot",
+    "sudo -T 5 /sbin/reboot",
+    "sudo -t staff_t /sbin/reboot",
+    # sudo's historical separated host form applies only to an exact `-h`.
+    # Attached hosts and a following ordinary host still leave a real command.
+    "sudo -h host /sbin/reboot",
+    "sudo -hhost /sbin/reboot",
+    "sudo -h-D /sbin/reboot",
+    "sudo -hD /sbin/reboot",
+    "sudo -h /tmp=x /sbin/reboot",
+    "sudo -h =x /sbin/reboot",
+    # Wrapper-owned assignments are not limited to shell identifiers. sudo's
+    # `is_envar` and GNU env both consume digit/dash-leading NAME=VALUE words
+    # before resuming option/command parsing. Cover bare and path spellings so
+    # both command-position walkers share the same state transition.
+    "sudo 1VAR=x -D /tmp /sbin/reboot",
+    "sudo name-with-dash=x -D /tmp /sbin/reboot",
+    "/usr/bin/sudo 1VAR=x -D /tmp /sbin/reboot",
+    "env 1VAR=x /sbin/reboot",
+    "env name-with-dash=x /sbin/reboot",
+    "env -- 1VAR=x /sbin/reboot",
+    "/usr/bin/env 1VAR=x /sbin/reboot",
+    # Uppercase -A is a flag, not lowercase -a with an operand.
+    "sudo -A /sbin/reboot",
+    # Ambiguous and unknown long options cannot place the command word safely.
+    "sudo --ch /tmp /sbin/reboot",
+    "sudo --not-a-sudo-option /sbin/reboot",
+]
+
+
+@pytest.mark.parametrize("command", _EXECUTABLE_WRAPPER_OPERAND_BLOCK)
+def test_executable_wrapper_operand_is_hardline_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+
+    assert is_hl, f"wrapper operand bypassed the floor: {command!r}"
+    assert desc, "hardline match must provide a description"
+
+
+@pytest.mark.parametrize("command", _EXECUTABLE_WRAPPER_OPERAND_BLOCK)
+def test_executable_wrapper_operand_not_bypassed_by_yolo(
+    clean_session, command
+):
+    enable_session_yolo("hardline_test")
+
+    result = check_all_command_guards(command, "local")
+
+    assert result["approved"] is False, command
+    assert result.get("hardline") is True, command
+
+
+@pytest.mark.parametrize(
+    "command,approved,hardline",
+    [
+        ("timeout 5 /bin/rm -rf /", False, True),
+        ("timeout -k 3 5s rm -rf /", False, True),
+        ("timeout -k3 5s rm -rf /", False, True),
+        ("timeout -sTERM 5s rm -rf /", False, True),
+        ("timeout -vk3 5s rm -rf /", False, True),
+        ("timeout -vsTERM 5s rm -rf /", False, True),
+        ("timeout --preserve-status 5 /bin/rm -rf /", False, True),
+        ("timeout -p 5 /bin/rm -rf /", False, True),
+        ("timeout -f 5 rm -rf /", False, True),
+        ("timeout -pf 5 rm -rf /", False, True),
+        ("timeout -vpf 5 rm -rf /", False, True),
+        ("nice /bin/rm -rf /", False, True),
+        ("nice -n 10 rm -rf /", False, True),
+        ("nice -n10 rm -rf /", False, True),
+        ("nice -10 rm -rf /", False, True),
+        ("stdbuf -oL /bin/rm -rf /", False, True),
+        ("stdbuf -o L rm -rf /", False, True),
+        ("timeout 5 nice rm -rf /", False, True),
+        ("echo timeout 5 rm -rf /", True, False),
+        ("timeout 5 ls", True, False),
+        ("nice -n 10 make build", True, False),
+        ("timeout -vx 5s rm -rf /", True, False),
+        ("timeout 5 -vsTERM rm -rf /", True, False),
+        ("nice -vn10 rm -rf /", True, False),
+        ("nice -10x rm -rf /", True, False),
+    ],
+)
+def test_pass_through_launcher_wrappers_resolve_command_word_under_yolo(
+    clean_session, monkeypatch, command, approved, hardline
+):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    result = check_all_command_guards(command, "local")
+
+    assert result["approved"] is approved, command
+    assert bool(result.get("hardline")) is hardline, command
+
+
+# -------------------------------------------------------------------------
+# time / setsid option grammar
+# -------------------------------------------------------------------------
+#
+# `time` and `setsid` accept options of their own ahead of the program word
+# (GNU time: -p/-a/-v/-q/-V, -f/-o with an operand; setsid: -c/-f/-w/-V/-h).
+# Without a grammar for them the walker treats the option itself as the
+# command word and never inspects the executable behind it.
+
+_TIME_SETSID_BLOCK = [
+    "time -p /sbin/reboot",
+    "setsid -f /sbin/reboot",
+    "setsid -w -c /sbin/reboot",
+    "setsid -fw /sbin/reboot",
+    "setsid --fork /sbin/reboot",
+    "time --quiet /sbin/reboot",
+    # an option's operand is skipped as data, then the executable resolves
+    "time -o /tmp/x /sbin/reboot",
+    "time -f '%e' /sbin/reboot",
+    "time --format=%e /sbin/reboot",
+    "time -p -- /sbin/reboot",
+]
+
+
+@pytest.mark.parametrize("command", _TIME_SETSID_BLOCK)
+def test_time_setsid_options_resolve_command_word(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"time/setsid option hid the executable: {command!r}"
+    assert desc, "hardline match must provide a description"
+
+
+_TIME_SETSID_ALLOW = [
+    # an option's operand is data, not the command word
+    "time -o /sbin/reboot /bin/echo hi",
+    "time -f /sbin/reboot /bin/echo hi",
+    "time --output=/sbin/reboot /bin/echo hi",
+    # ordinary launches keep working
+    "time -p /bin/echo hi",
+    "setsid -f /bin/echo hi",
+    "setsid -w sleep 1",
+    # a lone wrapper word has no command to resolve
+    "time",
+    "setsid",
+]
+
+
+@pytest.mark.parametrize("command", _TIME_SETSID_ALLOW)
+def test_time_setsid_option_operands_are_data(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"time/setsid false positive: {command!r} (got: {desc})"
+
+
+# An option word we do NOT model (`time -Z`) means the walker cannot tell
+# where the program word starts. That must fail safe (detected), never fall
+# back to "the option is the program" — that misread is exactly how
+# `time -p /sbin/reboot` walked past the floor.
+_TIME_SETSID_UNKNOWN_OPTION = [
+    "time -Z /sbin/reboot",
+    "time -x /sbin/reboot",
+    "time --bogus /sbin/reboot",
+    "setsid -x /sbin/reboot",
+    "setsid --bogus /sbin/reboot",
+]
+
+
+@pytest.mark.parametrize("command", _TIME_SETSID_UNKNOWN_OPTION)
+def test_unknown_time_setsid_option_fails_safe(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"unknown time/setsid option fell open: {command!r}"
+    assert desc
+
+
+def test_time_setsid_hardline_under_yolo(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    for cmd in ("time -p /sbin/reboot", "setsid -f /sbin/reboot"):
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"yolo leaked {cmd!r}"
+        assert result.get("hardline") is True, cmd
+
+
+# -------------------------------------------------------------------------
+# Walker termination: no pass-through exit
+# -------------------------------------------------------------------------
+#
+# The walk over the command prefix must end in exactly three ways: the
+# command word resolves, the input ends, or the defensive word cap trips and
+# the command is treated as unresolvable (detected). A fixed wrapper budget
+# used to be a fourth exit that silently gave up and let the executable
+# through uninspected.
+
+def test_wrapper_chain_depth_is_not_a_bypass():
+    import tools.approval as approval_mod
+
+    capped = {approval_mod._PARSER_LIMIT_DESCRIPTION,
+              approval_mod._MALFORMED_EXEC_DESCRIPTION}
+    for depth in (11, 12, 13):
+        command = "env " * depth + "/sbin/reboot"
+        is_hl, desc = detect_hardline_command(command)
+        assert is_hl, f"{depth} wrappers let the executable through"
+        assert desc not in capped, (
+            f"{depth} wrappers should resolve fully, not hit the cap: {desc!r}"
+        )
+
+
+def test_wrapper_chain_depth_bypass_closed_under_yolo(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    command = "env " * 12 + "/sbin/reboot"
+    result = check_all_command_guards(command, "local")
+    assert result["approved"] is False, "12 wrappers leaked under yolo"
+    assert result.get("hardline") is True
+
+
+def test_walker_word_cap_fails_safe_never_open():
+    import tools.approval as approval_mod
+
+    capped = {approval_mod._PARSER_LIMIT_DESCRIPTION,
+              approval_mod._MALFORMED_EXEC_DESCRIPTION}
+    max_words = approval_mod._WALKER_MAX_WORDS
+    for total_words, resolves in ((max_words - 1, True),
+                                  (max_words, False),
+                                  (max_words + 1, False)):
+        command = "env " * (total_words - 1) + "/sbin/reboot"
+        is_hl, desc = detect_hardline_command(command)
+        assert is_hl, f"{total_words}-word walk fell open"
+        if resolves:
+            assert desc not in capped, (
+                f"{total_words} words is under the cap and must resolve: {desc!r}"
+            )
+        else:
+            assert desc in capped, (
+                f"{total_words} words must trip the defensive cap: {desc!r}"
+            )

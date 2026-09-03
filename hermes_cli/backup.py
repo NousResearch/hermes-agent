@@ -200,7 +200,7 @@ _IMPORT_SKIP_NAMES = {
 }
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "action_receipts.db"}
 
 # Reserved archive subtree for provider state that lives OUTSIDE HERMES_HOME
 # (e.g. ~/.honcho, ~/.hindsight). The active memory provider declares these via
@@ -810,7 +810,9 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 
     By writing pages through the backup API the file inode is preserved,
     the WAL journal is updated correctly, and all connections (old and
-    new) converge on the restored data.
+    new) converge on the restored data. Secret database names are tightened
+    to ``0600`` together with any live WAL/SHM sidecars before success is
+    reported.
 
     Falls back to the unlink+move approach on failure ONLY when no other
     process or in-process connection holds the file: replacing the inode
@@ -831,10 +833,19 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         finally:
             src_conn.close()
         dst_conn.close()
-        # Restore original file permissions from the snapshot
+        # Restore the snapshot mode, except for known secret databases whose
+        # privacy contract also covers SQLite's live sidecars.
         try:
-            mode = src.stat().st_mode
-            dst.chmod(mode)
+            mode = 0o600 if dst.name in _SECRET_FILE_NAMES else stat.S_IMODE(src.stat().st_mode)
+            for candidate in (
+                dst,
+                dst.with_name(dst.name + "-wal"),
+                dst.with_name(dst.name + "-shm"),
+            ):
+                try:
+                    candidate.chmod(mode, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
         except Exception:
             pass
         return True
@@ -891,6 +902,8 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                 for _sidecar_suffix in ("-wal", "-shm", "-journal"):
                     dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
                 shutil.move(str(tmp), str(dst))
+                if dst.name in _SECRET_FILE_NAMES:
+                    dst.chmod(0o600, follow_symlinks=False)
             return True
         except LiveConnectionError as exc2:
             logger.error(
@@ -1236,7 +1249,14 @@ def _extract_member_atomically(
     # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
     mode = _preserve_file_mode(target)
     owner = _preserve_file_owner(target)
-    if mode is None:
+    secret_file = target.name in _SECRET_FILE_NAMES
+    if secret_file:
+        # Secret-bearing files must land as 0600, not transit through an
+        # archive/default or previously permissive target mode before a later
+        # chmod. The temp inode has this mode before archive bytes are written,
+        # and atomic_replace publishes the already-private inode.
+        mode = 0o600
+    elif mode is None:
         mode = new_file_mode
     else:
         # Deliberately NOT a faithful mode copy: setuid/setgid are dropped.
@@ -1244,9 +1264,9 @@ def _extract_member_atomically(
         # bits, and the content replacing this file comes from the archive.
         # Carrying the elevated bits across would let archive-controlled bytes
         # take over an existing setuid/setgid file, so ``hermes import`` would
-        # hand whoever produced the zip the identity that file runs as.  Nothing
+        # hand whoever produced the zip the identity that file runs as. Nothing
         # constrains that to Hermes' own state either: the ``_external/`` branch
-        # of ``run_import`` publishes members anywhere under ``$HOME``.  The
+        # of ``run_import`` publishes members anywhere under ``$HOME``. The
         # sticky bit is kept — it is inert on a regular file.
         mode &= ~(stat.S_ISUID | stat.S_ISGID)
 

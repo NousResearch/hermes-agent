@@ -166,6 +166,108 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     agent._flush_messages_to_session_db.assert_called()
 
 
+def test_sequential_timeout_after_dispatch_records_effective_metadata(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.middleware import RequestMiddlewareResult
+
+    agent = _make_agent(tmp_path)
+    callback_started = threading.Event()
+    release = threading.Event()
+    receipts: list[dict] = []
+    terminal_events: list[dict] = []
+    effective_args: dict = {}
+    trace = [{"source": "test-middleware"}]
+
+    def _dispatch(_name, args, *_positional, **_kwargs):
+        assert args == effective_args
+        callback_started.set()
+        release.wait()
+        return "late result"
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_tool_request_middleware",
+        lambda _name, args, **_kwargs: RequestMiddlewareResult(
+            payload=effective_args,
+            original_payload=args,
+            changed=True,
+            trace=trace,
+        ),
+    )
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
+    try:
+        with (
+            patch("run_agent.handle_function_call", side_effect=_dispatch),
+            patch(
+                "agent.tool_executor._maybe_record_action_receipt",
+                side_effect=lambda *_args, **kwargs: receipts.append(kwargs),
+            ),
+            patch(
+                "agent.tool_executor._emit_terminal_post_tool_call",
+                side_effect=lambda *_args, **kwargs: terminal_events.append(kwargs),
+            ),
+        ):
+            execute_tool_calls_sequential(
+                agent,
+                SimpleNamespace(tool_calls=[_tool_call("hung")]),
+                [],
+                "task",
+            )
+    finally:
+        release.set()
+
+    assert callback_started.is_set()
+    assert len(receipts) == 1
+    assert receipts[0]["tool_call_id"] == "hung"
+    assert receipts[0]["exit_status"] == "timeout"
+    assert receipts[0]["function_args"] == effective_args
+    assert len(terminal_events) == 1
+    assert terminal_events[0]["function_args"] == effective_args
+    assert terminal_events[0]["middleware_trace"] == trace
+    assert terminal_events[0]["status"] == "timeout"
+
+
+def test_sequential_timeout_before_dispatch_prevents_late_callback(tmp_path, monkeypatch):
+    agent = _make_agent(tmp_path)
+    preflight_started = threading.Event()
+    release = threading.Event()
+    callback_calls: list[str] = []
+    receipts: list[dict] = []
+
+    def _preflight(*_args, **_kwargs):
+        preflight_started.set()
+        release.wait()
+        return SimpleNamespace(allows_execution=True)
+
+    def _dispatch(*_args, **_kwargs):
+        callback_calls.append("called")
+        return "must not run"
+
+    agent._tool_guardrails.before_call = _preflight
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
+    try:
+        with (
+            patch("run_agent.handle_function_call", side_effect=_dispatch),
+            patch(
+                "agent.tool_executor._maybe_record_action_receipt",
+                side_effect=lambda *_args, **kwargs: receipts.append(kwargs),
+            ),
+        ):
+            execute_tool_calls_sequential(
+                agent,
+                SimpleNamespace(tool_calls=[_tool_call("preflight")]),
+                [],
+                "task",
+            )
+    finally:
+        release.set()
+
+    assert preflight_started.is_set()
+    time.sleep(0.1)
+    assert callback_calls == []
+    assert receipts == []
+
+
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
     import hermes_cli.lifecycle as lifecycle
     import model_tools

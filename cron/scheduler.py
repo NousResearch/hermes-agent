@@ -4366,6 +4366,23 @@ def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
             process_group: Optional[int] = os.getpgid(proc.pid)
         except (ProcessLookupError, OSError):
             process_group = None
+        if process_group is not None and process_group == os.getpgrp():
+            # Darwin posix_spawn path (#97296): the script shares OUR process
+            # group; killpg would SIGTERM the gateway. Kill descendants + child.
+            try:
+                import psutil
+                for _child in psutil.Process(proc.pid).children(recursive=True):
+                    try:
+                        _child.kill()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            process_group = None
         if process_group is not None:
             try:
                 os.killpg(process_group, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch (win32 handled above)
@@ -4659,12 +4676,22 @@ def _run_job_script(
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
         _script_cwd = workdir or str(path.parent)
+        if sys.platform == "darwin":
+            # Darwin: keep CPython 3.11 on the posix_spawn fast path (#97296) so
+            # the threaded gateway never fork()s (no_agent scripts exited -11).
+            # Gates: no cwd=, start_new_session=False, close_fds=False. cwd
+            # applied in-shell; exec keeps proc.pid on the script. Local fix.
+            import shlex as _shlex
+            argv = ["/bin/sh", "-c", "cd " + _shlex.quote(_script_cwd)
+                    + " && exec " + " ".join(_shlex.quote(a) for a in argv)]
+            popen_kwargs = {"start_new_session": False, "close_fds": False}
+        else:
+            popen_kwargs["cwd"] = _script_cwd
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )

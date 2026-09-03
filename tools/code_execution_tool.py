@@ -1775,15 +1775,26 @@ def execute_code(
             child_python=_child_python,
         )
 
+        # Darwin (#97296): keep the threaded parent on posix_spawn — no cwd=,
+        # no new session, fds inherited; cwd applied in-shell via exec.
+        if sys.platform == "darwin":
+            import shlex as _shlex
+            _argv = ["/bin/sh", "-c",
+                     "cd " + _shlex.quote(str(_child_cwd)) + ' && exec "$0" "$@"',
+                     _child_python, _script_path]
+            _spawn_kwargs = dict(start_new_session=False, close_fds=False)
+        else:
+            _argv = [_child_python, _script_path]
+            _spawn_kwargs = dict(cwd=_child_cwd, start_new_session=True)
+
         proc = subprocess.Popen(
-            [_child_python, _script_path],
-            cwd=_child_cwd,
+            _argv,
             env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            **_spawn_kwargs,
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---

@@ -754,21 +754,40 @@ def _spawn(kernel: SessionKernel, *, task_id: str, child_python: str,
         child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
         pass_fds = (death_r,)
 
+    # Darwin (#97296): a threaded parent must stay on CPython's posix_spawn
+    # fast path (fork() from the gateway dies in Network.framework atfork).
+    # CPython's gate requires: cwd is None, not close_fds, not pass_fds,
+    # not start_new_session. So on darwin: apply cwd in-shell via exec,
+    # inherit the death fd naturally (close_fds=False + set_inheritable)
+    # instead of pass_fds, and skip the new session.
+    _kernel_cwd = child_cwd or kernel.tmpdir
+    if sys.platform == "darwin":
+        import shlex as _shlex
+        if death_r is not None:
+            os.set_inheritable(death_r, True)
+        _argv = ["/bin/sh", "-c",
+                 "cd " + _shlex.quote(str(_kernel_cwd)) + ' && exec "$0" "$@"',
+                 child_python, runner_path]
+        _spawn_kwargs = dict(start_new_session=False, close_fds=False)
+    else:
+        _argv = [child_python, runner_path]
+        _spawn_kwargs = dict(
+            cwd=_kernel_cwd,
+            start_new_session=True,
+            close_fds=True,
+            pass_fds=pass_fds,
+        )
+
     try:
         kernel.proc = subprocess.Popen(
-            [child_python, runner_path],
-            # Strict mode resolves an empty cwd: the kernel's own staging dir
-            # then plays the per-call tmpdir's role.
-            cwd=child_cwd or kernel.tmpdir,
+            _argv,
             env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.PIPE,
-            start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-            close_fds=True,
-            pass_fds=pass_fds,
             startupinfo=startupinfo,
+            **_spawn_kwargs,
         )
     finally:
         if parent_process_handle and close_parent_process_handle is not None:

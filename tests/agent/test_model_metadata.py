@@ -162,6 +162,23 @@ class TestEstimateMessagesTokensRough:
         # Raw base64 would be ~100K tokens; the flat per-image model is ~1.5K.
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
+    def test_signed_zero_values_do_not_alias_in_message_cache(self, monkeypatch):
+        """Values with different wire representations need distinct memo entries."""
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(mm, "_MSG_TOKENS_CACHE", {})
+        positive = {"role": "user", "content": "xxx", "value": 0.0}
+        negative = {"role": "user", "content": "xxx", "value": -0.0}
+
+        positive_fresh = estimate_messages_tokens_rough([positive])
+        mm._MSG_TOKENS_CACHE.clear()
+        negative_fresh = estimate_messages_tokens_rough([negative])
+        assert positive_fresh != negative_fresh
+
+        mm._MSG_TOKENS_CACHE.clear()
+        assert estimate_messages_tokens_rough([positive]) == positive_fresh
+        assert estimate_messages_tokens_rough([negative]) == negative_fresh
+
 
 
 class TestEstimateRequestTokensRough:

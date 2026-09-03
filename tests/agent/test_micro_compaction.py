@@ -18,7 +18,7 @@ The invariants that matter:
   times and then skipped, so a poison exchange can't stall every turn.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -760,6 +760,115 @@ class TestMicroCompaction:
         assert not unstamped, (
             "splice must not strip _db_persisted from surviving messages"
         )
+
+    def test_failed_db_sync_keeps_pre_splice_transcript(self):
+        """A raised archive_and_compact must not publish the spliced list (#84723)."""
+        cc = _compressor()
+        cc._session_id = "sess-84723"
+
+        class _FailingDB:
+            def archive_and_compact(self, *_a, **_k):
+                raise RuntimeError("disk full")
+
+        cc._session_db = _FailingDB()
+        messages = _conversation(exchanges=8)
+        original = list(messages)
+        prev_summary = cc._micro_compact_rolling_summary
+        result = cc._micro_compact(messages)
+        assert result is messages
+        assert [m.get("content") for m in result] == [m.get("content") for m in original]
+        assert not _summary_markers(result)
+        # Resolve may scan-advance the cursor; absorb must not keep the
+        # new rolling summary when persist failed.
+        assert cc._micro_compact_rolling_summary == prev_summary
+        # Persist failure is a strike: do not reset the skip-after-N guard.
+        assert cc._micro_compact_consecutive_failures == 1
+
+    def test_repeated_persist_failures_skip_the_stuck_exchange(self):
+        """A disk that keeps rejecting the splice must not retry forever."""
+        cc = _compressor()
+        cc._session_id = "sess-84723-persist-skip"
+
+        class _FailingDB:
+            def archive_and_compact(self, *_a, **_k):
+                raise RuntimeError("disk full")
+
+        cc._session_db = _FailingDB()
+        messages = _conversation(exchanges=8)
+        for _ in range(_MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES):
+            result = cc._micro_compact(list(messages))
+            assert result == messages or [m.get("content") for m in result] == [
+                m.get("content") for m in messages
+            ]
+
+        assert cc._micro_compact_cursor > 0
+        assert cc._micro_compact_consecutive_failures == 0
+
+    def test_generated_micro_summary_is_redacted_before_publish(self):
+        """Summarizer output is redacted before cursor/summary/list publish (#84723)."""
+        secret = "sk-proj-" + ("a" * 40)
+        cc = _compressor(summary=f"Summary leaked {secret}")
+        result = cc._micro_compact(_conversation(exchanges=8))
+        markers = _summary_markers(result)
+        assert markers
+        blob = str(result)
+        assert secret not in blob
+        assert secret not in cc._micro_compact_rolling_summary
+        assert secret not in markers[0]["content"]
+
+    def test_rehydrated_secret_is_redacted_before_summarizer_prompt(self):
+        """A legacy marker secret must not re-enter the aux prompt (#84723)."""
+        secret = "sk-proj-" + ("a" * 40)
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = ""
+        cc._micro_compact_cursor = 0
+        del cc._micro_summarize_one
+        messages = _conversation(exchanges=8)
+        messages.insert(
+            1,
+            {
+                "role": "assistant",
+                "content": f"Old summary leaked {secret}",
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+            },
+        )
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "clean updated summary"
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=mock_response,
+        ) as mock_call:
+            result = cc._micro_compact(messages)
+
+        assert mock_call.called
+        prompt = mock_call.call_args.kwargs["messages"][1]["content"]
+        assert secret not in prompt
+        assert secret not in cc._micro_compact_rolling_summary
+        assert secret not in str(result)
+    def test_defragged_summary_is_redacted_before_publish(self):
+        """Defrag-generated summary is redacted before rolling summary and marker (#84723).
+
+        The absorb and rehydration paths already redact; the defrag sibling
+        path must too, or a secret in the re-summarized text reaches the
+        rolling summary, the marker content, and the session DB.
+        """
+        secret = "sk-proj-" + ("a" * 40)
+        # First pass: absorb exchanges to create a micro marker.
+        cc = _compressor(summary="clean initial summary")
+        messages = cc._micro_compact(_conversation(exchanges=8))
+        assert _summary_markers(messages)
+        # Force defrag on the next pass and make the summarizer leak a secret.
+        cc._micro_compact_rolling_summary = "x" * 40_000
+        cc._micro_summarize_one = lambda _text: f"Defrag leaked {secret}"
+        result = cc._micro_compact(list(messages))
+        markers = _summary_markers(result)
+        assert markers
+        blob = str(result)
+        assert secret not in blob
+        assert secret not in cc._micro_compact_rolling_summary
+        assert secret not in markers[0]["content"]
 
 
 class TestDefragFlushCursorInvalidation:

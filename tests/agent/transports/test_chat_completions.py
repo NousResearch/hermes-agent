@@ -284,6 +284,36 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["provider"] == {"only": ["openai"]}
 
+    def test_custom_profile_on_openrouter_base_url_injects_provider_prefs(self, transport):
+        """#98186: a custom profile pointed at an OpenRouter base_url must still
+        emit body["provider"] so provider_routing.only/ignore/order/sort holds
+        (a CustomProfile's build_extra_body returns {} and would otherwise drop
+        the lock, breaking prompt-cache continuity)."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="some/model", messages=msgs,
+            provider_profile=profile,
+            base_url="https://openrouter.ai/api/v1",
+            provider_preferences={"only": ["deepinfra"]},
+        )
+        assert kw["extra_body"]["provider"] == {"only": ["deepinfra"]}
+
+    def test_custom_profile_off_openrouter_does_not_inject_provider_prefs(self, transport):
+        """The injection is gated on the OpenRouter base_url — a custom provider
+        on any other endpoint must NOT receive the OpenRouter-only field."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="some/model", messages=msgs,
+            provider_profile=profile,
+            base_url="https://my-llm.example.com/v1",
+            provider_preferences={"only": ["deepinfra"]},
+        )
+        assert "provider" not in (kw.get("extra_body") or {})
+
 
 
 

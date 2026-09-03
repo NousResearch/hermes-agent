@@ -928,6 +928,23 @@ class ChatCompletionsTransport(ProviderTransport):
         if profile_body:
             extra_body.update(profile_body)
 
+        # OpenRouter provider-routing also applies when a *custom* profile fronts
+        # an OpenRouter base_url (provider: custom:openrouter). The native
+        # OpenRouter profile emits body["provider"] from build_extra_body, but a
+        # generic CustomProfile does not — so provider_routing.only/ignore/order/
+        # sort would be silently dropped, OpenRouter price-sorts every turn, and
+        # prompt-cache prefix hits collapse on long sessions (#98186). Gate on the
+        # resolved base_url so non-OpenRouter custom providers never get the field,
+        # and never override a "provider" the profile already set.
+        if "provider" not in extra_body:
+            _routing_prefs = params.get("provider_preferences")
+            _routing_base_url = params.get("base_url")
+            if _routing_prefs and _routing_base_url:
+                from utils import base_url_host_matches
+
+                if base_url_host_matches(str(_routing_base_url).lower(), "openrouter.ai"):
+                    extra_body["provider"] = _routing_prefs
+
         # Profile's reasoning/thinking extra_body entries
         if extra_body_from_profile:
             extra_body.update(extra_body_from_profile)

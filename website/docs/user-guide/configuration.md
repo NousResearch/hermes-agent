@@ -179,6 +179,7 @@ terminal:
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
+  local_memory_max_mb: ""  # Optional local-backend foreground command memory cap (MiB)
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
@@ -221,7 +222,14 @@ The default. Commands run directly on your machine with no isolation. No special
 ```yaml
 terminal:
   backend: local
+  local_memory_max_mb: ""  # Set e.g. 4096 to cap foreground commands at 4 GiB
 ```
+
+`terminal.local_memory_max_mb` is an opt-in guard for runaway local shell
+commands. When set to an integer MiB value (minimum 64), Hermes applies a
+per-command POSIX address-space limit to foreground `terminal` calls on Linux
+and macOS. Empty or `0` disables the cap. Gateway background tasks also use the
+same setting when systemd scope isolation is available.
 
 By default, local tool subprocesses keep your real OS-user `HOME`. This lets
 external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex
@@ -388,6 +396,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_LIFETIME_SECONDS` | `lifetime_seconds` | Idle reaper window |
 | `TERMINAL_TEMP_DIR` | `temp_dir` | Session temp root (local backend) |
 | `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
+| `TERMINAL_LOCAL_MEMORY_MAX_MB` | `local_memory_max_mb` | Optional local-backend foreground command memory cap in MiB |
 | `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
 
 ### SSH Backend

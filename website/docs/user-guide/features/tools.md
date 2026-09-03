@@ -197,6 +197,10 @@ terminal:
   container_persistent: true    # Persist filesystem across sessions (default: true)
 ```
 
+For the local backend, set `terminal.local_memory_max_mb` to an integer MiB
+value if you want foreground shell commands to fail inside the tool call instead
+of consuming unbounded host memory. Empty or `0` leaves local commands uncapped.
+
 When `container_persistent: true`, installed packages, files, and config survive across sessions.
 
 ### Container Security

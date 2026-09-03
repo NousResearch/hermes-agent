@@ -109,11 +109,15 @@ _GLOBAL_ENV_EXACT = frozenset({
     # API-server LISTENER settings — deployment config (Docker compose
     # ``environment:`` block, systemd ``Environment=``), not profile secrets.
     # The scoped runner reload (#64674) must keep seeing them or container
-    # deployments silently lose the api_server platform (#69379). NOTE:
-    # API_SERVER_KEY is deliberately NOT here — it IS a credential and stays
-    # profile-scoped.
+    # deployments silently lose the api_server platform (#69379).
+    # API_SERVER_KEY is the process→agent channel key — one key for the
+    # whole WebUI process, not a per-profile credential.  The WebUI reads it
+    # from os.environ at api/agent_health.py:526-528; the agent's own
+    # secret_scope was incorrectly classifying it as profile-scoped, creating
+    # a mismatch that would silently drop the key once profile-scoped secret
+    # handling is tightened (#96920).
     "API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT",
-    "API_SERVER_CORS_ORIGINS",
+    "API_SERVER_CORS_ORIGINS", "API_SERVER_KEY",
     # Relay-connector ROUTING stamps — deployment config injected into the
     # container/process env by managed deploys (the same shape as the
     # API_SERVER listener settings above). The scoped runner reload and the

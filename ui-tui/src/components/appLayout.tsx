@@ -489,6 +489,7 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        accountUsage={ui.accountUsage}
         battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
@@ -504,6 +505,7 @@ const StatusRulePane = memo(function StatusRulePane({
         modelReasoningEffort={ui.info?.reasoning_effort}
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
+        quotaDisplay={ui.quotaDisplay}
         sessionStartedAt={status.sessionStartedAt}
         sessionTitle={status.sessionTitle}
         status={ui.status}

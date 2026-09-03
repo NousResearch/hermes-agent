@@ -6459,6 +6459,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             self._console_print("  Battery indicator off")
 
+    def _handle_quota_command(self, cmd_original: str) -> None:
+        """Pick the provider quota window the status bar pins, or hide it.
+
+        ``/quota`` toggles the read-out off and back on, ``/quota session|both|
+        weekly|tightest|off`` sets a mode explicitly, and ``/quota status``
+        reports the current one. Persisted to ``display.quota`` — the same key
+        the TUI honors, so the choice follows the user between surfaces.
+        """
+        from agent.quota_display import (
+            describe_quota_mode,
+            normalize_quota_mode,
+            quota_usage,
+            render_quota_menu,
+        )
+
+        parts = (cmd_original or "").split()
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        current = normalize_quota_mode(CLI_CONFIG["display"].get("quota")) or "session"
+
+        if arg in ("", "status", "show"):
+            # Bare /quota lists every mode with the segment it produces, so the
+            # choice is visible instead of a blind toggle.
+            self._console_print(render_quota_menu(current))
+            return
+
+        target = normalize_quota_mode(arg)
+        if target is None:
+            self._console_print(f"  {quota_usage()}")
+            return
+
+        CLI_CONFIG["display"]["quota"] = target
+        save_config_value("display.quota", target)
+        self._console_print(f"  Quota read-out: {target} — {describe_quota_mode(target)}")
+
     @staticmethod
     def _compression_count_style(count: int) -> str:
         """Return a style class reflecting context compression pressure."""
@@ -12883,6 +12917,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_diff_command(cmd_original)
         elif canonical == "battery":
             self._handle_battery_command(cmd_original)
+        elif canonical == "quota":
+            self._handle_quota_command(cmd_original)
         elif canonical == "timestamps":
             self._handle_timestamps_command(cmd_original)
         elif canonical == "verbose":

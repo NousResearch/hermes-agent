@@ -1699,6 +1699,17 @@ delegation:
 # Display
 # =============================================================================
 display:
+  # Provider quota read-out (TUI). When the provider exposes account limits
+  # (OpenAI Codex today), the branding panel lists every window and the status
+  # bar pins one:
+  #   session:  the short rolling window — percent left + reset countdown (default)
+  #   both:     the session window, with the weekly one appended last
+  #   weekly:   the weekly cap only
+  #   tightest: whichever window is closest to spent
+  #   off:      hidden everywhere, and the provider is never polled for quota
+  # Change at runtime with /quota.
+  quota: session
+
   # Use compact banner mode (hides the ASCII-art banner, shows a single line).
   #   true:  Compact single-line banner
   #   false: Full ASCII banner with tool/skill summary (default)

@@ -409,6 +409,31 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'pick the provider quota read-out shown in the status bar',
+    name: 'quota',
+    usage: '/quota [session | both | weekly | tightest | off]',
+    run: (arg, ctx, cmd) => {
+      // Bare /quota opens the picker — ↑/↓ over the modes with each row
+      // previewing the segment it produces. A named mode stays on the text
+      // path (slash worker → config.set), so scripts and muscle memory keep
+      // working and the classic CLI behaves the same.
+      if (!arg.trim()) {
+        return patchOverlayState({ quotaPicker: true })
+      }
+
+      ctx.gateway.gw
+        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const body = r.output || '/quota: no output'
+            ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     help: 'toggle / adopt / resize an animated pet',
     name: 'pet',
     usage: '/pet [toggle | list | scale <n> | <slug>]',

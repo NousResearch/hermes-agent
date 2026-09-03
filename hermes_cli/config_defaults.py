@@ -1554,6 +1554,12 @@ DEFAULT_CONFIG = {
         # Show a color-coded battery read-out as the first status-bar element in
         # the CLI/TUI (off by default). No-op on machines without a battery.
         "battery": False,
+        # Provider quota read-out (TUI): which account-limit window the status
+        # bar pins — session (default, the short rolling window) | both (session
+        # then weekly) | weekly | tightest | off. "off" also stops the poll, so
+        # the provider is never asked for a quota nobody is showing. Change at
+        # runtime with /quota. No-op on providers with no quota API.
+        "quota": "session",
         # Focus view (/focus): display-only reduced-output mode. When true the
         # CLI/TUI pins tool_progress to "off" (reusing the existing suppression
         # path), reports a per-turn hidden-line count with a recovery hint, and

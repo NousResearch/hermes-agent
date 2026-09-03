@@ -82,6 +82,7 @@ FRONTEND_POLLED_RPCS = [
     "process.list",          # background process status — process registry scan
     "setup.runtime_check",   # runtime readiness — resolve_runtime_provider() I/O
     "setup.status",          # provider configured check — config/credential scan
+    "account.usage",         # TUI quota read-out poll — provider HTTP round-trip
 ]
 
 

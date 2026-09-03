@@ -4,9 +4,17 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import type {
+  AccountUsageInfo,
+  AccountUsageWindow,
+  BatteryInfo,
+  IndicatorStyle,
+  Notice,
+  QuotaDisplay
+} from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
+import { selectQuotaWindows } from '../app/useAccountUsagePoll.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
@@ -483,7 +491,12 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+/** Quota tint: muted until the window is nearly spent, then warn, then error. */
+const quotaTone = (remainingPercent: number, t: Theme) =>
+  remainingPercent <= 10 ? t.color.error : remainingPercent <= 25 ? t.color.warn : t.color.muted
+
 export function StatusRule({
+  accountUsage,
   battery,
   focusView,
   cwdLabel,
@@ -498,6 +511,7 @@ export function StatusRule({
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
   notice,
+  quotaDisplay = 'session',
   usage,
   bgCount,
   lastTurnEndedAt,
@@ -625,6 +639,27 @@ export function StatusRule({
   const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
 
+  // Provider subscription quota (`account.usage`, polled by
+  // useAccountUsagePoll). Providers report several windows; `display.quota`
+  // picks which one is pinned here — by default the tightest, so an
+  // almost-spent weekly cap wins over a fresh 5-hour one (the number that
+  // actually decides whether the next turn runs), or `session` / `weekly` to
+  // watch one specific cap. No breakpoint gate: on a narrow terminal it drops
+  // via the tail budget like any other segment, but it is never hidden by
+  // width alone while budget remains.
+  const quotaWindows = accountUsage ? selectQuotaWindows(accountUsage.windows, quotaDisplay) : []
+  const quotaWindow = quotaWindows[0] ?? null
+  const quotaTail = quotaWindows[1] ?? null
+
+  // Percent REMAINING plus the countdown to that window's reset. The panel
+  // above carries the labels; here the leading glyph marks the segment and the
+  // pair reads as "how much is left, and when it comes back".
+  const quotaLabel = (w: AccountUsageWindow) => `${w.remainingPercent}%${w.resetIn ? ` ${w.resetIn}` : ''}`
+  const quotaText = quotaWindow ? `◔ ${quotaLabel(quotaWindow)}` : ''
+  const quotaTailText = quotaTail ? quotaLabel(quotaTail) : ''
+
+  const showQuota = ok('quota') && !!quotaText && fits(SEP + stringWidth(quotaText))
+
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
@@ -646,6 +681,11 @@ export function StatusRule({
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
+
+  // The trailing quota window (`display.quota: both`) is budgeted after every
+  // other segment, so the weekly figure is the first thing dropped when the
+  // terminal narrows — the session pair before it is what must survive.
+  const showQuotaTail = showQuota && !!quotaTailText && fits(SEP + stringWidth(quotaTailText))
 
   // Focus-view badge. Pinned (not tail-budgeted) on purpose: the whole point of
   // the indicator is that the user can never be in reduced-output mode without
@@ -779,6 +819,18 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {tpsText}
+          </Text>
+        ) : null}
+        {showQuota ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text color={quotaTone(quotaWindow!.remainingPercent, t)}>{quotaText}</Text>
+            {showQuotaTail ? (
+              <Text color={t.color.muted}>
+                {' · '}
+                <Text color={quotaTone(quotaTail!.remainingPercent, t)}>{quotaTailText}</Text>
+              </Text>
+            ) : null}
           </Text>
         ) : null}
         {showVoice ? (
@@ -931,6 +983,9 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  accountUsage?: AccountUsageInfo | null
+  // `display.quota` — which window the segment pins, or 'off' to hide it.
+  quotaDisplay?: QuotaDisplay
   battery?: BatteryInfo | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean

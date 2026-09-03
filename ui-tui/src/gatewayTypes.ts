@@ -77,6 +77,8 @@ export type CommandDispatchResponse =
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
+  /** `display.quota` — off | tightest | session | weekly (see normalizeQuotaDisplay). */
+  quota?: unknown
   battery?: boolean
   bell_on_complete?: boolean
   bell_on_prompt?: boolean
@@ -177,6 +179,22 @@ export interface SystemBatteryResponse {
   category?: string
   percent?: null | number
   plugged?: null | boolean
+}
+
+/** One provider quota window as `account.usage` reports it. `used_percent` is
+ *  0-100 and `reset_at` an ISO-8601 instant; the gateway omits windows the
+ *  provider left unreported. */
+export interface AccountUsageWindowPayload {
+  label?: string
+  reset_at?: null | string
+  used_percent?: null | number
+}
+
+export interface AccountUsageResponse {
+  available?: boolean
+  plan?: null | string
+  provider?: string
+  windows?: AccountUsageWindowPayload[]
 }
 
 // ── Session lifecycle ────────────────────────────────────────────────

@@ -9449,6 +9449,10 @@ def check_respawn_guard(
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        A later ``changes_requested`` event is the exception: the reviewer
+        deliberately returned that same PR to its recorded implementer, so
+        the existing PR is the artifact to repair rather than duplicate-work
+        evidence.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9529,7 +9533,8 @@ def check_respawn_guard(
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', "
+            "             'changes_requested') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -9537,12 +9542,30 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    A reviewer-requested correction after that comment deliberately
+    #    requeues the original implementer to repair the same PR, so it must
+    #    not be treated as a duplicate-work signal.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    has_recent_pr = False
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            has_recent_pr = True
+            break
+    if has_recent_pr:
+        latest_review_phase = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? "
+            "AND kind IN ('review_requested', 'changes_requested') "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if (
+            latest_review_phase is None
+            or latest_review_phase["kind"] != "changes_requested"
+        ):
             return "active_pr"
 
     return None

@@ -475,6 +475,61 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_active_pr_guard_allows_same_card_changes_requested_requeue(
+    kanban_home: Path,
+) -> None:
+    """A reviewer correction must return to the original PR owner.
+
+    The fresh PR is the artifact being repaired after ``request_changes``;
+    treating it as duplicate-work evidence strands the same card in ``ready``.
+    """
+    pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="repair same PR", assignee="builder")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        kb.add_comment(conn, task_id, author="builder", body=pr_comment)
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="PR ready",
+            reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+
+        review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason="Fix the single-root wiring.",
+            expected_run_id=review.current_run_id,
+        )
+        # The implementer may update the existing PR/result before a crash.
+        # That same-PR comment must not erase the active correction phase.
+        kb.add_comment(
+            conn,
+            task_id,
+            author="builder",
+            body="Updated https://github.com/example/repo/pull/123 after review.",
+        )
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = "
+                "(SELECT MAX(created_at) + 1 FROM task_events "
+                " WHERE task_id = ? AND kind = 'changes_requested') "
+                "WHERE id = (SELECT MAX(id) FROM task_comments WHERE task_id = ?)",
+                (task_id, task_id),
+            )
+
+        rework = kb.get_task(conn, task_id)
+        assert rework is not None
+        assert rework.status == "ready"
+        assert rework.assignee == "builder"
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

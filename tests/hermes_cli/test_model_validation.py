@@ -248,6 +248,62 @@ class TestCopilotNormalization:
 
 
 
+    def test_copilot_api_mode_with_catalog_only_responses(self):
+        catalog = [{
+            "id": "gpt-5.4",
+            "supported_endpoints": ["/responses"],
+            "capabilities": {"type": "chat"},
+        }]
+        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
+
+    def test_copilot_api_mode_claude_with_messages_endpoint(self):
+        """Claude with /v1/messages in catalog should use anthropic_messages."""
+        catalog = [{
+            "id": "claude-sonnet-4.6",
+            "supported_endpoints": ["/chat/completions", "/v1/messages"],
+        }]
+        assert copilot_model_api_mode("claude-sonnet-4.6", catalog=catalog) == "anthropic_messages"
+
+    def test_copilot_api_mode_claude_with_both_endpoints_prefers_messages(self):
+        """When catalog lists both /chat/completions and /v1/messages, prefer messages."""
+        catalog = [{
+            "id": "claude-opus-4.6",
+            "supported_endpoints": ["/chat/completions", "/v1/messages"],
+        }]
+        assert copilot_model_api_mode("claude-opus-4.6", catalog=catalog) == "anthropic_messages"
+
+    def test_copilot_api_mode_gpt_with_messages_endpoint_still_uses_responses(self):
+        """GPT-5+ should still use codex_responses even if /v1/messages appears in catalog."""
+        catalog = [{
+            "id": "gpt-5.4",
+            "supported_endpoints": ["/chat/completions", "/v1/messages", "/responses"],
+        }]
+        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
+
+    def test_copilot_api_mode_gemini_without_messages_uses_chat(self):
+        """Non-Claude, non-GPT-5 models without /v1/messages stay on chat_completions."""
+        catalog = [{
+            "id": "gemini-2.5-pro",
+            "supported_endpoints": ["/chat/completions"],
+        }]
+        assert copilot_model_api_mode("gemini-2.5-pro", catalog=catalog) == "chat_completions"
+    
+    def test_normalize_opencode_model_id_strips_provider_prefix(self):
+        assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"
+        assert normalize_opencode_model_id("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "claude-sonnet-4-6"
+        assert normalize_opencode_model_id("opencode-go", "glm-5") == "glm-5"
+
+    def test_opencode_zen_api_modes_match_docs(self):
+        assert opencode_model_api_mode("opencode-zen", "gpt-5.4") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "gpt-5.3-codex") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/gpt-5.4") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "claude-sonnet-4-6") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
+        # Qwen on Zen is served via /v1/messages per the Zen endpoint table.
+        assert opencode_model_api_mode("opencode-zen", "qwen3.7-max") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "qwen3.6-plus") == "anthropic_messages"
 
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"

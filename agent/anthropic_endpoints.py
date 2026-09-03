@@ -209,6 +209,9 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         # not Anthropic's native x-api-key header. Hostname match for the
         # same reason as above.
         or base_url_host_matches(normalized, "api.commandcode.ai")
+        # GitHub Copilot's /v1/messages endpoint authenticates with
+        # Authorization: Bearer, not x-api-key.
+        or base_url_host_matches(normalized, "githubcopilot.com")
     )
 
 

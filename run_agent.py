@@ -9261,7 +9261,7 @@ class AIAgent:
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
-        stream_callback: Optional[callable] = None,
+        stream_callback: Optional[Callable] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
@@ -9929,7 +9929,7 @@ class AIAgent:
                     except Exception:
                         pass
 
-    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
+    def chat(self, message: str, stream_callback: Optional[Callable] = None) -> str:
         """
         Simple chat interface that returns just the final response.
 

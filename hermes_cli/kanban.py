@@ -675,6 +675,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+    p_block.add_argument(
+        "--dependency-ids", nargs="+", default=None, metavar="TASK_ID",
+        help=(
+            "With --kind dependency: task ids to link as parents in the same "
+            "transaction as the block. The block is refused when there is no "
+            "live parent edge to wait on (parentless or all-parents-done "
+            "tasks would respawn immediately)."
+        ),
+    )
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -2452,23 +2461,40 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
+    dependency_ids = getattr(args, "dependency_ids", None)
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
-            if not kb.block_task(
-                conn,
-                tid,
-                reason=reason,
-                kind=kind,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                ok = kb.block_task(
+                    conn,
+                    tid,
+                    reason=reason,
+                    kind=kind,
+                    expected_run_id=_worker_run_id_for(tid),
+                    dependency_ids=dependency_ids,
+                )
+            except ValueError as exc:
+                # Refused by validation (kind/dependency_ids misuse, or the
+                # dependency respawn-guard: no live parent edge to wait on).
+                # Deliberately NO comment: a refused block must not leave a
+                # misleading "BLOCKED:" note on a task that is not blocked.
+                failed.append(tid)
+                print(str(exc), file=sys.stderr)
+                continue
+            if not ok:
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
+                # The transition succeeded; only now is it safe to record the
+                # block reason as a durable comment. (Moving this before the
+                # transition would stamp "BLOCKED:" on a refused dependency
+                # block — the misleading state the respawn-guard exists to
+                # prevent.)
+                if reason:
+                    kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
                 # Report where the task actually landed — dependency blocks go
                 # to todo, and a tripped unblock-loop breaker routes to triage.
                 landed = kb.get_task(conn, tid)

@@ -3838,34 +3838,45 @@ def set_reasoning_effort(
 # ---------------------------------------------------------------------------
 
 def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+    with write_txn(conn):
+        _link_tasks_locked(conn, parent_id, child_id)
+
+
+def _link_tasks_locked(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+    """Shared edge-write logic for ``link_tasks`` — NO transaction of its own.
+
+    Callers must already hold a write transaction (``link_tasks`` opens one;
+    ``block_task`` reuses it inside its own txn so adding edges and parking
+    the task commit atomically). Runs the same self/unknown/cycle validation
+    as ``link_tasks``.
+    """
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
-    with write_txn(conn):
-        missing = _find_missing_parents(conn, [parent_id, child_id])
-        if missing:
-            raise ValueError(f"unknown task(s): {', '.join(missing)}")
-        if _would_cycle(conn, parent_id, child_id):
-            raise ValueError(
-                f"linking {parent_id} -> {child_id} would create a cycle"
-            )
+    missing = _find_missing_parents(conn, [parent_id, child_id])
+    if missing:
+        raise ValueError(f"unknown task(s): {', '.join(missing)}")
+    if _would_cycle(conn, parent_id, child_id):
+        raise ValueError(
+            f"linking {parent_id} -> {child_id} would create a cycle"
+        )
+    conn.execute(
+        "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+        (parent_id, child_id),
+    )
+    # If child was ready but parent is not yet done, demote child to todo.
+    parent_status = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+    ).fetchone()["status"]
+    if parent_status != "done":
         conn.execute(
-            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-            (parent_id, child_id),
+            "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+            (child_id,),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                (child_id,),
-            )
-        _append_event(
-            conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
-        )
-        _inherit_notify_subs(conn, child_id, (parent_id,))
+    _append_event(
+        conn, child_id, "linked",
+        {"parent": parent_id, "child": child_id},
+    )
+    _inherit_notify_subs(conn, child_id, (parent_id,))
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -4623,6 +4634,22 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
         "AND p.status NOT IN ('done', 'archived') LIMIT 1",
         (task_id,),
     ).fetchone() is None
+
+
+def _live_dependency_edges(conn: sqlite3.Connection, task_id: str) -> int:
+    """Number of parent edges whose parent is NOT yet terminal.
+
+    Zero means the parent gate has nothing to wait on: a task parked in
+    ``todo`` without a live parent is promoted straight back to ``ready``
+    by :func:`recompute_ready` on the next tick.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived')",
+        (task_id,),
+    ).fetchone()
+    return int(row["n"]) if row is not None else 0
 
 
 def claim_task(
@@ -6261,6 +6288,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    dependency_ids: Optional[Iterable[str]] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -6273,6 +6301,21 @@ def block_task(
       ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
       promotes it automatically once its parents finish. No human, no cron, no
       retry storm. This is Dale's "Type 2 — dependency blocked".
+      Precondition: the task must have at least one parent edge whose parent
+      is not yet terminal. With no live edge there is nothing for the parent
+      gate to wait on, and ``recompute_ready`` promotes zero-parent ``todo``
+      tasks straight back to ``ready`` on the next tick — the respawn loop
+      this routing exists to prevent. In that case ``ValueError`` is raised
+      with the actionable code ``dependency_edge_missing`` and nothing is
+      written; link the blocking task first (``link_tasks``), or use a
+      human-visible kind.
+
+      ``dependency_ids`` (optional, ``kind='dependency'`` only) links the
+      named tasks as parents inside THIS block's write transaction — the
+      edges and the todo park commit atomically, reusing ``link_tasks``'
+      self/unknown/cycle validation. If any id is invalid the whole call
+      raises ``ValueError`` and rolls back. Edges whose parents are already
+      terminal count as no live edge, so the respawn guard still applies.
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
@@ -6293,13 +6336,43 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    dep_ids: list[str] = []
+    if dependency_ids is not None:
+        seen_ids: set[str] = set()
+        for raw_id in dependency_ids:
+            dep_id = str(raw_id).strip()
+            if dep_id and dep_id not in seen_ids:
+                seen_ids.add(dep_id)
+                dep_ids.append(dep_id)
+        if dep_ids and kind != "dependency":
+            raise ValueError(
+                "dependency_ids is only valid with kind='dependency' — the "
+                "other block kinds route to a human, not a parent gate"
+            )
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, current_run_id "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
+            return False
+        # Blockable source states only — the original WHERE contract. The
+        # dependency branch's park filter below accepts 'todo' as well (a
+        # ready task can be demoted by its own link step), so the state
+        # machine must reject every other entry state up front.
+        if cur_row["status"] not in ("running", "ready"):
+            return False
+        # Validate the expected run BEFORE any write (including the
+        # dependency edge links below). A stale ``expected_run_id`` must
+        # refuse the whole call with zero side effects: linking parents but
+        # then failing the park UPDATE would commit a half-blocked state
+        # (edges present, task still running).
+        if expected_run_id is not None and (
+            cur_row["current_run_id"] is None
+            or int(cur_row["current_run_id"]) != int(expected_run_id)
+        ):
             return False
         source_status = (
             _retry_status_for_run(conn, task_id)
@@ -6319,6 +6392,36 @@ def block_task(
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
         if kind == "dependency":
+            # Caller-supplied parents are linked inside THIS transaction so
+            # the edges and the todo park commit atomically. This reuses
+            # ``link_tasks``' self/unknown/cycle validation verbatim; any
+            # ValueError rolls back the whole block (no partial edges).
+            for dep_id in dep_ids:
+                _link_tasks_locked(conn, dep_id, task_id)
+            # Respawn-guard: a dependency block is only meaningful when there
+            # is a live parent edge to wait on. Without one (no edges at all,
+            # or every parent already terminal), ``recompute_ready`` promotes
+            # this ``todo`` back to ``ready`` on the very next tick and the
+            # task respawns — the exact loop this routing exists to prevent.
+            # Refuse the transition instead of parking a task nothing gates.
+            if _live_dependency_edges(conn, task_id) == 0:
+                raise ValueError(
+                    f"dependency_edge_missing: cannot block {task_id} with "
+                    f"kind='dependency' — it has no live parent edge to wait "
+                    f"on (a parentless or already-satisfied todo is "
+                    f"re-promoted to ready on the next recompute, respawning "
+                    f"the worker). Link the blocking task first (kanban link "
+                    f"<parent> <child> or pass dependency_ids), or block "
+                    f"with a human-visible kind instead."
+                )
+            # ``_link_tasks_locked`` demotes a ready child to todo (the same
+            # contract link_tasks applies). That demote is ours, so the park
+            # transition must still match it.
+            park_filter = (
+                "AND status IN ('running', 'ready', 'todo')"
+                if source_status == "ready"
+                else "AND status IN ('running', 'ready')"
+            )
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -6328,8 +6431,8 @@ def block_task(
                        worker_pid    = NULL,
                        block_kind    = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                """ + park_filter
+                + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, task_id) if expected_run_id is None
                 else (kind, task_id, int(expected_run_id)),
             )

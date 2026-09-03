@@ -846,6 +846,11 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
+    dependency_ids = args.get("dependency_ids")
+    if dependency_ids is not None:
+        if not isinstance(dependency_ids, (list, tuple)):
+            return tool_error("dependency_ids must be a list of task ids")
+        dependency_ids = [str(x) for x in dependency_ids]
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -884,6 +889,7 @@ def _handle_block(args: dict, **kw) -> str:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id(tid),
+                dependency_ids=dependency_ids,
             )
             if not ok:
                 return tool_error(
@@ -1912,6 +1918,19 @@ KANBAN_BLOCK_SCHEMA = {
                     "Why you're blocked. 'dependency' waits in todo and "
                     "resumes automatically; the others surface to a human. "
                     "Omit only if none apply."
+                ),
+            },
+            "dependency_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "kind='dependency' only: task ids this task is waiting "
+                    "on. Linked as parents in the same transaction as the "
+                    "block. The block is refused (error code "
+                    "dependency_edge_missing) when there is no live parent "
+                    "edge to wait on — either pass the blockers here or link "
+                    "them first; a dependency block without a live edge "
+                    "would just respawn."
                 ),
             },
             "board": _board_schema_prop(),

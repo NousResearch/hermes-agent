@@ -372,11 +372,17 @@ export async function extractBridgeEvent({
     mime = item.mimetype || 'video/mp4';
     nativeMetadata.video = { gifPlayback: !!item.gifPlayback };
     await saveMedia({ mediaMessage: item, dir: cacheDirs.document, prefix: 'vid', fallbackExt: '.mp4', type: mediaType });
-  } else if (messageContent.audioMessage || messageContent.pttMessage) {
-    const item = messageContent.pttMessage || messageContent.audioMessage;
+  } else if (messageContent.audioMessage || messageContent.pttMessage || messageContent.ptvMessage) {
+    // ptvMessage = newer WhatsApp push-to-talk voice notes (2025+ protocol)
+    const item = messageContent.ptvMessage || messageContent.pttMessage || messageContent.audioMessage;
     hasMedia = true;
-    mediaType = item.ptt || messageContent.pttMessage ? 'ptt' : 'audio';
-    nativeType = messageContent.pttMessage ? 'pttMessage' : 'audioMessage';
+    const _mime0 = item.mimetype || '';
+    // Some clients (WhatsApp Business 2025+) send voice notes as a bare
+    // audioMessage with ptt unset. Voice notes are always ogg/opus and carry
+    // no fileName; shared audio files have a fileName or a non-opus mimetype.
+    const _voiceish = (_mime0.includes('ogg') || _mime0.includes('opus')) && !item.fileName;
+    mediaType = item.ptt || messageContent.ptvMessage || messageContent.pttMessage || _voiceish ? 'ptt' : 'audio';
+    nativeType = messageContent.ptvMessage ? 'ptvMessage' : (messageContent.pttMessage ? 'pttMessage' : 'audioMessage');
     mime = item.mimetype || 'audio/ogg';
     nativeMetadata.audio = { ptt: mediaType === 'ptt' };
     await saveMedia({ mediaMessage: item, dir: cacheDirs.audio, prefix: 'aud', fallbackExt: '.ogg', type: 'audio' });

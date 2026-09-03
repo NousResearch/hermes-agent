@@ -184,6 +184,72 @@ import {
   console.log('  ✓ MIME extension is preserved when document filename has none');
 }
 
+// -- voice-note vs audio-file classification (ptv / ptt / bare ogg audio) ---
+{
+  const cases = [
+    {
+      name: 'ptvMessage is classified as ptt voice note',
+      message: { ptvMessage: { mimetype: 'audio/ogg;codecs=opus' } },
+      expectedType: 'ptt',
+      expectedNative: 'ptvMessage',
+    },
+    {
+      name: 'legacy pttMessage is classified as ptt voice note',
+      message: { pttMessage: { mimetype: 'audio/ogg;codecs=opus' } },
+      expectedType: 'ptt',
+      expectedNative: 'pttMessage',
+    },
+    {
+      name: 'audioMessage with ptt flag is classified as ptt voice note',
+      message: { audioMessage: { mimetype: 'audio/ogg;codecs=opus', ptt: true } },
+      expectedType: 'ptt',
+      expectedNative: 'audioMessage',
+    },
+    {
+      // WhatsApp Business 2025+ sends voice notes as bare audioMessage with
+      // ptt unset; ogg/opus without a fileName is the voice-note signature.
+      name: 'bare ogg/opus audioMessage without fileName is classified as ptt',
+      message: { audioMessage: { mimetype: 'audio/ogg;codecs=opus' } },
+      expectedType: 'ptt',
+      expectedNative: 'audioMessage',
+    },
+    {
+      name: 'shared mp3 audio file stays audio',
+      message: { audioMessage: { mimetype: 'audio/mpeg', fileName: 'song.mp3' } },
+      expectedType: 'audio',
+      expectedNative: 'audioMessage',
+    },
+    {
+      name: 'ogg audio file with fileName stays audio',
+      message: { audioMessage: { mimetype: 'audio/ogg', fileName: 'recording.ogg' } },
+      expectedType: 'audio',
+      expectedNative: 'audioMessage',
+    },
+  ];
+
+  for (const { name, message, expectedType, expectedNative } of cases) {
+    const cacheDir = mkdtempSync(path.join(tmpdir(), 'hermes-wa-audio-'));
+    const event = await extractBridgeEvent({
+      msg: {
+        key: { id: 'aud-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+        messageTimestamp: 123,
+        message,
+      },
+      chatId: '15551234567@s.whatsapp.net',
+      senderId: '15550001111@s.whatsapp.net',
+      senderNumber: '15550001111',
+      downloadMedia: async () => Buffer.from('ogg'),
+      cacheDirs: { audio: cacheDir },
+    });
+
+    assert.equal(event.hasMedia, true, name);
+    assert.equal(event.mediaType, expectedType, name);
+    assert.equal(event.nativeType, expectedNative, name);
+    assert.equal(event.nativeMetadata.audio.ptt, expectedType === 'ptt', name);
+  }
+  console.log('  ✓ voice notes (ptv/ptt/bare ogg) classify as ptt, audio files stay audio');
+}
+
 {
   const event = await extractBridgeEvent({
     msg: {

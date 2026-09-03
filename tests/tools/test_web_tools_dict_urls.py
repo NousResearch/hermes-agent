@@ -75,6 +75,40 @@ async def test_web_extract_dispatches_urls_from_search_result_objects(extract_pr
     assert [entry["url"] for entry in result["results"]] == extract_provider.received_urls
 
 
+@pytest.mark.asyncio
+async def test_web_extract_repairs_bare_string_url(extract_provider):
+    """A bare string url must be wrapped, not iterated char-by-char.
+
+    Regression for the silent-corruption case: without the repair,
+    ``for index, item in enumerate(urls)`` over a bare string iterates each
+    character, every char fails URL validation, and the tool returns
+    "Content was inaccessible" for a perfectly valid URL.
+    """
+    result = json.loads(await web_tools.web_extract_tool("https://example.com"))
+
+    assert extract_provider.received_urls == ["https://example.com"]
+    assert [entry["url"] for entry in result["results"]] == ["https://example.com"]
+    assert "inaccessible" not in json.dumps(result).lower()
+
+
+@pytest.mark.asyncio
+async def test_web_extract_repairs_stringified_array_urls(extract_provider):
+    """A JSON-stringified array of urls must be parsed into a real list."""
+    result = json.loads(await web_tools.web_extract_tool('["https://example.com/a"]'))
+
+    assert extract_provider.received_urls == ["https://example.com/a"]
+    assert [entry["url"] for entry in result["results"]] == ["https://example.com/a"]
+
+
+@pytest.mark.asyncio
+async def test_web_extract_valid_list_untouched(extract_provider):
+    """A real list of urls must pass through unchanged (no corruption)."""
+    result = json.loads(await web_tools.web_extract_tool(["https://example.com/a"]))
+
+    assert extract_provider.received_urls == ["https://example.com/a"]
+    assert [entry["url"] for entry in result["results"]] == ["https://example.com/a"]
+
+
 def test_web_extract_registry_dispatch_accepts_search_result_objects(
     extract_provider,
 ):

@@ -1128,6 +1128,15 @@ def memory_tool(
 
     # --- Batch path -------------------------------------------------------
     if operations:
+        # Repair: LLM sometimes sends operations as a JSON string instead of a
+        # list. Share the stringified-array repair with every other array tool.
+        repaired_ops, repair_err = recover_list_from_json_string(
+            operations, param_name="operations"
+        )
+        if repair_err is not None:
+            return tool_error(repair_err, success=False)
+        if repaired_ops is not None:
+            operations = repaired_ops
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         gate_result = _apply_batch_write_gate(target, operations)
@@ -1371,6 +1380,7 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
 
 # --- Registry ---
 from tools.registry import registry, tool_error
+from tools.tool_input_repair import recover_list_from_json_string
 
 registry.register(
     name="memory",

@@ -98,6 +98,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     prefers_gateway,
 )
 from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
+from tools.tool_input_repair import recover_list_from_json_string
 import sys
 
 logger = logging.getLogger(__name__)
@@ -1078,6 +1079,21 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
+    # Repair the model-emitted ``urls`` param before touching it. Without this,
+    # a bare string ("https://example.com") or a stringified array
+    # ('["a","b"]') would flow into the ``for index, item in enumerate(urls)``
+    # loop below: a bare string iterates character-by-character and every char
+    # fails URL validation, silently returning "Content was inaccessible"
+    # instead of the real string-vs-array type mismatch. Share the same repair
+    # used by every other array-taking tool.
+    repaired_urls, repair_err = recover_list_from_json_string(
+        urls, param_name="urls", wrap_bare_string=True
+    )
+    if repair_err is not None:
+        return json.dumps({"error": repair_err}, ensure_ascii=False)
+    if repaired_urls is not None:
+        urls = repaired_urls
+
     # Block URLs containing embedded secrets (exfiltration prevention).
     # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
     from agent.redact import _PREFIX_RE

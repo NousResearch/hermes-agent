@@ -13,7 +13,31 @@ This module provides:
 - hermes config unset    - Remove a user configuration value
 - hermes config wizard   - Re-run setup wizard
 """
+import functools
 
+@functools.lru_cache(maxsize=10000)
+def _fast_fingerprint(role: str, content_len: int, msg_id: int):
+    return f"{role}:{content_len}:{msg_id}"
+
+def _msg_fingerprint(msg):
+    if isinstance(msg, dict):
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        content_len = len(content) if isinstance(content, str) else 0
+        return _fast_fingerprint(role, content_len, id(msg))
+    # Varsa fonksiyonun geri kalan orijinal kodları...
+
+@functools.lru_cache(maxsize=10000)
+def _fast_token_calc(msg_id: int, role: str, content_str: str) -> int:
+    words = len(content_str.split())
+    return max(1, int(words * 1.3)) + 4
+
+def _estimate_message_tokens_cached(msg, model=None):
+    if isinstance(msg, dict):
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return _fast_token_calc(id(msg), msg.get("role", ""), content)
+    # Varsa fonksiyonun geri kalan orijinal kodları...
 import copy
 from decimal import Decimal, InvalidOperation
 from hermes_cli.cli_output import line_input

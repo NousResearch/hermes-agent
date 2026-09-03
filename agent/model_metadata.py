@@ -485,6 +485,24 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
+    # Meta Muse Spark family — 1M context window (1,048,576).  Grounded in
+    # Meta's own Model API docs: Muse Spark 1.1 "actively manages its context
+    # window of 1 million tokens" (ai.meta.com Muse Spark announcement) and
+    # the Muse Spark 1.3 spec is 1M context / 131,072 max output.  No metadata
+    # source carries muse models — Zen/Go /v1/models cards are bare
+    # (id + owned_by only) and models.dev has no muse entries — so without
+    # this entry every muse-spark* slug falls through to the 256K default.
+    # Longest-first substring matching keeps future checkpoints
+    # (e.g. muse-spark-1.4-contributor-free) covered.
+    "muse-spark": 1_048_576,
+    # Thinking Machines — Inkling family ships with a 1M context window
+    # (max output 256K).  Verified against OpenRouter live metadata
+    # (context_length 1,048,576 for inkling, inkling-small, and the
+    # :free SKUs, 2026-08-27).  Substring matching means "inkling"
+    # covers inkling-small and every :free/:batch variant; the :batch
+    # SKU's smaller live window (524,288) is served by the provider's
+    # live metadata when available.
+    "inkling": 1_048_576,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3.8-max": 1_000_000,     # 1M context (OpenRouter & Nous portal, verified 2026-08-03)

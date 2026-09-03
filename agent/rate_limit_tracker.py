@@ -22,9 +22,17 @@ Header schema (12 headers total):
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping, Optional
+
+
+_DURATION_PART_RE = re.compile(r"(?P<value>\d+(?:\.\d+)?)(?P<unit>ms|s|m|h)")
+_RPM_THROTTLE_PROVIDERS = frozenset({"anthropic", "openai", "nous"})
+_RPM_THROTTLE_THRESHOLD = 2
+_RPM_WAIT_SLICE_SECONDS = 0.25
 
 
 @dataclass
@@ -35,6 +43,7 @@ class RateLimitBucket:
     remaining: int = 0
     reset_seconds: float = 0.0
     captured_at: float = 0.0  # time.time() when this was captured
+    has_remaining: bool = False
 
     @property
     def used(self) -> int:
@@ -63,6 +72,7 @@ class RateLimitState:
     tokens_hour: RateLimitBucket = field(default_factory=RateLimitBucket)
     captured_at: float = 0.0  # when the headers were captured
     provider: str = ""
+    base_url: str = ""
 
     @property
     def has_data(self) -> bool:
@@ -82,18 +92,46 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _normalized(value: object) -> str:
+    return str(value or "").strip().rstrip("/").lower()
+
+
+def _parse_reset_seconds(value: Any, *, now: float) -> float:
+    """Parse numeric, compact-duration, or RFC 3339 reset values."""
+    if value is None:
+        return 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+
+    compact = text.replace(" ", "")
+    parts = list(_DURATION_PART_RE.finditer(compact))
+    if parts and "".join(part.group(0) for part in parts) == compact:
+        unit_seconds = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+        return sum(
+            float(part.group("value")) * unit_seconds[part.group("unit")]
+            for part in parts
+        )
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        return 0.0
+    return max(0.0, parsed.astimezone(timezone.utc).timestamp() - now)
 
 
 def parse_rate_limit_headers(
     headers: Mapping[str, str],
     provider: str = "",
+    base_url: str = "",
 ) -> Optional[RateLimitState]:
-    """Parse x-ratelimit-* headers into a RateLimitState.
+    """Parse OpenAI-compatible or Anthropic rate-limit headers into state.
 
     Returns None if no rate limit headers are present.
     """
@@ -101,8 +139,9 @@ def parse_rate_limit_headers(
     # capitalises headers (HTTP header names are case-insensitive per RFC 7230).
     lowered = {k.lower(): v for k, v in headers.items()}
 
-    # Quick check: at least one rate limit header must exist
-    has_any = any(k.startswith("x-ratelimit-") for k in lowered)
+    has_any = any(
+        k.startswith(("x-ratelimit-", "anthropic-ratelimit-")) for k in lowered
+    )
     if not has_any:
         return None
 
@@ -112,21 +151,98 @@ def parse_rate_limit_headers(
         # e.g. resource="requests", suffix="" -> per-minute
         #      resource="tokens", suffix="-1h" -> per-hour
         tag = f"{resource}{suffix}"
+        remaining_key = f"x-ratelimit-remaining-{tag}"
         return RateLimitBucket(
             limit=_safe_int(lowered.get(f"x-ratelimit-limit-{tag}")),
-            remaining=_safe_int(lowered.get(f"x-ratelimit-remaining-{tag}")),
-            reset_seconds=_safe_float(lowered.get(f"x-ratelimit-reset-{tag}")),
+            remaining=_safe_int(lowered.get(remaining_key)),
+            reset_seconds=_parse_reset_seconds(
+                lowered.get(f"x-ratelimit-reset-{tag}"), now=now
+            ),
             captured_at=now,
+            has_remaining=remaining_key in lowered,
         )
 
+    def _anthropic_bucket(resource: str) -> RateLimitBucket:
+        prefix = f"anthropic-ratelimit-{resource}"
+        remaining_key = f"{prefix}-remaining"
+        return RateLimitBucket(
+            limit=_safe_int(lowered.get(f"{prefix}-limit")),
+            remaining=_safe_int(lowered.get(remaining_key)),
+            reset_seconds=_parse_reset_seconds(lowered.get(f"{prefix}-reset"), now=now),
+            captured_at=now,
+            has_remaining=remaining_key in lowered,
+        )
+
+    is_anthropic = any(k.startswith("anthropic-ratelimit-") for k in lowered)
+
     return RateLimitState(
-        requests_min=_bucket("requests"),
+        requests_min=(
+            _anthropic_bucket("requests") if is_anthropic else _bucket("requests")
+        ),
         requests_hour=_bucket("requests", "-1h"),
-        tokens_min=_bucket("tokens"),
+        tokens_min=(
+            _anthropic_bucket("tokens") if is_anthropic else _bucket("tokens")
+        ),
         tokens_hour=_bucket("tokens", "-1h"),
         captured_at=now,
         provider=provider,
+        base_url=_normalized(base_url),
     )
+
+
+def wait_for_low_rpm(
+    state: Optional[RateLimitState],
+    *,
+    provider: str,
+    base_url: str,
+    threshold: Optional[int] = None,
+    is_interrupted: Optional[Callable[[], bool]] = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> float:
+    """Wait for a matching, nearly exhausted request bucket to reset.
+
+    Captured state is local to one agent and is only trusted for the same
+    provider route. Unknown providers may opt in through an explicit threshold.
+    """
+    active_provider = _normalized(provider)
+    if (
+        state is None
+        or not state.has_data
+        or not active_provider
+        or _normalized(state.provider) != active_provider
+        or _normalized(state.base_url) != _normalized(base_url)
+    ):
+        return 0.0
+    if threshold is None and active_provider not in _RPM_THROTTLE_PROVIDERS:
+        return 0.0
+    if isinstance(threshold, bool):
+        return 0.0
+    try:
+        effective_threshold = (
+            _RPM_THROTTLE_THRESHOLD if threshold is None else int(threshold)
+        )
+    except (TypeError, ValueError):
+        return 0.0
+    bucket = state.requests_min
+    if (
+        effective_threshold < 0
+        or not bucket.has_remaining
+        or bucket.limit <= 0
+        or bucket.remaining > effective_threshold
+    ):
+        return 0.0
+    wait_seconds = bucket.remaining_seconds_now
+    if wait_seconds <= 0:
+        return 0.0
+
+    deadline = monotonic_fn() + wait_seconds
+    while not (callable(is_interrupted) and is_interrupted()):
+        remaining = deadline - monotonic_fn()
+        if remaining <= 0:
+            return wait_seconds
+        sleep_fn(min(_RPM_WAIT_SLICE_SECONDS, remaining))
+    return 0.0
 
 
 # ── Formatting ──────────────────────────────────────────────────────────

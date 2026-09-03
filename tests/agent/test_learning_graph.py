@@ -61,6 +61,50 @@ def test_memory_is_cards_split_on_separator(tmp_path):
 
 
 
+def test_provider_cards_follow_file_cards(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    (home / "memories").mkdir(parents=True)
+    (home / "memories" / "MEMORY.md").write_text("Project uses pytest", encoding="utf-8")
+
+    class Provider:
+        def learning_cards(self, limit=200):
+            return [
+                {"source": "demo", "timestamp": 1_700_000_000, "title": "Learned from the demo provider",
+                 "body": "body text", "kind": "lesson"},
+                {"title": ""},  # dropped: no title
+            ]
+
+    monkeypatch.setattr(learning_graph, "_load_active_provider", lambda: ("demo", Provider()))
+    token = set_hermes_home_override(home)
+    try:
+        graph = learning_graph.build_learning_graph()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert [c["source"] for c in graph["memory"]] == ["memory", "demo"]
+    node = next(n for n in graph["nodes"] if n["id"] == "memory:demo:1")
+    assert node["kind"] == "memory" and node["memorySource"] == "demo"
+    assert node["label"] == "Learned from the demo provider" and node["timestamp"] == 1_700_000_000
+    assert graph["stats"]["memory_nodes"] == 2
+
+
+def test_graph_survives_a_broken_provider(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+
+    class Broken:
+        def learning_cards(self, limit=200):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(learning_graph, "_load_active_provider", lambda: ("broken", Broken()))
+    token = set_hermes_home_override(home)
+    try:
+        graph = learning_graph.build_learning_graph()
+    finally:
+        reset_hermes_home_override(token)
+    assert graph["memory"] == []
+
+
 def test_full_payload_shape_and_edge_integrity(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

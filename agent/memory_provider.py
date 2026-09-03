@@ -339,6 +339,20 @@ class MemoryProvider(ABC):
         child_session_id: the subagent's session_id
         """
 
+    def learning_cards(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return what this provider has learned, as journey cards (oldest first).
+
+        Consumed by ``agent.learning_graph`` so the desktop Star Map, the TUI
+        ``/journey`` overlay and ``hermes journey`` can show provider memory
+        next to MEMORY.md/USER.md chunks and learned skills. Each card is a dict
+        with ``source`` (the provider name), ``timestamp`` (unix seconds or
+        None), ``title`` (short, about 80 chars) and ``body`` (about 1200 chars
+        at most); extra keys pass through to the graph payload. Providers with
+        nothing to show return []. Provider cards are read-only in the journey
+        editors; the provider's own tools manage them.
+        """
+        return []
+
     def get_config_schema(self) -> List[Dict[str, Any]]:
         """Return config fields this provider needs for setup.
 

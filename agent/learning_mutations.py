@@ -70,6 +70,11 @@ def _locate_memory(source: str, gidx: int) -> tuple[Path, list[str], int]:
     """
     from tools.memory_tool import MemoryStore
 
+    if source not in _MEMORY_FILES:
+        raise ValueError(
+            f"memory cards from provider {source!r} are read-only here; "
+            "manage them with the provider's own tools"
+        )
     path = _memories_dir() / _MEMORY_FILES[source]
     if not path.exists():
         raise ValueError(f"{path.name} not found")

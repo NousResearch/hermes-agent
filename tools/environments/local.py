@@ -564,7 +564,13 @@ def _is_terminal_first_party_env(name: str) -> bool:
 # PYTHONPATH is NOT included here — it's handled by
 # _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries,
 # preserving user-set paths.
-_ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
+_ACTIVE_VENV_MARKER_VARS = (
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "CONDA_SHLVL",
+    "CONDA_PROMPT_MODIFIER",
+    "PYTHONHOME",
+)
 
 
 def _is_hermes_internal_secret(key: str) -> bool:

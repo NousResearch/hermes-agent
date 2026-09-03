@@ -169,20 +169,22 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
 async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path):
     """Gateway hooks receive the actual model/provider for post-turn routing."""
     runner = _runner(monkeypatch, tmp_path)
-    runner._run_agent = AsyncMock(return_value={
-        "final_response": "done",
-        "messages": [
-            {"role": "user", "content": "question"},
-            {"role": "assistant", "content": "done"},
-        ],
-        "tools": [],
-        "history_offset": 0,
-        "last_prompt_tokens": 0,
-        "api_calls": 1,
-        "failed": False,
-        "model": "gpt-5.6-terra",
-        "provider": "openai-codex",
-    })
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "done",
+            "messages": [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "done"},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "api_calls": 1,
+            "failed": False,
+            "model": "gpt-5.6-terra",
+            "provider": "openai-codex",
+        }
+    )
 
     await runner._handle_message_with_agent(
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
@@ -195,3 +197,45 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_empty_turn_with_queued_followup_returns_queue_notice(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    session_key = "agent:main:telegram:group:-1001:12345"
+    adapter = MagicMock()
+    pending_event = MessageEvent(
+        text="follow-up",
+        source=_source(),
+        message_id="msg-follow-up",
+    )
+    adapter._pending_messages = {session_key: pending_event}
+    adapter._send_with_retry = AsyncMock()
+    runner.adapters[_source().platform] = adapter
+    runner._queued_events = {}
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner._deliver_platform_notice = AsyncMock()
+
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "",
+            "messages": [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": ""},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "api_calls": 1,
+            "failed": False,
+            "interrupted": True,
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), session_key, runner._MAX_INTERRUPT_DEPTH
+    )
+
+    assert response == "Queued for the next turn."
+    assert session_key in adapter._pending_messages
+    assert adapter._pending_messages[session_key].text == "follow-up"

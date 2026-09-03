@@ -81,6 +81,9 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "kind": t.kind,
+        "parent_id": t.parent_id,
+        "product_id": t.product_id,
     }
 
 
@@ -371,6 +374,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
+    p_create.add_argument("--kind", choices=sorted(kb.VALID_ISSUE_KINDS), default="task",
+                          help="Semantic issue kind (default: task)")
+    p_create.add_argument("--under", dest="hierarchy_parent_id", default=None,
+                          help="Containment parent issue id (does not gate dispatch)")
+    p_create.add_argument("--product-id", default=None,
+                          help="Structured portable product identity")
     p_create.add_argument("--workspace", default="scratch",
                           help="scratch | worktree | worktree:<path> | dir:<path> "
                                "(default: scratch)")
@@ -468,6 +477,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--status", default=None,
                         choices=sorted(kb.VALID_STATUSES))
     p_list.add_argument("--tenant", default=None)
+    p_list.add_argument("--kind", choices=sorted(kb.VALID_ISSUE_KINDS), default=None)
+    p_list.add_argument("--parent-id", default=None, help="Exact containment parent id")
+    p_list.add_argument("--product-id", default=None, help="Exact structured product id")
     p_list.add_argument("--session", default=None,
                         help="Filter by originating chat/agent session id "
                              "(set on tasks created from inside an ACP loop)")
@@ -1686,6 +1698,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            kind=getattr(args, "kind", "task"),
+            hierarchy_parent_id=getattr(args, "hierarchy_parent_id", None),
+            product_id=getattr(args, "product_id", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1751,6 +1766,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
             assignee=assignee,
             status=args.status,
             tenant=args.tenant,
+            kind=getattr(args, "kind", None),
+            hierarchy_parent_id=getattr(args, "parent_id", None),
+            product_id=getattr(args, "product_id", None),
             session_id=args.session,
             include_archived=args.archived,
             order_by=getattr(args, "sort", None),
@@ -1792,20 +1810,26 @@ def _cmd_show(args: argparse.Namespace) -> int:
         )
         return 2
     graph = None
-    with kb.connect_closing() as conn:
-        task = kb.get_task(conn, args.task_id)
+    board = None
+    task_id = args.task_id
+    if ":" in task_id:
+        board, task_id = kb.parse_issue_ref(task_id)
+    with kb.connect_closing(board=board) as conn:
+        task = kb.get_task(conn, task_id)
         if not task:
             print(f"no such task: {args.task_id}", file=sys.stderr)
             return 1
-        comments = kb.list_comments(conn, args.task_id)
-        events = kb.list_events(conn, args.task_id)
-        parents = kb.parent_ids(conn, args.task_id)
-        children = kb.child_ids(conn, args.task_id)
-        runs = kb.list_runs(conn, args.task_id, **rsk)
+        comments = kb.list_comments(conn, task_id)
+        events = kb.list_events(conn, task_id)
+        parents = kb.parent_ids(conn, task_id)
+        children = kb.child_ids(conn, task_id)
+        hierarchy_children = kb.hierarchy_child_ids(conn, task_id)
+        breadcrumbs = kb.issue_breadcrumbs(conn, task_id)
+        runs = kb.list_runs(conn, task_id, **rsk)
         # Workers hand off via ``task_runs.summary``; ``tasks.result`` is left NULL unless the caller explicitly passed
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
         # looking like a no-op when the worker actually did real work.
-        latest_summary = kb.latest_summary(conn, args.task_id)
+        latest_summary = kb.latest_summary(conn, task_id)
         if not getattr(args, "json", False):
             graph = kb.task_graph_context(conn, task.id)
 
@@ -1815,6 +1839,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
+            "hierarchy_children": hierarchy_children,
+            "breadcrumbs": [_task_to_dict(item) for item in breadcrumbs],
+            "qualified_ref": kb.qualified_issue_ref(board, task_id) if board else None,
             "comments": [
                 {"author": c.author, "body": c.body, "created_at": c.created_at}
                 for c in comments

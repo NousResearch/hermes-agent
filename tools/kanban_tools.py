@@ -502,6 +502,9 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "workspace_kind": task.workspace_kind,
         "workspace_path": task.workspace_path,
         "project_id": task.project_id,
+        "kind": task.kind,
+        "parent_id": task.parent_id,
+        "product_id": task.product_id,
         "created_by": task.created_by,
         "created_at": task.created_at,
         "started_at": task.started_at,
@@ -555,6 +558,8 @@ def _handle_show(args: dict, **kw) -> str:
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                     "provider_override": t.provider_override,
+                    "kind": t.kind, "parent_id": t.parent_id,
+                    "product_id": t.product_id,
                 }
 
             def _run_dict(r):
@@ -570,6 +575,11 @@ def _handle_show(args: dict, **kw) -> str:
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,
+                "hierarchy_children": kb.hierarchy_child_ids(conn, tid),
+                "breadcrumbs": [
+                    _task_summary_dict(kb, conn, item)
+                    for item in kb.issue_breadcrumbs(conn, tid)
+                ],
                 "comments": [
                     {"author": c.author, "body": c.body,
                      "created_at": c.created_at}
@@ -605,6 +615,9 @@ def _handle_list(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     status = args.get("status")
     tenant = args.get("tenant")
+    kind = args.get("kind")
+    parent_id = args.get("parent_id")
+    product_id = args.get("product_id")
     include_archived, bool_error = _parse_bool_arg(args, "include_archived")
     if bool_error:
         return tool_error(bool_error)
@@ -634,6 +647,9 @@ def _handle_list(args: dict, **kw) -> str:
                 status=status,
                 tenant=tenant,
                 include_archived=include_archived,
+                kind=kind,
+                hierarchy_parent_id=parent_id,
+                product_id=product_id,
                 limit=limit + 1,
             )
             truncated = len(rows) > limit
@@ -1481,6 +1497,9 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                kind=args.get("kind") or "task",
+                hierarchy_parent_id=args.get("parent_id"),
+                product_id=args.get("product_id"),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1490,6 +1509,9 @@ def _handle_create(args: dict, **kw) -> str:
                 workspace_kind=new_task.workspace_kind if new_task else None,
                 workspace_path=new_task.workspace_path if new_task else None,
                 project_id=new_task.project_id if new_task else None,
+                kind=new_task.kind if new_task else None,
+                parent_id=new_task.parent_id if new_task else None,
+                product_id=new_task.product_id if new_task else None,
                 subscribed=subscribed,
             )
         finally:
@@ -1767,6 +1789,9 @@ KANBAN_LIST_SCHEMA = {
                 "type": "string",
                 "description": "Optional tenant/project namespace filter.",
             },
+            "kind": {"type": "string", "enum": ["individual", "group", "company", "portfolio", "product", "project", "feature", "task", "defect"], "description": "Optional exact issue-kind filter."},
+            "parent_id": {"type": "string", "description": "Optional exact containment-parent filter."},
+            "product_id": {"type": "string", "description": "Optional exact structured product filter."},
             "include_archived": {
                 "type": "boolean",
                 "description": "Include archived tasks. Defaults to false.",
@@ -2194,6 +2219,9 @@ KANBAN_CREATE_SCHEMA = {
                     "synthesizer task."
                 ),
             },
+            "kind": {"type": "string", "enum": ["individual", "group", "company", "portfolio", "product", "project", "feature", "task", "defect"], "description": "Typed issue kind. Defaults to task."},
+            "parent_id": {"type": "string", "description": "Containment parent id; unlike parents, this never gates dispatch."},
+            "product_id": {"type": "string", "description": "Structured portable product identity."},
             "tenant": {
                 "type": "string",
                 "description": (

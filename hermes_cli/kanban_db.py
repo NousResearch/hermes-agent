@@ -133,6 +133,15 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+VALID_ISSUE_KINDS = {
+    "individual", "group", "company", "portfolio", "product", "project",
+    "feature", "task", "defect",
+}
+# A containment edge adds one level below a root issue.  Thirty-two levels is
+# intentionally generous for organizational/project decomposition while
+# bounding corrupt or adversarial chains across every hierarchy surface.
+MAX_CONTAINMENT_DEPTH = 32
+_SCOPE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -1141,6 +1150,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    kind: str = "task"
+    parent_id: Optional[str] = None
+    product_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1235,6 +1247,9 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            kind=(row["kind"] if "kind" in keys and row["kind"] else "task"),
+            parent_id=(row["parent_id"] if "parent_id" in keys else None),
+            product_id=(row["product_id"] if "product_id" in keys else None),
         )
 
 
@@ -1422,7 +1437,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    kind                 TEXT NOT NULL DEFAULT 'task',
+    parent_id            TEXT,
+    product_id           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2553,6 +2571,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "project_id" not in cols:
         _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
+    if "kind" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "kind", "kind TEXT NOT NULL DEFAULT 'task'"
+        )
+    if "parent_id" not in cols:
+        _add_column_if_missing(conn, "tasks", "parent_id", "parent_id TEXT")
+    if "product_id" not in cols:
+        _add_column_if_missing(conn, "tasks", "product_id", "product_id TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -2704,6 +2730,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks(kind)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks(parent_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_product_id ON tasks(product_id)")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -3194,6 +3223,9 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    kind: str = "task",
+    hierarchy_parent_id: Optional[str] = None,
+    product_id: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3240,6 +3272,13 @@ def create_task(
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
+    kind = str(kind or "").strip().lower()
+    if kind not in VALID_ISSUE_KINDS:
+        raise ValueError(f"kind must be one of {sorted(VALID_ISSUE_KINDS)}")
+    hierarchy_parent_id = str(hierarchy_parent_id or "").strip() or None
+    product_id = str(product_id or "").strip() or None
+    if product_id and not _SCOPE_ID_RE.fullmatch(product_id):
+        raise ValueError("product_id must be a structured identifier")
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -3449,6 +3488,17 @@ def create_task(
             # compose create_task calls under one outer commit so the
             # dispatcher can never observe a partially constructed graph.
             with write_txn(conn, allow_nested=True):
+                if hierarchy_parent_id and not conn.execute(
+                    "SELECT 1 FROM tasks WHERE id = ?", (hierarchy_parent_id,)
+                ).fetchone():
+                    raise ValueError(f"unknown hierarchy parent {hierarchy_parent_id}")
+                if hierarchy_parent_id:
+                    parent_by_id = {
+                        row["id"]: row["parent_id"]
+                        for row in conn.execute("SELECT id, parent_id FROM tasks")
+                    }
+                    parent_by_id[task_id] = hierarchy_parent_id
+                    _containment_chain(parent_by_id, task_id)
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3508,8 +3558,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        kind, parent_id, product_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3535,6 +3586,9 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        kind,
+                        hierarchy_parent_id,
+                        product_id,
                     ),
                 )
                 for pid in parents:
@@ -3563,6 +3617,9 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "kind": kind,
+                        "parent_id": hierarchy_parent_id,
+                        "product_id": product_id,
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -3670,6 +3727,9 @@ def list_tasks(
     order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None,
     current_step_key: Optional[str] = None,
+    kind: Optional[str] = None,
+    product_id: Optional[str] = None,
+    hierarchy_parent_id: Optional[str] = None,
 ) -> list[Task]:
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
@@ -3693,6 +3753,18 @@ def list_tasks(
     if current_step_key is not None:
         query += " AND current_step_key = ?"
         params.append(current_step_key)
+    if kind is not None:
+        kind = str(kind).strip().lower()
+        if kind not in VALID_ISSUE_KINDS:
+            raise ValueError(f"kind must be one of {sorted(VALID_ISSUE_KINDS)}")
+        query += " AND kind = ?"
+        params.append(kind)
+    if product_id is not None:
+        query += " AND product_id = ?"
+        params.append(product_id)
+    if hierarchy_parent_id is not None:
+        query += " AND parent_id = ?"
+        params.append(hierarchy_parent_id)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:
@@ -3836,6 +3908,153 @@ def set_reasoning_effort(
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------
+
+def qualified_issue_ref(board: str, issue_id: str) -> str:
+    """Return the stable, board-qualified reference for one issue."""
+    slug = _normalize_board_slug(board)
+    issue_id = str(issue_id or "").strip()
+    if not slug:
+        raise ValueError("board slug is required")
+    if not issue_id or ":" in issue_id:
+        raise ValueError("issue id must be non-empty and must not contain ':'")
+    return f"{slug}:{issue_id}"
+
+
+def parse_issue_ref(ref: str) -> tuple[str, str]:
+    """Parse a globally qualified issue reference, rejecting ambiguity."""
+    raw = str(ref or "").strip()
+    if ":" not in raw:
+        raise ValueError("issue reference must be qualified as <board>:<issue-id>")
+    board, issue_id = raw.split(":", 1)
+    try:
+        slug = _normalize_board_slug(board)
+    except ValueError as exc:
+        raise ValueError(f"invalid board slug in issue reference: {board!r}") from exc
+    if not slug or not issue_id or ":" in issue_id:
+        raise ValueError("issue reference must be qualified as <board>:<issue-id>")
+    return slug, issue_id
+
+
+def resolve_issue_ref(ref: str) -> dict[str, Any]:
+    """Resolve one qualified issue reference without mutating either board."""
+    board, issue_id = parse_issue_ref(ref)
+    with connect_closing(board=board) as conn:
+        task = get_task(conn, issue_id)
+    if task is None:
+        raise ValueError(f"issue {ref} not found")
+    return {"ref": qualified_issue_ref(board, issue_id), "board": board, "task": task}
+
+
+def hierarchy_child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE parent_id = ? ORDER BY created_at, id", (task_id,)
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def _containment_chain(
+    parent_by_id: Mapping[str, Optional[str]], task_id: str,
+) -> list[str]:
+    """Return root-to-task ids from a fetched relation, failing closed."""
+    chain: list[str] = []
+    seen: set[str] = set()
+    current: Optional[str] = task_id
+    while current:
+        if current in seen:
+            raise ValueError(f"hierarchy cycle detected at {current}")
+        if current not in parent_by_id:
+            raise ValueError(f"unknown hierarchy issue {current}")
+        seen.add(current)
+        chain.append(current)
+        if len(chain) - 1 > MAX_CONTAINMENT_DEPTH:
+            raise ValueError(
+                f"maximum containment depth is {MAX_CONTAINMENT_DEPTH}"
+            )
+        current = parent_by_id[current]
+    chain.reverse()
+    return chain
+
+
+def hierarchy_projection(
+    conn: sqlite3.Connection, task_ids: Iterable[str],
+) -> tuple[dict[str, list[str]], dict[str, list[Task]]]:
+    """Batch children and breadcrumbs from one deterministic task fetch."""
+    rows = conn.execute("SELECT * FROM tasks ORDER BY created_at, id").fetchall()
+    tasks_by_id = {row["id"]: Task.from_row(row) for row in rows}
+    parent_by_id = {task_id: task.parent_id for task_id, task in tasks_by_id.items()}
+    children: dict[str, list[str]] = {task_id: [] for task_id in tasks_by_id}
+    for task in tasks_by_id.values():
+        if task.parent_id in children:
+            children[task.parent_id].append(task.id)
+
+    breadcrumbs: dict[str, list[Task]] = {}
+    for task_id in task_ids:
+        breadcrumbs[task_id] = [
+            tasks_by_id[item_id]
+            for item_id in _containment_chain(parent_by_id, task_id)
+        ]
+    return children, breadcrumbs
+
+
+def issue_breadcrumbs(conn: sqlite3.Connection, task_id: str) -> list[Task]:
+    """Return root-to-issue containment breadcrumbs, failing on corrupt cycles."""
+    _, breadcrumbs = hierarchy_projection(conn, [task_id])
+    return breadcrumbs[task_id]
+
+
+def reparent_issue(
+    conn: sqlite3.Connection, task_id: str, parent_id: Optional[str]
+) -> bool:
+    """Atomically move one issue in the containment tree."""
+    parent_id = str(parent_id or "").strip() or None
+    if parent_id == task_id:
+        raise ValueError("reparenting would create a hierarchy cycle")
+    with write_txn(conn):
+        issue = get_task(conn, task_id)
+        if issue is None:
+            raise ValueError(f"unknown issue {task_id}")
+        if parent_id is not None:
+            if get_task(conn, parent_id) is None:
+                raise ValueError(f"unknown hierarchy parent {parent_id}")
+            ancestor: Optional[str] = parent_id
+            seen: set[str] = set()
+            while ancestor:
+                if ancestor == task_id or ancestor in seen:
+                    raise ValueError("reparenting would create a hierarchy cycle")
+                seen.add(ancestor)
+                row = conn.execute(
+                    "SELECT parent_id FROM tasks WHERE id = ?", (ancestor,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"unknown hierarchy parent {ancestor}")
+                ancestor = row["parent_id"]
+        parent_by_id = {
+            row["id"]: row["parent_id"]
+            for row in conn.execute("SELECT id, parent_id FROM tasks")
+        }
+        parent_by_id[task_id] = parent_id
+        # Validate the moved issue and every descendant because moving a subtree
+        # can push its deepest leaf over the shared boundary. Unrelated legacy
+        # corruption does not prevent repairing or extending a valid subtree.
+        descendants = {task_id}
+        while True:
+            added = {
+                candidate for candidate, candidate_parent in parent_by_id.items()
+                if candidate_parent in descendants
+            } - descendants
+            if not added:
+                break
+            descendants.update(added)
+        for candidate in descendants:
+            _containment_chain(parent_by_id, candidate)
+        if issue.parent_id == parent_id:
+            return False
+        conn.execute("UPDATE tasks SET parent_id = ? WHERE id = ?", (parent_id, task_id))
+        _append_event(
+            conn, task_id, "reparented", {"from": issue.parent_id, "to": parent_id}
+        )
+    notify_task_updated(conn, task_id, ("parent_id",))
+    return True
 
 def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
     if parent_id == child_id:
@@ -7558,6 +7777,8 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     second deliberate action.
     """
     with write_txn(conn):
+        if hierarchy_child_ids(conn, task_id):
+            raise ValueError("cannot delete an issue with hierarchy children")
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),
@@ -7587,6 +7808,8 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
+        if hierarchy_child_ids(conn, task_id):
+            raise ValueError("cannot delete an issue with hierarchy children")
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False

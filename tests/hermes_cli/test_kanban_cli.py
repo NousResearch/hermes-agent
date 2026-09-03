@@ -57,6 +57,26 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_cli_create_list_and_qualified_show_hierarchy_fields(kanban_home):
+    product = json.loads(kc.run_slash(
+        "create Product --kind product --product-id product_hermes --json"
+    ))
+    feature = json.loads(kc.run_slash(
+        f"create Feature --kind feature --under {product['id']} "
+        "--product-id product_hermes --json"
+    ))
+    listed = json.loads(kc.run_slash(
+        f"list --kind feature --parent-id {product['id']} "
+        "--product-id product_hermes --json"
+    ))
+    assert [row["id"] for row in listed] == [feature["id"]]
+
+    shown = json.loads(kc.run_slash(f"show default:{feature['id']} --json"))
+    assert shown["task"]["kind"] == "feature"
+    assert shown["qualified_ref"] == f"default:{feature['id']}"
+    assert [row["id"] for row in shown["breadcrumbs"]] == [product["id"], feature["id"]]
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kb.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

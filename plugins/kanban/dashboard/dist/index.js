@@ -623,6 +623,9 @@
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
+    const [kindFilter, setKindFilter] = useState("");
+    const [productFilter, setProductFilter] = useState("");
+    const [parentFilter, setParentFilter] = useState("");
     const [includeArchived, setIncludeArchived] = useState(false);
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
@@ -799,6 +802,9 @@
       const filterTask = function (t) {
         if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
+        if (kindFilter && t.kind !== kindFilter) return false;
+        if (productFilter && t.product_id !== productFilter) return false;
+        if (parentFilter && t.parent_id !== parentFilter) return false;
         if (q) {
           const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
           if (hay.indexOf(q) === -1) return false;
@@ -810,7 +816,7 @@
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [boardData, tenantFilter, assigneeFilter, search]);
+    }, [boardData, tenantFilter, assigneeFilter, kindFilter, productFilter, parentFilter, search]);
 
     // --- actions ------------------------------------------------------------
     // Performs the actual move (optimistic UI + PATCH) once any required
@@ -1288,6 +1294,9 @@
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
+          kindFilter, setKindFilter,
+          productFilter, setProductFilter,
+          parentFilter, setParentFilter,
           assigneeFilter, setAssigneeFilter,
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
@@ -2455,6 +2464,23 @@
           }),
         ),
       ),
+      h("div", { className: "flex flex-col gap-1" },
+        h(Label, { className: "text-xs text-muted-foreground" }, "Kind"),
+        h(Select, Object.assign({ value: props.kindFilter, className: "h-8" }, selectChangeHandler(props.setKindFilter)),
+          h(SelectOption, { value: "" }, "All kinds"),
+          ["individual", "group", "company", "portfolio", "product", "project", "feature", "task", "defect"].map(function (kind) {
+            return h(SelectOption, { key: kind, value: kind }, kind);
+          }),
+        ),
+      ),
+      h("div", { className: "flex flex-col gap-1" },
+        h(Label, { className: "text-xs text-muted-foreground" }, "Product"),
+        h(Input, { value: props.productFilter, onChange: function (e) { props.setProductFilter(e.target.value); }, placeholder: "product id", className: "w-32 h-8" }),
+      ),
+      h("div", { className: "flex flex-col gap-1" },
+        h(Label, { className: "text-xs text-muted-foreground" }, "Parent"),
+        h(Input, { value: props.parentFilter, onChange: function (e) { props.setParentFilter(e.target.value); }, placeholder: "containment id", className: "w-36 h-8" }),
+      ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h(Checkbox, {
@@ -2487,6 +2513,9 @@
           props.setSearch("");
           props.setTenantFilter("");
           props.setAssigneeFilter("");
+          props.setKindFilter("");
+          props.setProductFilter("");
+          props.setParentFilter("");
           props.setIncludeArchived(false);
         },
         size: "sm",
@@ -3102,6 +3131,8 @@
               ? h(Badge, { className: "hermes-kanban-priority",
                            title: `Priority ${t.priority}. Higher-priority tasks are claimed first by the dispatcher.` }, `P${t.priority}`)
               : null,
+            h(Badge, { variant: "outline", className: "hermes-kanban-kind", title: "Recursive issue kind" }, t.kind || "task"),
+            t.product_id ? h(Badge, { variant: "outline", title: "Structured product identity" }, t.product_id) : null,
             t.tenant
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
@@ -3125,6 +3156,10 @@
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
+          t.breadcrumbs && t.breadcrumbs.length > 1
+            ? h("div", { className: "text-xs text-muted-foreground", title: "Containment breadcrumb" },
+                t.breadcrumbs.map(function (x) { return x.title || x.id; }).join(" › "))
+            : null,
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",
@@ -3142,6 +3177,9 @@
               ? h("span", { className: "hermes-kanban-count",
                             title: `${t.link_counts.parents} parent${t.link_counts.parents === 1 ? "" : "s"}, ${t.link_counts.children} child${t.link_counts.children === 1 ? "" : "ren"}. Children stay blocked until their parent is done.` },
                   "↔ ", t.link_counts.parents + t.link_counts.children)
+              : null,
+            t.hierarchy_children && t.hierarchy_children.length > 0
+              ? h("span", { className: "hermes-kanban-count", title: "Containment children (not dispatcher dependencies)" }, "⌂ ", t.hierarchy_children.length)
               : null,
             h("span", { className: "hermes-kanban-ago",
                         title: t.created_at ? `Created ${t.created_at}` : "" },
@@ -3167,6 +3205,9 @@
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
+    const [hierarchyParent, setHierarchyParent] = useState("");
+    const [kind, setKind] = useState("task");
+    const [productId, setProductId] = useState("");
     const [skills, setSkills] = useState("");
     // A board with a configured workdir defaults to a persistent workspace:
     // worktree for git repositories, dir for ordinary directories. Boards
@@ -3191,8 +3232,11 @@
         assignee: assignee.trim() || null,
         priority: Number(priority) || 0,
         triage: props.columnName === "triage",
+        kind: kind,
       };
       if (parent) body.parents = [parent];
+      if (hierarchyParent) body.parent_id = hierarchyParent;
+      if (productId.trim()) body.product_id = productId.trim();
       // Parse comma-separated skills into a clean list. Blank = no
       // extras (omit key so backend leaves it null). The dispatcher
       // always auto-loads kanban-worker; these are extras on top.
@@ -3216,7 +3260,7 @@
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setHierarchyParent(""); setKind("task"); setProductId(""); setSkills("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
@@ -3347,6 +3391,27 @@
               (props.allTasks || []).map(function (task) {
                 return h(SelectOption, { key: task.id, value: task.id },
                   `${task.id} — ${(task.title || "").slice(0, 50)}`);
+              }),
+            ),
+          ),
+          h("div", { className: "flex gap-2" },
+            h("div", { className: "flex flex-col gap-1 flex-1" },
+              fieldLabel("Issue kind"),
+              h(Select, Object.assign({ value: kind, className: "h-8 text-sm" }, selectChangeHandler(setKind)),
+                ["individual", "group", "company", "portfolio", "product", "project", "feature", "task", "defect"].map(function (value) {
+                  return h(SelectOption, { key: value, value: value }, value);
+                }),
+              ),
+            ),
+            h("div", { className: "flex flex-col gap-1 flex-1" }, fieldLabel("Product id"),
+              h(Input, { value: productId, onChange: function (e) { setProductId(e.target.value); }, className: "h-8 text-sm", placeholder: "product_hermes" })),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel("Containment parent", "(does not gate dispatch)"),
+            h(Select, Object.assign({ value: hierarchyParent, className: "h-8 text-sm" }, selectChangeHandler(setHierarchyParent)),
+              h(SelectOption, { value: "" }, "— root issue —"),
+              (props.allTasks || []).map(function (task) {
+                return h(SelectOption, { key: task.id, value: task.id }, `${task.kind || "task"}: ${task.title || task.id}`);
               }),
             ),
           ),
@@ -3874,6 +3939,8 @@
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
     const childResults = props.data.child_results || [];
+    const hierarchyChildren = props.data.hierarchy_child_results || [];
+    const hierarchyProgress = props.data.hierarchy_progress || { completed: 0, total: 0 };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -3894,6 +3961,19 @@
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+        h(MetaRow, { label: "Kind", value: t.kind || "task" }),
+        t.product_id ? h(MetaRow, { label: "Product", value: t.product_id }) : null,
+        h("div", { className: "hermes-kanban-meta-row" },
+          h("span", { className: "hermes-kanban-meta-label" }, "Containment parent"),
+          h(Select, Object.assign({ value: t.parent_id || "", className: "h-8 text-sm" }, selectChangeHandler(function (value) {
+            props.onPatch(value ? { parent_id: value } : { clear_parent: true });
+          })),
+            h(SelectOption, { value: "" }, "— root issue —"),
+            (props.allTasks || []).filter(function (task) { return task.id !== t.id; }).map(function (task) {
+              return h(SelectOption, { key: task.id, value: task.id }, `${task.kind || "task"}: ${task.title || task.id}`);
+            }),
+          ),
+        ),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         h(ModelEditor, { task: t, onPatch: props.onPatch }),
@@ -3978,9 +4058,27 @@
         }
         return null;
       })(),
+      hierarchyChildren.length > 0 ? h("details", { className: "hermes-kanban-section", open: true },
+        h("summary", { className: "hermes-kanban-section-head" },
+          `Contained Issues (${hierarchyProgress.completed}/${hierarchyProgress.total} completed)`),
+        hierarchyChildren.map(function (child) {
+          return h("div", { key: child.id, className: "hermes-kanban-comment" },
+            h("div", { className: "hermes-kanban-comment-head" },
+              h("span", { className: "hermes-kanban-comment-author" },
+                `${child.kind || "task"} · ${child.title || child.id}`),
+              h(Badge, { variant: "outline" }, child.status),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-diag-action-btn",
+                onClick: function () { if (props.onOpenTask) props.onOpenTask(child.id); },
+              }, tx(i18n, "open", "Open")),
+            ),
+          );
+        }),
+      ) : null,
       childResults.length > 0 ? h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" },
-          `${tx(i18n, "childResults", "Child Results")} (${childResults.length})`),
+          `Dependency ${tx(i18n, "childResults", "Child Results")} (${childResults.length})`),
         childResults.map(function (child) {
           var childResult = child.result || child.latest_summary || null;
           return h("div", { key: child.id, className: "hermes-kanban-comment" },

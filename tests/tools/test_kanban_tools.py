@@ -111,6 +111,37 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert tenant_ids == [c]
 
 
+def test_existing_tools_round_trip_hierarchy_fields(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+
+    parent = json.loads(kt._handle_create({
+        "title": "Product", "assignee": "factory", "kind": "product",
+        "product_id": "product_hermes",
+    }))
+    child = json.loads(kt._handle_create({
+        "title": "Feature", "assignee": "factory", "kind": "feature",
+        "parent_id": parent["task_id"], "product_id": "product_hermes",
+    }))
+    assert child["kind"] == "feature"
+    assert child["parent_id"] == parent["task_id"]
+    assert child["product_id"] == "product_hermes"
+
+    shown = json.loads(kt._handle_show({"task_id": child["task_id"]}))
+    assert shown["task"]["kind"] == "feature"
+    assert shown["hierarchy_children"] == []
+    assert [x["id"] for x in shown["breadcrumbs"]] == [parent["task_id"], child["task_id"]]
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    listed = json.loads(kt._handle_list({
+        "kind": "feature", "parent_id": parent["task_id"],
+        "product_id": "product_hermes",
+    }))
+    assert [x["id"] for x in listed["tasks"]] == [child["task_id"]]
+
+    properties = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert {"kind", "parent_id", "product_id"} <= properties.keys()
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

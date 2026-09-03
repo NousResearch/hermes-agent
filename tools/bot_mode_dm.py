@@ -137,6 +137,11 @@ def ensure_message_agent_tool(agent: Any) -> bool:
     sees the schema. Never raises.
     """
     try:
+        # Shadow contract: keep this source order synchronized with
+        # agent.bot_control_plane.legacy_message_agent_injection_decision.
+        # The schema-present return intentionally precedes title/install
+        # revalidation; the parity suite records that asymmetry without
+        # changing which result remains authoritative.
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
         tools = getattr(agent, "tools", None)
@@ -255,6 +260,10 @@ def message_agent_tool(
     try:
         from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
+        # Shadow contract: keep these authoritative checks synchronized with
+        # agent.bot_control_plane.legacy_message_agent_dispatch_decision.
+        # Dispatch deliberately does not recheck protocol/schema state; the
+        # parity suite records that current asymmetry without changing it.
         title = _session_title(agent)
         if title != BOT_CHAT_TITLE:
             return _err(

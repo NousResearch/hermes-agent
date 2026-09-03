@@ -362,6 +362,10 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
 
+        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        self._pending_clarify: Dict[str, Dict[str, Any]] = {}
+        self._pending_slash_confirm: Dict[str, Dict[str, Any]] = {}
+
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
@@ -793,6 +797,13 @@ class SignalAdapter(BasePlatformAdapter):
 
         logger.debug("Signal: message from %s in %s: %s",
                       redact_phone(sender), chat_id[:20], (text or "")[:50])
+
+        if text and text.strip().isdigit():
+            consumed = await self._try_intercept_interactive_reply(
+                chat_id, text.strip(), getattr(event.source, "chat_id", chat_id)
+            )
+            if consumed:
+                return
 
         await self.handle_message(event)
 
@@ -1679,6 +1690,164 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Reactions
     # ------------------------------------------------------------------
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        """Send a numbered-menu approval prompt over Signal text."""
+        try:
+            from tools.approval import _format_command_for_approval
+            cmd_display = _format_command_for_approval(command)
+        except Exception:
+            cmd_display = command[:500]
+        choices = ["✅ Allow Once"]
+        choice_keys = ["once"]
+        if not smart_denied:
+            if allow_session:
+                choices.append("✅ Allow This Session")
+                choice_keys.append("session")
+            if allow_permanent:
+                choices.append("✅ Always Allow")
+                choice_keys.append("always")
+        choices.append("❌ Deny")
+        choice_keys.append("deny")
+        numbered = "\n".join(f"{i+1}. {c}" for i, c in enumerate(choices))
+        text = (
+            f"⚠️ Approval required ({description}):\n"
+            f"`{cmd_display}`\n\n"
+            f"{numbered}\n\n"
+            "Reply with a number to choose."
+        )
+        result = await self.send(chat_id, text, metadata=metadata)
+        if result.success:
+            self._pending_approvals[chat_id] = {
+                "session_key": session_key,
+                "choice_keys": choice_keys,
+            }
+        return result
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a numbered clarify prompt over Signal text."""
+        if not choices:
+            return await super().send_clarify(
+                chat_id=chat_id, question=question, choices=choices,
+                clarify_id=clarify_id, session_key=session_key, metadata=metadata,
+            )
+        numbered = "\n".join(f"{i+1}. {c}" for i, c in enumerate(choices))
+        text = (
+            f"❓ {question}\n\n"
+            f"{numbered}\n\n"
+            "Reply with a number to choose."
+        )
+        result = await self.send(chat_id, text, metadata=metadata)
+        if result.success:
+            self._pending_clarify[chat_id] = {
+                "clarify_id": clarify_id,
+                "choices": list(choices),
+            }
+        return result
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+    ) -> SendResult:
+        """Send a numbered slash-confirm prompt over Signal text."""
+        choices = ["✅ Allow Once"]
+        choice_keys = ["once"]
+        if allow_permanent:
+            choices.append("✅ Always Allow")
+            choice_keys.append("always")
+        choices.append("❌ Cancel")
+        choice_keys.append("cancel")
+        numbered = "\n".join(f"{i+1}. {c}" for i, c in enumerate(choices))
+        text = (
+            f"🔧 {title}\n"
+            f"{message}\n\n"
+            f"{numbered}\n\n"
+            "Reply with a number to choose."
+        )
+        result = await self.send(chat_id, text, metadata=metadata)
+        if result.success:
+            self._pending_slash_confirm[chat_id] = {
+                "confirm_id": confirm_id,
+                "session_key": session_key,
+                "choice_keys": choice_keys,
+            }
+        return result
+
+    async def _try_intercept_interactive_reply(
+        self, chat_id: str, text: str, session_key: str
+    ) -> bool:
+        """Intercept a numbered reply to a pending interactive prompt.
+
+        Returns True if consumed, False otherwise. Fail-closed.
+        """
+        stripped = text.strip()
+        if not stripped.isdigit():
+            return False
+        idx = int(stripped) - 1
+        approval_state = self._pending_approvals.get(chat_id)
+        if approval_state:
+            choice_keys = approval_state["choice_keys"]
+            if 0 <= idx < len(choice_keys):
+                self._pending_approvals.pop(chat_id, None)
+                choice = choice_keys[idx]
+                try:
+                    from tools.approval import resolve_gateway_approval
+                    resolve_gateway_approval(approval_state["session_key"], choice)
+                    logger.info("Signal: approval resolved chat=%s choice=%s", chat_id[:20], choice)
+                except Exception as e:
+                    logger.error("Signal: resolve_gateway_approval failed: %s", e)
+                return True
+        clarify_state = self._pending_clarify.get(chat_id)
+        if clarify_state:
+            choices = clarify_state["choices"]
+            if 0 <= idx < len(choices):
+                self._pending_clarify.pop(chat_id, None)
+                chosen = str(choices[idx])
+                try:
+                    from tools import clarify_gateway as _clarify_mod
+                    _clarify_mod.resolve(clarify_state["clarify_id"], chosen)
+                    logger.info("Signal: clarify resolved chat=%s choice=%s", chat_id[:20], chosen)
+                except Exception as e:
+                    logger.error("Signal: clarify resolve failed: %s", e)
+                return True
+        slash_state = self._pending_slash_confirm.get(chat_id)
+        if slash_state:
+            choice_keys = slash_state["choice_keys"]
+            if 0 <= idx < len(choice_keys):
+                self._pending_slash_confirm.pop(chat_id, None)
+                choice = choice_keys[idx]
+                try:
+                    from tools.slash_confirm import resolve as _sc_resolve
+                    _sc_resolve(slash_state["confirm_id"], choice)
+                    logger.info("Signal: slash_confirm resolved chat=%s choice=%s", chat_id[:20], choice)
+                except Exception as e:
+                    logger.error("Signal: slash_confirm resolve failed: %s", e)
+                return True
+        return False
 
     async def send_reaction(
         self,

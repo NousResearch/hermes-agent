@@ -1,0 +1,55 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: clawvisor
+description: >-
+  Route external API actions through Clawvisor task scopes, approvals,
+  credential vaulting, and audit logs.
+source: https://github.com/clawvisor/clawvisor
+
+# Clawvisor ships an HTTP MCP server at /mcp. The hosted app is the default
+# because agents should usually run separately from the Clawvisor control
+# plane. Self-hosted deployments can use the same MCP path on their public URL.
+transport:
+  type: http
+  url: https://app.clawvisor.com/mcp
+
+auth:
+  type: oauth
+  # Clawvisor implements native MCP OAuth 2.1 discovery. Hermes handles the
+  # browser consent flow on first connection and stores the resulting token.
+
+# Tool selection at install time:
+# The Clawvisor MCP surface is small but includes administrative feedback and
+# approved-request helper tools. Pre-check the normal task + gateway workflow;
+# users can opt into the rest from the install checklist or later configure
+# with `hermes mcp configure clawvisor`.
+tools:
+  default_enabled:
+    - fetch_catalog
+    - create_task
+    - get_task
+    - expand_task
+    - gateway_request
+    - gateway_batch
+    - complete_task
+
+post_install: |
+  This entry connects Hermes to the hosted Clawvisor app at
+  https://app.clawvisor.com/mcp.
+
+  On first connection, Hermes will open a browser for Clawvisor MCP consent.
+  Clawvisor creates a bounded Hermes agent token during that OAuth flow, so you
+  do not need to paste an agent token into Hermes.
+
+  Before asking Hermes to use Gmail, GitHub, Slack, or another downstream
+  service, connect that service in the Clawvisor dashboard.
+
+  For self-hosted Clawvisor, edit mcp_servers.clawvisor.url in
+  ~/.hermes/config.yaml to point at your instance's /mcp endpoint, such as
+  http://localhost:25297/mcp for a local daemon. Then start a new Hermes
+  session or run /reload-mcp.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure clawvisor

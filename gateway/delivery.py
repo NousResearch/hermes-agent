@@ -8,6 +8,7 @@ Routes messages to the appropriate destination based on:
 - Local (always saved to files)
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -562,13 +563,42 @@ class DeliveryRouter:
                     send_metadata["user_id"] = home.user_id
                 if home.scope_id:
                     send_metadata["scope_id"] = home.scope_id
+
+        has_direct_topic = (
+            "direct_messages_topic_id" in send_metadata
+            or "telegram_direct_messages_topic_id" in send_metadata
+        )
+        if (
+            target.platform == Platform.TELEGRAM
+            and looks_like_telegram_private_chat_id(target.chat_id)
+            and not target.thread_id
+            and "thread_id" not in send_metadata
+            and "message_thread_id" not in send_metadata
+            and not has_direct_topic
+        ):
+            resolve_last_active = getattr(
+                adapter, "resolve_last_active_dm_topic", None
+            )
+            if callable(resolve_last_active):
+                try:
+                    last_active_thread_id = await asyncio.to_thread(
+                        resolve_last_active, target.chat_id
+                    )
+                except Exception:
+                    logger.debug(
+                        "Last-active Telegram topic resolution failed for chat=%s",
+                        target.chat_id,
+                        exc_info=True,
+                    )
+                    last_active_thread_id = None
+                if last_active_thread_id:
+                    send_metadata["thread_id"] = str(last_active_thread_id)
+                    send_metadata["telegram_last_active_topic_routing"] = True
+
         is_named_telegram_private_topic = False
         named_telegram_private_topic_name: Optional[str] = None
         if target.thread_id:
-            has_explicit_direct_topic = (
-                "direct_messages_topic_id" in send_metadata
-                or "telegram_direct_messages_topic_id" in send_metadata
-            )
+            has_explicit_direct_topic = has_direct_topic
             target_thread_id = target.thread_id
             is_named_telegram_private_topic = (
                 target.platform == Platform.TELEGRAM
@@ -650,8 +680,30 @@ class DeliveryRouter:
                 )
             if _send_result_failed(result):
                 raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
+
+        if (
+            target.platform == Platform.TELEGRAM
+            and looks_like_telegram_private_chat_id(target.chat_id)
+            and not has_direct_topic
+            and not _send_result_failed(result)
+        ):
+            delivered_thread_id = (
+                send_metadata.get("thread_id")
+                or send_metadata.get("message_thread_id")
+            )
+            record_activity = getattr(adapter, "record_dm_topic_activity", None)
+            if delivered_thread_id and callable(record_activity):
+                try:
+                    await asyncio.to_thread(
+                        record_activity, target.chat_id, delivered_thread_id
+                    )
+                except Exception:
+                    logger.debug(
+                        "Telegram topic activity write failed for chat=%s thread=%s",
+                        target.chat_id,
+                        delivered_thread_id,
+                        exc_info=True,
+                    )
         return result
-
-
 
 

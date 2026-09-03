@@ -16560,6 +16560,72 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return []
         return [dict(row) for row in rows]
 
+    def touch_telegram_topic_binding(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        """Mark an existing Telegram DM topic binding as recently active.
+
+        This never creates the opt-in topic tables or a new binding.  When a
+        ``user_id`` is supplied it must match the binding owner, preventing a
+        forged or cross-user event from changing the fallback route.
+        """
+        chat_id = str(chat_id)
+        thread_id = str(thread_id)
+        owner_id = str(user_id) if user_id is not None else None
+
+        def _do(conn):
+            try:
+                if owner_id is None:
+                    cursor = conn.execute(
+                        "UPDATE telegram_dm_topic_bindings SET updated_at = ? "
+                        "WHERE chat_id = ? AND thread_id = ?",
+                        (time.time(), chat_id, thread_id),
+                    )
+                else:
+                    cursor = conn.execute(
+                        "UPDATE telegram_dm_topic_bindings SET updated_at = ? "
+                        "WHERE chat_id = ? AND thread_id = ? AND user_id = ?",
+                        (time.time(), chat_id, thread_id, owner_id),
+                    )
+            except sqlite3.OperationalError:
+                return 0
+            return cursor.rowcount or 0
+
+        return int(self._execute_write(_do) or 0)
+
+    def get_last_active_telegram_topic_binding(
+        self,
+        *,
+        chat_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the active topic-mode DM binding used for bare egress.
+
+        Disabled topic mode and pre-migration databases return ``None``.  The
+        join also requires the binding owner to match the opted-in owner for
+        the chat, so stale rows cannot route another user's delivery.
+        """
+        with self._read_ctx() as conn:
+            try:
+                row = conn.execute(
+                    """
+                    SELECT b.*
+                    FROM telegram_dm_topic_bindings AS b
+                    JOIN telegram_dm_topic_mode AS m
+                      ON m.chat_id = b.chat_id AND m.user_id = b.user_id
+                    WHERE b.chat_id = ? AND m.enabled = 1
+                    ORDER BY b.updated_at DESC, b.linked_at DESC, b.thread_id DESC
+                    LIMIT 1
+                    """,
+                    (str(chat_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return dict(row) if row else None
+
     def get_telegram_topic_binding_by_session(
         self,
         *,

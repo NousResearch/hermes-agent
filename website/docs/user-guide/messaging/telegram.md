@@ -805,6 +805,12 @@ After activation, the **root DM is a lobby**: normal prompts are rejected with g
 
 Every topic gets its own conversation history, model state, tool execution, and session ID. The isolation key is `agent:main:telegram:dm:{chat_id}:{thread_id}` — identical to the config-driven DM topics isolation.
 
+### Last-active delivery routing
+
+While `/topic` mode is enabled, Hermes remembers the most recently used DM topic. A bare Telegram delivery target such as `telegram:<chat_id>` — including a home-channel or cron delivery without a topic — is sent to that topic instead of disappearing into the root lobby.
+
+User messages and commands inside a topic make it active. A successful delivery to an explicitly selected topic also makes that topic active. Explicit targets such as `telegram:<chat_id>:<thread_id>` always win; Hermes only applies the fallback when no topic was supplied. If topic mode is off or no active binding exists, the existing root-chat behavior is unchanged.
+
 ### Auto-renamed topics
 
 When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.

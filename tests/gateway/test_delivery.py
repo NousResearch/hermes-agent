@@ -1,16 +1,18 @@
 """Tests for the delivery routing module."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from typing import Any, cast
 
+import hermes_state
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import SendResult
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.session import SessionSource
+from gateway.session import SessionSource, SessionStore
 
 
 class TestParseTargetPlatformChat:
@@ -275,6 +277,125 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
                 "telegram_dm_topic_reply_fallback": True,
             },
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bare_telegram_private_delivery_follows_last_active_topic(
+    tmp_path, monkeypatch
+):
+    """Bare egress follows activity; an explicit topic remains authoritative."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="***",
+                typing_indicator=False,
+            )
+        }
+    )
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    db = store._db
+    db.enable_telegram_topic_mode(chat_id="722341991", user_id="722341991")
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(hermes_state.time, "time", lambda: clock["now"])
+    first = store.get_or_create_session(
+        SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="722341991",
+            user_id="722341991",
+            thread_id="32344",
+        )
+    )
+    db.bind_telegram_topic(
+        chat_id="722341991",
+        thread_id="32344",
+        user_id="722341991",
+        session_key=first.session_key,
+        session_id=first.session_id,
+    )
+    clock["now"] = 200.0
+    second = store.get_or_create_session(
+        SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="722341991",
+            user_id="722341991",
+            thread_id="32345",
+        )
+    )
+    db.bind_telegram_topic(
+        chat_id="722341991",
+        thread_id="32345",
+        user_id="722341991",
+        session_key=second.session_key,
+        session_id=second.session_id,
+    )
+    clock["now"] = 300.0
+    assert db.touch_telegram_topic_binding(
+        chat_id="722341991",
+        thread_id="32344",
+        user_id="722341991",
+    ) == 1
+
+    adapter = TelegramAdapter(config.platforms[Platform.TELEGRAM])
+    adapter.set_session_store(store)
+    adapter.resolve_last_active_dm_topic = MagicMock(
+        wraps=adapter.resolve_last_active_dm_topic
+    )
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="telegram-message")
+    )
+    router = DeliveryRouter(config, adapters={Platform.TELEGRAM: adapter})
+
+    bare = DeliveryTarget.parse("telegram:722341991")
+    await router._deliver_to_platform(bare, "bare one", metadata=None)
+
+    explicit = DeliveryTarget.parse("telegram:722341991:32345")
+    clock["now"] = 400.0
+    await router._deliver_to_platform(
+        explicit,
+        "explicit",
+        metadata={"thread_id": "32345"},
+    )
+
+    await router._deliver_to_platform(bare, "bare two", metadata=None)
+
+    assert adapter.resolve_last_active_dm_topic.call_count == 2
+    assert [call.kwargs["metadata"] for call in adapter.send.await_args_list] == [
+        {
+            "thread_id": "32344",
+            "telegram_last_active_topic_routing": True,
+        },
+        {"thread_id": "32345"},
+        {
+            "thread_id": "32345",
+            "telegram_last_active_topic_routing": True,
+        },
+    ]
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_bare_telegram_private_delivery_keeps_lobby_without_active_topic(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    adapter.resolve_last_active_dm_topic = MagicMock(return_value=None)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+
+    await router._deliver_to_platform(
+        DeliveryTarget.parse("telegram:722341991"),
+        "hello",
+        metadata=None,
+    )
+
+    assert adapter.calls == [
+        {"chat_id": "722341991", "content": "hello", "metadata": None}
     ]
 
 

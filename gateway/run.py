@@ -8683,6 +8683,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         return True
 
+    def _touch_telegram_topic_activity(self, source: SessionSource) -> None:
+        """Mark an authorized inbound DM topic as the user's active lane."""
+        if (
+            source.platform != Platform.TELEGRAM
+            or source.chat_type != "dm"
+            or not source.chat_id
+            or not source.user_id
+        ):
+            return
+        thread_id = str(source.thread_id or "")
+        if not thread_id or thread_id in self._TELEGRAM_GENERAL_TOPIC_IDS:
+            return
+        session_db = getattr(self, "_session_db", None)
+        session_db = getattr(session_db, "_db", session_db)
+        touch = getattr(session_db, "touch_telegram_topic_binding", None)
+        if not callable(touch):
+            return
+        try:
+            touch(
+                chat_id=str(source.chat_id),
+                thread_id=thread_id,
+                user_id=str(source.user_id),
+            )
+        except Exception:
+            logger.debug("Failed to record Telegram topic activity", exc_info=True)
+
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
     def _telegram_topic_cooldown_key(self, source: SessionSource) -> Optional[str]:
@@ -19005,6 +19031,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        if not is_internal:
+            await asyncio.to_thread(self._touch_telegram_topic_activity, source)
 
         # Global emergency stop (`hermes pause`): give new turns a brief
         # paused notice instead of starting an agent run. Internal events

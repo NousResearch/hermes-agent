@@ -258,6 +258,28 @@ async def test_internal_root_telegram_dm_event_bypasses_topic_lobby(
 
 
 @pytest.mark.asyncio
+async def test_authorized_topic_command_marks_topic_active(monkeypatch):
+    """Commands count as user activity before their early-return handler."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._touch_telegram_topic_activity = MagicMock()
+    runner._handle_topic_command = AsyncMock(return_value="topic status")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    source = _make_source(thread_id="17585")
+    result = await runner._handle_message(
+        MessageEvent(text="/topic", source=source, message_id="topic-command")
+    )
+
+    assert result == "topic status"
+    runner._touch_telegram_topic_activity.assert_called_once_with(source)
+
+
+@pytest.mark.asyncio
 async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
     import gateway.run as gateway_run
 
@@ -801,6 +823,34 @@ def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):
     assert tables == set()
 
 
+def test_last_active_telegram_topic_binding_requires_enabled_matching_owner(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    assert db.get_last_active_telegram_topic_binding(chat_id="208214988") is None
+
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-active", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:17585",
+        session_id="sess-active",
+    )
+
+    assert db.touch_telegram_topic_binding(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="someone-else",
+    ) == 0
+    assert db.get_last_active_telegram_topic_binding(
+        chat_id="208214988"
+    )["thread_id"] == "17585"
+
+    db.disable_telegram_topic_mode(chat_id="208214988", clear_bindings=False)
+    assert db.get_last_active_telegram_topic_binding(chat_id="208214988") is None
+    db.close()
+
+
 # ---------------------------------------------------------------------------
 # Tests for get_telegram_topic_binding_by_session (issue #27166)
 # ---------------------------------------------------------------------------
@@ -829,4 +879,3 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 # ---------------------------------------------------------------------------
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
-

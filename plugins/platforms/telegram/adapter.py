@@ -1784,6 +1784,78 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, chat_id, thread_id,
             )
 
+    def _dm_topic_session_db(self, chat_id: Any):
+        """Resolve the SessionDB owned by this adapter's profile."""
+        if chat_id is None:
+            return None
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return None
+        try:
+            from gateway.session import SessionSource
+
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(chat_id),
+                chat_type="dm",
+                user_id=str(chat_id),
+                profile=self._session_key_profile(),
+            )
+            session_key = store._generate_session_key(source)
+            db_for_key = getattr(store, "_db_for_key", None)
+            if callable(db_for_key):
+                return db_for_key(session_key)
+        except Exception:
+            logger.debug(
+                "[%s] Failed to resolve profile-scoped Telegram topic DB",
+                self.name,
+                exc_info=True,
+            )
+            return None
+        return getattr(store, "_db", None)
+
+    def resolve_last_active_dm_topic(self, chat_id: Any) -> Optional[str]:
+        """Return the last active opted-in DM topic for a bare delivery."""
+        db = self._dm_topic_session_db(chat_id)
+        getter = getattr(db, "get_last_active_telegram_topic_binding", None)
+        if not callable(getter):
+            return None
+        try:
+            binding = getter(chat_id=str(chat_id))
+        except Exception:
+            logger.debug(
+                "[%s] Failed to read last-active Telegram topic for chat=%s",
+                self.name,
+                chat_id,
+                exc_info=True,
+            )
+            return None
+        thread_id = str((binding or {}).get("thread_id") or "")
+        return thread_id if thread_id and thread_id != "1" else None
+
+    def record_dm_topic_activity(self, chat_id: Any, thread_id: Any) -> None:
+        """Mark a successfully targeted DM topic as the next bare fallback."""
+        if chat_id is None or thread_id is None:
+            return
+        db = self._dm_topic_session_db(chat_id)
+        touch = getattr(db, "touch_telegram_topic_binding", None)
+        if not callable(touch):
+            return
+        try:
+            touch(
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+                user_id=str(chat_id),
+            )
+        except Exception:
+            logger.debug(
+                "[%s] Failed to record Telegram topic activity for chat=%s thread=%s",
+                self.name,
+                chat_id,
+                thread_id,
+                exc_info=True,
+            )
+
     @staticmethod
     def _is_bad_request_error(error: Exception) -> bool:
         name = error.__class__.__name__.lower()

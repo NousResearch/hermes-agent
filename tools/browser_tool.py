@@ -1734,10 +1734,14 @@ def _real_profile_cdp() -> tuple:
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _real_profile_cdp_cache["cdp"] = existing
             return existing, None
-        if existing:
-            # Stale/wrong-dir session (throwaway-temp fallback, or an old copy):
-            # close it so nothing holds the dir open before we overlay + relaunch.
-            _agent_browser_close_session(_REAL_PROFILE_SESSION)
+        # Not reusable: close the session unconditionally, not only when the
+        # daemon still reports an endpoint. A daemon whose browser died (e.g.
+        # the previous hermes process terminated its Chrome at exit) answers
+        # ``get cdp-url`` with an error, so ``existing`` is None — yet it still
+        # owns the session name and ignores a fresh ``--cdp`` on the attach
+        # below, failing every later launch against the dead port. Closing a
+        # non-existent session is a cheap no-op (~0.1s).
+        _agent_browser_close_session(_REAL_PROFILE_SESSION)
 
         # No live browser owns the dir now — safe to (re)snapshot + overlay.
         snap_dir, err = snapshot_real_profile(browser)

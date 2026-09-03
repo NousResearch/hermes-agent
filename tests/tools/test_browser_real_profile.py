@@ -336,6 +336,45 @@ class TestRealProfileCdpLaunch:
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
 
+    def test_closes_stale_session_when_daemon_reports_no_cdp(self, tmp_path):
+        """A daemon whose browser died answers get cdp-url with an error (None).
+
+        The daemon still owns the session name and ignores a fresh ``--cdp``,
+        so it must be closed before relaunch — otherwise every later launch
+        fails against the dead port.
+        """
+        import tools.browser_tool as bt
+        self._reset()
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+        closed = {"n": 0}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=False), \
+             patch.object(bt, "_agent_browser_close_session",
+                          side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_is_headed_mode", return_value=False):
+            cdp, err = bt._real_profile_cdp()
+        assert closed["n"] == 1  # dead-browser daemon was closed before relaunch
+        assert cdp == "http://127.0.0.1:41000"
+        self._reset()
+
     def test_cdp_on_data_dir_matches_devtoolsactiveport(self, tmp_path):
         import tools.browser_tool as bt
         (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")

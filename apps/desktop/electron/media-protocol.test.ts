@@ -33,6 +33,7 @@ describe('media protocol helpers', () => {
   it('recognises only supported audio/video extensions case-insensitively', () => {
     expect(isStreamableMediaPath('/tmp/render.MP4')).toBe(true)
     expect(isStreamableMediaPath('/tmp/voice.flac')).toBe(true)
+    expect(isStreamableMediaPath('/tmp/spec.PDF')).toBe(false)
     expect(isStreamableMediaPath('/tmp/secrets.txt')).toBe(false)
   })
 

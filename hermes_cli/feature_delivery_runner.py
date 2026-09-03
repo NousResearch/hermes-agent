@@ -15,7 +15,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import ValidationError
 
@@ -38,7 +38,9 @@ from hermes_cli.feature_delivery import (
     compute_contract_hash,
     count_fix_loops,
     evaluate_delivery_gate,
+    is_recoverable_block,
     is_legal_transition,
+    resolve_resume_target,
     validate_stage_report,
 )
 
@@ -118,6 +120,11 @@ class DeliverySnapshot:
     last_report_status: str | None = None
     blocked_code: str | None = None
     blocked_message: str | None = None
+    blocked_from_state: FeatureDeliveryState | None = None
+    last_blocked_code: str | None = None
+    last_blocked_message: str | None = None
+    last_unblock_target: FeatureDeliveryState | None = None
+    resume_generation: int = 0
     reports: tuple[StoredStageReport, ...] = ()
 
     def feedback(self) -> tuple[str, ...]:
@@ -148,6 +155,8 @@ class DeliveryStatus:
     last_stage: str | None
     last_report_status: str | None
     blocked_reason: str | None
+    last_blocked_reason: str | None
+    last_unblock_target: str | None
 
     @property
     def delivery_status(self) -> str:
@@ -172,6 +181,8 @@ class DeliveryStatus:
             ("Last Stage", self.last_stage or "-"),
             ("Last Report Status", self.last_report_status or "-"),
             ("Blocked Reason", self.blocked_reason or "-"),
+            ("Last Blocked Reason", self.last_blocked_reason or "-"),
+            ("Last Unblock Target", self.last_unblock_target or "-"),
             ("Delivery Status", self.delivery_status),
         )
         return "\n".join(f"{label}: {value}" for label, value in values)
@@ -266,6 +277,90 @@ class FeatureDeliveryRunner:
 
     def resume(self, task_id: str) -> DeliveryStatus:
         return self._drive(task_id)
+
+    def unblock(
+        self,
+        task_id: str,
+        *,
+        resume_stage: Literal["previous", "developer"] = "previous",
+        confirmed: bool = False,
+    ) -> DeliveryStatus:
+        """Authorize one guarded human recovery without running an agent."""
+
+        if not confirmed:
+            raise DeliveryRunnerError("explicit --confirm is required")
+        with kb.connect(board=self.board) as conn:
+            root, metadata = self._root_and_metadata(conn, task_id)
+            if root.current_step_key != FeatureDeliveryState.BLOCKED.value:
+                raise DeliveryRunnerError("feature delivery task is not BLOCKED")
+            snapshot = self._snapshot(conn, root, recover=False)
+            if not is_recoverable_block(snapshot.blocked_code):
+                raise DeliveryRunnerError(
+                    f"blocked reason is not recoverable: {snapshot.blocked_code or 'unknown'}"
+                )
+            try:
+                contract = self._load_contract(conn, root, metadata)
+            except DeliveryRunnerError as exc:
+                self._record_unblock_rejection(
+                    conn,
+                    root,
+                    snapshot.blocked_code,
+                    "contract_hash_mismatch",
+                    str(exc),
+                )
+                raise DeliveryRunnerError(f"contract_hash_mismatch: {exc}") from exc
+            try:
+                target = resolve_resume_target(snapshot.blocked_from_state, resume_stage)
+            except ValueError as exc:
+                raise DeliveryRunnerError(str(exc)) from exc
+            integrity_error = self._validate_resume_integrity(
+                root, contract, metadata, snapshot, target
+            )
+            if integrity_error:
+                self._record_unblock_rejection(
+                    conn,
+                    root,
+                    snapshot.blocked_code,
+                    integrity_error[0],
+                    integrity_error[1],
+                )
+                raise DeliveryRunnerError(
+                    f"{integrity_error[0]}: {integrity_error[1]}"
+                )
+
+            generation = snapshot.resume_generation + 1
+            approved_at = int(time.time())
+            audit = {
+                "blocked_reason_code": snapshot.blocked_code,
+                "previous_state": FeatureDeliveryState.BLOCKED.value,
+                "resume_target_state": target.value,
+                "approved_by": "human_cli",
+                "contract_hash": metadata["contract_sha256"],
+                "timestamp": approved_at,
+                "resume_generation": generation,
+            }
+            changed = kb.transition_workflow_step_cas(
+                conn,
+                task_id=root.id,
+                workflow_template_id=FEATURE_DELIVERY_WORKFLOW,
+                expected_step=FeatureDeliveryState.BLOCKED.value,
+                new_step=target.value,
+                event_payload={
+                    "human_resume": True,
+                    "blocked_reason_code": snapshot.blocked_code,
+                    "resume_generation": generation,
+                },
+                audit_event=("feature_delivery_unblocked", audit),
+            )
+            if not changed:
+                raise DeliveryRunnerError("feature delivery state changed before unblock")
+            refreshed = kb.get_task(conn, root.id)
+            assert refreshed is not None
+            return self._status(
+                refreshed,
+                metadata,
+                self._snapshot(conn, refreshed, recover=False),
+            )
 
     def status(self, task_id: str) -> DeliveryStatus:
         with kb.connect(board=self.board) as conn:
@@ -398,6 +493,7 @@ class FeatureDeliveryRunner:
             snapshot.fix_loops + 1,
             workspace,
             snapshot.feedback(),
+            generation=snapshot.resume_generation,
         )
         if stored is None:
             return
@@ -439,6 +535,7 @@ class FeatureDeliveryRunner:
             "tester",
             snapshot.developer_commit,
             snapshot.fix_loops + 1,
+            snapshot.resume_generation,
         )
         existing = self._report_for_stage(conn, root, stage, recover=True)
         if existing is None:
@@ -509,6 +606,7 @@ class FeatureDeliveryRunner:
             "acceptance",
             target,
             snapshot.fix_loops + 1,
+            snapshot.resume_generation,
         )
         stored = self._report_for_stage(conn, root, stage, recover=True)
         if stored is None:
@@ -615,8 +713,11 @@ class FeatureDeliveryRunner:
         attempt: int,
         workspace: Path,
         feedback: tuple[str, ...],
+        generation: int = 0,
     ) -> StoredStageReport | None:
-        stage = self._ensure_stage(conn, root, role, target_commit, attempt)
+        stage = self._ensure_stage(
+            conn, root, role, target_commit, attempt, generation
+        )
         existing = self._report_for_stage(conn, root, stage, recover=True)
         if existing is not None:
             return existing
@@ -693,6 +794,7 @@ class FeatureDeliveryRunner:
         role: StageRole,
         target_commit: str,
         attempt: int,
+        generation: int = 0,
     ) -> kb.Task:
         rows = conn.execute(
             "SELECT t.* FROM tasks t JOIN task_links l ON l.child_id = t.id "
@@ -702,10 +804,18 @@ class FeatureDeliveryRunner:
         for row in rows:
             task = kb.Task.from_row(row)
             info = self._stage_info(task)
-            if info and info.get("role") == role and int(info.get("attempt", 0)) == attempt:
+            if (
+                info
+                and info.get("role") == role
+                and int(info.get("attempt", 0)) == attempt
+                and int(info.get("generation", 0)) == generation
+            ):
                 return task
 
-        key = f"feature-delivery-stage:{root.id}:{role}:{target_commit}:{attempt}"
+        key = (
+            f"feature-delivery-stage:{root.id}:{role}:{target_commit}:"
+            f"{attempt}:{generation}"
+        )
         stage_id = kb.create_task(
             conn,
             title=f"{root.title} [{role} {attempt}]",
@@ -716,6 +826,7 @@ class FeatureDeliveryRunner:
                         "role": role,
                         "input_commit": target_commit,
                         "attempt": attempt,
+                        "generation": generation,
                     }
                 },
                 sort_keys=True,
@@ -968,21 +1079,45 @@ class FeatureDeliveryRunner:
         transitions: list[tuple[FeatureDeliveryState, FeatureDeliveryState]] = []
         blocked_code = None
         blocked_message = None
+        blocked_from_state = None
+        last_blocked_code = None
+        last_blocked_message = None
+        last_unblock_target = None
+        resume_generation = 0
         for event in kb.list_events(conn, root.id):
             payload = event.payload or {}
             if event.kind == "workflow_step_transitioned":
                 try:
-                    transitions.append(
-                        (
-                            FeatureDeliveryState(payload["from_step"]),
-                            FeatureDeliveryState(payload["to_step"]),
-                        )
-                    )
+                    from_state = FeatureDeliveryState(payload["from_step"])
+                    to_state = FeatureDeliveryState(payload["to_step"])
+                    transitions.append((from_state, to_state))
                 except (KeyError, ValueError):
                     continue
-                if payload.get("to_step") == FeatureDeliveryState.BLOCKED.value:
+                if to_state == FeatureDeliveryState.BLOCKED:
                     blocked_code = payload.get("code")
                     blocked_message = payload.get("message")
+                    blocked_from_state = from_state
+                    last_blocked_code = blocked_code
+                    last_blocked_message = blocked_message
+                elif from_state == FeatureDeliveryState.BLOCKED:
+                    blocked_code = None
+                    blocked_message = None
+                    blocked_from_state = None
+            elif event.kind == "feature_delivery_unblocked":
+                try:
+                    last_unblock_target = FeatureDeliveryState(
+                        payload["resume_target_state"]
+                    )
+                    resume_generation = max(
+                        resume_generation, int(payload["resume_generation"])
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+            elif event.kind == "feature_delivery_unblock_rejected":
+                blocked_code = payload.get("code")
+                blocked_message = payload.get("message")
+                last_blocked_code = blocked_code
+                last_blocked_message = blocked_message
 
         rows = conn.execute(
             "SELECT t.* FROM tasks t JOIN task_links l ON l.child_id = t.id "
@@ -1029,6 +1164,11 @@ class FeatureDeliveryRunner:
             last_report_status=last.report.status.value if last else None,
             blocked_code=blocked_code,
             blocked_message=blocked_message,
+            blocked_from_state=blocked_from_state,
+            last_blocked_code=last_blocked_code,
+            last_blocked_message=last_blocked_message,
+            last_unblock_target=last_unblock_target,
+            resume_generation=resume_generation,
             reports=tuple(reports),
         )
 
@@ -1071,6 +1211,70 @@ class FeatureDeliveryRunner:
                 (str(target), stage.id),
             )
         return target
+
+    def _validate_resume_integrity(
+        self,
+        root: kb.Task,
+        contract: TaskContract,
+        metadata: dict,
+        snapshot: DeliverySnapshot,
+        target: FeatureDeliveryState,
+    ) -> tuple[str, str] | None:
+        if target == FeatureDeliveryState.TESTING and snapshot.developer_commit is None:
+            return "commit_mismatch", "developer commit is missing"
+        if target == FeatureDeliveryState.ACCEPTANCE and (
+            snapshot.developer_commit is None
+            or snapshot.tested_commit != snapshot.developer_commit
+        ):
+            return "commit_mismatch", "tested commit is missing or stale"
+
+        expected = snapshot.developer_commit or contract.base_commit
+        repository = Path(metadata["repository"])
+        if not self._commit_exists(repository, expected):
+            return "commit_mismatch", "resume commit does not exist"
+        if self._branch_head(repository, contract.branch) != expected:
+            return "commit_mismatch", "feature branch HEAD changed while blocked"
+        ancestor = subprocess.run(
+            ["git", "-C", str(repository), "merge-base", "--is-ancestor", contract.base_commit, expected],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if ancestor.returncode != 0:
+            return "commit_mismatch", "resume commit is not a descendant of base commit"
+
+        if root.workspace_path:
+            workspace = Path(root.workspace_path)
+            if workspace.is_dir():
+                if self._git(workspace, "status", "--porcelain"):
+                    return "dirty_worktree", "developer worktree is not clean"
+                if self._git(workspace, "branch", "--show-current") != contract.branch:
+                    return "commit_mismatch", "developer worktree is on the wrong branch"
+                if self._git(workspace, "rev-parse", "HEAD") != expected:
+                    return "commit_mismatch", "developer worktree HEAD changed while blocked"
+        return None
+
+    def _record_unblock_rejection(
+        self,
+        conn,
+        root: kb.Task,
+        previous_code: str | None,
+        code: str,
+        message: str,
+    ) -> None:
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                root.id,
+                "feature_delivery_unblock_rejected",
+                {
+                    "previous_blocked_reason_code": previous_code,
+                    "code": code,
+                    "message": message,
+                    "timestamp": int(time.time()),
+                },
+            )
 
     def _validate_developer_commit(
         self,
@@ -1242,6 +1446,11 @@ class FeatureDeliveryRunner:
             reason = snapshot.blocked_code
             if snapshot.blocked_message:
                 reason += f": {snapshot.blocked_message}"
+        last_reason = None
+        if snapshot.last_blocked_code:
+            last_reason = snapshot.last_blocked_code
+            if snapshot.last_blocked_message:
+                last_reason += f": {snapshot.last_blocked_message}"
         return DeliveryStatus(
             task_id=root.id,
             title=root.title,
@@ -1256,6 +1465,12 @@ class FeatureDeliveryRunner:
             last_stage=snapshot.last_stage,
             last_report_status=snapshot.last_report_status,
             blocked_reason=reason,
+            last_blocked_reason=last_reason,
+            last_unblock_target=(
+                snapshot.last_unblock_target.value
+                if snapshot.last_unblock_target
+                else None
+            ),
         )
 
     def _next_report_path(self, conn, root_id: str, role: StageRole) -> str:

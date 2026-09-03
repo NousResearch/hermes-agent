@@ -18,6 +18,14 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 FEATURE_DELIVERY_WORKFLOW = "feature_delivery_v1"
 ACCEPTANCE_FINAL_MARKER = "FINAL: ACCEPT"
 MAX_FIX_LOOPS = 5
+RECOVERABLE_BLOCK_CODES = frozenset(
+    {
+        "external_environment_missing",
+        "profile_missing",
+        "stage_executor_missing",
+        "stage_execution_failed",
+    }
+)
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 FullCommitSha = Annotated[
@@ -103,6 +111,31 @@ def can_transition_to_blocked(state: FeatureDeliveryState) -> bool:
     """Return whether infrastructure failure may terminally block ``state``."""
 
     return state in _BLOCKABLE_STATES
+
+
+def is_recoverable_block(reason_code: str | None) -> bool:
+    """Return whether a human may explicitly resume this blocked reason."""
+
+    return reason_code in RECOVERABLE_BLOCK_CODES
+
+
+def resolve_resume_target(
+    blocked_from_state: FeatureDeliveryState | None,
+    resume_stage: Literal["previous", "developer"],
+) -> FeatureDeliveryState:
+    """Resolve the only two human-approved recovery targets."""
+
+    if resume_stage == "developer":
+        return FeatureDeliveryState.DEVELOPING
+    if resume_stage != "previous":
+        raise ValueError(f"unsupported resume stage: {resume_stage}")
+    if blocked_from_state not in {
+        FeatureDeliveryState.DEVELOPING,
+        FeatureDeliveryState.TESTING,
+        FeatureDeliveryState.ACCEPTANCE,
+    }:
+        raise ValueError("blocked task has no recoverable previous stage")
+    return blocked_from_state
 
 
 def count_fix_loops(

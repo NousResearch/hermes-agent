@@ -4352,6 +4352,7 @@ def transition_workflow_step_cas(
     expected_step: str,
     new_step: str,
     event_payload: Optional[dict] = None,
+    audit_event: Optional[tuple[str, dict]] = None,
 ) -> bool:
     """Atomically advance one opt-in workflow step and record one event.
 
@@ -4377,6 +4378,8 @@ def transition_workflow_step_cas(
             }
         )
         _append_event(conn, task_id, "workflow_step_transitioned", payload)
+        if audit_event is not None:
+            _append_event(conn, task_id, audit_event[0], audit_event[1])
     return True
 
 

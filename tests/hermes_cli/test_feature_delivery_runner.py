@@ -430,12 +430,17 @@ def test_ordinary_kanban_task_is_rejected_without_mutation(delivery_env):
     assert task.current_step_key is None
 
 
-def test_cli_parser_supports_only_four_delivery_commands():
+def test_cli_parser_supports_only_feature_delivery_commands():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
     build_delivery_parser(subparsers, cmd_delivery=lambda _: 0)
-    for command in ("create", "run", "resume", "status"):
-        tail = ["--contract", "contract.json"] if command == "create" else ["task-id"]
+    for command in ("create", "run", "resume", "status", "unblock"):
+        if command == "create":
+            tail = ["--contract", "contract.json"]
+        elif command == "unblock":
+            tail = ["task-id", "--confirm"]
+        else:
+            tail = ["task-id"]
         args = parser.parse_args(["delivery", command, *tail])
         assert args.delivery_command == command
 

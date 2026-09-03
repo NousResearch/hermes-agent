@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -45,8 +46,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
@@ -2974,6 +2975,352 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
     return get_orchestration_settings()
 
 
+# ---------------------------------------------------------------------------
+# Sanitized, versioned read surface for observability-only dashboard plugins
+# ---------------------------------------------------------------------------
+
+_SIGNAL_CAPABILITIES = (
+    "kanban.read_model.signal.v1",
+    "kanban.events.signal.v1",
+)
+_SIGNAL_SCHEMA = "kanban.read_model.signal.v1"
+_SIGNAL_EVENTS_SCHEMA = "kanban.events.signal.v1"
+_SIGNAL_TASK_LIMIT = 500
+_SIGNAL_LINK_LIMIT = 2000
+_SIGNAL_RUN_LIMIT = 1000
+_SIGNAL_AUTH_QUERY_KEYS = frozenset({"token", "ticket", "internal"})
+
+
+def supports_signal_view() -> bool:
+    """Stable capability probe for external dashboard plugins."""
+    return True
+
+
+def _no_store_headers(*, generation: str | None = None, cursor: int | None = None):
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Kanban-Capabilities": ", ".join(_SIGNAL_CAPABILITIES),
+    }
+    if generation is not None:
+        headers["X-Kanban-Event-Generation"] = generation
+    if cursor is not None:
+        headers["X-Kanban-Event-Cursor"] = str(cursor)
+    return headers
+
+
+def _strict_query_values(query_params, *, allowed: set[str], required: set[str]):
+    pairs = list(query_params.multi_items())
+    counts: dict[str, int] = {}
+    for key, _value in pairs:
+        counts[key] = counts.get(key, 0) + 1
+    unknown = sorted(set(counts) - allowed)
+    duplicates = sorted(key for key, count in counts.items() if count != 1)
+    missing = sorted(required - set(counts))
+    if unknown or duplicates or missing:
+        problems = []
+        if unknown:
+            problems.append(f"unknown query parameters: {', '.join(unknown)}")
+        if duplicates:
+            problems.append(f"duplicate query parameters: {', '.join(duplicates)}")
+        if missing:
+            problems.append(f"missing query parameters: {', '.join(missing)}")
+        raise ValueError("; ".join(problems))
+    return {key: query_params.get(key) for key in counts}
+
+
+def _resolve_signal_board(raw: str | None) -> str:
+    """Require an existing board expressed as its exact canonical slug."""
+    if not raw:
+        raise ValueError("board is required")
+    try:
+        board = kanban_db._normalize_board_slug(raw)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    if not board or board != raw:
+        raise ValueError("board must be a canonical slug")
+    if not kanban_db.board_exists(board):
+        raise FileNotFoundError(f"board {board!r} does not exist")
+    return board
+
+
+def _signal_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _signal_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > 128 or not re.fullmatch(r"[A-Za-z0-9_.:@-]+", text):
+        return "[REDACTED]"
+    return text
+
+
+def _signal_task(row: sqlite3.Row) -> dict:
+    status = str(row["status"])
+    block_kind = row["block_kind"]
+    return {
+        "id": _signal_label(row["id"]),
+        "status": status if status in kanban_db.VALID_STATUSES else "unknown",
+        "priority": _signal_int(row["priority"]) or 0,
+        "assignee": _signal_label(row["assignee"]),
+        "created_at": _signal_int(row["created_at"]),
+        "started_at": _signal_int(row["started_at"]),
+        "completed_at": _signal_int(row["completed_at"]),
+        "current_run_id": _signal_int(row["current_run_id"]),
+        "block_kind": (
+            str(block_kind) if block_kind in kanban_db.VALID_BLOCK_KINDS else None
+        ),
+    }
+
+
+def _build_signal_read_model(board: str) -> dict:
+    conn = kanban_db._connect_existing_query_only(board=board)
+    try:
+        # Keep generation, cursor, tasks, links, and runs on one WAL snapshot.
+        # A concurrent GC must not rotate generation between SELECT statements.
+        conn.execute("BEGIN")
+        task_rows = conn.execute(
+            "SELECT id, status, priority, assignee, created_at, "
+            "started_at, completed_at, current_run_id, block_kind "
+            "FROM tasks WHERE status != 'archived' "
+            "ORDER BY created_at ASC, id ASC LIMIT ?",
+            (_SIGNAL_TASK_LIMIT + 1,),
+        ).fetchall()
+        visible_tasks = task_rows[:_SIGNAL_TASK_LIMIT]
+        link_rows = conn.execute(
+            "WITH visible AS ("
+            " SELECT id FROM tasks WHERE status != 'archived'"
+            " ORDER BY created_at ASC, id ASC LIMIT ?"
+            ") SELECT l.parent_id, l.child_id FROM task_links l "
+            "JOIN visible p ON p.id = l.parent_id "
+            "JOIN visible c ON c.id = l.child_id "
+            "ORDER BY l.parent_id ASC, l.child_id ASC LIMIT ?",
+            (_SIGNAL_TASK_LIMIT, _SIGNAL_LINK_LIMIT + 1),
+        ).fetchall()
+        run_rows = conn.execute(
+            "WITH visible AS ("
+            " SELECT id FROM tasks WHERE status != 'archived'"
+            " ORDER BY created_at ASC, id ASC LIMIT ?"
+            ") SELECT r.id, r.task_id, r.profile, r.status, r.started_at, "
+            "r.ended_at, r.outcome FROM task_runs r "
+            "JOIN visible v ON v.id = r.task_id "
+            "ORDER BY r.id ASC LIMIT ?",
+            (_SIGNAL_TASK_LIMIT, _SIGNAL_RUN_LIMIT + 1),
+        ).fetchall()
+        cursor_row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events"
+        ).fetchone()
+        generation = kanban_db.event_generation(conn)
+        cursor = int(cursor_row["cursor"])
+        truncated = (
+            len(task_rows) > _SIGNAL_TASK_LIMIT
+            or len(link_rows) > _SIGNAL_LINK_LIMIT
+            or len(run_rows) > _SIGNAL_RUN_LIMIT
+        )
+        return {
+            "schema": _SIGNAL_SCHEMA,
+            "capabilities": list(_SIGNAL_CAPABILITIES),
+            "board": board,
+            "generation": generation,
+            "cursor": cursor,
+            "generated_at": int(time.time()),
+            "truncated": truncated,
+            "tasks": [_signal_task(row) for row in visible_tasks],
+            "links": [
+                {
+                    "source": _signal_label(row["parent_id"]),
+                    "target": _signal_label(row["child_id"]),
+                    "kind": "parent-child",
+                }
+                for row in link_rows[:_SIGNAL_LINK_LIMIT]
+            ],
+            "runs": [
+                {
+                    "id": _signal_int(row["id"]),
+                    "task_id": _signal_label(row["task_id"]),
+                    "profile": _signal_label(row["profile"]),
+                    "status": _signal_label(row["status"]),
+                    "started_at": _signal_int(row["started_at"]),
+                    "ended_at": _signal_int(row["ended_at"]),
+                    "outcome": _signal_label(row["outcome"]),
+                }
+                for row in run_rows[:_SIGNAL_RUN_LIMIT]
+            ],
+        }
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+
+
+def _signal_http_response(request: Request):
+    try:
+        values = _strict_query_values(
+            request.query_params, allowed={"board"}, required={"board"}
+        )
+        board = _resolve_signal_board(values["board"])
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    model = _build_signal_read_model(board)
+    headers = _no_store_headers(
+        generation=model["generation"], cursor=model["cursor"]
+    )
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=headers)
+    return JSONResponse(model, headers=headers)
+
+
+@router.get("/capabilities")
+def get_capabilities():
+    return JSONResponse(
+        {"capabilities": list(_SIGNAL_CAPABILITIES)},
+        headers=_no_store_headers(),
+    )
+
+
+@router.get("/read-model/signal")
+def get_signal_read_model(request: Request):
+    return _signal_http_response(request)
+
+
+@router.head("/read-model/signal")
+def head_signal_read_model(request: Request):
+    return _signal_http_response(request)
+
+
+def _parse_signal_ws_query(ws: WebSocket) -> tuple[str, int, str | None]:
+    allowed = {"view", "board", "since", "generation"} | set(
+        _SIGNAL_AUTH_QUERY_KEYS
+    )
+    values = _strict_query_values(
+        ws.query_params,
+        allowed=allowed,
+        required={"view", "board", "since"},
+    )
+    if values["view"] != "signal":
+        raise ValueError("unsupported event view")
+    auth_keys = set(values) & set(_SIGNAL_AUTH_QUERY_KEYS)
+    if len(auth_keys) != 1:
+        raise ValueError("exactly one WebSocket credential is required")
+    board = _resolve_signal_board(values["board"])
+    since = values["since"] or ""
+    if not re.fullmatch(r"0|[1-9][0-9]*", since):
+        raise ValueError("since must be a canonical non-negative integer")
+    cursor = int(since)
+    if cursor > 9_223_372_036_854_775_807:
+        raise ValueError("since exceeds SQLite integer range")
+    generation = values.get("generation")
+    if generation is not None and not re.fullmatch(r"[0-9a-f]{32}", generation):
+        raise ValueError("generation must be 32 lowercase hexadecimal characters")
+    if cursor > 0 and generation is None:
+        raise ValueError("generation is required when since is greater than zero")
+    return board, cursor, generation
+
+
+def _signal_event_frame(
+    board: str,
+    cursor: int,
+    *,
+    initial: bool,
+    expected_generation: str | None = None,
+) -> dict:
+    conn = kanban_db._connect_existing_query_only(board=board)
+    try:
+        # Generation, bounds, and events must describe one WAL snapshot.
+        conn.execute("BEGIN")
+        generation = kanban_db.event_generation(conn)
+        bounds = conn.execute(
+            "SELECT MIN(id) AS min_id, COALESCE(MAX(id), 0) AS max_id "
+            "FROM task_events"
+        ).fetchone()
+        min_id = _signal_int(bounds["min_id"])
+        max_id = int(bounds["max_id"])
+        reset = (
+            (expected_generation is not None and generation != expected_generation)
+            or cursor > max_id
+            or (min_id is not None and cursor < min_id - 1)
+        )
+        events: list[dict] = []
+        new_cursor = max_id if reset else cursor
+        if not reset:
+            rows = conn.execute(
+                "SELECT id, task_id, run_id, kind, created_at "
+                "FROM task_events WHERE id > ? ORDER BY id ASC LIMIT 200",
+                (cursor,),
+            ).fetchall()
+            for row in rows:
+                events.append(
+                    {
+                        "id": int(row["id"]),
+                        "task_id": _signal_label(row["task_id"]),
+                        "run_id": _signal_int(row["run_id"]),
+                        "kind": _signal_label(row["kind"]),
+                        "created_at": _signal_int(row["created_at"]),
+                    }
+                )
+                new_cursor = int(row["id"])
+        return {
+            "schema": _SIGNAL_EVENTS_SCHEMA,
+            "initial": initial,
+            "generation": generation,
+            "reset": reset,
+            "cursor": new_cursor,
+            "events": events,
+        }
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+
+
+async def _stream_signal_events(
+    ws: WebSocket,
+    board: str,
+    cursor: int,
+    expected_generation: str | None,
+):
+    frame = await asyncio.to_thread(
+        _signal_event_frame,
+        board,
+        cursor,
+        initial=True,
+        expected_generation=expected_generation,
+    )
+    await ws.send_json(frame)
+    cursor = int(frame["cursor"])
+    generation = str(frame["generation"])
+    while True:
+        try:
+            message = await asyncio.wait_for(
+                ws.receive(), timeout=_EVENT_POLL_SECONDS
+            )
+            if message["type"] == "websocket.disconnect":
+                return
+        except asyncio.TimeoutError:
+            pass
+        frame = await asyncio.to_thread(
+            _signal_event_frame,
+            board,
+            cursor,
+            initial=False,
+            expected_generation=generation,
+        )
+        if frame["reset"] or frame["events"]:
+            await ws.send_json(frame)
+            cursor = int(frame["cursor"])
+            generation = str(frame["generation"])
+
+
 @router.websocket("/events")
 async def stream_events(ws: WebSocket):
     # Authorize the upgrade via the dashboard's canonical WS gate so the
@@ -2984,6 +3331,31 @@ async def stream_events(ws: WebSocket):
     if not _ws_upgrade_authorized(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
+
+    # ``view`` absent is the exact legacy protocol below. Signal mode is
+    # additive and strict: malformed, duplicated, or unknown parameters fail
+    # closed before the WebSocket is accepted.
+    if "view" in ws.query_params:
+        try:
+            signal_board, signal_cursor, signal_generation = _parse_signal_ws_query(ws)
+        except (ValueError, FileNotFoundError):
+            await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+            return
+        await ws.accept()
+        try:
+            await _stream_signal_events(
+                ws, signal_board, signal_cursor, signal_generation
+            )
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            return
+        except Exception as exc:
+            log.warning("Kanban signal event stream error: %s", exc)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        return
+
     await ws.accept()
 
     # Keep one connection alive for this socket after its first poll. SQLite

@@ -42,6 +42,7 @@ EXCLUDED_SKILL_DIRS = frozenset(
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
+        ".restore-backups",
     )
 )
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_state import SessionDB
+from tools.process_registry import process_registry
 
 
 @pytest.fixture
@@ -33,7 +35,9 @@ def adapter(session_db):
 
 @pytest.fixture
 def auth_adapter(session_db):
-    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True, extra={"key": "sk-test-81754-long-key"})
+    )
     adapter._session_db = session_db
     return adapter
 
@@ -47,6 +51,10 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
+    app.router.add_get(
+        "/api/sessions/{session_id}/delegations",
+        adapter._handle_session_delegations,
+    )
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
@@ -67,11 +75,16 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
     assert features["run_steer"] is True
+    assert features["session_delegations"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["session_delegations"] == {
+        "method": "GET",
+        "path": "/api/sessions/{session_id}/delegations",
+    }
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
@@ -891,3 +904,195 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_session_delegations_lists_active_for_origin_session(
+    adapter, session_db, monkeypatch
+):
+    """/v1/runs orchestrators poll this after run.completed (#81754).
+
+    api_server background dispatch stamps origin_session_id with the raw
+    session id while session_key is often the per-run approval key — the
+    endpoint must match on origin_session_id.
+    """
+    import threading
+    import time
+
+    from tools import async_delegation as ad
+
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 60.0)
+    ad._reset_for_tests()
+    session_id = session_db.create_session("deleg-origin-session", "api_server")
+    gate = threading.Event()
+
+    try:
+        res = ad.dispatch_async_delegation(
+            goal="bg for api orchestrator",
+            context="secret-context-must-not-leak",
+            toolsets=["terminal"],
+            role="leaf",
+            model="m",
+            session_key="run_approval_key_not_session",
+            parent_session_id=None,
+            origin_session_id=session_id,
+            max_async_children=1,
+            runner=lambda: {} if gate.wait(timeout=10) else {},
+        )
+        assert res["status"] == "dispatched"
+
+        # Foreign session must not appear in this listing.
+        ad.dispatch_async_delegation(
+            goal="other session work",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="other",
+            origin_session_id="someone-else",
+            max_async_children=2,
+            runner=lambda: {"status": "completed"},
+        )
+
+        app = _create_session_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            missing = await cli.get(
+                f"/api/sessions/missing-deleg-{uuid.uuid4().hex}/delegations"
+            )
+            assert missing.status == 404
+
+            resp = await cli.get(f"/api/sessions/{session_id}/delegations")
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+
+            recent = await cli.get(
+                f"/api/sessions/{session_id}/delegations?include_recent=1"
+            )
+            assert recent.status == 200
+            recent_payload = await recent.json()
+
+        assert payload["object"] == "hermes.session.delegations"
+        assert payload["session_id"] == session_id
+        assert payload["active_count"] == 1
+        assert payload["pending_delivery_count"] == 0
+        assert payload["drain_complete"] is False
+        assert len(payload["delegations"]) == 1
+        row = payload["delegations"][0]
+        assert row["delegation_id"] == res["delegation_id"]
+        assert row["status"] == "running"
+        assert row["goal"] == "bg for api orchestrator"
+        assert row["origin_session_id"] == session_id
+        assert "context" not in row
+        assert "interrupt_fn" not in row
+        assert "progress_fn" not in row
+        # Still active — include_recent does not change active_count.
+        assert recent_payload["active_count"] == 1
+        assert any(
+            d["delegation_id"] == res["delegation_id"]
+            for d in recent_payload["delegations"]
+        )
+    finally:
+        gate.set()
+        deadline = time.monotonic() + 2.0
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_session_delegations_pending_delivery_blocks_drain_complete(
+    adapter, session_db, monkeypatch,
+):
+    """Completed subagent with undelivered wake must not report drain_complete."""
+    import time
+
+    from tools import async_delegation as ad
+
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 60.0)
+    ad._reset_for_tests()
+    session_id = session_db.create_session("deleg-drain-session", "api_server")
+
+    res = ad.dispatch_async_delegation(
+        goal="fast bg",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="run_key",
+        origin_session_id=session_id,
+        max_async_children=1,
+        runner=lambda: {"status": "completed", "summary": "done"},
+    )
+    assert res["status"] == "dispatched"
+
+    deadline = time.monotonic() + 5.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    evt = None
+    while time.monotonic() < deadline:
+        if not process_registry.completion_queue.empty():
+            evt = process_registry.completion_queue.get_nowait()
+            if evt.get("delegation_id") == res["delegation_id"]:
+                break
+        time.sleep(0.02)
+    assert evt is not None
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}/delegations")
+        payload = await resp.json()
+        recent = await cli.get(
+            f"/api/sessions/{session_id}/delegations?include_recent=1"
+        )
+        recent_payload = await recent.json()
+
+    assert payload["active_count"] == 0
+    assert payload["pending_delivery_count"] == 1
+    assert payload["drain_complete"] is False
+    assert recent_payload["active_count"] == 0
+    assert recent_payload["pending_delivery_count"] == 1
+    row = next(
+        d for d in recent_payload["delegations"]
+        if d["delegation_id"] == res["delegation_id"]
+    )
+    assert row["status"] == "completed"
+    assert row["delivery_state"] == "pending"
+    assert "delivered_at" not in row
+
+    assert ad.mark_completion_delivered(res["delegation_id"])
+
+    async with TestClient(TestServer(app)) as cli:
+        done = await cli.get(f"/api/sessions/{session_id}/delegations")
+        done_payload = await done.json()
+        done_recent = await cli.get(
+            f"/api/sessions/{session_id}/delegations?include_recent=1"
+        )
+        done_recent_payload = await done_recent.json()
+
+    assert done_payload["pending_delivery_count"] == 0
+    assert done_payload["drain_complete"] is True
+    delivered_row = next(
+        d for d in done_recent_payload["delegations"]
+        if d["delegation_id"] == res["delegation_id"]
+    )
+    assert delivered_row["delivery_state"] == "delivered"
+    assert isinstance(delivered_row["delivered_at"], float)
+
+
+@pytest.mark.asyncio
+async def test_session_delegations_requires_auth(auth_adapter, session_db):
+    session_id = session_db.create_session("deleg-auth-session", "api_server")
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        unauth = await cli.get(f"/api/sessions/{session_id}/delegations")
+        assert unauth.status == 401
+        ok = await cli.get(
+            f"/api/sessions/{session_id}/delegations",
+            headers={"Authorization": "Bearer sk-test-81754-long-key"},
+        )
+        assert ok.status == 200
+        payload = await ok.json()
+        assert payload["active_count"] == 0
+        assert payload["pending_delivery_count"] == 0
+        assert payload["drain_complete"] is True
+        assert payload["delegations"] == []

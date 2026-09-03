@@ -80,7 +80,7 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
     category = dg.guess_category(p)
     if category is None:
         return
-    newly = dg.track(str(p), category, silent=True)
+    newly = dg.track(str(p), category, silent=True, explicit=False)
     if newly:
         _record_track(task_id, session_id, p, category)
 
@@ -206,7 +206,12 @@ Subcommands:
 Categories: temp | test | research | download | chrome-profile | cron-output | other
 
 All operations are scoped to HERMES_HOME and /tmp/hermes-*.
-Test files are auto-tracked on write_file / terminal and auto-cleaned at session end.
+Test files are auto-tracked on write_file / terminal and auto-cleaned at session end,
+except for Git worktrees and tracked/non-ignored source paths. Manual `track` may
+override protection for the selected path, but recursive deletion still refuses
+directories containing nested or bare Git repositories/worktrees. Resolved scope
+checks reject symlink escapes, non-canonical paths, durable Hermes state, and
+filesystem mount boundaries before deletion.
 """
 
 

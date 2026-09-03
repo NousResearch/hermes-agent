@@ -4650,12 +4650,19 @@ class APIServerAdapter(BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
+        raw_include_compacted = request.query.get("include_compacted")
+        include_compacted = (
+            _coerce_request_bool(raw_include_compacted, default=False)
+            if raw_include_compacted is not None
+            else False
+        )
         messages = await asyncio.to_thread(
             db.get_messages,
             resolved_id,
             limit=limit,
             offset=offset,
             latest=latest_page,
+            include_compacted=include_compacted,
         )
         return web.json_response({
             "object": "list",

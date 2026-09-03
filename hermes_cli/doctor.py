@@ -3284,8 +3284,23 @@ def run_doctor(args):
     _section("Memory Provider")
     _active_memory_provider = _memory_config.get("provider", "")
 
+    # Same alias set as runtime / dashboard (plugins.memory.normalize_memory_provider_name).
+    # Without this, memory.provider: builtin falls through to load_memory_provider
+    # and prints a false "plugin not found" warning (#75647).
+    _raw_mem_provider = _active_memory_provider
+    try:
+        from plugins.memory import normalize_memory_provider_name as _norm_mem_provider
+        _active_memory_provider = _norm_mem_provider(_active_memory_provider)
+    except ImportError:
+        pass
+
     if not _active_memory_provider:
-        check_ok("Built-in memory active", "(no external provider configured — this is fine)")
+        check_ok(
+            "Built-in memory active",
+            "(builtin provider configured — this is fine)"
+            if str(_raw_mem_provider).strip()
+            else "(no external provider configured — this is fine)",
+        )
     elif _active_memory_provider == "honcho":
         try:
             from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path

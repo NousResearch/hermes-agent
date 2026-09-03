@@ -110,6 +110,45 @@ class TestCreateSession:
 
         assert state.agent.session_cwd == "/tmp/project"
 
+    def test_make_agent_honors_configured_agent_max_turns(self, monkeypatch):
+        """ACP sessions must obey config agent.max_turns, not the AIAgent default.
+
+        Regression: the ACP agent factory never read agent.max_turns, so ACP
+        sessions silently ignored a configured cap that CLI and gateway
+        sessions both honor.
+        """
+        captured = {}
+
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        config = {
+            "model": {"default": "fake-model", "provider": "fake-provider"},
+            "mcp_servers": {},
+            "agent": {"max_turns": 1234},
+        }
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("acp_adapter.session.load_config", lambda: config, raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "chat_completions",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert captured.get("max_iterations") == 1234
+
 
 
 

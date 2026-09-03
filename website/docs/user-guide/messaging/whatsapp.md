@@ -118,6 +118,17 @@ To use the pairing flow instead, remove both variables and rely on the
 [DM pairing system](/user-guide/security#dm-pairing-system).
 :::
 
+Optional: the name the paired phone shows under **WhatsApp → Linked devices**
+defaults to `Hermes Agent`. To present a different name (for example when the
+bridge runs a business line under its own branding), set it before pairing:
+
+```bash
+WHATSAPP_DEVICE_NAME="Front Desk Bot"      # Optional; default "Hermes Agent"
+```
+
+The name is sent to WhatsApp when the device is linked, so changing it later
+only takes effect after you unpair and scan the QR code again.
+
 Optional behavior settings in `~/.hermes/config.yaml`:
 
 ```yaml

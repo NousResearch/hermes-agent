@@ -5798,6 +5798,16 @@ class BasePlatformAdapter(ABC):
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
 
     @staticmethod
+    def _is_rate_limited_error(error: Optional[str]) -> bool:
+        """Return True if the error string classifies as a rate limit / flood cap.
+
+        Single wrapper around :func:`classify_send_error` so the three call
+        sites in :meth:`_send_with_retry` share one notion of "is this a rate
+        limit" instead of three inline copies that could drift.
+        """
+        return classify_send_error(None, error or "") == "rate_limited"
+
+    @staticmethod
     def _is_timeout_error(error: Optional[str]) -> bool:
         """Return True if the error string indicates a read/write timeout.
 
@@ -5888,7 +5898,19 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
+        # A rate-limited / flood-capped send is transient: it should back off
+        # (honoring the server's retry_after when present) rather than fall
+        # through to the plain-text fallback, which re-enters the ban and can
+        # truncate content.  Gate on the platform-neutral classifier as well so
+        # platforms that surface a rate limit without a retry_after field
+        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
+        is_rate_limited = self._is_rate_limited_error(error_str)
+        is_network = (
+            result.retryable
+            or is_rate_limited
+            or result.retry_after is not None
+            or self._is_retryable_error(error_str)
+        )
 
         # Timeout errors are not safe to retry (message may have been
         # delivered) and not formatting errors — return the failure as-is.
@@ -5923,7 +5945,20 @@ class BasePlatformAdapter(ABC):
                 error_str = result.error or ""
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
-                if not (result.retryable or self._is_retryable_error(error_str)):
+                # The failure kind can change between attempts (a transient
+                # error may later surface as a flood/rate-limit, or a
+                # rate-limited send may give way to a permanent formatting
+                # error). Reclassify from the refreshed error_str on every
+                # retry instead of reusing the first attempt's classification,
+                # so the break/continue decision below reflects the current
+                # attempt — not a stale value.
+                is_rate_limited = self._is_rate_limited_error(error_str)
+                if not (
+                    result.retryable
+                    or is_rate_limited
+                    or result.retry_after is not None
+                    or self._is_retryable_error(error_str)
+                ):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
                 # All retries exhausted (loop completed without break) — notify user
@@ -5938,7 +5973,18 @@ class BasePlatformAdapter(ABC):
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
-        # Non-network / post-retry formatting failure: try plain text as fallback
+        # Non-network / post-retry formatting failure: try plain text as fallback.
+        # Never attempt a truncating plain-text fallback for a rate-limited /
+        # flood-capped send: it re-enters the server ban and would drop the tail
+        # of the message.  Return the typed failure so the delivery ledger owns
+        # redelivery after the cooldown instead.
+        if self._is_rate_limited_error(error_str):
+            logger.error(
+                "[%s] Rate-limited send not retried via plain-text fallback; "
+                "returning typed failure for redelivery: %s",
+                self.name, error_str,
+            )
+            return result
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,

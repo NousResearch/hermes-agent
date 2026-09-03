@@ -27,17 +27,23 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import ntpath
 import re
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
 import yaml
 
 from hermes_constants import get_hermes_home, get_optional_mcps_dir
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli._subprocess_compat import (
+    IS_WINDOWS,
+    noninteractive_git_env,
+    resolve_node_command,
+)
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
     load_config,
@@ -465,15 +471,185 @@ def _install_root() -> Path:
     return root
 
 
+def _split_windows_commandline(command: str) -> List[str]:
+    """Split a native Windows command line without applying POSIX escapes.
+
+    This follows the Microsoft C runtime backslash-and-double-quote rules used
+    by Python's Windows subprocess serialization. Ordinary path backslashes
+    remain literal; a backslash only escapes a quote immediately after it, and
+    paired quotes inside quoted text produce one literal quote.
+    """
+    argv: List[str] = []
+    index = 0
+    length = len(command)
+    while index < length:
+        while index < length and command[index] in " \t":
+            index += 1
+        if index == length:
+            break
+
+        value: List[str] = []
+        quoted = False
+        while index < length:
+            char = command[index]
+            if char in " \t" and not quoted:
+                break
+            if char == "\\":
+                start = index
+                while index < length and command[index] == "\\":
+                    index += 1
+                backslashes = index - start
+                if index < length and command[index] == '"':
+                    value.extend("\\" * (backslashes // 2))
+                    if backslashes % 2:
+                        value.append('"')
+                        index += 1
+                    elif (
+                        quoted
+                        and index + 1 < length
+                        and command[index + 1] == '"'
+                    ):
+                        value.append('"')
+                        index += 2
+                    else:
+                        quoted = not quoted
+                        index += 1
+                else:
+                    value.extend("\\" * backslashes)
+                continue
+            if char == '"':
+                if quoted and index + 1 < length and command[index + 1] == '"':
+                    value.append('"')
+                    index += 2
+                else:
+                    quoted = not quoted
+                    index += 1
+                continue
+            value.append(char)
+            index += 1
+
+        if quoted:
+            raise ValueError("unbalanced quotation in command line")
+        argv.append("".join(value))
+        while index < length and command[index] in " \t":
+            index += 1
+    return argv
+
+
+def _split_bootstrap_command(command: str) -> List[str]:
+    if IS_WINDOWS:
+        return _split_windows_commandline(command)
+    return shlex.split(command)
+
+
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
-    Each command runs through the shell (so `&&` etc. work). The output is
-    streamed to the user's terminal for visibility.
+    Commands use native Windows command-line quoting on Windows and ``shlex``
+    quoting on POSIX, then run as argv without a shell. Shell operators are
+    therefore literal arguments, not executable syntax; catalog entries that
+    need multiple steps must declare separate commands. Output is streamed to
+    the user's terminal for visibility.
     """
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        try:
+            argv = _split_bootstrap_command(cmd)
+        except ValueError as exc:
+            raise CatalogError(f"malformed bootstrap command: {cmd!r}") from exc
+        if not argv or not argv[0].strip():
+            raise CatalogError("bootstrap command is empty")
+        if IS_WINDOWS:
+            allowed_root = None
+            executable = PureWindowsPath(argv[0])
+            bootstrap_windows = PureWindowsPath(
+                ntpath.normpath(str(PureWindowsPath(cwd)))
+            )
+            if (
+                executable.drive
+                and not executable.root
+                and executable.drive.casefold() != bootstrap_windows.drive.casefold()
+            ):
+                raise CatalogError(
+                    "drive-relative bootstrap executable uses a different drive "
+                    f"from the bootstrap directory: {argv[0]}"
+                )
+            if (
+                executable.drive
+                and not executable.root
+                and executable.drive.casefold() == bootstrap_windows.drive.casefold()
+            ):
+                child_windows = PureWindowsPath(
+                    ntpath.normpath(str(bootstrap_windows.joinpath(executable)))
+                )
+                try:
+                    child_windows.relative_to(bootstrap_windows)
+                except ValueError as exc:
+                    raise CatalogError(
+                        "relative bootstrap executable resolves outside "
+                        f"bootstrap directory: {argv[0]}"
+                    ) from exc
+                if isinstance(cwd, Path):
+                    bootstrap_dir = cwd.resolve()
+                    child_executable = Path(child_windows).resolve()
+                    try:
+                        child_executable.relative_to(bootstrap_dir)
+                    except ValueError as exc:
+                        raise CatalogError(
+                            "relative bootstrap executable resolves outside "
+                            f"bootstrap directory: {argv[0]}"
+                        ) from exc
+                    argv[0] = str(child_executable)
+                    allowed_root = bootstrap_dir
+                else:
+                    argv[0] = str(child_windows)
+            elif not executable.anchor and ("/" in argv[0] or "\\" in argv[0]):
+                bootstrap_dir = cwd.resolve()
+                child_executable = cwd.joinpath(*executable.parts).resolve()
+                try:
+                    child_executable.relative_to(bootstrap_dir)
+                except ValueError as exc:
+                    raise CatalogError(
+                        "relative bootstrap executable resolves outside "
+                        f"bootstrap directory: {argv[0]}"
+                    ) from exc
+                argv[0] = str(child_executable)
+                allowed_root = bootstrap_dir
+            elif executable.anchor and not executable.is_absolute():
+                child_executable = PureWindowsPath(cwd).joinpath(executable)
+                if child_executable.is_absolute():
+                    argv[0] = str(child_executable)
+            resolve_kwargs: Dict[str, Any] = {"cwd": cwd, "search_cwd": False}
+            if allowed_root is not None:
+                resolve_kwargs["allowed_root"] = allowed_root
+            try:
+                argv = resolve_node_command(
+                    argv[0],
+                    argv[1:],
+                    **resolve_kwargs,
+                )
+            except ValueError as exc:
+                raise CatalogError(
+                    "relative bootstrap executable resolves outside "
+                    f"bootstrap directory: {argv[0]}"
+                ) from exc
+            if argv[0].lower().endswith((".cmd", ".bat")):
+                # Unresolved batch files still cross an implicit cmd.exe
+                # boundary. Node shims are converted to native node argv by
+                # resolve_node_command; reject every other batch launcher.
+                raise CatalogError(
+                    "bootstrap command resolves to a Windows batch launcher; "
+                    "use a native executable or Node package entrypoint"
+                )
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=str(cwd),
+                shell=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, ValueError) as exc:
+            raise CatalogError(f"bootstrap step failed to start: {cmd}") from exc
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"

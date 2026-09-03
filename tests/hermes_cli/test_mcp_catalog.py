@@ -7,8 +7,13 @@ launch an MCP is mocked.
 
 from __future__ import annotations
 
+import os
 import re
-from pathlib import Path
+import shlex
+import subprocess
+import sys
+from pathlib import Path, PureWindowsPath
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -897,3 +902,745 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+    def test_all_shipped_bootstrap_commands_are_native_argv(self, monkeypatch):
+        """Keep shell syntax and Windows batch launchers out of the catalog."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import (
+            IS_WINDOWS,
+            _catalog_root,
+            _parse_manifest,
+            _split_bootstrap_command,
+        )
+
+        problems = []
+        for manifest in _catalog_root().glob("*/manifest.yaml"):
+            entry = _parse_manifest(manifest)
+            for command in entry.install.bootstrap if entry.install else ():
+                argv = _split_bootstrap_command(command)
+                has_shell_syntax = any(char in command for char in "&;|<>")
+                if not argv or has_shell_syntax:
+                    problems.append(f"{entry.name}: shell syntax in {command!r}")
+                elif IS_WINDOWS and argv[0].casefold().endswith((".cmd", ".bat")):
+                    problems.append(f"{entry.name}: batch launcher in {command!r}")
+
+        assert not problems, "unsafe catalog bootstrap commands:\n" + "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap execution
+# ---------------------------------------------------------------------------
+
+
+class TestRunBootstrap:
+    def test_shell_metacharacters_are_literal_arguments(self, tmp_path):
+        """A bootstrap command cannot use shell redirection as a second command."""
+        from hermes_cli.mcp_catalog import _run_bootstrap
+
+        marker = tmp_path / "shell-redirection-ran"
+        python_argv = [sys.executable, "-c", "print('bootstrap')"]
+        command = (
+            subprocess.list2cmdline(python_argv)
+            if os.name == "nt"
+            else shlex.join(python_argv)
+        )
+
+        _run_bootstrap(tmp_path, [f'{command} > "{marker}"'])
+
+        assert not marker.exists()
+
+    def test_runs_each_command_as_argv_without_a_shell(self, tmp_path, monkeypatch):
+        import hermes_cli.mcp_catalog as mc
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+        monkeypatch.setattr(mc.subprocess, "run", fake_run)
+
+        mc._run_bootstrap(tmp_path, ['python -m pip install "demo package"'])
+
+        assert calls == [
+            (
+                ["python", "-m", "pip", "install", "demo package"],
+                {
+                    "cwd": str(tmp_path),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    def test_posix_relative_executable_keeps_child_cwd_resolution(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        calls = []
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(tmp_path, [".venv/bin/pip install demo"])
+
+        assert calls == [
+            (
+                [".venv/bin/pip", "install", "demo"],
+                {
+                    "cwd": str(tmp_path),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            [r"C:\work\python.exe", r"C:\work\demo.py"],
+            [
+                r"C:\Program Files\Python\python.exe",
+                r"C:\work\demo.py",
+                'say "hello"',
+                "trailing\\",
+            ],
+        ],
+    )
+    def test_windows_commandline_round_trips_native_quoting(self, argv):
+        from hermes_cli.mcp_catalog import _split_windows_commandline
+
+        assert _split_windows_commandline(subprocess.list2cmdline(argv)) == argv
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ('tool.exe "say ""hello"""', ["tool.exe", 'say "hello"']),
+            (
+                r'tool.exe "prefix\\""suffix"',
+                ["tool.exe", 'prefix\\"suffix'],
+            ),
+        ],
+    )
+    def test_windows_commandline_preserves_crt_paired_quotes(
+        self, command, expected
+    ):
+        from hermes_cli.mcp_catalog import _split_windows_commandline
+
+        assert _split_windows_commandline(command) == expected
+
+    def test_windows_bootstrap_preserves_crt_paired_quotes(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        calls = []
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda name, args, *, cwd, search_cwd: [name, *args],
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(tmp_path, ['tool.exe "say ""hello"""'])
+
+        assert calls == [
+            (
+                ["tool.exe", 'say "hello"'],
+                {
+                    "cwd": str(tmp_path),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    def test_shipped_bootstrap_commands_keep_ordinary_argv_shape(self, monkeypatch):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+
+        assert mc._split_bootstrap_command("python3 -m venv .venv") == [
+            "python3",
+            "-m",
+            "venv",
+            ".venv",
+        ]
+        assert mc._split_bootstrap_command(
+            ".venv/bin/pip install -r requirements.txt"
+        ) == [".venv/bin/pip", "install", "-r", "requirements.txt"]
+
+    def test_malformed_command_raises_catalog_error(self, tmp_path, monkeypatch):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+
+        with pytest.raises(mc.CatalogError, match="malformed bootstrap command"):
+            mc._run_bootstrap(tmp_path, ['python -c "unterminated'])
+
+    def test_windows_malformed_command_raises_catalog_error(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+
+        with pytest.raises(mc.CatalogError, match="malformed bootstrap command"):
+            mc._run_bootstrap(tmp_path, ['python -c "unterminated'])
+
+    @pytest.mark.parametrize("command", ["", '""', '"   "'])
+    def test_empty_executable_raises_catalog_error(
+        self, tmp_path, monkeypatch, command
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("empty executable was launched"),
+        )
+
+        with pytest.raises(mc.CatalogError, match="bootstrap command is empty"):
+            mc._run_bootstrap(tmp_path, [command])
+
+    def test_empty_non_executable_argument_is_preserved(self, tmp_path, monkeypatch):
+        import hermes_cli.mcp_catalog as mc
+
+        calls = []
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(tmp_path, ['python ""'])
+
+        assert calls == [
+            (
+                ["python", ""],
+                {
+                    "cwd": str(tmp_path),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    def test_start_failure_raises_catalog_error(self, tmp_path, monkeypatch):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+
+        def fail_to_start(*args, **kwargs):
+            raise FileNotFoundError("missing executable")
+
+        monkeypatch.setattr(mc.subprocess, "run", fail_to_start)
+
+        with pytest.raises(mc.CatalogError, match="bootstrap step failed to start"):
+            mc._run_bootstrap(tmp_path, ["missing-command --version"])
+
+    def test_invalid_process_argv_raises_catalog_error(self, tmp_path, monkeypatch):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+
+        def reject_argv(*args, **kwargs):
+            raise ValueError("embedded null byte")
+
+        monkeypatch.setattr(mc.subprocess, "run", reject_argv)
+
+        with pytest.raises(mc.CatalogError, match="bootstrap step failed to start"):
+            mc._run_bootstrap(tmp_path, ["invalid-command --version"])
+
+    def test_nonzero_exit_names_original_command(self, tmp_path, monkeypatch):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: subprocess.CompletedProcess(argv, 7),
+        )
+
+        with pytest.raises(mc.CatalogError, match=r"exit 7.*python -m pip"):
+            mc._run_bootstrap(tmp_path, ["python -m pip"])
+
+    def test_windows_resolves_node_launcher_without_a_shell(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        calls = []
+        resolve_calls = []
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda name, args, *, cwd, search_cwd: resolve_calls.append(
+                (name, args, cwd, search_cwd)
+            )
+            or [
+                r"C:\Program Files\nodejs\node.exe",
+                r"C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js",
+                *args,
+            ],
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(
+            tmp_path,
+            [r'npm install pkg@^1.2.3 "100% (stable)!" & echo'],
+        )
+
+        assert resolve_calls == [
+            (
+                "npm",
+                ["install", "pkg@^1.2.3", "100% (stable)!", "&", "echo"],
+                tmp_path,
+                False,
+            )
+        ]
+        assert calls == [
+            (
+                [
+                    r"C:\Program Files\nodejs\node.exe",
+                    r"C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js",
+                    "install",
+                    "pkg@^1.2.3",
+                    "100% (stable)!",
+                    "&",
+                    "echo",
+                ],
+                {
+                    "cwd": str(tmp_path),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "executable",
+        [r".venv\Scripts\pip.exe", ".venv/Scripts/pip.exe"],
+    )
+    def test_windows_resolves_relative_executable_against_bootstrap_cwd(
+        self, tmp_path, monkeypatch, executable
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        resolve_calls = []
+        run_calls = []
+        expected_executable = str(
+            (tmp_path / ".venv" / "Scripts" / "pip.exe").resolve()
+        )
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda name, args, *, cwd, search_cwd, allowed_root: resolve_calls.append(
+                (name, args, cwd, search_cwd, allowed_root)
+            )
+            or [name, *args],
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                run_calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(
+            tmp_path,
+            [f"{executable} install -r requirements.txt"],
+        )
+
+        expected_argv = [
+            expected_executable,
+            "install",
+            "-r",
+            "requirements.txt",
+        ]
+        assert resolve_calls == [
+            (expected_executable, expected_argv[1:], tmp_path, False, tmp_path.resolve())
+        ]
+        assert run_calls == [
+            (
+                expected_argv,
+                {
+                    "cwd": str(tmp_path),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    def test_windows_resolves_extensionless_relative_executable_with_pathext(
+        self, tmp_path, monkeypatch
+    ):
+        """Path-qualified commands retain cmd.exe's PATHEXT selection."""
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli import _subprocess_compat as sc
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        executable_com = bin_dir / "tool.COM"
+        executable_exe = bin_dir / "tool.EXE"
+        executable_com.touch()
+        executable_exe.touch()
+        run_calls = []
+
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                run_calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(tmp_path, [r"bin\tool --version"])
+
+        assert run_calls == [
+            (
+                [str(executable_com.resolve()), "--version"],
+                {
+                    "cwd": str(tmp_path),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "executable",
+        [
+            r"..\outside.exe",
+            "../outside.exe",
+            r".venv\Scripts\..\..\..\outside.exe",
+            ".venv/Scripts/../../../outside.exe",
+        ],
+    )
+    def test_windows_rejects_relative_executable_escaping_bootstrap_cwd(
+        self, tmp_path, monkeypatch, executable
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda *args, **kwargs: pytest.fail("escaping executable was resolved"),
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("escaping executable was launched"),
+        )
+
+        with pytest.raises(mc.CatalogError, match="outside bootstrap directory"):
+            mc._run_bootstrap(tmp_path, [f"{executable} --version"])
+
+    def test_windows_rejects_relative_executable_symlink_escape(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        outside = tmp_path.parent / f"{tmp_path.name}-outside"
+        outside.mkdir()
+        try:
+            (tmp_path / "bin").symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda *args, **kwargs: pytest.fail("escaping executable was resolved"),
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("escaping executable was launched"),
+        )
+
+        with pytest.raises(mc.CatalogError, match="outside bootstrap directory"):
+            mc._run_bootstrap(tmp_path, [r"bin\tool.exe --version"])
+
+    def test_windows_rejects_pathext_candidate_symlink_escape(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli import _subprocess_compat as sc
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.EXE"
+        outside.touch()
+        try:
+            (bin_dir / "tool.EXE").symlink_to(outside)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        monkeypatch.setenv("PATHEXT", ".EXE")
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("escaping executable was launched"),
+        )
+
+        with pytest.raises(mc.CatalogError, match="outside bootstrap directory"):
+            mc._run_bootstrap(tmp_path, [r"bin\tool --version"])
+
+    @pytest.mark.parametrize(
+        ("executable", "expected"),
+        [
+            (r"\tools\tool.exe", r"D:\tools\tool.exe"),
+            (r"D:tools\tool.exe", r"D:\bootstrap\repo\tools\tool.exe"),
+        ],
+    )
+    def test_windows_resolves_drive_relative_executable_against_bootstrap_cwd(
+        self, monkeypatch, executable, expected
+    ):
+        """Root/same-drive paths inherit the bootstrap child's drive context."""
+        import hermes_cli.mcp_catalog as mc
+
+        bootstrap_cwd = cast(Path, PureWindowsPath(r"D:\bootstrap\repo"))
+        resolve_calls = []
+        run_calls = []
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda name, args, *, cwd, search_cwd: resolve_calls.append(
+                (name, args, cwd, search_cwd)
+            )
+            or [name, *args],
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                run_calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(bootstrap_cwd, [f"{executable} --version"])
+
+        assert resolve_calls == [(expected, ["--version"], bootstrap_cwd, False)]
+        assert run_calls == [
+            (
+                [expected, "--version"],
+                {
+                    "cwd": str(bootstrap_cwd),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    def test_windows_rejects_drive_relative_executable_escaping_bootstrap_cwd(
+        self, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        bootstrap_cwd = cast(Path, PureWindowsPath(r"D:\bootstrap\repo"))
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda *args, **kwargs: pytest.fail("escaping executable was resolved"),
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("escaping executable was launched"),
+        )
+
+        with pytest.raises(mc.CatalogError, match="outside bootstrap directory"):
+            mc._run_bootstrap(
+                bootstrap_cwd,
+                [r"D:..\..\outside.exe --version"],
+            )
+
+    def test_windows_rejects_drive_relative_executable_on_different_drive(
+        self, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        bootstrap_cwd = cast(Path, PureWindowsPath(r"D:\bootstrap\repo"))
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda *args, **kwargs: pytest.fail(
+                "different-drive relative executable was resolved"
+            ),
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail(
+                "different-drive relative executable was launched"
+            ),
+        )
+
+        with pytest.raises(mc.CatalogError, match="different drive"):
+            mc._run_bootstrap(
+                bootstrap_cwd,
+                [r"C:tools\tool.exe --version"],
+            )
+
+    @pytest.mark.parametrize(
+        "executable",
+        [r"D:\tools\tool.exe", r"\\server\share\tools\tool.exe"],
+    )
+    def test_windows_preserves_fully_qualified_executable(
+        self, monkeypatch, executable
+    ):
+        """Drive-absolute and UNC executable spellings are cwd-independent."""
+        import hermes_cli.mcp_catalog as mc
+
+        bootstrap_cwd = cast(Path, PureWindowsPath(r"D:\bootstrap\repo"))
+        resolve_calls = []
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda name, args, *, cwd, search_cwd: resolve_calls.append(
+                (name, args, cwd, search_cwd)
+            )
+            or [name, *args],
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0),
+        )
+
+        mc._run_bootstrap(bootstrap_cwd, [f"{executable} --version"])
+
+        assert resolve_calls == [(executable, ["--version"], bootstrap_cwd, False)]
+
+    def test_windows_preserves_bare_executable_for_path_resolution(
+        self, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        bootstrap_cwd = cast(Path, PureWindowsPath(r"D:\bootstrap\repo"))
+        resolve_calls = []
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda name, args, *, cwd, search_cwd: resolve_calls.append(
+                (name, args, cwd, search_cwd)
+            )
+            or [name, *args],
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0),
+        )
+
+        mc._run_bootstrap(bootstrap_cwd, ["pip install demo"])
+
+        assert resolve_calls == [
+            ("pip", ["install", "demo"], bootstrap_cwd, False)
+        ]
+
+    def test_windows_shipped_n8n_python_ignores_clone_local_executable(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "n8n"
+        path_dir = tmp_path / "python-bin"
+        for directory in (bootstrap_cwd, path_dir):
+            directory.mkdir()
+        attacker = bootstrap_cwd / "python3.EXE"
+        safe_python = path_dir / "python3.EXE"
+        attacker.touch()
+        safe_python.touch()
+
+        run_calls = []
+        monkeypatch.setenv("PATH", str(path_dir))
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda argv, **kwargs: (
+                run_calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 0)
+            ),
+        )
+
+        mc._run_bootstrap(bootstrap_cwd, ["python3 -m venv .venv"])
+
+        assert run_calls == [
+            (
+                [str(safe_python), "-m", "venv", ".venv"],
+                {
+                    "cwd": str(bootstrap_cwd),
+                    "shell": False,
+                    "stdin": subprocess.DEVNULL,
+                },
+            )
+        ]
+
+    def test_windows_rejects_unresolved_batch_launcher(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            mc,
+            "resolve_node_command",
+            lambda name, args, *, cwd, search_cwd: [
+                r"C:\Program Files\nodejs\npm.cmd",
+                *args,
+            ],
+        )
+        monkeypatch.setattr(
+            mc.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("unsafe batch command was launched"),
+        )
+
+        with pytest.raises(mc.CatalogError, match="Windows batch launcher"):
+            mc._run_bootstrap(tmp_path, ["legacy.cmd install"])

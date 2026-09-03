@@ -1094,6 +1094,8 @@ agent:
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
+**Upstream-capacity backoff:** When a provider reports that the model is "temporarily at capacity upstream" (e.g. Nous Portal's HTTP 429 capacity message), Hermes automatically extends the retry ceiling to 10 and switches to a longer, progressively increasing backoff schedule (10s → 30s → 60s → 120s → 180s → 300s). This ensures the agent persists patiently through transient upstream saturation that typically clears in 30–180 seconds, rather than giving up after ~14 seconds with the default profile.
+
 ## Wall-Clock Run Budget
 
 Separate from the iteration budget, you can give each conversation run an optional **wall-clock** budget. This is designed for one-shot and eval-harness invocations that run under a hard external ceiling (e.g. a 900-second per-task limit): without it, a run can time out with the work essentially done — one generation short of emitting the final answer, or stuck in a single hung provider call.

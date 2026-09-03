@@ -206,3 +206,85 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
     """
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+# ── Upstream-capacity (model "temporarily at capacity") backoff ──────────
+#
+# Nous Portal (and some other aggregators) return HTTP 429 with a message like
+# "The requested model is temporarily at capacity upstream. This is not your
+# API key's rate limit — please retry shortly."  The error itself says it is
+# transient — the upstream serving that model is saturated and should recover
+# in seconds to a few minutes.
+#
+# The default retry profile (max_retries=3, jittered_backoff with base_delay=2s
+# and max_delay=60s) gives up in ~14s — far too fast for an upstream capacity
+# stall that typically clears in 30s–180s.  Users watch the agent burn 3 quick
+# retries and abort, even though the model is healthy and would have succeeded
+# on a 4th attempt a minute later.
+#
+# The functions below extend both the retry ceiling and the backoff schedule so
+# the agent persists patiently through upstream capacity windows.  The Z.AI
+# Coding overload pattern was the template: a provider-specific long-backoff
+# table walked by an expanded ceiling.
+_UPSTREAM_CAPACITY_LONG_BACKOFF = (10.0, 30.0, 60.0, 120.0, 180.0, 300.0)
+_UPSTREAM_CAPACITY_SHORT_ATTEMPTS = 3
+
+
+def is_upstream_capacity_error(*, error: Any) -> bool:
+    """Return True for provider 429s reporting upstream model capacity.
+
+    Matches the verbatim "temporarily at capacity upstream" phrasing used by
+    Nous Portal. This is intentionally narrow: generic 429 bodies that happen
+    to contain "at capacity" or "over capacity" (e.g. account-level quota
+    exhaustion, credential-pool rate limits) are excluded, because those
+    benefit from an immediate provider failover rather than a patient
+    multi-minute retry against the same saturated endpoint.
+    """
+    status = getattr(error, "status_code", None)
+    if status != 429:
+        return False
+    text = _error_text(error)
+    if not text:
+        return False
+    # "temporarily at capacity upstream" — Nous Portal's exact wording.
+    return "temporarily at capacity upstream" in text
+
+
+def upstream_capacity_retry_ceiling(
+    short_attempts: int = _UPSTREAM_CAPACITY_SHORT_ATTEMPTS,
+) -> int:
+    """Retry-loop ceiling for the full upstream-capacity backoff schedule.
+
+    Same rationale as ``zai_coding_overload_retry_ceiling``: the loop's
+    give-up check (``retry_count >= ceiling``) runs before the backoff for
+    that attempt is computed, so the ceiling must sit one past the final
+    long-backoff entry for every tier to execute.
+    """
+    return short_attempts + len(_UPSTREAM_CAPACITY_LONG_BACKOFF) + 1
+
+
+def upstream_capacity_backoff(attempt: int) -> float:
+    """Compute the jittered delay for an upstream-capacity 429 retry.
+
+    ``attempt`` is 1-based, matching the retry loop's logged attempt number.
+    Walks the short exponential schedule for the first
+    ``_UPSTREAM_CAPACITY_SHORT_ATTEMPTS`` attempts (so the first few
+    retries stay snappy), then switches to the long table
+    (10s → 30s → 60s → 120s → 180s → 300s) with light jitter.
+
+    This is a pure schedule walker — it does not inspect the error.  The
+    caller has already classified the error as an upstream-capacity 429.
+    """
+    if attempt <= _UPSTREAM_CAPACITY_SHORT_ATTEMPTS:
+        # Short tier: jittered exponential, 2s base doubling, capped at 60s.
+        return jittered_backoff(
+            attempt, base_delay=2.0, max_delay=60.0, jitter_ratio=0.5
+        )
+    idx = min(
+        max(0, attempt - _UPSTREAM_CAPACITY_SHORT_ATTEMPTS - 1),
+        len(_UPSTREAM_CAPACITY_LONG_BACKOFF) - 1,
+    )
+    base_delay = _UPSTREAM_CAPACITY_LONG_BACKOFF[idx]
+    return jittered_backoff(
+        1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2
+    )

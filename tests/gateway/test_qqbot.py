@@ -438,6 +438,112 @@ class TestWaitForReconnection:
         assert result.success
         assert result.message_id == "msg_123"
 
+    @pytest.mark.asyncio
+    async def test_expired_reply_anchor_falls_back_to_standalone_message(self):
+        """An expired QQ reply anchor must not prevent the final result."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["group-1"] = "group"
+        calls = []
+
+        async def fake_api_request(method, path, body=None, *, timeout=None):
+            calls.append(body)
+            if body.get("msg_id"):
+                raise RuntimeError(
+                    "QQ Bot API error [400] /v2/groups/group-1/messages: "
+                    "回复消息msg_id已过期"
+                )
+            return {"id": "standalone-msg-1"}
+
+        adapter._api_request = fake_api_request
+
+        result = await adapter.send(
+            "group-1", "任务已完成", reply_to="expired-msg-1"
+        )
+
+        assert result.success
+        assert result.message_id == "standalone-msg-1"
+        assert len(calls) == 2
+        assert calls[0]["msg_id"] == "expired-msg-1"
+        assert "msg_id" not in calls[1]
+
+    @pytest.mark.asyncio
+    async def test_keyboard_expired_reply_anchor_falls_back_to_standalone_message(self):
+        """Keyboard messages also need the standalone fallback."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["group-1"] = "group"
+        calls = []
+
+        async def fake_api_request(method, path, body=None, *, timeout=None):
+            calls.append(body)
+            if body.get("msg_id"):
+                raise RuntimeError("QQ Bot API error [400]: msg_id expired")
+            return {"id": "keyboard-standalone-msg-1"}
+
+        adapter._api_request = fake_api_request
+        keyboard = SimpleNamespace(to_dict=lambda: {"content": {"rows": []}})
+
+        result = await adapter.send_with_keyboard(
+            "group-1", "Approve?", keyboard, reply_to="expired-msg-1"
+        )
+
+        assert result.success
+        assert result.message_id == "keyboard-standalone-msg-1"
+        assert len(calls) == 2
+        assert calls[0]["msg_id"] == "expired-msg-1"
+        assert "msg_id" not in calls[1]
+        assert calls[1]["keyboard"] == {"content": {"rows": []}}
+
+    @pytest.mark.asyncio
+    async def test_c2c_keyboard_expired_reply_anchor_falls_back_to_standalone_message(self):
+        """C2C keyboard messages must preserve the keyboard on fallback too."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["user-1"] = "c2c"
+        calls = []
+
+        async def fake_api_request(method, path, body=None, *, timeout=None):
+            calls.append((path, body))
+            if body.get("msg_id"):
+                raise RuntimeError("QQ Bot API error [400]: msg_id expired")
+            return {"id": "c2c-keyboard-standalone-msg-1"}
+
+        adapter._api_request = fake_api_request
+        keyboard = SimpleNamespace(to_dict=lambda: {"content": {"rows": []}})
+
+        result = await adapter.send_with_keyboard(
+            "user-1", "Approve?", keyboard, reply_to="expired-msg-1"
+        )
+
+        assert result.success
+        assert result.message_id == "c2c-keyboard-standalone-msg-1"
+        assert [path for path, _ in calls] == [
+            "/v2/users/user-1/messages",
+            "/v2/users/user-1/messages",
+        ]
+        assert calls[0][1]["msg_id"] == "expired-msg-1"
+        assert "msg_id" not in calls[1][1]
+        assert calls[1][1]["keyboard"] == {"content": {"rows": []}}
+
+    @pytest.mark.parametrize(
+        "error_text",
+        ["回复消息msg_id已过期", "QQ Bot API error: msg_id expired"],
+    )
+    def test_expired_reply_error_detection_supports_qq_error_variants(self, error_text):
+        from gateway.platforms.qqbot import QQAdapter
+
+        assert QQAdapter._is_expired_reply_error(RuntimeError(error_text))
+
+    def test_expired_reply_error_detection_rejects_unrelated_errors(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        assert not QQAdapter._is_expired_reply_error(RuntimeError("msg_id missing"))
+        assert not QQAdapter._is_expired_reply_error(RuntimeError("invalid request"))
+
 
 # ---------------------------------------------------------------------------
 # Regression for #78183: httpx timeout empty-string defeats _is_timeout_error

@@ -489,7 +489,7 @@ _URL_USERINFO_RE = re.compile(
 # the key is decoded separately for classification. Values stop at query or
 # fragment pair separators; both ``&`` and ``;`` are valid in deployed URLs.
 _STRICT_URL_PARAM_RE = re.compile(
-    r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*)"
+    r"([?#&;])([A-Za-z0-9_.~+%\-\[\]]+)=([^#&;\s\"'<>]*)"
 )
 
 # Match userinfo in both absolute (``scheme://user:pass@host``) and
@@ -724,7 +724,9 @@ def _canonical_url_param_name(name: str) -> str:
         if next_value == decoded:
             break
         decoded = next_value
-    return decoded.casefold().replace("-", "_")
+    canonical = decoded.casefold().replace("-", "_")
+    # Treat PHP/Rails-style array keys as their base parameter name.
+    return canonical.split("[", 1)[0]
 
 
 def _redact_strict_url_credentials(text: str) -> str:

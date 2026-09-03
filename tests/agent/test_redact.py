@@ -529,6 +529,16 @@ class TestStrictUrlCredentialRedaction:
                 "/resume?token=***;view=public",
             ),
             (
+                "https://x.test/cb?access_token[]=BRACKET_SECRET&view=public",
+                "BRACKET_SECRET",
+                "https://x.test/cb?access_token[]=***&view=public",
+            ),
+            (
+                "https://x.test/cb?access_token%5B%5D=ENC_BRACKET&view=public",
+                "ENC_BRACKET",
+                "https://x.test/cb?access_token%5B%5D=***&view=public",
+            ),
+            (
                 "//user:NET_SECRET@x.test/path",
                 "NET_SECRET",
                 "//user:***@x.test/path",
@@ -546,7 +556,10 @@ class TestStrictUrlCredentialRedaction:
         assert result == expected
 
     def test_similarly_named_public_params_remain_unchanged(self):
-        text = "/metrics?token_count=17&session_id=public"
+        text = (
+            "/metrics?token_count=17&session_id=public&"
+            "token_count[]=23&access_tokenized[]=public"
+        )
         assert redact_sensitive_text(text, redact_url_credentials=True) == text
 
 

@@ -28,17 +28,7 @@ prints on first boot:
 npx supermemory local
 ```
 
-Before running `hermes memory setup`, add the local endpoint to
-`$HERMES_HOME/supermemory.json`:
-
-```json
-{
-  "base_url": "http://localhost:6767"
-}
-```
-
-Then run `hermes memory setup` and enter the local server's API key. Configuring
-the endpoint first ensures the setup connection probe also stays local.
+Then run `hermes memory setup`, select `supermemory`, and enter your API key and the local server's base URL (e.g. `http://localhost:6767`) when prompted.
 
 ## Config
 

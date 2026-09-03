@@ -576,11 +576,12 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return bool(get_secret("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
-        # Only prompt for the API key during `hermes memory setup`.
-        # All other options are documented for $HERMES_HOME/supermemory.json
+        # We explicitly prompt for API key and base_url during setup.
+        # Other options are documented for $HERMES_HOME/supermemory.json
         # or the SUPERMEMORY_CONTAINER_TAG env var.
         return [
             {"key": "api_key", "description": "Supermemory API key", "secret": True, "required": True, "env_var": "SUPERMEMORY_API_KEY", "url": _API_KEY_URL},
+            {"key": "base_url", "description": "API Base URL (Leave blank for Cloud, or e.g. http://localhost:6767 for local)", "secret": False, "required": False},
         ]
 
     def save_config(self, values, hermes_home):
@@ -616,6 +617,17 @@ class SupermemoryMemoryProvider(MemoryProvider):
             val = _prompt("Supermemory API key", secret=True)
         if val:
             env_writes["SUPERMEMORY_API_KEY"] = val
+
+        existing_url = _load_supermemory_config(hermes_home).get("base_url", "")
+        if existing_url:
+            url_val = _prompt(f"Supermemory base URL (current: {existing_url}, blank to keep, 'clear' to reset)", secret=False)
+            if url_val:
+                new_url = "" if url_val.strip().lower() == "clear" else url_val.strip()
+                _save_supermemory_config({"base_url": new_url}, hermes_home)
+        else:
+            url_val = _prompt("Supermemory base URL (Leave blank for Cloud, or e.g. http://localhost:6767 for local)", secret=False)
+            if url_val:
+                _save_supermemory_config({"base_url": url_val.strip()}, hermes_home)
 
         if not isinstance(config.get("memory"), dict):
             config["memory"] = {}

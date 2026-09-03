@@ -1873,7 +1873,11 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     return None
 
 
-def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+def validate_media_delivery_path(
+    path: str,
+    session_key: str = "",
+    rejection_reason: Optional[dict] = None,
+) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
     Default mode (single-user / private gateway): accept any existing regular
@@ -1892,24 +1896,38 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     host's secrets to that same user.
 
     Symlinks are resolved before any containment / denylist check.
+
+    *rejection_reason*, when a dict is passed, is populated with a
+    ``{"reason": str, "security": bool}`` entry describing WHY a rejected
+    path was rejected. Only six of the return paths are security
+    decisions; the most common rejection in practice — the file simply
+    does not exist, because the model emitted a MEDIA: tag for something
+    it never produced — is a correctness note, not a security event, and
+    the log wording must say so (#100074).
     """
-    if not path:
+    def _reject(reason: str, *, security: bool) -> Optional[str]:
+        if rejection_reason is not None:
+            rejection_reason["reason"] = reason
+            rejection_reason["security"] = security
         return None
+
+    if not path:
+        return _reject("empty path", security=False)
 
     candidate = str(path).strip()
     if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
         candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
-        return None
+        return _reject("empty after quote stripping", security=False)
 
     try:
         expanded = Path(os.path.expanduser(candidate))
     except (OSError, RuntimeError, ValueError):
         # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
-        return None
+        return _reject("path could not be expanded", security=False)
     if not expanded.is_absolute():
-        return None
+        return _reject("not an absolute path", security=False)
 
     # Docker agents emit MEDIA:/workspace/... (or other configured container
     # mount paths). Resolve those to host paths before the normal host-side
@@ -1921,10 +1939,10 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         try:
             resolved = expanded.resolve(strict=True)
         except (OSError, RuntimeError, ValueError):
-            return None
+            return _reject("file does not exist", security=False)
 
     if not resolved.is_file():
-        return None
+        return _reject("path is not a regular file", security=False)
 
     # Cache / operator allowlist is always honored — these are unconditionally
     # trusted regardless of mode.
@@ -1945,7 +1963,7 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     # ``MEDIA:~/.hermes/google_token.json``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):
-            return None
+            return _reject("denied credential/system path", security=True)
         return str(resolved)
 
     # Strict mode: fall back to recency-based trust for freshly-produced
@@ -1958,7 +1976,12 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         if _file_is_recently_produced(resolved, window):
             return str(resolved)
 
-    return None
+    if _path_under_denied_prefix(resolved):
+        return _reject("denied credential/system path (strict mode)", security=True)
+    return _reject(
+        "outside allowed roots and not recently produced (strict mode)",
+        security=True,
+    )
 
 
 # Neutralise control chars and the Unicode line separators (NEL, LS, PS) that
@@ -5151,9 +5174,15 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
-    def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+    def validate_media_delivery_path(
+        path: str,
+        session_key: str = "",
+        rejection_reason: Optional[dict] = None,
+    ) -> Optional[str]:
         """Return a resolved path if it is safe for native attachment upload."""
-        return validate_media_delivery_path(path, session_key=session_key)
+        return validate_media_delivery_path(
+            path, session_key=session_key, rejection_reason=rejection_reason
+        )
 
     @staticmethod
     def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
@@ -5161,11 +5190,30 @@ class BasePlatformAdapter(ABC):
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
-            safe_path = validate_media_delivery_path(raw, session_key=session_key)
+            why: dict = {}
+            safe_path = validate_media_delivery_path(
+                raw, session_key=session_key, rejection_reason=why
+            )
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
+                # Only two of the eight rejection causes are security
+                # decisions; the most common one — the file was never
+                # created — must not read like an exfiltration block
+                # (#100074).
+                if why.get("security"):
+                    logger.warning(
+                        "Skipping unsafe MEDIA directive path (%s): %s",
+                        why.get("reason", "unknown"),
+                        _log_safe_path(raw),
+                    )
+                else:
+                    logger.info(
+                        "Skipping MEDIA directive path — %s (not a security "
+                        "block): %s",
+                        why.get("reason", "unknown"),
+                        _log_safe_path(raw),
+                    )
         return safe_media
 
     @staticmethod
@@ -5174,11 +5222,26 @@ class BasePlatformAdapter(ABC):
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
-            safe_path = validate_media_delivery_path(raw, session_key=session_key)
+            why: dict = {}
+            safe_path = validate_media_delivery_path(
+                raw, session_key=session_key, rejection_reason=why
+            )
             if safe_path:
                 safe_paths.append(safe_path)
             else:
-                logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
+                if why.get("security"):
+                    logger.warning(
+                        "Skipping unsafe local file path (%s): %s",
+                        why.get("reason", "unknown"),
+                        _log_safe_path(raw),
+                    )
+                else:
+                    logger.info(
+                        "Skipping local file path — %s (not a security "
+                        "block): %s",
+                        why.get("reason", "unknown"),
+                        _log_safe_path(raw),
+                    )
         return safe_paths
 
 

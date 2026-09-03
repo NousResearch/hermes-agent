@@ -173,6 +173,73 @@ class TestCmdUpdateNpmLockfileCache:
         assert cache_roots == [shared_root, shared_root]
 
 
+class TestCmdUpdatePythonLockfileCache:
+    """Lockfile-hash skip for the uv-managed Python deps — mirrors the npm
+    cache (TestCmdUpdateNpmLockfileCache). ``uv pip install -e .[all]``
+    recompiles native extensions on every update even when uv.lock +
+    pyproject.toml are unchanged; a matching content digest arms the skip.
+    """
+
+    @staticmethod
+    def _cache_file(hermes_root, project_root):
+        cache_key = hashlib.sha256(str(project_root).encode()).hexdigest()[:12]
+        return hermes_root / f".py_lock_hash_{cache_key}"
+
+    def test_record_python_lockfile_hash(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "uv.lock").write_text('version = 1\n')
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = \"x\"\n")
+        (tmp_path / "venv").mkdir()
+
+        hm._record_python_lockfile_hash(tmp_path)
+
+        assert (
+            self._cache_file(tmp_path, tmp_path).read_text()
+            == hm._python_manifests_digest()
+        )
+
+    def test_pyproject_only_edit_defeats_skip(self, tmp_path, monkeypatch):
+        """pyproject.toml is part of the digest: editing it WITHOUT touching
+        uv.lock must re-trigger the install (same reviewer scenario as the
+        npm package.json-only edit, #61580)."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "uv.lock").write_text('version = 1\n')
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = \"x\"\n")
+        (tmp_path / "venv").mkdir()
+        hm._record_python_lockfile_hash(tmp_path)
+        assert hm._python_lockfile_changed(tmp_path) is False
+
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = \"y\"\n")
+        assert hm._python_lockfile_changed(tmp_path) is True
+
+    def test_missing_lockfile_never_skips(self, tmp_path, monkeypatch):
+        """A missing uv.lock must never arm the skip (conservative)."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = \"x\"\n")
+        (tmp_path / "venv").mkdir()
+        # A stale cache must not be honored without a lockfile.
+        self._cache_file(tmp_path, tmp_path).write_text("stale")
+        assert hm._python_lockfile_changed(tmp_path) is True
+
+    def test_missing_venv_never_skips(self, tmp_path, monkeypatch):
+        """A matching digest over a tree whose venv never landed must still
+        trigger the install (mirrors the npm node_modules guard)."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "uv.lock").write_text('version = 1\n')
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = \"x\"\n")
+        hm._record_python_lockfile_hash(tmp_path)
+        assert not (tmp_path / "venv").exists()
+        assert hm._python_lockfile_changed(tmp_path) is True
+
+
 class TestCmdUpdateTermuxUvBootstrap:
     """Regression tests for Termux-specific uv bootstrap behavior."""
 

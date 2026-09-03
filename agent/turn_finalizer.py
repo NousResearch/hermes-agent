@@ -750,8 +750,15 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
-    if agent._tool_guardrail_halt_decision is not None:
-        result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    # Prefer the live halt decision; fall back to the one preserved by the
+    # wrap-up path in conversation_loop, which clears the live attribute so
+    # the loop can make one final tool-free call. Without the fallback a
+    # wrapped-up halt would report no guardrail at all.
+    _guard_halt = agent._tool_guardrail_halt_decision or getattr(
+        agent, "_toolguard_last_halt_decision", None
+    )
+    if _guard_halt is not None:
+        result["guardrail"] = _guard_halt.to_metadata()
     # Persistence failures already set failed=True + an explanation in
     # final_response; also stamp `error` so gateway surfaces status="error"
     # (and desktop can toast the cause) instead of a quiet complete frame.

@@ -731,6 +731,13 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Guardrail-halt wrap-up: one tool-free summary call per turn. The
+    # decision is preserved separately because the wrap-up clears the live
+    # attribute so the loop can make that final call (turn_finalizer falls
+    # back to it for turn-result metadata).
+    agent._toolguard_wrapup_used = False
+    agent._toolguard_suppress_tools_next_call = False
+    agent._toolguard_last_halt_decision = None
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()

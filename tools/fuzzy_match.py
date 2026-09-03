@@ -29,6 +29,7 @@ Usage:
     )
 """
 
+import json
 import re
 from typing import Tuple, Optional, List, Callable
 from difflib import SequenceMatcher
@@ -96,6 +97,50 @@ def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
     if old_string == new_string:
         return True
     return old_string not in content
+
+
+def _json_candidate_has_applied_string_value(
+    content: str,
+    candidate: str,
+    new_string: str,
+) -> bool:
+    """Return True for one JSON property whose complete string value is the target.
+
+    Similarity strategies can expand a stale scalar-value search into its
+    enclosing JSON property.  Treat that candidate as a replay only when both
+    the full file and a one-property object built from the candidate parse as
+    JSON, and that property's value exactly equals ``new_string``.
+
+    This deliberately does not use substring containment: a legitimate
+    multiline replacement may retain ``new_string`` merely as context.
+    """
+    try:
+        json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+    property_text = candidate.strip()
+    if property_text.endswith(","):
+        property_text = property_text[:-1].rstrip()
+    if "\n" in property_text or "\r" in property_text:
+        return False
+
+    try:
+        parsed_pairs = json.loads(
+            "{" + property_text + "}",
+            object_pairs_hook=lambda pairs: pairs,
+        )
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+    return (
+        isinstance(parsed_pairs, list)
+        and len(parsed_pairs) == 1
+        and isinstance(parsed_pairs[0], tuple)
+        and len(parsed_pairs[0]) == 2
+        and isinstance(parsed_pairs[0][1], str)
+        and parsed_pairs[0][1] == new_string
+    )
 
 
 def _format_match_locations(content: str, matches: List[Tuple[int, int]],
@@ -195,6 +240,30 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                     f"'{strategy_name}' strategy; replace_all only applies to exact "
                     f"matches. Provide the precise text (whitespace included) so an "
                     f"exact/line-trimmed match can be made."
+                )
+
+            # A replayed scalar-value edit can reach a similarity strategy even
+            # though the target value is already present. In JSON, that strategy
+            # may reinterpret the value fragment as its enclosing property and
+            # replace the larger region. Only treat the edit as already applied
+            # when the one selected candidate is exactly one JSON property whose
+            # complete string value equals the requested target. Substring
+            # presence is not enough because a legitimate block replacement can
+            # retain the target merely as context.
+            if (
+                strategy_name in _SIMILARITY_STRATEGIES
+                and is_already_applied(content, old_string, new_string)
+                and _json_candidate_has_applied_string_value(
+                    content,
+                    content[matches[0][0]:matches[0][1]],
+                    new_string,
+                )
+            ):
+                return (
+                    content,
+                    0,
+                    None,
+                    "Target JSON string value is already present in the matched property",
                 )
 
             # Escape-drift guard: when the matched strategy is NOT `exact`,

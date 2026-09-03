@@ -2889,6 +2889,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
                 fb_api_mode = nous_api_mode(fb_model)
             elif (
+                fb_provider in {"opencode-go", "opencode-zen", "opencode-free"}
+                or base_url_hostname(fb_base_url) == "opencode.ai"
+                or base_url_host_matches(fb_base_url, "opencode.ai")
+            ):
+                from hermes_cli.models import (
+                    opencode_model_api_mode,
+                    opencode_provider_family,
+                )
+
+                effective_opencode_provider = fb_provider
+                if opencode_provider_family(fb_provider) is None:
+                    if "/go" in fb_base_url.lower():
+                        effective_opencode_provider = "opencode-go"
+                    else:
+                        effective_opencode_provider = "opencode-zen"
+
+                fb_api_mode = opencode_model_api_mode(
+                    effective_opencode_provider, fb_model
+                )
+            elif (
                 fb_base_url.rstrip("/").lower().endswith("/anthropic")
                 or base_url_hostname(fb_base_url) == "api.anthropic.com"
             ):

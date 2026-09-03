@@ -230,7 +230,15 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
                 ) from exc
             raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
             if isinstance(raw_terminal, dict):
-                for cfg_key, value in raw_terminal.items():
+                # The profile's file is parsed raw here, so any ${VAR} /
+                # ${env:VAR} reference in terminal: keys is still literal.
+                # Expand with the same resolver the startup config path uses:
+                # _env_ref_lookup honors the active profile's secret scope
+                # (installed before this per-turn scope), so a multiplexed
+                # turn resolves against THIS profile's .env (#101659).
+                from hermes_cli.config import _expand_env_vars
+
+                for cfg_key, value in _expand_env_vars(raw_terminal).items():
                     _apply(cfg_key, value)
     except TerminalPolicyUnavailable:
         raise

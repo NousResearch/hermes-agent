@@ -170,6 +170,43 @@ def test_gateway_runtime_scope_resets_on_error(tmp_path):
     assert get_terminal_scope() is None
 
 
+def test_config_env_refs_expand_against_profile_secret_scope(tmp_path, monkeypatch):
+    """#101659: ${VAR} references in a profile's config.yaml terminal: keys
+    must expand against that profile's secret scope at the per-turn boundary —
+    exactly as the startup config load would — instead of reaching consumers
+    as literals (TERMINAL_CWD="${DEFAULT_CWD}" → runtime_cwd falls back to
+    os.getcwd())."""
+    import gateway.run as gw
+    import tools.terminal_tool as tt
+    from agent import runtime_cwd
+
+    b_cwd = tmp_path / "b-work"
+    b_cwd.mkdir()
+    monkeypatch.setattr(
+        "agent.secret_scope.build_profile_secret_scope",
+        lambda _h: {"DEFAULT_CWD": str(b_cwd)},
+    )
+    home = _profile(tmp_path, "bee", "terminal:\n  cwd: ${DEFAULT_CWD}\n")
+    with gw._profile_runtime_scope(home):
+        cfg = tt._get_env_config()
+        assert cfg["cwd"] == str(b_cwd)
+        assert runtime_cwd.resolve_agent_cwd() == b_cwd
+
+
+def test_unresolved_config_env_ref_stays_verbatim(tmp_path, monkeypatch):
+    """An unresolved ${VAR} keeps its literal form (same contract as the
+    startup _expand_env_vars path) — downstream existence checks warn and
+    fall back; expansion itself never raises."""
+    import gateway.run as gw
+
+    monkeypatch.setattr(
+        "agent.secret_scope.build_profile_secret_scope", lambda _h: {}
+    )
+    home = _profile(tmp_path, "bee", "terminal:\n  cwd: ${NO_SUCH_CWD}\n")
+    with gw._profile_runtime_scope(home):
+        assert terminal_env("TERMINAL_CWD") == "${NO_SUCH_CWD}"
+
+
 def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
     import tui_gateway.server as server
     from tools.terminal_scope import install_and_reset_profile_terminal_scope

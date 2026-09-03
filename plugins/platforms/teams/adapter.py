@@ -595,10 +595,13 @@ async def _standalone_send(
     env var.  ``chat_id`` is validated to match the documented Bot
     Framework ID character set so it cannot escape the URL path.
 
-    ``media_files`` and ``force_document`` are accepted for signature
-    parity but not implemented for the standalone path; messages with
-    attachments will send as text-only.  The live adapter handles
-    attachments via the SDK.
+    ``media_files`` (list of paths or {"path": ...} dicts) are sent as
+    Bot Framework attachments with base64 data-URI ``contentUrl``s — the
+    same shape the live adapter's ``_send_media_attachment`` produces.
+    Note: Teams renders data-URI attachments for image/* MIME types only;
+    document types require the uploaded-attachment flow (#76038) or the
+    consent flow (#94566) and will 400 from the Bot Connector.
+    ``force_document`` is accepted for signature parity.
     """
     extra = getattr(pconfig, "extra", {}) or {}
     client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
@@ -667,6 +670,26 @@ async def _standalone_send(
                 "text": message,
                 "textFormat": "markdown",
             }
+            if media_files:
+                import base64 as _base64
+                import mimetypes as _mimetypes
+                attachments = []
+                for _mf in media_files:
+                    _src = (_mf.get("path") if isinstance(_mf, dict) else _mf) or ""
+                    _src = str(_src).removeprefix("file://")
+                    if not _src or not os.path.exists(_src):
+                        logger.warning("[teams] standalone media missing, skipped: %s", _src)
+                        continue
+                    _mime = _mimetypes.guess_type(_src)[0] or "application/octet-stream"
+                    with open(_src, "rb") as _f:
+                        _b64 = _base64.b64encode(_f.read()).decode()
+                    attachments.append({
+                        "contentType": _mime,
+                        "contentUrl": "data:%s;base64,%s" % (_mime, _b64),
+                        "name": os.path.basename(_src),
+                    })
+                if attachments:
+                    activity["attachments"] = attachments
             async with session.post(
                 activities_url,
                 json=activity,
@@ -1360,6 +1383,26 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
+
+        # MEDIA:<path> handling: the send_message tool passes MEDIA tags
+        # through as text for platforms without a dedicated media branch.
+        # Teams can send local files as base64-URI attachments
+        # (_send_media_attachment), so intercept here instead of letting the
+        # tag render as literal text. Data-URI attachments render for
+        # image/* MIME types; non-image files need the uploaded-attachment
+        # flow (#76038) or consent flow (#94566) and will 400 here.
+        caption = content
+        media_path = None
+        if "MEDIA:" in content:
+            import re as _re
+            _m = _re.search(r"MEDIA:(\S+)", content)
+            if _m:
+                media_path = _m.group(1)
+                caption = _re.sub(r"\s*MEDIA:\S+\s*", " ", content).strip()
+        if media_path and os.path.exists(media_path.removeprefix("file://")):
+            return await self._send_media_attachment(
+                chat_id, media_path, default_mime="application/octet-stream",
+                caption=caption or None, media_label="document")
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted)

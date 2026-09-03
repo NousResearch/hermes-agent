@@ -9,10 +9,12 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from utils import is_truthy_value
 
@@ -23,6 +25,19 @@ BACKEND_DISABLED = "off"
 
 # Cloud daemon names become the BU_NAME env var
 _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+# browser-use harness daemon runtime state. The daemon (spawned by the CLI on
+# first use) resolves its CDP endpoint at FIRST attach and never revalidates
+# it, so it can strand on a dead endpoint when the local browser it drove is
+# relaunched on a new ephemeral port (#101576). Its on-disk layout:
+#   <home>/runtime/bu-<name>.pid   — daemon pid
+#   <home>/runtime/bu-<name>.sock  — daemon IPC socket (stays LISTEN even when
+#                                    the daemon's browser endpoint is dead)
+#   <home>/tmp/bu-<name>.log       — daemon log; every attach records a
+#                                    "connecting to <url>" line (last one wins)
+_HARNESS_HOME: Optional[Path] = None  # test override; None → ~/.config
+_HARNESS_CONNECT_RE = re.compile(r"^connecting to (\S+)", re.MULTILINE)
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 # Internal marker set by _resolve_backend_cdp on the env dict when the
 # resolved browser is EXCLUSIVE to this named session (per-name provider
@@ -649,6 +664,205 @@ def _resolve_backend_cdp(
     return None
 
 
+def _harness_name(env: dict) -> str:
+    """The harness daemon namespace for this call: BU_NAME or ``default``.
+
+    Matches the daemon's own naming (``bu-<name>.sock`` / ``.pid``) and the
+    ``BU_NAME`` default in the own-tab preamble's runtime lookup.
+    """
+    return str(env.get("BU_NAME") or "default").strip() or "default"
+
+
+def _harness_home() -> Path:
+    """The browser-harness state root (``~/.config/browser-harness``)."""
+    if _HARNESS_HOME is not None:
+        return _HARNESS_HOME
+    return Path.home() / ".config" / "browser-harness"
+
+
+def _daemon_log_endpoint(log_path: Path) -> Optional[str]:
+    """The daemon's recorded attach endpoint — the LAST ``connecting to`` line.
+
+    The daemon writes one ``connecting to <url>`` line per attach (first and
+    re-attach); its current endpoint is the last one in the log.
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    matches = _HARNESS_CONNECT_RE.findall(text)
+    return matches[-1] if matches else None
+
+
+def _is_loopback_endpoint(url: str) -> bool:
+    """True when a CDP endpoint URL points at this host's loopback.
+
+    Only loopback endpoints are ephemeral local browser ports whose death can
+    strand the daemon (#101576). Cloud provider URLs (``wss://host/...``) are
+    long-lived and shared — not this failure class.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https", "ws", "wss"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _LOOPBACK_HOSTS
+
+
+def _cdp_endpoint_ready(url: str) -> bool:
+    """True when a loopback CDP endpoint still answers.
+
+    A bare TCP connect to the port: Chrome's DevTools socket accepts the
+    connection regardless of path, so connect-success is readiness. Reuses
+    the built-in stack's readiness check when available (same 1 s budget as
+    ``_cdp_http_ready``), falling back to a raw socket connect.
+    """
+    if not url:
+        return False
+    try:
+        from tools.browser_tool import _cdp_http_ready
+
+        if url.startswith(("http://", "https://")):
+            return _cdp_http_ready(url)
+    except Exception:
+        pass
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port
+        if not port:
+            return False
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _daemon_identity(pid: int) -> str:
+    """Classify the pid file's process: ``"harness"`` / ``"dead"`` / ``"stranger"``.
+
+    Mirrors the orphan reaper's fail-closed posture: a recycled PID (or a
+    planted one) must never be signaled, and ambiguity is treated as
+    stranger. ``"harness"`` requires the live process to look like the
+    browser-use harness daemon (``browser_harness`` in name or command line).
+    """
+    try:
+        import psutil
+    except ImportError:
+        return "stranger"
+    try:
+        proc = psutil.Process(pid)
+        name = (proc.name() or "").lower()
+        cmdline = " ".join(proc.cmdline() or []).lower()
+    except psutil.NoSuchProcess:
+        return "dead"
+    except (psutil.AccessDenied, OSError):
+        return "stranger"
+    if "browser_harness" in name or "browser_harness" in cmdline:
+        return "harness"
+    return "stranger"
+
+
+def _endpoint_host_port(url: str) -> Optional[Tuple[str, int]]:
+    """``(host, port)`` of a CDP endpoint URL, or None when unparsable/no port."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if not port:
+        return None
+    return ((parsed.hostname or "").lower(), port)
+
+
+def _recycle_stranded_harness_daemon(env: dict) -> None:
+    """Recycle a harness daemon stranded on a dead CDP endpoint (#101576).
+
+    The daemon resolves its CDP endpoint at first attach and never
+    revalidates. When the local browser it drove is relaunched on a new
+    ephemeral port (crash, OOM kill, update, manual cleanup), the daemon
+    keeps its dead connection while its IPC socket stays in LISTEN — every
+    subsequent browser_exec blocks against it for the full tool timeout,
+    with no output and no log line.
+
+    Before the CLI runs, check the daemon's recorded endpoint (last
+    ``connecting to`` line in its log). When it no longer answers, do what
+    the issue's verified workaround does — kill the daemon and clear its
+    runtime pid/sock files — so this call respawns a fresh daemon on the
+    endpoint Hermes just resolved.
+
+    Best-effort and fail-closed: never raises, never signals a non-harness
+    process, and skips remote/cloud endpoints (not this failure class).
+    """
+    try:
+        name = _harness_name(env)
+        home = _harness_home()
+        pid_path = home / "runtime" / f"bu-{name}.pid"
+        sock_path = home / "runtime" / f"bu-{name}.sock"
+        log_path = home / "tmp" / f"bu-{name}.log"
+
+        try:
+            pid = int(pid_path.read_text(encoding="utf-8", errors="replace").strip())
+        except (OSError, ValueError):
+            return  # no pid file / empty / unparsable → fresh-daemon path
+        if pid <= 0:
+            return
+
+        endpoint = _daemon_log_endpoint(log_path)
+        if not endpoint or not _is_loopback_endpoint(endpoint):
+            return  # nothing recorded, or a remote/cloud endpoint
+
+        # The daemon must be driving the endpoint this call resolved. A daemon
+        # latched onto a DIFFERENT live loopback port (Hermes relaunched the
+        # browser; the old one somehow survived) would drive the wrong browser
+        # even though its endpoint answers — recycle it too (#101576 fix 1).
+        # When this call resolved no endpoint (plain local Chrome: the harness
+        # finds the browser itself), aliveness is the only contract we can
+        # check — a live endpoint means a working daemon.
+        resolved = env.get("BU_CDP_URL") or env.get("BU_CDP_WS") or ""
+        resolved_hp = _endpoint_host_port(resolved)
+        recorded_hp = _endpoint_host_port(endpoint)
+
+        if _cdp_endpoint_ready(endpoint):
+            if resolved_hp is not None and recorded_hp is not None and resolved_hp != recorded_hp:
+                pass  # alive but wrong endpoint — recycle (falls through)
+            else:
+                return  # healthy daemon — untouched
+        # Endpoint dead: the daemon is attached to a browser that is gone, so
+        # it can never do useful work again (its endpoint is cached for its
+        # lifetime) — recycle it and let this call respawn a fresh daemon.
+        # This is the reported #101576 hang. A stranger pid (recycled or
+        # planted) is a full no-op: never signaled, evidence preserved —
+        # fail closed, same posture as the orphan reaper.
+        identity = _daemon_identity(pid)
+        if identity == "stranger":
+            return
+        if identity == "harness":
+            try:
+                from tools.process_registry import ProcessRegistry
+
+                ProcessRegistry._terminate_host_pid(pid)
+            except Exception as e:
+                logger.debug("stranded harness daemon %d terminate failed: %s", pid, e)
+                return  # leave files in place for manual recovery
+        for path in (pid_path, sock_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                logger.debug("harness runtime file clear failed (%s): %s", path.name, e)
+        logger.info(
+            "recycled stranded harness daemon (name=%s pid=%d): endpoint %s no longer answers",
+            name, pid, endpoint,
+        )
+    except Exception as e:  # never break browser_exec on this guard
+        logger.debug("stranded harness daemon check failed: %s", e)
+
+
 def _real_profile_consented() -> bool:
     """Whether the user opted in to real-profile local browsing (config read)."""
     try:
@@ -805,6 +1019,13 @@ def browser_exec(
     # local Chrome/CDP endpoint is reachable (their API key authenticates it)
     if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
         env["BU_AUTOSPAWN"] = "1"
+
+    # A previously-spawned harness daemon may be stranded on a dead CDP
+    # endpoint (the local browser relaunched on a new port after a crash /
+    # OOM kill / update). Its socket stays in LISTEN, so this call would
+    # block against it for the full timeout. Recycle it now so the CLI
+    # respawns a fresh daemon on the endpoint just resolved above (#101576).
+    _recycle_stranded_harness_daemon(env)
 
     try:
         timeout = max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))

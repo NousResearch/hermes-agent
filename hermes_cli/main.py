@@ -11083,6 +11083,46 @@ def cmd_update(args):
         )
         return
 
+    if getattr(args, "client_only", False):
+        # Runtime-free remote Desktop clients have no venv. The full
+        # pipeline would abort (or worse, try to invent a local runtime).
+        # Eligible surfaces take the small git+Desktop path; a present
+        # venv falls through to the normal full-install update.
+        from hermes_cli.client_only_update import (
+            UpdateSurface,
+            classify_update_kind,
+            inspect_install_root,
+            run_client_only_update,
+        )
+
+        surface = inspect_install_root(PROJECT_ROOT, windows=_is_windows())
+        kind = classify_update_kind(
+            UpdateSurface(
+                has_venv_hermes=surface.has_venv_hermes,
+                has_venv_python=surface.has_venv_python,
+                remote_mode=True,
+                has_bootstrap_marker=surface.has_bootstrap_marker,
+            )
+        )
+        if kind == "client_only":
+            result = run_client_only_update(
+                PROJECT_ROOT,
+                branch=_resolve_update_branch(args),
+                remote_mode=True,
+                force_client_only=True,
+            )
+            if result.installed_commit:
+                print(f"INSTALLED_COMMIT={result.installed_commit}")
+            print(result.message)
+            sys.exit(result.exit_code)
+        if kind == "broken_local":
+            print(
+                "✗ --client-only refused: the local runtime is incomplete "
+                "(partial venv). That is a broken install, not a remote-only "
+                "Desktop client. Run the Hermes installer or hermes doctor."
+            )
+            sys.exit(3)
+
     gateway_mode = getattr(args, "gateway", False)
 
     # Protect against mid-update terminal disconnects (SIGHUP) and tolerate

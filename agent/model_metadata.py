@@ -1656,6 +1656,30 @@ def _resolve_endpoint_context_length(
     return None
 
 
+def _is_separator_boundary_match(model: str, entry_id: str) -> bool:
+    """Whether two catalog ids denote the same base model across a
+    namespace or variant-tag boundary.
+
+    The two ids must be identical, or one must be the other plus a
+    namespace (``vendor/model``) or variant-tag (``model:beta``) segment
+    split at a ``/`` or ``:`` boundary, in either direction: a bare model
+    name resolves against its vendor-qualified catalog id, and an untagged
+    query resolves against a tagged catalog entry. Hyphen splits are
+    deliberately NOT accepted: ``vendor/model`` and ``vendor/model-large``
+    are distinct models with distinct context windows, and a
+    wrong-but-plausible value is worse than falling through to the next
+    step of the resolution chain.
+    """
+    if model == entry_id:
+        return True
+    for sep in ("/", ":"):
+        if entry_id.startswith(model + sep) or model.startswith(entry_id + sep):
+            return True
+        if entry_id.endswith(sep + model) or model.endswith(sep + entry_id):
+            return True
+    return False
+
+
 def _resolve_profile_context_length(
     profile: Any,
     model: str,
@@ -1739,7 +1763,7 @@ def _resolve_profile_context_length(
                 entry
                 for entry in entries
                 if isinstance(entry.get("id"), str)
-                and (model in entry["id"] or entry["id"] in model)
+                and _is_separator_boundary_match(model, entry["id"])
             ),
             None,
         )

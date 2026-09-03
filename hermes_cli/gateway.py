@@ -4115,15 +4115,15 @@ def _load_env_vars_for_systemd_unit() -> dict[str, str]:
     # Get vars from .env file that are in os.environ now
     hermes_home = get_hermes_home()
     env_file = hermes_home / ".env"
-    if env_file.exists():
-        try:
+    try:
+        if env_file.exists():
             from dotenv import dotenv_values
             dotenv_vars = dotenv_values(env_file)
             for k, v in dotenv_vars.items():
                 if v is not None and k not in env_vars:
                     env_vars[k] = v
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Also include any vars already in os.environ that look like Hermes config vars
     # (e.g. MNEMOSYNE_*, HERMES_*, etc.) - these may have been set by the shell
@@ -4182,8 +4182,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None, 
     )
 
     # Load extra environment variables for the systemd unit
+    # For system units (target user != calling user), do NOT load the calling
+    # user's env vars — they would leak the wrong user's paths/config into the
+    # target unit. Callers may still pass extra_env explicitly.
     if extra_env is None:
-        extra_env = _load_env_vars_for_systemd_unit()
+        extra_env = {} if system else _load_env_vars_for_systemd_unit()
     extra_env_lines = "\n".join(f'Environment="{k}={v}"' for k, v in sorted(extra_env.items()))
 
     if system:

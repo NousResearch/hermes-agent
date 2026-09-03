@@ -16,6 +16,7 @@ with different backends via a bridge pattern.
 """
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -468,6 +469,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        # Per-chat banner map (JID → prefix) for the multiplex bridge. This is
+        # the decoupling seam: group banners come from config (reply_prefixes),
+        # NOT from a hardcoded literal in bridge.js / whatsapp_common.py.
+        self._reply_prefixes: Dict[str, str] = dict(config.extra.get("reply_prefixes") or {})
         self._dm_policy = str(config.extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         # Prefer config.extra, then the documented WHATSAPP_ALLOWED_USERS env
         # (setup wizard / pairing mirror). Select by key *presence* so an
@@ -734,6 +739,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env = with_hermes_node_path()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            if self._reply_prefixes:
+                # Pass the per-chat banner map to the bridge so it replaces the
+                # hardcoded GROUP_PREFIXES literal with config-driven banners.
+                bridge_env["WHATSAPP_REPLY_PREFIXES"] = json.dumps(self._reply_prefixes)
             bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (
                 "true" if self._send_read_receipts else "false"
             )
@@ -1392,7 +1401,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # delay message dispatch (matches BlueBubbles
                                 # asyncio.create_task pattern for mark_read).
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
+                                # Debounce for any event with text or media (TEXT, VOICE,
+                                # AUDIO, PHOTO, VIDEO, DOCUMENT — any media+text combo
+                                # within 8s merges into one turn). Binary/media-only
+                                # events still join via media_urls/media_types; gateway
+                                # run.py filters non-processable types downstream.
+                                # Immediate dispatch only for pure non-text/non-media
+                                # events (e.g. LOCATION, STICKER, standalone polls).
+                                has_media = bool(event.media_urls) or event.message_type != MessageType.TEXT
+                                has_text = bool((event.text or "").strip())
+                                if has_media or has_text:
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)

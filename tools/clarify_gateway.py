@@ -40,6 +40,27 @@ from typing import Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _session_key_variants(session_key):
+    """Return all canonical-identifier variants of a WhatsApp DM session key.
+
+    The clarify reply path and the pending-prompt registration can materialize
+    the SAME account under two identifiers (e.g. the classic phone number vs
+    the linked-device LID). ``expand_whatsapp_aliases`` deterministically returns
+    both, so indexing and looking up under every variant guarantees the owner's
+    vote matches the pending clarify regardless of which shape each side used.
+    For group/other keys the variant list degrades to just the original."""
+    raw = str(session_key)
+    if ":whatsapp:" in raw and ":dm:" in raw:
+        try:
+            from gateway.whatsapp_identity import expand_whatsapp_aliases
+            prefix, _, tail = raw.rpartition(":")
+            variants = sorted(expand_whatsapp_aliases(tail))
+            return [f"{prefix}:{v}" for v in variants] or [raw]
+        except Exception:
+            pass
+    return [raw]
+
+
 # =========================================================================
 # Module-level state
 # =========================================================================
@@ -98,9 +119,12 @@ def register(
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
     )
+    variants = _session_key_variants(session_key)
+    entry.session_key = session_key
     with _lock:
         _entries[clarify_id] = entry
-        _session_index.setdefault(session_key, []).append(clarify_id)
+        for v in variants:
+            _session_index.setdefault(v, []).append(clarify_id)
     return entry
 
 
@@ -148,11 +172,12 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     with _lock:
         # Remove from indices regardless of resolution outcome.
         _entries.pop(clarify_id, None)
-        ids = _session_index.get(entry.session_key)
-        if ids and clarify_id in ids:
-            ids.remove(clarify_id)
-            if not ids:
-                _session_index.pop(entry.session_key, None)
+        for v in _session_key_variants(entry.session_key):
+            ids = _session_index.get(v)
+            if ids and clarify_id in ids:
+                ids.remove(clarify_id)
+                if not ids:
+                    _session_index.pop(v, None)
 
     return entry.response
 
@@ -191,13 +216,17 @@ def get_pending_for_session(
     of being queued as an unrelated follow-up turn.
     """
     with _lock:
-        ids = _session_index.get(session_key) or []
-        for cid in ids:
-            entry = _entries.get(cid)
-            if entry is None:
-                continue
-            if include_choice_prompts or entry.awaiting_text:
-                return entry
+        seen = set()
+        for v in _session_key_variants(session_key):
+            for cid in _session_index.get(v) or []:
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                entry = _entries.get(cid)
+                if entry is None:
+                    continue
+                if include_choice_prompts or entry.awaiting_text:
+                    return entry
         return None
 
 
@@ -479,8 +508,11 @@ def mark_awaiting_text(clarify_id: str) -> bool:
 def has_pending(session_key: str) -> bool:
     """Return True when this session has at least one pending clarify entry."""
     with _lock:
-        ids = _session_index.get(session_key) or []
-        return any(_entries.get(cid) is not None for cid in ids)
+        for v in _session_key_variants(session_key):
+            for cid in _session_index.get(v) or []:
+                if _entries.get(cid) is not None:
+                    return True
+        return False
 
 
 def clear_session(session_key: str) -> int:
@@ -499,7 +531,10 @@ def clear_session(session_key: str) -> int:
     user answered.  Only unresolved entries are cancelled here.
     """
     with _lock:
-        ids = list(_session_index.pop(session_key, []) or [])
+        ids = []
+        for v in _session_key_variants(session_key):
+            ids.extend(_session_index.pop(v, []) or [])
+        ids = list(dict.fromkeys(ids))
         entries = [_entries.pop(cid, None) for cid in ids]
         # The mutation loop must stay inside the lock: the pop above and the
         # event.is_set() check below have to be atomic with respect to

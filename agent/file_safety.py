@@ -91,20 +91,49 @@ def build_write_denied_prefixes(home: str) -> list[str]:
 
 
 def get_safe_write_roots() -> set[str]:
-    """Return resolved HERMES_WRITE_SAFE_ROOT paths. Supports multiple directories
-    separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
-    E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
-    env = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not env:
-        return set()
+    """Return resolved safe-write root paths.
+
+    Sources, both merged:
+      1. Config: ``terminal.workdir_allowed`` (list of dirs) in the active
+         profile's config.yaml — the config-driven "hard fence" for folder
+         isolation. This is the convention entry point (global managed scope
+         can seed it; a profile overrides/extends per leaf).
+      2. Env: ``HERMES_WRITE_SAFE_ROOT`` (``os.pathsep``-separated). Kept for
+         backward compatibility; config wins when both set.
+
+    When non-empty, writes outside every root are denied by the file tools
+    (see ``_classify_write_denial`` → ``"safe_root"``).
+    """
     roots: set[str] = set()
-    for path in env.split(os.pathsep):
-        if path:
-            try:
-                resolved = os.path.realpath(os.path.expanduser(path))
-                roots.add(resolved)
-            except (OSError, ValueError):
-                continue
+
+    # 1. Config-driven roots (primary). Lazy local import to avoid a
+    #    circular import at module load time — file_safety is imported by
+    #    the file tools early in agent bring-up.
+    try:
+        from hermes_cli.config import load_config_readonly
+        _cfg = load_config_readonly()
+        _workdir = ((_cfg or {}).get("terminal") or {}).get("workdir_allowed")
+        if _workdir:
+            if isinstance(_workdir, str):
+                _workdir = [_workdir]
+            for _p in _workdir:
+                if _p:
+                    try:
+                        roots.add(os.path.realpath(os.path.expanduser(str(_p))))
+                    except (OSError, ValueError):
+                        continue
+    except Exception:
+        pass
+
+    # 2. Legacy env fallback.
+    env = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
+    if env:
+        for path in env.split(os.pathsep):
+            if path:
+                try:
+                    roots.add(os.path.realpath(os.path.expanduser(path)))
+                except (OSError, ValueError):
+                    continue
     return roots
 
 
@@ -210,8 +239,9 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (
-            f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
-            f"({roots_display}). Unset the variable or add this path's directory prefix."
+            f"{verb} denied: '{path}' is outside the configured workdir "
+            f"allowed roots ({roots_display}). Add it to `terminal.workdir_allowed` "
+            f"in the profile's config.yaml (HERMES_WRITE_SAFE_ROOT also honored)."
         )
     return f"{verb} denied: '{path}' is a protected system/credential file."
 

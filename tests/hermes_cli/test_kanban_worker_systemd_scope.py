@@ -2478,6 +2478,72 @@ def test_release_stale_claims_never_terminates_refreshed_claim(
     assert [s["action"] for s in shims.stops() if s["unit"] == unit] == []
 
 
+def test_release_stale_claims_reservation_cas_blocks_inflight_heartbeat(
+    shims, conn, monkeypatch,
+):
+    """Pass 11 (AN): a heartbeat committing between the sweep's fresh
+    re-read and the reservation UPDATE — the exact window AK's lock-free
+    pre-check could not cover — must make the optimistic CAS miss and
+    stand the row down for the tick: no signal, no reclaim, and the
+    heartbeat's TTL (not a defer grace) owns the row afterwards."""
+    worker = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_anhb", 1)
+    shims.write_unit(unit, [worker])
+    tid = kb.create_task(conn, title="reservation cas", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=?, worker_scope=?, "
+        "claim_expires=?, last_heartbeat_at=? WHERE id=?",
+        (worker, kb._worker_pid_start_time(worker), now, unit,
+         now - 60, now - 7200, tid),  # heartbeat past the 1h backstop
+    )
+    conn.commit()
+
+    real_reread = kb._reread_stale_claim_for_reclaim
+
+    def reread_then_inflight_heartbeat(conn_arg, task_id, claim_lock):
+        row = real_reread(conn_arg, task_id, claim_lock)
+        # The interleaving under test: the worker's heartbeat commits
+        # between the sweep's re-read and its reservation CAS, i.e.
+        # after the decision transaction opened but before its UPDATE.
+        landed = int(time.time())
+        conn_arg.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (landed + kb.DEFAULT_CLAIM_TTL_SECONDS, landed, task_id),
+        )
+        return row
+
+    monkeypatch.setattr(
+        kb, "_reread_stale_claim_for_reclaim",
+        reread_then_inflight_heartbeat,
+    )
+    signalled: list[tuple] = []
+
+    def record_signal(pid, sig):
+        signalled.append((pid, sig))
+
+    assert kb.release_stale_claims(conn, signal_fn=record_signal) == 0
+
+    row = conn.execute(
+        "SELECT status, claim_lock, claim_expires FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    # The heartbeat's TTL owns the row — not a defer grace.
+    assert row["claim_expires"] > int(time.time()) + 600
+    assert signalled == [], "a heartbeat that beat the CAS is never signalled"
+    assert kb._pid_alive(worker), "the live worker was never signalled"
+    assert [s["action"] for s in shims.stops() if s["unit"] == unit] == []
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='reclaimed'", (tid,),
+    ).fetchone()["n"] == 0
+
+
 def test_crash_cleanup_defers_until_scope_stop_verified(shims, conn):
     """Crash reclamation of a scoped run waits for the VERIFIED scope
     stop (Gate B review, crash-cleanup ordering): a deactivating unit

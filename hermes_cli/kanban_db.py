@@ -5161,6 +5161,31 @@ def heartbeat_claim(
         return False
 
 
+def _reread_stale_claim_for_reclaim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    claim_lock: Optional[str],
+) -> Any:
+    """In-transaction re-read of a stale row right before its reservation.
+
+    Pass 11 (AN): the scan that fed :func:`release_stale_claims` is a
+    snapshot, so the decision to terminate is made against a row read
+    INSIDE the sweep's write transaction — the reservation UPDATE that
+    follows is an optimistic CAS on exactly these values. A dedicated
+    seam (not an inline ``conn.execute``) so the read→update
+    interleaving, a heartbeat landing between the two, is injectable in
+    tests. Returns ``None`` when the row is no longer a running claim
+    under ``claim_lock``.
+    """
+    return conn.execute(
+        "SELECT claim_lock, claim_expires, worker_pid, "
+        "worker_pid_started_at, worker_scope, current_run_id "
+        "FROM tasks "
+        "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+        (task_id, claim_lock),
+    ).fetchone()
+
+
 def release_stale_claims(
     conn: sqlite3.Connection,
     *,
@@ -5268,30 +5293,62 @@ def release_stale_claims(
         if _handle_stale_own_worker_handoff(conn, row, now=now):
             continue
 
-        # Pass 10 (AK): never signal from a stale snapshot. The scan that
-        # produced *row* is old by now; a heartbeat that landed since (the
-        # usual winner against every CAS above) refreshed the claim — the
-        # worker is alive and this tick must stand down before any
-        # termination, so the pid-kill backstop inside
-        # ``_terminate_reclaimed_worker`` cannot fire for a row whose
-        # claim was refreshed after the snapshot.
-        fresh = conn.execute(
-            "SELECT claim_expires FROM tasks "
-            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
-            (row["id"], row["claim_lock"]),
-        ).fetchone()
-        if (
-            fresh is not None
-            and fresh["claim_expires"] is not None
-            and int(fresh["claim_expires"]) > now
-        ):
-            continue
+        # Pass 11 (AN): the reclaim decision is atomic, the signal is
+        # post-commit. AK's fresh read stood the sweep down for heartbeats
+        # that landed before it, but the read and the termination were
+        # still separate operations — a heartbeat committing in between
+        # signalled a live worker. The decision now happens inside ONE
+        # write transaction: the row is re-read and reserved by an UPDATE
+        # with an optimistic CAS on the exact values just read
+        # (claim_expires + worker_pid_started_at + worker_scope). A CAS
+        # miss means a heartbeat landed between the re-read and the
+        # UPDATE — the row is alive: no signal, no reclaim this tick. A
+        # hit holds the claim for one defer grace (a worker that then
+        # survives the signal cannot be duplicated beside it), and only
+        # then is the termination tuple signalled, strictly post-commit
+        # and keyed to the fresh values, never the scan snapshot.
+        with write_txn(conn):
+            fresh = _reread_stale_claim_for_reclaim(
+                conn, row["id"], row["claim_lock"],
+            )
+            if (
+                fresh is None
+                or fresh["claim_expires"] is None
+                or int(fresh["claim_expires"]) > now
+            ):
+                # Alive (a heartbeat refreshed the claim) or moved on:
+                # not ours to terminate on stale evidence.
+                continue
+            grace = now + RECLAIM_DEFER_GRACE_SECONDS
+            cur = conn.execute(
+                "UPDATE tasks SET claim_expires = ? "
+                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "AND claim_expires IS ? AND worker_pid_started_at IS ? "
+                "AND worker_scope IS ?",
+                (grace, row["id"], row["claim_lock"],
+                 fresh["claim_expires"], fresh["worker_pid_started_at"],
+                 fresh["worker_scope"]),
+            )
+            if cur.rowcount != 1:
+                _log.info(
+                    "kanban: stale reclaim reservation CAS missed for %s "
+                    "— a heartbeat landed between the re-read and the "
+                    "update; the row is alive, skipping it this tick",
+                    row["id"],
+                )
+                continue
+            current_run = _current_run_id(conn, row["id"])
+            if current_run is not None:
+                conn.execute(
+                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    (grace, current_run),
+                )
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
-            scope_unit=row["worker_scope"] or None,
-            pid_started_at=row["worker_pid_started_at"],
-            task_id=row["id"], run_id=row["current_run_id"],
+            fresh["worker_pid"], fresh["claim_lock"], signal_fn=signal_fn,
+            scope_unit=fresh["worker_scope"] or None,
+            pid_started_at=fresh["worker_pid_started_at"],
+            task_id=row["id"], run_id=fresh["current_run_id"],
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -5309,10 +5366,17 @@ def release_stale_claims(
                 "worker_pid_started_at = NULL, "
                 "worker_registered_at = NULL, worker_scope = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (retry_status, row["id"], row["claim_lock"], now),
+                "AND claim_expires IS ? AND worker_pid_started_at IS ? "
+                "AND worker_scope IS ?",
+                (retry_status, row["id"], row["claim_lock"], grace,
+                 fresh["worker_pid_started_at"], fresh["worker_scope"]),
             )
             if cur.rowcount != 1:
+                # CAS miss: the row moved after the reservation — under
+                # our held claim only a live worker's heartbeat can
+                # rewrite claim_expires. Stand down; the reservation's
+                # grace keeps the row un-spawnable until the next tick
+                # re-scans.
                 continue
             run_id = _end_run(
                 conn, row["id"],

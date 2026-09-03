@@ -335,6 +335,28 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    preserve_session_transport = params.get("preserve_session_transport") is True
+    external_submission_id = params.get("external_submission_id")
+    if preserve_session_transport != (external_submission_id is not None):
+        return _err(
+            rid,
+            -32602,
+            "preserve_session_transport and external_submission_id must be supplied together",
+        )
+    if external_submission_id is not None and (
+        not isinstance(external_submission_id, str)
+        or not external_submission_id
+        or len(external_submission_id) > 128
+        or any(
+            not (character.isascii() and (character.isalnum() or character in ".:_-"))
+            for character in external_submission_id
+        )
+    ):
+        return _err(
+            rid,
+            -32602,
+            "external_submission_id must be 1-128 ASCII letters, digits, '.', ':', '_' or '-'",
+        )
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -446,7 +468,8 @@ def _(rid, params: dict) -> dict:
     # submit, because one session can be driven from the app window and the HUD
     # in turn: a stale "hud" would tell the model the user is still floating
     # over another app when they are back in Hermes.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
+    if not preserve_session_transport:
+        session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     has_truncation = (
         truncate_user_ordinal is not None
         or params.get("truncate_before_row_id") is not None
@@ -462,17 +485,28 @@ def _(rid, params: dict) -> dict:
         )
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
-    if internal_hosted_submit and turn_isolation:
+    if (internal_hosted_submit or preserve_session_transport) and turn_isolation:
         return _err(
             rid,
             4121,
-            "hosted room turns do not support isolated compute workers yet",
+            "hosted room and external submissions do not support isolated compute workers yet",
         )
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    request_transport = current_transport()
+    if preserve_session_transport:
+        delivery_transport = session.get("transport")
+        if not is_live_transport(delivery_transport):
+            return _err(
+                rid,
+                4093,
+                "session has no live client transport to receive an external submission",
+            )
+    else:
+        delivery_transport = request_transport or session.get("transport")
+        if request_transport is not None:
+            session["transport"] = request_transport
     while True:
         busy_transport = None
         with session["history_lock"]:
@@ -483,12 +517,13 @@ def _(rid, params: dict) -> dict:
                 # interrupt the live turn) so it runs as the next turn. The
                 # provider interrupt itself must happen after this lock is
                 # released: a non-interruptible tool may keep it waiting.
-                busy_transport = t or session.get("transport")
+                busy_transport = delivery_transport
             else:
                 break
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport,
             queued=bool(params.get("queued")),
+            external_submission_id=external_submission_id,
         )
         if busy_response is not None:
             return busy_response
@@ -1018,6 +1053,7 @@ def _(rid, params: dict) -> dict:
                 # Agent construction never reached the provider: this is a
                 # local-runtime failure (env/config/venv), not an API error.
                 error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True},
+                external_submission_id=external_submission_id,
             )
             with session["history_lock"]:
                 session["running"] = False
@@ -1051,6 +1087,7 @@ def _(rid, params: dict) -> dict:
             text,
             display_kind=display_kind,
             terminal_callback=hosted_terminal_callback,
+            external_submission_id=external_submission_id,
         )
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
@@ -1062,6 +1099,11 @@ def _(rid, params: dict) -> dict:
         rid,
         {
             "status": "streaming",
+            **(
+                {"external_submission_id": external_submission_id}
+                if external_submission_id
+                else {}
+            ),
             **(
                 {"survivor_user_row_ids": survivor_user_row_ids}
                 if survivor_user_row_ids is not None

@@ -2654,6 +2654,14 @@ def unregister_live_transport(transport: Transport | None) -> None:
         _live_transports.discard(transport)
 
 
+def is_live_transport(transport: Transport | None) -> bool:
+    """Return whether *transport* still belongs to a connected WS peer."""
+    if transport is None:
+        return False
+    with _live_transports_lock:
+        return transport in _live_transports
+
+
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every
     connected client. Emitters like the skin watcher run on background threads
@@ -10410,6 +10418,7 @@ def _enqueue_prompt(
     text: Any,
     transport: Any,
     image_paths: list[str] | None = None,
+    external_submission_id: str | None = None,
 ) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -10436,6 +10445,8 @@ def _enqueue_prompt(
         if original and text.strip() == original:
             return
     queued = {"text": text, "transport": transport}
+    if external_submission_id:
+        queued["external_submission_id"] = external_submission_id
     if image_paths:
         queued["image_paths"] = image_paths
     existing = session.get("queued_prompt")
@@ -10445,6 +10456,8 @@ def _enqueue_prompt(
         and isinstance(text, str)
         and not existing.get("image_paths")
         and not image_paths
+        and not existing.get("external_submission_id")
+        and not external_submission_id
         and not session.get("queued_prompts")
     ):
         prev = existing["text"]
@@ -10568,7 +10581,13 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
 
 
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    queued: bool = False,
+    external_submission_id: str | None = None,
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -10646,7 +10665,13 @@ def _handle_busy_submit(
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths)
+        _enqueue_prompt(
+            session,
+            text,
+            transport,
+            image_paths=image_paths,
+            external_submission_id=external_submission_id,
+        )
         session["last_active"] = time.time()
 
     # Attachments need a separate model invocation. Queue them without
@@ -10662,7 +10687,17 @@ def _handle_busy_submit(
     # FIFO in ``queued_prompt``/``queued_prompts`` and drained on turn end.
     if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
-    return _ok(rid, {"status": "queued"})
+    return _ok(
+        rid,
+        {
+            "status": "queued",
+            **(
+                {"external_submission_id": external_submission_id}
+                if external_submission_id
+                else {}
+            ),
+        },
+    )
 
 
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
@@ -10738,6 +10773,11 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     queued["text"],
                     image_paths=queued["image_paths"],
                     queued_prompt_generation=queue_generation,
+                    **(
+                        {"external_submission_id": queued["external_submission_id"]}
+                        if queued.get("external_submission_id")
+                        else {}
+                    ),
                 )
             else:
                 _run_prompt_submit(
@@ -10746,6 +10786,11 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     session,
                     queued["text"],
                     queued_prompt_generation=queue_generation,
+                    **(
+                        {"external_submission_id": queued["external_submission_id"]}
+                        if queued.get("external_submission_id")
+                        else {}
+                    ),
                 )
     except Exception as exc:
         print(
@@ -10818,6 +10863,7 @@ def _emit_terminal_turn_error(
     error_surface: Optional[dict] = None,
     *,
     retire_marker: bool = True,
+    external_submission_id: str | None = None,
 ) -> None:
     """Close a failed turn with a terminal ``message.complete`` frame.
 
@@ -10864,6 +10910,8 @@ def _emit_terminal_turn_error(
         payload["error_surface"] = error_surface
     if partial:
         payload["partial"] = True
+    if external_submission_id:
+        payload["external_submission_id"] = external_submission_id
     try:
         rendered = render_message(text, cols)
     except Exception:
@@ -13187,6 +13235,7 @@ def _run_prompt_submit(
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    external_submission_id: str | None = None,
 ) -> bool:
     # Ownership admission at the ONE chokepoint every fresh turn source must
     # cross. prompt.submit already claims the slot in its RPC handler (so this
@@ -13202,7 +13251,18 @@ def _run_prompt_submit(
         )
         with session["history_lock"]:
             session["running"] = False
-        _emit("error", sid, {"message": str(ownership_refusal)})
+        _emit(
+            "error",
+            sid,
+            {
+                "message": str(ownership_refusal),
+                **(
+                    {"external_submission_id": external_submission_id}
+                    if external_submission_id
+                    else {}
+                ),
+            },
+        )
         return False
     with session["history_lock"]:
         if session.get("_closing"):
@@ -13249,7 +13309,15 @@ def _run_prompt_submit(
         len(text) if isinstance(text, str) else "-",
         len(images),
     )
-    _emit("message.start", sid)
+    _emit(
+        "message.start",
+        sid,
+        (
+            {"external_submission_id": external_submission_id}
+            if external_submission_id
+            else None
+        ),
+    )
 
     def run():
         terminal_receipt_attempted = False
@@ -13838,6 +13906,8 @@ def _run_prompt_submit(
                 payload["recoverable"] = True
                 if _error_surface:
                     payload["error_surface"] = _error_surface
+            if external_submission_id:
+                payload["external_submission_id"] = external_submission_id
             if terminal_callback is not None:
                 terminal_receipt_attempted = True
                 terminal_callback(
@@ -14055,6 +14125,7 @@ def _run_prompt_submit(
                     session,
                     e,
                     retire_marker=terminal_receipt_committed,
+                    external_submission_id=external_submission_id,
                 )
                 turn_error_retained = True
                 turn_error_detail = _turn_failure_detail(

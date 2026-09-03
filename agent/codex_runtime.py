@@ -1299,9 +1299,25 @@ def _consume_codex_event_stream(
                 # The .done event's own output_index wins when present, with
                 # the announced index as its fallback.
                 done_id = str(_item_field(done_item, "id", ""))
+                done_call_id = str(_item_field(done_item, "call_id", "") or "")
+                pending_aliases = []
+                if done_call_id:
+                    pending_aliases = [
+                        (pending_id, pending)
+                        for pending_id, pending in pending_function_calls.items()
+                        if str(_item_field(pending.get("item"), "call_id", "") or "")
+                        == done_call_id
+                    ]
                 announced_sequence, announced_index = announced_output_order.get(
                     done_id, (None, None)
                 )
+                if announced_sequence is None and pending_aliases:
+                    _, announced_alias = min(
+                        pending_aliases,
+                        key=lambda alias: alias[1]["sequence"],
+                    )
+                    announced_sequence = announced_alias["sequence"]
+                    announced_index = announced_alias["output_index"]
                 done_index = _event_field(event, "output_index", None)
                 if done_index is None:
                     done_index = announced_index
@@ -1311,8 +1327,12 @@ def _consume_codex_event_stream(
                 collected_output_indexes.append(done_index)
                 collected_output_sequences.append(announced_sequence)
                 # Confirmed by the authoritative per-item done event; remove
-                # from pending so it is not settled twice.
+                # from pending so it is not settled twice. GitHub Responses
+                # may use a different item id on the .done event, so also
+                # coalesce aliases by the provider's authoritative call_id.
                 pending_function_calls.pop(done_id, None)
+                for pending_id, _pending in pending_aliases:
+                    pending_function_calls.pop(pending_id, None)
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
                 if done_phase == "commentary" and on_commentary_message is not None:
@@ -1386,15 +1406,12 @@ def _consume_codex_event_stream(
     else:
         output = []
 
-    # Settle function calls that were announced via output_item.added and
-    # streamed argument deltas but never confirmed by output_item.done: some
-    # OpenAI-compatible backends omit per-item done events on a successful
-    # completion (anomalyco/opencode#37159).  Done items stay authoritative;
-    # this only fills the gap so the call executes instead of vanishing.
-    if pending_function_calls and saw_response_completed:
-        # Assemble settled calls and .done items in output_index order instead
-        # of appending at the tail: a pending call that streamed before a later
-        # .done item must keep its position, or dependent side effects invert.
+    # Preserve announced order for confirmed items and settle function calls
+    # that never received output_item.done. Some compatible backends omit done
+    # events entirely; others confirm calls under aliased ids or in a different
+    # order. Done items stay authoritative, but all items retain their original
+    # output_index/sequence so dependent side effects cannot invert.
+    if saw_response_completed and (collected_output_items or pending_function_calls):
         indexed = [
             (index, sequence, position, item)
             for position, (index, sequence, item) in enumerate(

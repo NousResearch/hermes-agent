@@ -1399,13 +1399,38 @@ def _auth_store_lock(
         yield
 
 
+# A concurrent writer (gateway keepalive, credential rotation) holds auth.json
+# only briefly; these delays bound how long a colliding read waits before the
+# fail-loud path below takes over (#100723).
+_AUTH_READ_RETRY_DELAYS: Tuple[float, ...] = (0.1, 0.25, 0.5)
+
+
+def _read_auth_store_text(auth_file: Path) -> str:
+    # On Windows, a read that collides with a concurrent writer fails with
+    # PermissionError [Errno 13] even though the contents are fine. Retry just
+    # that case: the writer's hold is transient, and treating it as permanent
+    # leaves the in-memory credential pool degraded for the rest of the
+    # process. Other OSErrors (EMFILE, EIO, a stalled mount) are not made
+    # better by retrying and keep the fail-loud path unchanged.
+    for delay in _AUTH_READ_RETRY_DELAYS:
+        try:
+            return auth_file.read_text(encoding="utf-8-sig")
+        except PermissionError:
+            logger.debug(
+                "auth: %s is held by a concurrent writer; retrying read in %.2fs",
+                auth_file, delay,
+            )
+            time.sleep(delay)
+    return auth_file.read_text(encoding="utf-8-sig")
+
+
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
-        raw = json.loads(auth_file.read_text(encoding="utf-8-sig"))
+        raw = json.loads(_read_auth_store_text(auth_file))
     except OSError:
         # The file exists (checked above) but could not be READ: EMFILE under
         # fd exhaustion, EACCES, EIO, a stalled network mount. None of those

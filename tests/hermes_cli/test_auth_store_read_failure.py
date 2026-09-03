@@ -8,15 +8,28 @@ with an empty provider set and destroyed every stored credential.
 
 Genuine corruption still degrades, still preserves a copy, and now only claims
 to have preserved one when the copy actually landed.
+
+``PermissionError`` additionally gets a short bounded retry (#100723): on
+Windows a concurrent writer holds auth.json just long enough to fail a plain
+read, and failing that read permanently poisons the in-memory credential pool
+for the rest of the process. Retries are exhausted -> same fail-loud raise;
+every other ``OSError`` is never retried.
 """
 
 import errno
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
 import hermes_cli.auth as auth
+
+
+@pytest.fixture(autouse=True)
+def _fast_read_retries(monkeypatch):
+    # Keep the real delays in production; tests only care about retry counts.
+    monkeypatch.setattr(auth, "_AUTH_READ_RETRY_DELAYS", (0.0, 0.0, 0.0))
 
 
 @pytest.fixture
@@ -96,3 +109,61 @@ def test_log_does_not_claim_a_backup_that_was_not_written(
     text = caplog.text
     assert "could NOT be preserved" in text
     assert "Corrupt file preserved at" not in text
+
+
+def test_transient_permission_error_is_retried_and_recovers(
+    store_file, monkeypatch
+):
+    """A Windows file-lock collision is transient; the read must recover."""
+    calls = {"n": 0}
+    real_read = Path.read_text
+
+    def _flaky(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _flaky)
+
+    result = auth._load_auth_store(store_file)
+
+    assert result["providers"]["nous"]["api_key"] == "secret"
+    assert calls["n"] == 3, "two lock collisions should be absorbed by retries"
+
+
+def test_persistent_permission_error_still_raises_after_bounded_retries(
+    store_file, monkeypatch, caplog
+):
+    """Retries must be bounded, and exhaustion keeps the fail-loud raise."""
+    calls = {"n": 0}
+
+    def _always_denied(self, *args, **kwargs):
+        calls["n"] += 1
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", _always_denied)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+        with pytest.raises(PermissionError):
+            auth._load_auth_store(store_file)
+
+    assert calls["n"] == len(auth._AUTH_READ_RETRY_DELAYS) + 1
+    assert "could not read" in caplog.text
+    assert not store_file.with_suffix(".json.corrupt").exists()
+
+
+def test_non_permission_oserror_is_not_retried(store_file, monkeypatch):
+    """EMFILE/EIO/stalled-mount failures gain nothing from retrying."""
+    calls = {"n": 0}
+
+    def _always_fails(self, *args, **kwargs):
+        calls["n"] += 1
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(Path, "read_text", _always_fails)
+
+    with pytest.raises(OSError):
+        auth._load_auth_store(store_file)
+
+    assert calls["n"] == 1, "non-PermissionError read failures must not retry"

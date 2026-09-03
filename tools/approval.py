@@ -4072,6 +4072,64 @@ def _run_approval_gate(
     return {"approved": True, "message": None}
 
 
+_GITHUB_ACTIONS_MUTATION_ENDPOINT = re.compile(
+    r"(?:^|/)actions/(?:"
+    r"runs/[0-9]+/(?:rerun|rerun-failed-jobs|cancel)"
+    r"|workflows/[^/]+/dispatches"
+    r")(?:$|[/?#])"
+    r"|(?:^|/)repos/[^/]+/[^/]+/dispatches(?:$|[/?#])",
+    re.IGNORECASE,
+)
+
+
+def _kanban_github_actions_mutation(command: str) -> bool:
+    """Detect GitHub Actions mutations forbidden to autonomous Kanban workers.
+
+    Kanban workers may inspect run/check state, but starting, rerunning, or
+    cancelling hosted CI is an operator-budget action. This guard uses the
+    existing ``HERMES_KANBAN_TASK`` execution identity and runs before all
+    container/yolo bypasses so a worker cannot gain that authority by changing
+    terminal backend or approval mode.
+    """
+
+    if not os.environ.get("HERMES_KANBAN_TASK", "").strip():
+        return False
+    for variant in _command_detection_variants(command):
+        for segment in _iter_top_level_shell_segments(variant):
+            for start, _, word in _iter_shell_command_word_spans(segment):
+                executable = os.path.basename(
+                    _deobfuscate_shell_word_for_detection(word)
+                ).casefold()
+                if executable not in {"gh", "curl"}:
+                    continue
+                tokens = _shell_segment_tokens(segment, start)
+                if not tokens:
+                    continue
+                lowered = [token.casefold() for token in tokens[1:]]
+                if executable == "gh":
+                    pairs = set(zip(lowered, lowered[1:]))
+                    if pairs.intersection(
+                        {("run", "rerun"), ("run", "cancel"), ("workflow", "run")}
+                    ):
+                        return True
+                if any(_GITHUB_ACTIONS_MUTATION_ENDPOINT.search(token) for token in lowered):
+                    return True
+    return False
+
+
+def _kanban_github_actions_block_result() -> dict:
+    return {
+        "approved": False,
+        "kanban_policy": "github_actions_mutation",
+        "message": (
+            "BLOCKED: Kanban workers may inspect GitHub Actions, but may not "
+            "start, rerun, or cancel hosted CI. This consumes operator-owned "
+            "Actions budget and requires an explicit operator action outside "
+            "the worker."
+        ),
+    }
+
+
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
     """Return True when the backend is isolated enough to skip dangerous-command prompts.
 
@@ -4104,6 +4162,10 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
+    if _kanban_github_actions_mutation(command):
+        logger.warning("Kanban GitHub Actions mutation blocked: %s", command[:200])
+        return _kanban_github_actions_block_result()
+
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
@@ -4741,6 +4803,10 @@ def check_all_command_guards(command: str, env_type: str,
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
+    if _kanban_github_actions_mutation(command):
+        logger.warning("Kanban GitHub Actions mutation blocked: %s", command[:200])
+        return _kanban_github_actions_block_result()
+
     # Skip isolated container backends for both checks. Docker stops skipping
     # once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):

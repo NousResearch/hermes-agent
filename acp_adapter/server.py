@@ -737,10 +737,23 @@ class HermesACPAgent(acp.Agent):
         """
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+        requested_provider = getattr(state.agent, "requested_provider", None)
+        requested_provider_id = (
+            requested_provider.strip().lower()
+            if isinstance(requested_provider, str)
+            else ""
+        )
+        if not requested_provider_id.startswith("custom:"):
+            requested_provider_id = ""
 
         try:
             from hermes_cli.inventory import build_models_payload, load_picker_context
-            from hermes_cli.models import normalize_provider, provider_label
+            from hermes_cli.models import (
+                CANONICAL_PROVIDERS,
+                normalize_provider,
+                provider_label,
+            )
+            from hermes_cli.runtime_provider import canonical_custom_identity
 
             normalized_provider = normalize_provider(provider)
             context = load_picker_context().with_overrides(
@@ -764,9 +777,24 @@ class HermesACPAgent(acp.Agent):
 
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
-            current_choice_provider = str(provider or "").strip().lower()
-            if current_choice_provider == "ollama":
-                current_choice_provider = "custom:ollama"
+            canonical_provider_ids = {entry.slug for entry in CANONICAL_PROVIDERS}
+
+            def canonical_choice_provider(provider_id: str) -> str:
+                raw = str(provider_id or "").strip().lower()
+                if raw == "ollama":
+                    return "custom:ollama"
+                if raw == "custom" and requested_provider_id:
+                    return requested_provider_id
+                if raw.startswith("custom:"):
+                    return raw
+                normalized = normalize_provider(raw)
+                if normalized in canonical_provider_ids:
+                    return normalized
+                return canonical_custom_identity(config_provider=raw) or normalized
+
+            current_choice_provider = canonical_choice_provider(
+                requested_provider_id or provider
+            )
             current_base_url = str(
                 getattr(state.agent, "base_url", "") or ""
             ).strip().rstrip("/").lower()
@@ -801,6 +829,7 @@ class HermesACPAgent(acp.Agent):
                 provider_name = str(row.get("name") or "").strip() or provider_label(
                     row_provider
                 )
+                encoded_provider = canonical_choice_provider(raw_row_provider)
                 row_models = row.get("models")
                 if not isinstance(row_models, (list, tuple)):
                     continue
@@ -816,15 +845,6 @@ class HermesACPAgent(acp.Agent):
                         rendered_model = str(model_entry or "").strip()
                     if not rendered_model:
                         continue
-                    encoded_provider = (
-                        "custom:ollama"
-                        if raw_row_provider == "ollama"
-                        else raw_row_provider
-                        if raw_row_provider == "custom:ollama"
-                        else raw_row_provider
-                        if raw_row_provider.startswith("custom:")
-                        else row_provider
-                    )
                     choice_id = self._encode_model_choice(
                         encoded_provider, rendered_model
                     )

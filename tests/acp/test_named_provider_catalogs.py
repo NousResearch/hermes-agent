@@ -277,3 +277,116 @@ class TestModelStateIncludesNamedProviders:
             )
         assert provider == "custom:local-127.0.0.1:11434"
         assert model == "qwen3:1.7b"
+
+    @pytest.mark.parametrize(
+        (
+            "current_provider",
+            "requested_provider",
+            "inventory_provider",
+            "current_model",
+            "expected_current_id",
+        ),
+        [
+            ("openai-codex", None, "9router", "gpt-5.4", "openai-codex:gpt-5.4"),
+            (
+                "custom",
+                "custom:9router",
+                "custom",
+                "tflow/gpt-5.6-sol",
+                "custom:9router:tflow/gpt-5.6-sol",
+            ),
+        ],
+    )
+    def test_named_provider_inventory_slug_uses_canonical_choice_id(
+        self,
+        monkeypatch,
+        tmp_path,
+        current_provider,
+        requested_provider,
+        inventory_provider,
+        current_model,
+        expected_current_id,
+    ):
+        """ACP must advertise one round-trippable ID for a named endpoint."""
+        import yaml
+
+        from hermes_cli.models import parse_model_input
+
+        model = "tflow/gpt-5.6-sol"
+        config = {
+            "model": {"provider": "openai-codex", "default": "gpt-5.4"},
+            "providers": {
+                "9router": {
+                    "name": "9Router",
+                    "base_url": "https://router.example/v1",
+                    "api_key": "x",
+                    "default_model": model,
+                    "discover_models": False,
+                }
+            },
+        }
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(config), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model=current_model,
+                provider=current_provider,
+                requested_provider=requested_provider,
+                base_url="https://router.example/v1"
+                if current_provider == "custom"
+                else None,
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd=str(tmp_path))
+        inventory = {
+            "providers": [
+                {
+                    "slug": inventory_provider,
+                    "name": "9Router",
+                    "api_url": "https://router.example/v1",
+                    "models": [{"id": model}],
+                }
+            ]
+        }
+
+        with patch(
+            "hermes_cli.inventory.build_models_payload", return_value=inventory
+        ):
+            model_state = acp_agent._build_model_state(state)
+
+        assert isinstance(model_state, SessionModelState)
+        canonical_id = f"custom:9router:{model}"
+        ids = [item.model_id for item in model_state.available_models]
+        assert ids.count(canonical_id) == 1
+        assert f"{inventory_provider}:{model}" not in ids
+        assert model_state.current_model_id == expected_current_id
+
+        provider, parsed_model = parse_model_input(canonical_id, "custom")
+        assert provider == "custom:9router"
+        assert parsed_model == model
+
+    def test_auto_request_keeps_resolved_provider_id(self):
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="anthropic/claude-sonnet-4.5",
+                provider="openrouter",
+                requested_provider="auto",
+                base_url=None,
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+
+        with patch(
+            "acp_adapter.server._named_custom_provider_catalogs", return_value=[]
+        ):
+            model_state = acp_agent._build_model_state(state)
+
+        assert isinstance(model_state, SessionModelState)
+        assert model_state.current_model_id == (
+            "openrouter:anthropic/claude-sonnet-4.5"
+        )

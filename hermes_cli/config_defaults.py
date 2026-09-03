@@ -3146,6 +3146,12 @@ DEFAULT_CONFIG = {
         # from the inline picker; set False to surface every provider that has
         # credentials.
         "explicit_only_pickers": True,
+        # Hard allow-list for chat-surface /model pickers: when non-empty,
+        # only these provider slugs are listed (the current provider is always
+        # kept as a safety net). Stricter than explicit_only_pickers — use it
+        # to pin /model to the providers you actually cycle through.
+        # Example: ["deepseek", "openrouter"]
+        "picker_providers": [],
     },
 
     # Per-model metadata overrides — manually declare context_window,

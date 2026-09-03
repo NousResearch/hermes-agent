@@ -2965,6 +2965,7 @@ def list_authenticated_providers(
     for_picker: bool = False,
     excluded_providers: list | None = None,
     explicit_only: bool = False,
+    picker_providers: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -4336,7 +4337,25 @@ def list_authenticated_providers(
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
-    if explicit_only:
+    if picker_providers:
+        # Hard allow-list: when the user names specific providers, the picker
+        # shows only those (plus the current provider as a safety net so the
+        # active model stays visible). This is stricter than explicit_only —
+        # it hides even explicitly-configured providers the user does not
+        # want to cycle through on chat surfaces.
+        wanted = {
+            str(slug).strip().lower()
+            for slug in picker_providers
+            if str(slug).strip()
+        }
+        if current_provider:
+            wanted.add(str(current_provider).strip().lower())
+        results = [
+            row
+            for row in results
+            if str(row.get("slug", "")).strip().lower() in wanted
+        ]
+    elif explicit_only:
         # Narrow to providers the user explicitly configured — the same
         # semantic the desktop ModelPickerDialog applies via inventory's
         # _filter_explicit_provider_rows (#56974). Ambient / auto-seeded
@@ -4397,6 +4416,7 @@ def list_picker_providers(
     include_moa: bool = False,
     excluded_providers: list | None = None,
     explicit_only: bool = False,
+    picker_providers: list | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -4429,6 +4449,7 @@ def list_picker_providers(
         for_picker=True,
         excluded_providers=excluded_providers,
         explicit_only=explicit_only,
+        picker_providers=picker_providers,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

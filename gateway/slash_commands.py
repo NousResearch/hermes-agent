@@ -1813,6 +1813,7 @@ class GatewaySlashCommandsMixin:
         custom_provs = None
         excluded_provs = []
         _explicit_only = True
+        _picker_providers = None
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
             cfg = _load_gateway_config(config_path=config_path)
@@ -1834,6 +1835,9 @@ class GatewaySlashCommandsMixin:
                 _explicit_only = bool(
                     cfg.get("model_catalog", {}).get("explicit_only_pickers", True)
                 )
+                _pp = cfg.get("model_catalog", {}).get("picker_providers")
+                if isinstance(_pp, list) and _pp:
+                    _picker_providers = [str(s) for s in _pp]
         except Exception:
             pass
 
@@ -1879,6 +1883,7 @@ class GatewaySlashCommandsMixin:
                         include_moa=True,
                         excluded_providers=excluded_provs,
                         explicit_only=_explicit_only,
+                        picker_providers=_picker_providers,
                     )
                 except Exception:
                     providers = []
@@ -2193,6 +2198,7 @@ class GatewaySlashCommandsMixin:
                     max_models=5,
                     excluded_providers=excluded_provs,
                     explicit_only=_explicit_only,
+                    picker_providers=_picker_providers,
                 )
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""

@@ -130,6 +130,33 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 )
 
 
+def _native_responses_request_pressure_tokens(
+    agent: Any,
+    api_messages: List[Dict[str, Any]],
+    effective_system: str,
+) -> Optional[int]:
+    """Return the checkpoint-pruned next-request size when native is eligible."""
+    try:
+        from agent.codex_responses_adapter import (
+            estimate_native_responses_preflight_tokens,
+        )
+
+        native = estimate_native_responses_preflight_tokens(
+            agent,
+            api_messages,
+            system_prompt=effective_system or "",
+            tools=getattr(agent, "tools", None) or None,
+        )
+        if isinstance(native, int) and not isinstance(native, bool) and native >= 0:
+            return native
+    except Exception:
+        logger.debug(
+            "native Responses request estimate unavailable",
+            exc_info=True,
+        )
+    return None
+
+
 def _midturn_request_pressure_tokens(
     agent: Any,
     api_messages: List[Dict[str, Any]],
@@ -151,26 +178,54 @@ def _midturn_request_pressure_tokens(
     ``api_messages`` (which carries the system row) alongside
     ``effective_system`` counts the system prompt exactly once.
     """
-    try:
-        from agent.codex_responses_adapter import (
-            estimate_native_responses_preflight_tokens,
-        )
-
-        native = estimate_native_responses_preflight_tokens(
-            agent,
-            api_messages,
-            system_prompt=effective_system or "",
-            tools=getattr(agent, "tools", None) or None,
-        )
-        if isinstance(native, int) and not isinstance(native, bool) and native >= 0:
-            return native
-    except Exception:
-        logger.debug(
-            "native Responses mid-turn estimate unavailable; "
-            "using generic transcript estimate",
-            exc_info=True,
-        )
+    native = _native_responses_request_pressure_tokens(
+        agent,
+        api_messages,
+        effective_system,
+    )
+    if native is not None:
+        return native
     return approx_tokens + (
+        _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
+    )
+
+
+def _post_tool_request_pressure_tokens(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    effective_system: str,
+    *,
+    provider_prompt_tokens: int,
+) -> int:
+    """Measure the next request after tool results are appended.
+
+    Provider usage describes the request that just finished.  If it emitted a
+    native checkpoint, that pre-checkpoint count is stale for the next wire
+    payload and must not immediately trigger local compression.
+    """
+    overrides = getattr(agent, "request_overrides", None)
+    has_final_context_override = (
+        isinstance(overrides, dict) and "context_management" in overrides
+    )
+    native = None
+    if not has_final_context_override:
+        native = _native_responses_request_pressure_tokens(
+            agent,
+            messages,
+            effective_system,
+        )
+    if native is not None:
+        return native
+    if provider_prompt_tokens > 0:
+        return provider_prompt_tokens
+    # Preserve the existing no-usage fallback exactly: the post-tool path
+    # passed a full request estimate into the mid-turn helper, which then
+    # added its conservative tool-schema overhead separately.
+    fallback = estimate_request_tokens_rough(
+        messages,
+        tools=getattr(agent, "tools", None) or None,
+    )
+    return fallback + (
         _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
     )
 
@@ -8165,51 +8220,26 @@ def run_conversation(
                 if _tc_names == {"execute_code"}:
                     agent.iteration_budget.refund()
                 
-                # Use real token counts from the API response to decide
-                # compression.  prompt_tokens + completion_tokens is the
-                # actual context size the provider reported plus the
-                # assistant turn — a tight lower bound for the next prompt.
-                # Tool results appended above aren't counted yet, but the
-                # threshold (default 50%) leaves ample headroom; if tool
-                # results push past it, the next API call will report the
-                # real total and trigger compression then.
-                #
-                # If last_prompt_tokens is 0 (stale after API disconnect
-                # or provider returned no usage data), fall back to rough
-                # estimate to avoid missing compression.  Without this,
-                # a session can grow unbounded after disconnects because
-                # should_compress(0) never fires.  (#2153)
+                # Measure pressure on the next request, after tool results are
+                # appended. Provider usage is normally the tight lower bound,
+                # but it is stale when that response emitted a native checkpoint:
+                # the next Responses payload is checkpoint-pruned before send.
+                # Missing usage still falls back to the current rough request
+                # estimate so disconnects cannot let the session grow unbounded.
                 _compressor = agent.context_compressor
-                if _compressor.last_prompt_tokens > 0:
-                    # Only use prompt_tokens — completion/reasoning
-                    # tokens don't consume context window space.
-                    # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
-                    # inflate completion_tokens with reasoning,
-                    # causing premature compression.  (#12026)
-                    _real_tokens = _compressor.last_prompt_tokens
-                elif _compressor.last_prompt_tokens == -1:
+                if _compressor.last_prompt_tokens == -1:
                     # Compression just ran and no API-reported prompt count
                     # has arrived yet. Avoid treating a schema-heavy rough
                     # post-compression estimate as real context pressure.
                     _real_tokens = 0
                 else:
-                    # Include tool schemas — with 50+ tools enabled
-                    # these add 20-30K tokens the messages-only
-                    # estimate misses, which can skip compression
-                    # past the configured threshold (#14695).
-                    # Route-aware (#96995/#97602 class): on a compacted
-                    # native-Codex session the generic durable-history
-                    # figure overstates the wire and would false-trigger
-                    # compression here exactly like the pre-API guard —
-                    # this fallback runs precisely when no provider usage
-                    # is available (post-disconnect / gateway restart),
-                    # the unanchored case from #97602's repro.
-                    _real_tokens = _midturn_request_pressure_tokens(
+                    _real_tokens = _post_tool_request_pressure_tokens(
                         agent,
                         messages,
                         active_system_prompt or "",
-                        estimate_request_tokens_rough(
-                            messages, tools=agent.tools or None
+                        provider_prompt_tokens=max(
+                            int(_compressor.last_prompt_tokens or 0),
+                            0,
                         ),
                     )
 

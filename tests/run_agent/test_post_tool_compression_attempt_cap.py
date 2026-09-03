@@ -197,3 +197,39 @@ class TestPostToolCompressionAttemptCap:
 
         assert len(first) == 3
         assert len(second) == 3
+
+    def test_native_checkpoint_reestimates_post_tool_pressure(self, agent):
+        """Stale pre-checkpoint usage must not trigger local compression.
+
+        The provider usage belongs to the request that emitted the native
+        checkpoint.  The next request is checkpoint-pruned, so its live wire
+        estimate wins after the tool result is appended.
+        """
+        agent.context_compressor.should_compress.side_effect = (
+            lambda tokens: tokens >= 10_000
+        )
+
+        with patch(
+            "agent.codex_responses_adapter.estimate_native_responses_preflight_tokens",
+            return_value=5_000,
+        ):
+            result, compress_calls = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        assert compress_calls == []
+
+    def test_final_context_override_keeps_local_post_tool_fallback(self, agent):
+        """A final-wire override must not leave the request ownerless."""
+        agent.request_overrides = {"context_management": None}
+        agent.context_compressor.should_compress.side_effect = (
+            lambda tokens: tokens >= 10_000
+        )
+
+        with patch(
+            "agent.codex_responses_adapter.estimate_native_responses_preflight_tokens",
+            return_value=5_000,
+        ):
+            result, compress_calls = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        assert compress_calls == [3]

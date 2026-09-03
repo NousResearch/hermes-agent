@@ -146,3 +146,76 @@ def test_midturn_pressure_falls_back_to_generic_plus_tools_when_ineligible():
     assert _midturn_request_pressure_tokens(
         agent, messages, "be brief", approx
     ) == approx + _estimate_tools_tokens_rough(agent.tools)
+
+
+# ── Post-tool checkpoint pressure ──────────────────────────────────────────
+
+
+def test_post_tool_pressure_uses_checkpoint_pruned_next_request():
+    from agent.conversation_loop import _post_tool_request_pressure_tokens
+
+    agent = _codex_agent()
+    messages = _history_with_checkpoint()
+    expected = estimate_native_responses_preflight_tokens(
+        agent,
+        messages,
+        system_prompt="be brief",
+        tools=agent.tools,
+    )
+
+    assert isinstance(expected, int)
+    assert expected < 231_462
+    assert _post_tool_request_pressure_tokens(
+        agent,
+        messages,
+        "be brief",
+        provider_prompt_tokens=231_462,
+    ) == expected
+
+
+def test_post_tool_pressure_keeps_provider_usage_when_native_ineligible():
+    from agent.conversation_loop import _post_tool_request_pressure_tokens
+
+    agent = _codex_agent(model="gpt-5.2")
+    messages = [{"role": "user", "content": "hello"}]
+
+    assert _post_tool_request_pressure_tokens(
+        agent,
+        messages,
+        "be brief",
+        provider_prompt_tokens=231_462,
+    ) == 231_462
+
+
+def test_post_tool_pressure_keeps_provider_usage_for_final_context_override():
+    from agent.conversation_loop import _post_tool_request_pressure_tokens
+
+    agent = _codex_agent(request_overrides={"context_management": None})
+    messages = _history_with_checkpoint()
+
+    assert _post_tool_request_pressure_tokens(
+        agent,
+        messages,
+        "be brief",
+        provider_prompt_tokens=231_462,
+    ) == 231_462
+
+
+def test_post_tool_pressure_preserves_missing_usage_fallback():
+    from agent.conversation_loop import (
+        _estimate_tools_tokens_rough,
+        _post_tool_request_pressure_tokens,
+    )
+
+    tools = [{"type": "function", "function": {"name": "t", "parameters": {}}}]
+    agent = _codex_agent(api_mode="chat_completions", tools=tools)
+    messages = [{"role": "user", "content": "hello"}]
+    prior_fallback = estimate_request_tokens_rough(messages, tools=tools)
+    prior_fallback += _estimate_tools_tokens_rough(tools)
+
+    assert _post_tool_request_pressure_tokens(
+        agent,
+        messages,
+        "be brief",
+        provider_prompt_tokens=0,
+    ) == prior_fallback

@@ -203,6 +203,23 @@ class TestRegister:
         with pytest.raises(InvalidCredentialsError):
             provider.complete_password_login(username="admin", password="config-pw")
 
+    def test_env_hash_overrides_stale_env_plaintext(self, basic, monkeypatch):
+        rotated_hash = basic.hash_password("rotated-pw")
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", rotated_hash)
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "stale-pw")
+
+        ctx = MagicMock()
+        basic.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+
+        assert provider.complete_password_login(
+            username="admin", password="rotated-pw"
+        )
+        with pytest.raises(InvalidCredentialsError):
+            provider.complete_password_login(username="admin", password="stale-pw")
+
     def test_explicit_secret_makes_sessions_portable(self, basic, monkeypatch):
         # Two providers built from the SAME explicit secret accept each
         # other's tokens (the restart-/multi-worker-survival contract).

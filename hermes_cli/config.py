@@ -4905,50 +4905,46 @@ def remove_env_value(key: str) -> bool:
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
-    if not env_path.exists():
-        _publish_env_value(key, None)
-        return False
-
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     write_kw = {"encoding": "utf-8"}
 
-    with open(env_path, **read_kw) as f:
-        lines = f.readlines()
-    lines = _sanitize_env_lines(lines)
+    with _CONFIG_LOCK, _env_write_lock(env_path):
+        lines = []
+        if env_path.exists():
+            with open(env_path, **read_kw) as f:
+                lines = _sanitize_env_lines(f.readlines())
 
-    new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
-    found = len(new_lines) < len(lines)
+        new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
+        found = len(new_lines) < len(lines)
 
-    if found:
-        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-        # Preserve original permissions so Docker volume mounts aren't clobbered.
-        original_mode = None
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-        try:
-            with os.fdopen(fd, 'w', **write_kw) as f:
-                f.writelines(new_lines)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, env_path)
-            # Preserve the original file mode (e.g. 0640 for Docker volume
-            # mounts) instead of letting _secure_file unconditionally tighten
-            # to 0600. Mirrors save_env_value().
-            if original_mode is not None:
-                try:
-                    os.chmod(env_path, original_mode)
-                except OSError:
-                    pass
-            else:
-                _secure_file(env_path)
-        except BaseException:
+        if found:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
+            )
+            original_mode = None
             try:
-                os.unlink(tmp_path)
+                original_mode = stat.S_IMODE(env_path.stat().st_mode)
             except OSError:
                 pass
-            raise
+            try:
+                with os.fdopen(fd, "w", **write_kw) as f:
+                    f.writelines(new_lines)
+                    f.flush()
+                    os.fsync(f.fileno())
+                atomic_replace(tmp_path, env_path)
+                if original_mode is not None:
+                    try:
+                        os.chmod(env_path, original_mode)
+                    except OSError:
+                        pass
+                else:
+                    _secure_file(env_path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
     _publish_env_value(key, None)
     invalidate_env_cache()

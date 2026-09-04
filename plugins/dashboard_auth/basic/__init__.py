@@ -438,19 +438,23 @@ def register(ctx) -> None:
         logger.warning("dashboard-auth-basic: %s", LAST_SKIP_REASON)
         return
 
-    # Precedence (env-wins convention): a password supplied via the
-    # HERMES_DASHBOARD_BASIC_AUTH_PASSWORD env var overrides a config.yaml
-    # password_hash, so an operator can rotate the password by setting an
-    # env var without editing config. A password_hash (precomputed) wins
-    # over a config-only plaintext password at the same tier — it's the
-    # preferred at-rest form. Concretely:
-    #   * env password set        → hash it (overrides any config hash)
+    # Precedence follows the environment tier before config, while preferring
+    # the hash within each tier. This lets the rotation command's persisted
+    # environment hash supersede a stale plaintext value injected by a service
+    # manager, without changing the legacy env-plaintext-over-config behavior:
+    #   * env password_hash set   → use it
+    #   * else env password set   → hash it (overrides config)
     #   * else config password_hash set → use it
     #   * else config plaintext password → hash it in-memory
+    password_hash_from_env = os.environ.get(
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", ""
+    ).strip()
     plaintext_from_env = os.environ.get(
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", ""
     ).strip()
-    if plaintext_from_env:
+    if password_hash_from_env:
+        password_hash = password_hash_from_env
+    elif plaintext_from_env:
         password_hash = hash_password(plaintext_from_env)
         logger.info(
             "dashboard-auth-basic: hashed env-supplied password in-memory "

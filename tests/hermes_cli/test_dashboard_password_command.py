@@ -5,6 +5,7 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,8 @@ def test_generate_prints_once_and_persists_only_hash(
     assert values["HERMES_DASHBOARD_BASIC_AUTH_USERNAME"] == "admin"
     assert _verify_password(generated, values["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"])
     assert values["HERMES_DASHBOARD_BASIC_AUTH_SECRET"]
+    assert "session-signing secret was created" in output
+    assert "existing sessions will be invalid after restart" in output
 
 
 def test_interactive_rotation_confirms_password_and_preserves_sessions(
@@ -141,6 +144,28 @@ def test_noninteractive_prompt_is_rejected_without_generate(hermes_home: Path, m
     assert not (hermes_home / ".env").exists()
 
 
+@pytest.mark.parametrize("username", ["用户", "admin用户", "admin\nuser"])
+def test_non_ascii_username_is_rejected_without_partial_write(
+    hermes_home: Path,
+    username: str,
+    capsys: pytest.CaptureFixture[str],
+):
+    from hermes_cli.dashboard_password import cmd_dashboard_password
+
+    hermes_home.mkdir(parents=True)
+    env_path = hermes_home / ".env"
+    original = "UNCHANGED=value\n"
+    env_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="only ASCII"):
+        cmd_dashboard_password(
+            argparse.Namespace(generate=True, username=username, force_logout=False)
+        )
+
+    assert env_path.read_text(encoding="utf-8") == original
+    assert "Dashboard password updated" not in capsys.readouterr().out
+
+
 def test_env_batch_lock_preserves_concurrent_updates(hermes_home: Path):
     script = (
         "import sys; from hermes_cli.config import save_env_values; "
@@ -161,6 +186,67 @@ def test_env_batch_lock_preserves_concurrent_updates(hermes_home: Path):
     assert {values[f"DASHBOARD_TEST_{index}"] for index in range(8)} == {
         str(index) for index in range(8)
     }
+
+
+def test_remove_and_save_share_one_cross_process_transaction_lock(hermes_home: Path):
+    hermes_home.mkdir(parents=True)
+    (hermes_home / ".env").write_text("KEEP=value\nDROP=gone\n", encoding="utf-8")
+    ready = hermes_home / "remove-ready"
+    release = hermes_home / "remove-release"
+    remover_script = """
+import pathlib, sys, time
+from hermes_cli import config
+original = config.atomic_replace
+ready, release = map(pathlib.Path, sys.argv[1:3])
+def paused_replace(source, target):
+    ready.write_text("ready")
+    while not release.exists():
+        time.sleep(0.01)
+    original(source, target)
+config.atomic_replace = paused_replace
+config.remove_env_value("DROP")
+"""
+    saver_script = (
+        "import contextlib, pathlib, sys; from hermes_cli import config; "
+        "original_lock = config._env_write_lock; "
+        "exec(\"@contextlib.contextmanager\\ndef observed_lock(path):\\n"
+        "    pathlib.Path(sys.argv[1]).write_text('attempted')\\n"
+        "    with original_lock(path):\\n        yield\"); "
+        "config._env_write_lock = observed_lock; "
+        "config.save_env_values({'NEW_VALUE': 'survives'})"
+    )
+    env = dict(os.environ, HERMES_HOME=str(hermes_home))
+    root = Path(__file__).resolve().parents[2]
+    remover = subprocess.Popen(
+        [sys.executable, "-c", remover_script, str(ready), str(release)],
+        cwd=root,
+        env=env,
+    )
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+
+    saver_started = hermes_home / "save-started"
+    saver = subprocess.Popen(
+        [sys.executable, "-c", saver_script, str(saver_started)],
+        cwd=root,
+        env=env,
+    )
+    deadline = time.monotonic() + 10
+    while not saver_started.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert saver_started.exists()
+    try:
+        time.sleep(0.5)
+        assert saver.poll() is None
+    finally:
+        release.write_text("release")
+    assert remover.wait(timeout=10) == 0
+    assert saver.wait(timeout=10) == 0
+    values = _load_dotenv(hermes_home)
+    assert values["NEW_VALUE"] == "survives"
+    assert "DROP" not in values
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")

@@ -55,21 +55,35 @@ def cmd_dashboard_password(args: Any) -> None:
     from hermes_cli.config import save_env_values
     from plugins.dashboard_auth.basic import hash_password
 
-    password, generated = _read_password(generate=bool(getattr(args, "generate", False)))
     username = str(getattr(args, "username", None) or "").strip()
     if not username:
         username = _configured_value(_USERNAME_ENV, "username") or "admin"
+    if not username.isascii() or "\n" in username or "\r" in username:
+        raise SystemExit(
+            "Dashboard username must contain only ASCII characters without line breaks; "
+            "password was not changed."
+        )
+
+    password, generated = _read_password(generate=bool(getattr(args, "generate", False)))
 
     force_logout = bool(getattr(args, "force_logout", False))
     current_secret = _configured_value(_SECRET_ENV, "secret")
-    secret = secrets.token_urlsafe(32) if force_logout or not current_secret else current_secret
+    if force_logout:
+        secret_state = "rotated"
+        secret = secrets.token_urlsafe(32)
+    elif current_secret:
+        secret_state = "preserved"
+        secret = current_secret
+    else:
+        secret_state = "created"
+        secret = secrets.token_urlsafe(32)
 
     updates = {
         _USERNAME_ENV: username,
         _PASSWORD_HASH_ENV: hash_password(password),
         _PASSWORD_ENV: None,
     }
-    if force_logout or not current_secret:
+    if secret_state != "preserved":
         updates[_SECRET_ENV] = secret
 
     if not save_env_values(updates):
@@ -79,8 +93,10 @@ def cmd_dashboard_password(args: Any) -> None:
         print(f"Generated dashboard password (displayed once): {password}")
     print(f"Dashboard password updated for user {username!r}.")
     print(f"Stored only its scrypt hash in {display_hermes_home()}/.env.")
-    if force_logout:
+    if secret_state == "rotated":
         print("The session-signing secret was rotated; existing sessions will be invalid after restart.")
+    elif secret_state == "created":
+        print("A session-signing secret was created; existing sessions will be invalid after restart.")
     else:
         print("The session-signing secret was preserved; existing sessions remain valid.")
     print("Restart the dashboard/backend before using the new password.")

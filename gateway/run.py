@@ -4352,6 +4352,9 @@ def _get_channel_override(
 
     Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
     ``parent_id`` (forum threads / child channels inherit the parent entry).
+    Falls back to a ``"default"`` entry, if configured, when none of those
+    match — lets a platform-wide override apply to every channel without
+    enumerating each chat_id individually.
     """
     platforms = getattr(config, "platforms", None)
     if not platforms:
@@ -4366,7 +4369,7 @@ def _get_channel_override(
         ov = overrides.get(key)
         if ov is not None:
             return ov
-    return None
+    return overrides.get("default")
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:

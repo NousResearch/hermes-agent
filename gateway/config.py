@@ -602,6 +602,11 @@ class ChannelOverride:
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
     models and personas without running separate gateway instances.
+
+    The key ``"default"`` is reserved: if no specific chat_id/thread_id/
+    parent_id entry matches, ``_get_channel_override`` falls back to it, so a
+    single entry can apply to every channel on a platform without listing
+    each chat_id.
     """
     model: Optional[str] = None
     provider: Optional[str] = None

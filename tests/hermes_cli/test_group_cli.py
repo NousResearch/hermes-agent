@@ -340,6 +340,33 @@ def test_wait_ignores_uncommitted_member_message(home):
     assert rc == 0 and got == [] and summary["status"] == "bounded"
 
 
+def test_wait_does_not_stream_replies_from_other_discussions_or_threads(home):
+    room = mk_room()
+    sent = _sent(room)
+    other = g.HostedTransport().send(
+        g.resolve_room("room-1"), text="other relay", thread="t2", label="Other", event_key="k-other"
+    )
+    # A committed reply to the OTHER discussion (different discussion id AND thread).
+    _member_turn(room, discussion_id=other.message_id, member_id="archie", text="for t2", thread="t2", n=1)
+    # A committed reply whose thread matches ours but belongs to another discussion id.
+    _member_turn(room, discussion_id="user:stale", member_id="archie", text="stale", thread="cli", n=2)
+    # Ours.
+    _member_turn(room, discussion_id=sent.message_id, member_id="archie", text="for us", n=3)
+    _activity(room, discussion_id=sent.message_id)
+    got = []
+    rc, summary = g.HostedTransport().wait(sent, timeout=5, poll_seconds=0.01, on_reply=lambda s, t: got.append(t))
+    assert rc == 0 and got == ["for us"]
+    assert [r["text"] for r in summary["replies"]] == ["for us"]
+
+
+def test_wait_rejects_non_positive_poll(home):
+    room = mk_room()
+    sent = _sent(room)
+    for bad in (0, -1):
+        with pytest.raises(g.GroupCLIError, match="--poll"):
+            g.HostedTransport().wait(sent, timeout=1, poll_seconds=bad, on_reply=lambda *a: None)
+
+
 def test_wait_only_settles_on_own_discussion(home):
     room = mk_room()
     sent = _sent(room)
@@ -358,6 +385,7 @@ def test_wait_times_out_with_partial_replies(home):
 
 
 def test_wait_exit_4_when_room_stop_supersedes(home):
+    """A stop fence is room-wide (policy stopped_through_seq), so exit 4 even for a stop aimed elsewhere."""
     room = mk_room()
     sent = _sent(room)
     hosted_rooms.request_room_stop(

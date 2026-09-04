@@ -523,7 +523,10 @@ concurrent relays should pass distinct `--thread` values, and a new relaying
 session should start its own thread rather than reuse another session's.
 
 Exit codes: `0` settled/bounded, `1` error, `2` usage, `3` timeout (replies
-received so far are already printed), `4` superseded by a room stop.
+received so far are already printed), `4` superseded by a room stop. A room
+stop is room-wide — it cancels every pending user turn in every thread,
+including a relay's — so `4` is correct even when the stop targeted another
+thread.
 
 ## `hermes secrets`
 

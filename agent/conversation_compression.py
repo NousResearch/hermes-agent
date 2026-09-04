@@ -740,11 +740,13 @@ class CompressionCommitFence:
             self.set_total_ceiling_seconds(total_ceiling_seconds)
 
     def set_total_ceiling_seconds(self, seconds: float) -> None:
-        """Arm the wall-clock deadline shared by the host and worker."""
+        """Arm the wall-clock and no-progress clocks for a new attempt."""
         seconds = float(seconds)
         if seconds <= 0:
             raise ValueError("total compression ceiling must be positive")
-        self._deadline = time.monotonic() + seconds
+        now = time.monotonic()
+        self._last_progress = now
+        self._deadline = now + seconds
 
     def touch_progress(self) -> None:
         """Record forward progress (e.g. a streamed summary token arriving).
@@ -1527,7 +1529,6 @@ def run_compress_context_with_progress_timeout(
     ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
     idle = float(idle_timeout_seconds)
     fence = fence if fence is not None else CompressionCommitFence()
-    fence.set_total_ceiling_seconds(ceiling)
     # Sync mirror of gateway session-hygiene's run_in_executor(None, ...) +
     # wait_for loop (gateway/run.py): offload compress_context onto the shared
     # daemon pool, poll with an inactivity budget + total ceiling, then
@@ -1578,17 +1579,18 @@ def run_compress_context_with_progress_timeout(
             return messages, ""
         return worker(worker_fence)
 
-    # Bare pool workers start with an empty ContextVar map; propagate the
-    # parent conversation/approval context into the worker.
+    # Capture the parent context before the attempt clocks start: this helper
+    # can lazily import approval plumbing, which is setup work rather than
+    # summary-model time. Every failure after admission must release the slot.
     try:
-        future = executor.submit(
-            propagate_context_to_thread(_fence_gated_worker), fence
-        )
+        wrapped_worker = propagate_context_to_thread(_fence_gated_worker)
+        wait_started = time.monotonic()
+        fence.set_total_ceiling_seconds(ceiling)
+        future = executor.submit(wrapped_worker, fence)
     except BaseException:
         _release_compression_admission()
         raise
     future.add_done_callback(_release_compression_admission)
-    wait_started = time.monotonic()
     # F2: EVERY host unwind (KeyboardInterrupt, task cancellation, unexpected
     # exception while waiting) must revoke future commit admission before the
     # host resumes, or a detached worker could later commit and mutate durable

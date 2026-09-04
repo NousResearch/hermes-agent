@@ -15,6 +15,8 @@ _profile_scoped = _registry.profile_scoped
 def _(rid, params: dict) -> dict:
     global _paste_counter
     text = params.get("text", "")
+    if not isinstance(text, str):
+        return _err(rid, 4000, "text must be a string")
     if not text:
         return _err(rid, 4004, "empty paste")
 

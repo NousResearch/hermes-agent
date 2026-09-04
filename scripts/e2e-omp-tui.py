@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import os
 import pty
 import re
@@ -20,6 +22,7 @@ UI_TUI = _PROJECT_ROOT / "ui-tui"
 UI_DIST = UI_TUI / "dist" / "entry.js"
 MONITOR_PID = Path("/tmp/hermes-omp-monitor.pid")
 MONITOR_LOG = Path("/tmp/hermes-omp-monitor.log")
+LIVE_LOCK = Path("/tmp/hermes-omp-live.lock")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 COMPOSER_BORDER_RE = re.compile(r"[╭╮╯╰┌┐└┘│─]")
 READY_HINTS = ("❯", "ready", "/help", "tools ·")
@@ -44,6 +47,93 @@ def find_hermes() -> str:
     if local.is_file():
         return str(local)
     return hermes
+
+
+@contextlib.contextmanager
+def live_test_lock():
+    """Exclusive lock so overlapping ``--live`` runs do not SIGTERM each other."""
+    LIVE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with LIVE_LOCK.open("w", encoding="utf-8") as lock_fp:
+        try:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            holder = lock_fp.read().strip() or "another process"
+            print(
+                f"FAIL: live PTY already running ({holder}). "
+                "Run one ``test --live`` at a time.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from None
+        lock_fp.write(f"pid={os.getpid()}\n")
+        lock_fp.flush()
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+
+
+def _signal_pattern_except_self(pattern: str, sig: signal.Signals = signal.SIGTERM) -> None:
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return
+    me = os.getpid()
+    for token in out.stdout.split():
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        if pid == me:
+            continue
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+
+def cleanup_stale_live_runs(*, quiet: bool = False) -> None:
+    """Drop orphaned live smoke / TUI processes from prior overlapping runs."""
+    patterns = (
+        "e2e-omp-tui.py test --live",
+        "hermes --tui",
+        f"node --expose-gc {UI_DIST}",
+    )
+    for pattern in patterns:
+        _signal_pattern_except_self(pattern)
+    time.sleep(0.5)
+    if not quiet:
+        print("live preflight: cleared stale hermes/npm/e2e processes", flush=True)
+
+
+def cleanup_project_tui_nodes() -> None:
+    """Node may survive ``killpg`` if Ink re-parents; sweep the project bundle."""
+    dist = str(UI_DIST)
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", dist],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return
+    for token in out.stdout.split():
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
 
 
 def read_available(fd: int, timeout: float) -> bytes:
@@ -243,44 +333,48 @@ def cmd_test(args: argparse.Namespace) -> int:
         if boot_rc != 0:
             return boot_rc
 
-    hermes = find_hermes()
-    use_dev = args.dev or not UI_DIST.exists()
-    argv = tui_argv(hermes, dev=use_dev)
-    env = build_env(args.cols, args.rows)
-    print(f"live PTY: {' '.join(argv)}")
+    with live_test_lock():
+        cleanup_stale_live_runs(quiet=args.quiet_bootstrap)
 
-    pid, fd = launch_pty(argv, env, args.cols, args.rows)
-    captured = b""
-    try:
-        deadline = time.monotonic() + args.timeout
-        started = time.monotonic()
-        last_progress = 0.0
-        while time.monotonic() < deadline:
-            chunk = read_available(fd, min(2.0, deadline - time.monotonic()))
-            if chunk:
-                captured += chunk
-                plain = strip_ansi(captured.decode("utf-8", errors="replace"))
-                if any(h in plain for h in READY_HINTS) and COMPOSER_BORDER_RE.search(plain):
-                    break
-            else:
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    break
-                elapsed = time.monotonic() - started
-                if elapsed - last_progress >= 30 and len(captured) <= len(MOUSE_CSI) + 20:
-                    print(
-                        f"… still waiting for Ink ({int(elapsed)}s; npm/build or Node load can be silent)",
-                        file=sys.stderr,
-                    )
-                    last_progress = elapsed
-                time.sleep(0.1)
-    finally:
-        terminate_pid(pid)
+        hermes = find_hermes()
+        use_dev = args.dev or not UI_DIST.exists()
+        argv = tui_argv(hermes, dev=use_dev)
+        env = build_env(args.cols, args.rows)
+        print(f"live PTY: {' '.join(argv)}")
+
+        pid, fd = launch_pty(argv, env, args.cols, args.rows)
+        captured = b""
         try:
-            os.close(fd)
-        except OSError:
-            pass
+            deadline = time.monotonic() + args.timeout
+            started = time.monotonic()
+            last_progress = 0.0
+            while time.monotonic() < deadline:
+                chunk = read_available(fd, min(2.0, deadline - time.monotonic()))
+                if chunk:
+                    captured += chunk
+                    plain = strip_ansi(captured.decode("utf-8", errors="replace"))
+                    if any(h in plain for h in READY_HINTS) and COMPOSER_BORDER_RE.search(plain):
+                        break
+                else:
+                    try:
+                        os.kill(pid, 0)
+                    except OSError:
+                        break
+                    elapsed = time.monotonic() - started
+                    if elapsed - last_progress >= 30 and len(captured) <= len(MOUSE_CSI) + 20:
+                        print(
+                            f"… still waiting for Ink ({int(elapsed)}s; npm/build or Node load can be silent)",
+                            file=sys.stderr,
+                        )
+                        last_progress = elapsed
+                    time.sleep(0.1)
+        finally:
+            terminate_pid(pid)
+            cleanup_project_tui_nodes()
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     text = captured.decode("utf-8", errors="replace")
     failures = assert_live_acceptance(text)

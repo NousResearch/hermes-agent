@@ -23,6 +23,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 
 import type { ProfileRoute } from './types'
 
@@ -133,6 +134,17 @@ async function pushAndSettle(times = 1) {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
+  vi.stubGlobal('crypto', {
+    subtle: {
+      digest: async (_algorithm: string, input: BufferSource) => {
+        const bytes = input instanceof ArrayBuffer
+          ? new Uint8Array(input)
+          : new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+        const digest = createHash('sha256').update(bytes).digest()
+        return digest.buffer.slice(digest.byteOffset, digest.byteOffset + digest.byteLength)
+      }
+    }
+  } as unknown as Crypto)
   hostMock.onEvent = vi.fn(() => vi.fn())
   hostMock.agents = vi.fn(async () => ({ agents: [], sources: [] }))
   hostMock.connections = vi.fn(async () => [])
@@ -546,6 +558,174 @@ describe('the drain loop wires drain → deliver → reply', () => {
     target_connection: 'b',
     target_profile: 'ops'
   }
+
+  const typedEnvelope = (id: string, targetConnection: string, targetProfile: string, targetHandle: string) => ({
+    schema: 'asm-hermes-a2a-envelope/v2',
+    id,
+    message_id: id,
+    idempotency_key: `mission:relay:${id}`,
+    type: 'REQUEST',
+    from_agent: 'hermes',
+    to_agent: targetHandle,
+    target_connection: targetConnection,
+    target_profile: targetProfile,
+    target_handle: targetHandle,
+    message: `status for ${targetHandle}`,
+    scope: { mutation: 'none', production: 'none' },
+    expires_at: Date.now() / 1000 + 60,
+    authority_effect: 'none'
+  })
+
+  const targetReceipt = (
+    messageId: string,
+    targetConnection: string,
+    targetProfile: string,
+    targetHandle: string,
+    reply = `reply from ${targetHandle}`
+  ) => ({
+    schema: 'asm-hermes-a2a-target-receipt/v1',
+    status: 'completed',
+    idempotency_sha256: '1'.repeat(64),
+    message_id: messageId,
+    delivery_sha256: '2'.repeat(64),
+    target_sha256: '3'.repeat(64),
+    target_connection: targetConnection,
+    target_profile: targetProfile,
+    target_handle: targetHandle,
+    started_at: '2026-09-04T20:00:00+00:00',
+    completed_at: '2026-09-04T20:00:01+00:00',
+    reply_sha256: createHash('sha256').update(reply, 'utf8').digest('hex')
+  })
+
+  it.each([
+    ['a', 'b', 'ops', 'ops', 'a-to-b'],
+    ['b', 'a', 'default', 'hermes', 'b-to-a']
+  ])('requires a readback receipt in the %s direction', async (senderId, targetId, targetProfile, targetHandle, id) => {
+    const currentEnvelope = typedEnvelope(`${'a'.repeat(31)}${id.slice(-1)}`, targetId, targetProfile, targetHandle)
+    const receipt = targetReceipt(currentEnvelope.message_id, targetId, targetProfile, targetHandle)
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === senderId ? [currentEnvelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: `reply from ${targetHandle}`, target_receipt: receipt }
+      }
+
+      if (call.method === 'bot_relay.receipt.read') {
+        return { receipt }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: targetId,
+      params: {
+        message: currentEnvelope.message,
+        profile: targetProfile,
+        envelope: currentEnvelope
+      }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.receipt.read')).toMatchObject({
+      connectionId: targetId,
+      params: {
+        message_id: currentEnvelope.message_id,
+        idempotency_key: currentEnvelope.idempotency_key,
+        envelope: currentEnvelope
+      }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
+      connectionId: senderId,
+      params: {
+        id: currentEnvelope.id,
+        reply: `reply from ${targetHandle}`,
+        target_receipt: receipt
+      }
+    })
+
+    stopBotRelay()
+  })
+
+  it('does not post structured success when target readback is missing or changed', async () => {
+    const currentEnvelope = typedEnvelope(`${'b'.repeat(32)}`, 'b', 'ops', 'ops')
+    const receipt = targetReceipt(currentEnvelope.message_id, 'b', 'ops', 'ops', 'unverified reply')
+    let readback: unknown = {}
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [currentEnvelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'unverified reply', target_receipt: receipt }
+      }
+
+      if (call.method === 'bot_relay.receipt.read') {
+        return { receipt: readback }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: currentEnvelope.id,
+      reason: 'target_receipt_unverified'
+    })
+    expect(clearBotAttentionMock).not.toHaveBeenCalledWith('b::ops')
+
+    calls.length = 0
+    readback = { ...receipt, target_connection: 'other' }
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: currentEnvelope.id,
+      reason: 'target_receipt_mismatch'
+    })
+
+    stopBotRelay()
+  })
+
+  it('rejects a structured receipt whose reply digest does not match the returned reply', async () => {
+    const currentEnvelope = typedEnvelope(`${'c'.repeat(32)}`, 'b', 'ops', 'ops')
+    const receipt = targetReceipt(currentEnvelope.message_id, 'b', 'ops', 'ops')
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [currentEnvelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return {
+          reply: 'tampered reply',
+          target_receipt: { ...receipt, reply_sha256: '0'.repeat(64) }
+        }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.some(call => call.method === 'bot_relay.receipt.read')).toBe(false)
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: currentEnvelope.id,
+      reason: 'target_receipt_mismatch'
+    })
+
+    stopBotRelay()
+  })
 
   it('delivers on the target’s own socket and posts the reply to the sender', async () => {
     const calls = respondWith(call => {

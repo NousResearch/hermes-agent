@@ -85,6 +85,9 @@ def test_resolve_remote_target_forms(root):
     assert bot_relay.resolve_remote_target("default", roster)["connection_id"] == "cloud-1"
     # exact connection-qualified form
     assert bot_relay.resolve_remote_target("hermes@cloud-1", roster)["profile"] == "default"
+    # profile@connection — the form Desktop's mention middleware annotates
+    # for remote bots (#97678); the UI alias form must not be required
+    assert bot_relay.resolve_remote_target("default@cloud-1", roster)["profile"] == "default"
     assert bot_relay.resolve_remote_target("hermes@nope", roster) is None
     assert bot_relay.resolve_remote_target("ghost", roster) is None
 
@@ -145,6 +148,164 @@ def test_idempotent_delivery_replays_completed_result_and_holds_ambiguous(root):
     assert "already delivered" in replay["reply"]
     conflict = bot_relay.begin_idempotent_delivery(root, "work:1", "b" * 32, "other\0different")
     assert conflict["disposition"] == "conflict"
+
+
+def test_target_receipt_is_durable_and_bound_to_claimed_envelope(root):
+    target = _target(conn="ssh-vps", profile="researcher", handle="researcher")
+    envelope = bot_relay.enqueue_envelope(
+        root,
+        target=target,
+        message="receipt proof",
+        sender_profile="default",
+        sender_handle="hermes",
+        metadata={"idempotency_key": "mission:receipt:1", "subject": "Receipt proof"},
+    )
+    claimed = bot_relay.claim_pending_envelopes(root)
+    assert [item["id"] for item in claimed] == [envelope["id"]]
+    fingerprint = bot_relay.delivery_fingerprint(
+        claimed[0], target_profile="researcher", message="receipt proof", structured=True
+    )
+    admitted = bot_relay.begin_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        envelope["message_id"],
+        fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert admitted["disposition"] == "admitted"
+    pending = bot_relay.read_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        message_id=envelope["message_id"],
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert pending["disposition"] == "pending"
+
+    receipt = bot_relay.complete_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        "target reply",
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert receipt["schema"] == "asm-hermes-a2a-target-receipt/v1"
+    readback = bot_relay.read_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        message_id=envelope["message_id"],
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert readback == {"disposition": "completed", "receipt": receipt}
+
+    reply_path = bot_relay.write_reply(root, envelope["id"], reply="target reply", target_receipt=receipt)
+    reply = json.loads(reply_path.read_text(encoding="utf-8"))
+    assert reply["target_receipt"] == receipt
+
+    with pytest.raises(ValueError, match="delivery does not match envelope"):
+        bot_relay.write_reply(
+            root,
+            envelope["id"],
+            reply="target reply",
+            target_receipt={**receipt, "delivery_sha256": "f" * 64},
+        )
+
+
+def test_delayed_live_receipt_is_completed_by_persist_reconciliation(root):
+    """A timed-out live queue can finish when the exact platform row lands later."""
+    message_id = "d" * 32
+    key = "mission:receipt:delayed-live"
+    fingerprint = "delayed-live-fingerprint"
+    reply = "Delivered into @researcher's open Bot Chat; the reply will appear there."
+    admitted = bot_relay.begin_idempotent_delivery(
+        root,
+        key,
+        message_id,
+        fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+        completion_reply=reply,
+    )
+    assert admitted["disposition"] == "admitted"
+    assert bot_relay.read_idempotent_delivery(
+        root,
+        key,
+        message_id=message_id,
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )["disposition"] == "pending"
+
+    completed = bot_relay.complete_pending_deliveries_for_message(root, message_id)
+    assert len(completed) == 1
+    assert completed[0]["status"] == "completed"
+    assert bot_relay.read_idempotent_delivery(
+        root,
+        key,
+        message_id=message_id,
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    ) == {"disposition": "completed", "receipt": completed[0]}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("target_connection", "other-connection"), ("target_profile", "other-profile"), ("target_handle", "other-handle")],
+)
+def test_target_receipt_readback_rejects_adversarial_identity(root, field, value):
+    target = _target(conn="ssh-vps", profile="researcher", handle="researcher")
+    envelope = bot_relay.enqueue_envelope(
+        root,
+        target=target,
+        message="identity check",
+        sender_profile="default",
+        sender_handle="hermes",
+        metadata={"idempotency_key": f"mission:receipt:{field}"},
+    )
+    claimed = bot_relay.claim_pending_envelopes(root)[0]
+    fingerprint = bot_relay.delivery_fingerprint(
+        claimed, target_profile="researcher", message="identity check", structured=True
+    )
+    bot_relay.begin_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        envelope["message_id"],
+        fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    bot_relay.complete_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        "reply",
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    identity = {"target_connection": "ssh-vps", "target_profile": "researcher", "target_handle": "researcher"}
+    identity[field] = value
+    outcome = bot_relay.read_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        message_id=envelope["message_id"],
+        delivery_fingerprint=fingerprint,
+        **identity,
+    )
+    assert outcome["disposition"] == "mismatch"
+    assert outcome["reason"] == "target_receipt_mismatch"
 
 
 def test_per_envelope_expiry_overrides_global_ttl(root, monkeypatch):

@@ -24,6 +24,7 @@ import types
 import pytest
 
 from hermes_state import SessionDB
+from tools import bot_relay
 
 
 def _make_db(tmp_path) -> SessionDB:
@@ -130,6 +131,74 @@ def test_platform_message_id_survives_a_persist_content_override(tmp_path):
     assert db.has_platform_message_id(session_id, "discord-7777")
 
 
+def test_turn_start_persistence_completes_delayed_live_relay_receipt(tmp_path, monkeypatch):
+    """The existing turn-start writer closes a receipt that timed out before persistence."""
+    from agent.turn_context import _persist_turn_start
+
+    install_root = tmp_path / ".hermes"
+    profile_home = install_root / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    message_id = "r" * 32
+    key = "mission:receipt:turn-start"
+    fingerprint = "turn-start-fingerprint"
+    bot_relay.begin_idempotent_delivery(
+        install_root,
+        key,
+        message_id,
+        fingerprint,
+        target_connection="spark-02",
+        target_profile="ops",
+        target_handle="ops",
+        completion_reply="Delivered into @ops's open Bot Chat; the reply will appear there.",
+    )
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: profile_home)
+
+    class _DB:
+        durable = False
+
+        def has_platform_message_id(self, _session_id, _platform_message_id):
+            return self.durable
+
+    db = _DB()
+
+    class _Agent:
+        session_id = "turn-start-session"
+        _session_db = db
+        _session_persist_lock = None
+        _pending_cli_user_message = None
+        _persist_user_message_platform_id = message_id
+
+        def _ensure_db_session(self):
+            pass
+
+        def _persist_session(self, _messages, _conversation_history):
+            pass
+
+    _persist_turn_start(_Agent(), [], None, None)
+    assert bot_relay.read_idempotent_delivery(
+        install_root,
+        key,
+        message_id=message_id,
+        delivery_fingerprint=fingerprint,
+        target_connection="spark-02",
+        target_profile="ops",
+        target_handle="ops",
+    )["disposition"] == "pending"
+
+    db.durable = True
+    _persist_turn_start(_Agent(), [], None, None)
+    outcome = bot_relay.read_idempotent_delivery(
+        install_root,
+        key,
+        message_id=message_id,
+        delivery_fingerprint=fingerprint,
+        target_connection="spark-02",
+        target_profile="ops",
+        target_handle="ops",
+    )
+    assert outcome["disposition"] == "completed"
+
+
 def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     """Construct a minimal build_turn_context call.
 
@@ -170,7 +239,7 @@ def test_gateway_run_agent_threads_the_event_message_id_into_the_turn():
     import ast
     import inspect
 
-    import gateway.run as gateway_run
+    import gateway.run_turn_runner as gateway_run
 
     source = inspect.getsource(gateway_run)
     tree = ast.parse(source)

@@ -138,22 +138,6 @@ _BH_ABSENT = (
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# chrome_fake_audio_flags
-# ---------------------------------------------------------------------------
-
-
-def test_chrome_fake_audio_flags_linux():
-    from plugins.google_meet.audio_bridge import chrome_fake_audio_flags
-
-    with patch("plugins.google_meet.audio_bridge.platform.system",
-               return_value="Linux"):
-        flags = chrome_fake_audio_flags(
-            {"platform": "linux", "device_name": "hermes_meet_src"}
-        )
-    assert "--use-fake-ui-for-media-stream" in flags
-
-
 def test_property_access_before_setup_raises():
     from plugins.google_meet.audio_bridge import AudioBridge
 

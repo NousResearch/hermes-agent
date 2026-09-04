@@ -140,8 +140,133 @@ interface RelayEnvelope {
   message?: string
   message_id?: string
   schema?: string
+  type?: string
+  from_agent?: string
+  to_agent?: string
+  scope?: Record<string, unknown>
+  expires_at?: number
+  authority_effect?: string
+  target_handle?: string
   target_connection?: string
   target_profile?: string
+}
+
+interface RelayTargetReceipt {
+  schema: string
+  status: string
+  idempotency_sha256: string
+  message_id: string
+  delivery_sha256: string
+  target_sha256: string
+  target_connection: string
+  target_profile: string
+  target_handle: string
+  started_at: string
+  completed_at: string
+  reply_sha256: string
+}
+
+const RELAY_ENVELOPE_SCHEMA = 'asm-hermes-a2a-envelope/v2'
+const RELAY_TARGET_RECEIPT_SCHEMA = 'asm-hermes-a2a-target-receipt/v1'
+const RELAY_RECEIPT_READBACK_TIMEOUT_MS = 30_000
+
+class RelayReceiptError extends Error {
+  readonly reason: string
+
+  constructor(reason: string, message: string) {
+    super(message)
+    this.name = 'RelayReceiptError'
+    this.reason = reason
+  }
+}
+
+function isStructuredRelayEnvelope(envelope: RelayEnvelope): boolean {
+  return String(envelope?.schema || '') === RELAY_ENVELOPE_SCHEMA
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle) {
+    throw new RelayReceiptError(
+      'target_receipt_unverified',
+      'target receipt reply digest cannot be verified in this runtime'
+    )
+  }
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function validateRelayTargetReceipt(
+  value: unknown,
+  envelope: RelayEnvelope,
+  target: RelayConnection
+): RelayTargetReceipt {
+  if (!value || typeof value !== 'object') {
+    throw new RelayReceiptError('target_receipt_unverified', 'target gateway returned no typed receipt')
+  }
+
+  const receipt = value as Record<string, unknown>
+  const required = [
+    'schema', 'status', 'idempotency_sha256', 'message_id', 'delivery_sha256',
+    'target_sha256', 'target_connection', 'target_profile', 'target_handle',
+    'started_at', 'completed_at', 'reply_sha256'
+  ]
+
+  if (required.some(field => typeof receipt[field] !== 'string' || !String(receipt[field]).trim())) {
+    throw new RelayReceiptError('target_receipt_unverified', 'target gateway returned an incomplete typed receipt')
+  }
+  if (receipt.schema !== RELAY_TARGET_RECEIPT_SCHEMA || receipt.status !== 'completed') {
+    throw new RelayReceiptError('target_receipt_unverified', 'target gateway receipt is not completed v1')
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(receipt.idempotency_sha256)) ||
+      !/^[0-9a-f]{64}$/.test(String(receipt.delivery_sha256)) ||
+      !/^[0-9a-f]{64}$/.test(String(receipt.target_sha256)) ||
+      !/^[0-9a-f]{64}$/.test(String(receipt.reply_sha256))) {
+    throw new RelayReceiptError('target_receipt_unverified', 'target gateway receipt contains an invalid digest')
+  }
+
+  const messageId = String(envelope.message_id || envelope.id || '')
+  const targetProfile = String(envelope.target_profile || '')
+  const targetHandle = String(envelope.target_handle || envelope.to_agent || '')
+  if (receipt.message_id !== messageId ||
+      receipt.target_connection !== target.id ||
+      receipt.target_profile !== targetProfile ||
+      (targetHandle && receipt.target_handle !== targetHandle)) {
+    throw new RelayReceiptError('target_receipt_mismatch', 'target gateway receipt identity does not match the envelope route')
+  }
+
+  return receipt as unknown as RelayTargetReceipt
+}
+
+function assertSameRelayTargetReceipt(left: RelayTargetReceipt, right: RelayTargetReceipt): void {
+  const fields: Array<keyof RelayTargetReceipt> = [
+    'schema', 'status', 'idempotency_sha256', 'message_id', 'delivery_sha256',
+    'target_sha256', 'target_connection', 'target_profile', 'target_handle',
+    'started_at', 'completed_at', 'reply_sha256'
+  ]
+  if (fields.some(field => left[field] !== right[field])) {
+    throw new RelayReceiptError('target_receipt_mismatch', 'target receipt changed between delivery and readback')
+  }
+}
+
+async function assertRelayReplyDigest(
+  reply: unknown,
+  receipt: RelayTargetReceipt,
+  replayed: boolean
+): Promise<void> {
+  // A replay deliberately returns a suppression notice while the durable
+  // receipt retains the original reply digest. The receipt/readback equality
+  // check still applies; only a replay skips comparing that notice to the
+  // original reply digest.
+  if (replayed) {
+    return
+  }
+  if (typeof reply !== 'string') {
+    throw new RelayReceiptError('target_receipt_unverified', 'target gateway returned a non-text reply')
+  }
+  if (await sha256Hex(reply) !== receipt.reply_sha256) {
+    throw new RelayReceiptError('target_receipt_mismatch', 'target receipt reply digest does not match the reply')
+  }
 }
 
 /** Reconcile retention with the CURRENT connection set: pin new connections,
@@ -749,7 +874,12 @@ async function drainRelayOutboxes() {
         const targetConnectionId = String(envelope?.target_connection || '')
         let target = byId.get(targetConnectionId)
 
-        const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
+        const postReply = async (payload: {
+          error?: string
+          reason?: string
+          reply?: string
+          target_receipt?: RelayTargetReceipt
+        }) => {
           try {
             await host.requestProfile(sender.route, 'bot_relay.reply', {
               id: envelopeId,
@@ -794,7 +924,11 @@ async function drainRelayOutboxes() {
         const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
         try {
-          const res = await host.requestProfile<{ reply?: string }>(
+          const res = await host.requestProfile<{
+            reply?: string
+            replayed?: boolean
+            target_receipt?: unknown
+          }>(
             target.route,
             'bot_relay.deliver',
             {
@@ -808,9 +942,31 @@ async function drainRelayOutboxes() {
             RELAY_DELIVER_TIMEOUT_MS
           )
 
+          let targetReceipt: RelayTargetReceipt | undefined
+          if (isStructuredRelayEnvelope(envelope)) {
+            const deliveredReceipt = validateRelayTargetReceipt(res?.target_receipt, envelope, target)
+            await assertRelayReplyDigest(res?.reply, deliveredReceipt, res?.replayed === true)
+            const readback = await host.requestProfile<{ receipt?: unknown }>(
+              target.route,
+              'bot_relay.receipt.read',
+              {
+                profile: String(envelope?.target_profile || ''),
+                message: String(envelope?.message || ''),
+                message_id: String(envelope?.message_id || envelopeId),
+                idempotency_key: String(envelope?.idempotency_key || envelopeId),
+                envelope_schema: RELAY_ENVELOPE_SCHEMA,
+                envelope
+              },
+              RELAY_RECEIPT_READBACK_TIMEOUT_MS
+            )
+            targetReceipt = validateRelayTargetReceipt(readback?.receipt, envelope, target)
+            assertSameRelayTargetReceipt(deliveredReceipt, targetReceipt)
+          }
+
           clearBotAttention(attentionKey)
           await postReply({
-            reply: String(res?.reply || '')
+            reply: String(res?.reply || ''),
+            ...(targetReceipt ? { target_receipt: targetReceipt } : {})
           })
         } catch (error: any) {
           // #93091: bot_relay.deliver classifies the failed turn and ships the
@@ -818,7 +974,7 @@ async function drainRelayOutboxes() {
           // the sender-side reply file so the waiter (and the sending agent)
           // get the machine-readable cause, and prefer it for the badge —
           // classified codes beat free-text re-parsing.
-          const reason = String(error?.data?.reason || '').trim()
+          const reason = String(error?.data?.reason || error?.reason || '').trim()
           noteBotAttention(attentionKey, reason || error?.message || error)
           await postReply({
             error: String(error?.message || error || 'delivery failed'),

@@ -111,8 +111,9 @@ class TestFindBashSkipsBrokenCustomPath:
         %LOCALAPPDATA%\\hermes\\git → Program Files) only exists in
         ``_find_bash``'s Windows branch."""
         import tools.environments.local as local_mod
+        from tools.environments import local_gitbash_probe as gitbash_probe
 
-        local_mod._bash_starts_cache.clear()
+        gitbash_probe._bash_starts_cache.clear()
 
         broken = tmp_path / "broken" / "bash.exe"
         broken.parent.mkdir()
@@ -140,9 +141,10 @@ class TestGitBashExternalProgramProbe:
         every host, so this stays on the Linux runner with ``subprocess.run``
         mocked — no platform faking needed."""
         import tools.environments.local as local_mod
+        from tools.environments import local_gitbash_probe as gitbash_probe
 
-        local_mod._bash_starts_cache.clear()
-        local_mod._bash_probe_details_cache.clear()
+        gitbash_probe._bash_starts_cache.clear()
+        gitbash_probe._bash_probe_details_cache.clear()
         calls = []
 
         def fake_run(argv, **kwargs):
@@ -151,7 +153,7 @@ class TestGitBashExternalProgramProbe:
 
         monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
 
-        assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
+        assert gitbash_probe._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
 
     @pytest.mark.windows_only
@@ -162,9 +164,10 @@ class TestGitBashExternalProgramProbe:
         ``_find_bash``'s Windows candidate ladder and names PowerShell's
         ``Set-ProcessMitigation`` — unreachable off Windows."""
         import tools.environments.local as local_mod
+        from tools.environments import local_gitbash_probe as gitbash_probe
 
-        local_mod._bash_starts_cache.clear()
-        local_mod._bash_probe_details_cache.clear()
+        gitbash_probe._bash_starts_cache.clear()
+        gitbash_probe._bash_probe_details_cache.clear()
         portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
         portable.parent.mkdir(parents=True)
         portable.write_text("", encoding="utf-8")
@@ -177,7 +180,7 @@ class TestGitBashExternalProgramProbe:
         monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
 
         def failed_probe(path: str) -> bool:
-            local_mod._bash_probe_details_cache[path] = (
+            gitbash_probe._bash_probe_details_cache[path] = (
                 "dofork: child -1 - forked process died unexpectedly"
             )
             return False

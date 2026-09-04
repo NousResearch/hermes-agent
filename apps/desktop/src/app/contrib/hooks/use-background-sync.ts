@@ -151,7 +151,10 @@ export async function reconcileTileTranscripts({
     // read from that backend, not whichever profile is foreground. Tiles
     // without a route keep the legacy local read.
     const profileScope: ProfileScope = tile.ownerRoute
-      ? { connectionId: tile.ownerRoute.connectionId, profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile }
+      ? {
+          connectionId: tile.ownerRoute.connectionId,
+          profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile
+        }
       : undefined
 
     const signatureKey = tileTranscriptSignatureKey(tile)
@@ -159,7 +162,11 @@ export async function reconcileTileTranscripts({
     try {
       const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 
-      if (requestId !== requestSequenceRef.current || tileRuntimeOwnsLiveState(runtimeSessionId) || !tileStillPresent()) {
+      if (
+        requestId !== requestSequenceRef.current ||
+        tileRuntimeOwnsLiveState(runtimeSessionId) ||
+        !tileStillPresent()
+      ) {
         // Tile closed or superseded mid-read — discard AND prune its
         // signature so the map doesn't grow one entry per ever-opened tile
         // for the app's lifetime (#94255 review point 3).

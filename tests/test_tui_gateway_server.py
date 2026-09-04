@@ -1802,10 +1802,12 @@ def test_voice_toggle_on_carries_stop_hint(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "tools.voice_mode",
-        types.SimpleNamespace(
-            check_voice_requirements=lambda: {"available": True, "details": ""},
-            voice_stop_hint=lambda: 'Say "halt" to end the voice chat.',
-        ),
+        types.SimpleNamespace(check_voice_requirements=lambda: {"available": True, "details": ""}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode_transcript",
+        types.SimpleNamespace(voice_stop_hint=lambda: 'Say "halt" to end the voice chat.'),
     )
     monkeypatch.setenv("HERMES_VOICE", "0")
 
@@ -1817,11 +1819,8 @@ def test_voice_toggle_on_carries_stop_hint(monkeypatch):
     # Disabled stop phrases → empty hint, clients show nothing.
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
-        types.SimpleNamespace(
-            check_voice_requirements=lambda: {"available": True, "details": ""},
-            voice_stop_hint=lambda: "",
-        ),
+        "tools.voice_mode_transcript",
+        types.SimpleNamespace(voice_stop_hint=lambda: ""),
     )
     on_resp = _dispatch_sync(
         {"id": "voice-on2", "method": "voice.toggle", "params": {"action": "on"}}
@@ -3937,7 +3936,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
     monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
-    monkeypatch.setattr("hermes_state.get_shared_session_db", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
@@ -3999,11 +3998,11 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     profile_db = ProfileDB()
 
-    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr(terminal_tool, "cleanup_vm", lambda _key: None)
+    monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_vm", lambda _key: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
 
     session = {"session_key": target, "profile_home": str(profile_home)}
@@ -7896,7 +7895,7 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", _ProfileDB)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row(
@@ -9793,7 +9792,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
         "hermes_cli.model_selection_guards.combined_selection_warning",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr("hermes_state.get_shared_session_db", FakeDb)
+    monkeypatch.setattr("hermes_state_registry.acquire", FakeDb)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_transfer_db_to_agent", barrier_transfer)
     monkeypatch.setattr(
@@ -11528,7 +11527,7 @@ def test_plugins_list_surfaces_loader_error(monkeypatch):
 
 def test_complete_slash_surfaces_completer_error(monkeypatch):
     with patch(
-        "hermes_cli.commands.SlashCommandCompleter",
+        "hermes_cli.commands_completion.SlashCommandCompleter",
         side_effect=Exception("no completer"),
     ):
         resp = server.handle_request(
@@ -12151,9 +12150,9 @@ def test_session_info_includes_mcp_servers(monkeypatch):
         {"name": "filesystem", "transport": "stdio", "tools": 4, "connected": True},
         {"name": "broken", "transport": "stdio", "tools": 0, "connected": False},
     ]
-    fake_mod = types.ModuleType("tools.mcp_tool")
+    fake_mod = types.ModuleType("tools.mcp_tool_discovery")
     fake_mod.get_mcp_status = lambda: fake_status
-    monkeypatch.setitem(sys.modules, "tools.mcp_tool", fake_mod)
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool_discovery", fake_mod)
 
     info = server._session_info(types.SimpleNamespace(tools=[], model="", provider="openai-codex"))
 
@@ -14621,8 +14620,10 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     def _broken_shared(_db_path=None):
         raise RuntimeError("locking protocol")
 
-    fake_mod.get_shared_session_db = _broken_shared
     monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
+    fake_registry = types.ModuleType("hermes_state_registry")
+    fake_registry.acquire = _broken_shared
+    monkeypatch.setitem(sys.modules, "hermes_state_registry", fake_registry)
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)
 
@@ -14644,8 +14645,10 @@ def test_ensure_session_db_row_false_when_store_unavailable(monkeypatch):
     def _broken_shared(_db_path=None):
         raise RuntimeError("utf-8 boom")
 
-    fake_mod.get_shared_session_db = _broken_shared
     monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
+    fake_registry = types.ModuleType("hermes_state_registry")
+    fake_registry.acquire = _broken_shared
+    monkeypatch.setitem(sys.modules, "hermes_state_registry", fake_registry)
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)
 
@@ -14997,7 +15000,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
 
     resp = server.handle_request(
         {
@@ -15038,7 +15041,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB2)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB2)
 
     resp = server.handle_request(
         {
@@ -15165,7 +15168,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
 
     resp = server.handle_request(
         {
@@ -15232,7 +15235,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     try:
         set_resp = server.handle_request(
             {
@@ -15289,7 +15292,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.history", "params": {"session_id": "sid"}}
@@ -15376,7 +15379,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
@@ -15418,7 +15421,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
             seen["closed"] = True
 
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     session = {
         "session_key": "ml-sess",
         "profile_home": str(profile_home),
@@ -15511,7 +15514,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
 
     def _fake_make_agent(*a, **k):
@@ -15933,7 +15936,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
 
     def _fake_make_agent(*a, **k):
@@ -16050,7 +16053,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None))
     monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: FakeAgent())
     monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: {})
@@ -16110,7 +16113,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
             seen["closed"] = True
 
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     session = {
         "session_key": "ml-sess",
         "pending_title": "deferred-title",
@@ -17092,7 +17095,7 @@ def test_browser_manage_status_does_not_call_get_cdp_override(monkeypatch):
             "_get_cdp_override must not run on /browser status (network I/O)"
         )
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
         )
@@ -17115,7 +17118,7 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
         cleanup_all_browsers=_cleanup_all,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -17141,7 +17144,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
         cleanup_all_browsers=lambda: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         urls = _stub_urlopen_capture(monkeypatch, ok=True)
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -17171,7 +17174,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         cleanup_all_browsers=lambda: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
@@ -17230,7 +17233,7 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
         cleanup_all_browsers=lambda: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
@@ -17265,7 +17268,7 @@ def test_browser_manage_connect_handles_null_url(monkeypatch):
         cleanup_all_browsers=lambda: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -17327,7 +17330,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
     launched = ChromeDebugLaunch(launched=True)
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         with (
             patch(
                 "hermes_cli.browser_connect.launch_chrome_debug",
@@ -17375,7 +17378,7 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
     import urllib.request
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
         )
@@ -17419,7 +17422,7 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
         launch_ports.append(port)
         return ChromeDebugLaunch(launched=True)
 
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         with (
             patch("hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=True),
@@ -17446,7 +17449,7 @@ def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
         ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         resp = server.handle_request(
             {
@@ -17471,7 +17474,7 @@ def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
         cleanup_all_browsers=lambda: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -17497,7 +17500,7 @@ def test_browser_manage_connect_strips_discovery_path(monkeypatch):
         cleanup_all_browsers=lambda: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -17529,7 +17532,7 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
         def __exit__(self, *a):
             return False
 
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         # If urlopen is reached for a concrete ws endpoint, the test
         # would still pass because _stub_urlopen returned ok=True before;
         # patch it to assert-fail so we prove the HTTP probe is skipped.
@@ -17568,7 +17571,7 @@ def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         with patch("socket.create_connection", return_value=_OkSocket()):
             resp = server.handle_request(
                 {
@@ -17637,7 +17640,7 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
         seen_targets.append(addr)
         return _OkSocket()
 
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         # urlopen would 404/ECONNREFUSED on a real hosted CDP endpoint;
         # asserting it's never called proves the probe was skipped.
         with patch(
@@ -17668,7 +17671,7 @@ def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
     )
     concrete = "ws://offline.example/devtools/browser/missing"
 
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         with patch("socket.create_connection", side_effect=OSError("ECONNREFUSED")):
             resp = server.handle_request(
                 {
@@ -17691,7 +17694,7 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
         ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "disconnect"}}
         )
@@ -20071,11 +20074,15 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
         "tools.tts_tool",
         types.SimpleNamespace(
             check_tts_requirements=lambda: requirements,
-            stream_tts_to_speaker=fake_stream,
             _get_provider=lambda cfg: "edge",
             _load_tts_config=lambda: {},
             get_env_value=lambda key, default="": default,
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.tts_tool_speaker",
+        types.SimpleNamespace(stream_tts_to_speaker=fake_stream),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -20726,7 +20733,7 @@ def test_fallback_session_info_reports_session_cwd_not_launch_dir(monkeypatch):
     wrong project for any session resumed without a built agent (#71254).
     """
     monkeypatch.setattr(server, "_default_session_cwd", lambda: "/gateway/launch/dir")
-    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "bb/feature")
+    monkeypatch.setattr(server.git_probe, "branch", lambda cwd: "bb/feature")
     monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
@@ -20743,7 +20750,7 @@ def test_fallback_session_info_always_emits_branch(monkeypatch):
     after switching into a non-git session.
     """
     monkeypatch.setattr(server, "_default_session_cwd", lambda: "/gateway/launch/dir")
-    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "")
+    monkeypatch.setattr(server.git_probe, "branch", lambda cwd: "")
     monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
@@ -22238,13 +22245,13 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_profile_db", _fake_db)
     monkeypatch.setattr(
-        server,
-        "_git_branch_for_cwd",
+        server.git_probe,
+        "branch",
         lambda cwd: "main",
     )
     monkeypatch.setattr(
-        server,
-        "_git_common_repo_root_for_cwd",
+        server.git_probe,
+        "common_repo_root",
         lambda cwd: str(new_cwd),
     )
 

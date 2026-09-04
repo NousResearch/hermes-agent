@@ -185,6 +185,21 @@ COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE = (
 COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
     "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying..."
 )
+# No-op anti-growth refusal notice (#100171): automatic compression declined
+# to commit a summary that would have grown the transcript. A pure no-op
+# diagnostic — nothing was dropped and the conversation continues unchanged —
+# so chat surfaces should not receive it (opsec: shared group chats must not
+# leak framework internals). It is NOT routine compression progress and must
+# stay out of ROUTINE_COMPRESSION_STATUS_SAMPLES /
+# _COMPRESSION_PROGRESS_STATUS_RE (the #52995 opt-in gate must not release
+# it). Manual /compress feedback (manual_compression_feedback.py) uses a
+# different wording and is a deliberate carve-out that stays visible.
+COMPRESSION_REFUSED_WOULD_GROW_WARNING = (
+    "⚠️ Compression refused: the generated summary "
+    "would have GROWN the conversation instead of "
+    "shrinking it. No messages were dropped — "
+    "conversation continues unchanged."
+)
 
 # FAILURE-CLASS notice — a deliberate carve-out from routine-compression
 # silence (#16775 class): the context is over the compression threshold but
@@ -4875,12 +4890,7 @@ def compress_context(
                     except Exception:
                         pass
                     try:
-                        agent._emit_warning(
-                            "⚠️ Compression refused: the generated summary "
-                            "would have GROWN the conversation instead of "
-                            "shrinking it. No messages were dropped — "
-                            "conversation continues unchanged."
-                        )
+                        agent._emit_warning(COMPRESSION_REFUSED_WOULD_GROW_WARNING)
                     except Exception:
                         pass
                     _existing_sp = getattr(agent, "_cached_system_prompt", None)

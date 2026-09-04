@@ -53,6 +53,7 @@ from agent.conversation_compression import (
     COMPACTION_DONE_STATUS,
     COMPACTION_HEARTBEAT_STATUS,
     COMPACTION_STATUS,
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
@@ -146,6 +147,14 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
+    # #100171: the anti-growth refusal warning is a no-op diagnostic (no
+    # messages dropped, conversation unchanged) — chat surfaces should not
+    # receive it. Anchored to the SAME constant the emit site uses, so a
+    # rewording there fails the noise-filter suite instead of silently
+    # re-leaking. Manual /compress feedback ("Compression refused (summary
+    # would grow the conversation): N messages preserved") does not match
+    # this full-literal alternative and stays visible.
+    rf"|{re.escape(COMPRESSION_REFUSED_WOULD_GROW_WARNING)}"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"

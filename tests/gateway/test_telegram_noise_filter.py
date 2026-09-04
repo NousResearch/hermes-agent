@@ -3,6 +3,7 @@
 import pytest
 
 from agent.conversation_compression import (
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
@@ -57,6 +58,11 @@ NOISY_STATUS_MESSAGES = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # #100171: the automatic anti-growth refusal warning is a no-op
+    # diagnostic (nothing dropped, conversation unchanged) — chat surfaces
+    # must not receive it. Pinned from the emit-site constant, not a
+    # hand-copied literal, so rewording drift fails here.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
 # Messages that must NEVER be swallowed by the compression-noise filter:
@@ -68,6 +74,12 @@ VISIBLE_COMPRESSION_MESSAGES = [
     "Compression aborted: 30 messages preserved",
     "Compressed with fallback: 30 → 12 messages",
     "No changes from compression: 30 messages",
+    # #100171: manual /compress refused-would-grow feedback uses this exact
+    # headline shape (manual_compression_feedback.py). The automatic no-op
+    # refusal warning is suppressed (NOISY_STATUS_MESSAGES above); this
+    # user-invoked feedback must stay visible — the two wordings must never
+    # be conflated by the noise regex.
+    "Compression refused (summary would grow the conversation): 30 messages preserved",
     (
         "⚠ Compression aborted: auth failure. No messages were dropped — "
         "conversation continues unchanged. Run /compress to retry, or /new "
@@ -124,13 +136,21 @@ def test_programmatic_surfaces_keep_raw_status():
     """Programmatic surfaces (local/api/webhook) must keep raw diagnostics.
 
     Negative case for the invariant: the chat-noise filter must not touch
-    CLI/TUI diagnostics, API JSON, or webhook payloads.
+    CLI/TUI diagnostics, API JSON, or webhook payloads. Includes the
+    #100171 anti-growth refusal warning — chat surfaces suppress it, but
+    local/API/webhook consumers keep the raw diagnostic stream.
     """
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
 
     for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
+        )
+        assert (
+            _prepare_gateway_status_message(
+                platform, "warn", COMPRESSION_REFUSED_WOULD_GROW_WARNING
+            )
+            == COMPRESSION_REFUSED_WOULD_GROW_WARNING
         )
 
 

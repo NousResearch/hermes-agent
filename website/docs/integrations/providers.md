@@ -1305,7 +1305,7 @@ Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accept
 
 #### Command-minted credentials (`key_cmd`)
 
-Enterprise gateways often issue short-lived bearer tokens (SSO/OIDC brokers, cloud IAM, internal auth proxies) rather than static API keys, so a token copied into `.env` goes stale mid-session and requests start returning 401. `key_cmd` names a command that *prints* a token; Hermes runs it and caches the result until shortly before expiry, so long sessions keep working with no restart:
+Enterprise gateways often issue short-lived bearer tokens (SSO/OIDC brokers, cloud IAM, internal auth proxies) rather than static API keys, so a token copied into `.env` goes stale mid-session and requests start returning 401. `key_cmd` names an **argv-only executable command** that *prints* a token; Hermes runs it and caches the result until shortly before expiry, so long sessions keep working with no restart. Hermes never invokes a shell for `key_cmd`:
 
 ```yaml
 providers:
@@ -1315,7 +1315,9 @@ providers:
     key_cmd: "my-auth-cli print-token --profile prod"
 ```
 
-Works with any helper that prints a token — `databricks auth token`, `gcloud auth print-access-token`, `az account get-access-token`, `vault read`, or Claude Code-style `apiKeyHelper` scripts.
+Works with any executable helper that prints a token — `databricks auth token`, `gcloud auth print-access-token`, `az account get-access-token`, or `vault read`. Do not wrap a helper in `cmd.exe /c`, `powershell -Command`, `pwsh -c`, `sh -c`, or `bash -c`; shell launchers and shell operators are rejected. Replace shell syntax with explicit executable arguments instead.
+
+On Windows, `key_cmd` uses native command-line quoting. Backslashes are preserved as path separators unless they precede a double quote. Quote an executable or argument only when it contains spaces, for example: `"C:\Program Files\my-auth.exe" --config C:\Users\me\config.json`. Use double quotes (not POSIX single-quote syntax) for grouped arguments; escape embedded double quotes with the native backslash rules.
 
 The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
 

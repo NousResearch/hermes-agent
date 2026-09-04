@@ -179,10 +179,15 @@ model:
 # request (cached until shortly before expiry), so long sessions keep working
 # with no restart.
 #
-# Contract: print ONLY the token on stdout, either bare or as JSON with an
-# "access_token" field ("expires_in" is honoured). Same shape as OAuth 2.0
-# token endpoints, Claude Code's `apiKeyHelper`, `gcloud auth
-# print-access-token`, and `aws ecr get-login-password`.
+# Contract: key_cmd is argv-only and Hermes never invokes a shell. Print ONLY the
+# token on stdout, either bare or as JSON with an "access_token" field
+# ("expires_in" is honoured). Shell operators and launchers such as cmd.exe /c,
+# powershell -Command, pwsh -c, sh -c, and bash -c are rejected; use an
+# executable plus explicit arguments instead.
+#
+# On Windows, native command-line quoting is used: backslashes are preserved as
+# path separators unless they precede a double quote. Quote paths containing
+# spaces with double quotes; do not use POSIX single-quote syntax.
 #
 # Precedence: an explicit --api-key still wins; otherwise key_cmd is preferred
 # over inline api_key / key_env on that entry.

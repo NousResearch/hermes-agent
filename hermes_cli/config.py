@@ -2556,10 +2556,9 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
     #77490, #88441.
     """
+    scope_module: Any = None
     try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        scope = current_secret_scope() if is_multiplex_active() else None
+        from agent import secret_scope as scope_module
     except Exception:
         scope = None
     target = scope if isinstance(scope, dict) else (None if scope is not None else os.environ)

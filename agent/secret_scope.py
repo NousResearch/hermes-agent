@@ -110,6 +110,7 @@ class ProfileSecretScope(Mapping[str, str]):
     generation: str
     source_status: str
     digest: str
+    external_generation: int = 0
 
     def __getitem__(self, key: str) -> str:
         return self.data[key]
@@ -194,6 +195,7 @@ def _immutable_scope(
         generation=generation,
         source_status=source_status,
         digest=digest,
+        external_generation=external_generation,
     )
 
 

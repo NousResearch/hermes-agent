@@ -2306,6 +2306,14 @@ def run_conversation(
             _turn_exit_reason = "interrupted_by_user"
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+            # Recover any streamed content that arrived before the flag was set,
+            # otherwise the turn finaliser logs response_len=0 and gateways
+            # deliver a blank bubble to the user.
+            _partial = agent._strip_think_blocks(
+                getattr(agent, "_current_streamed_assistant_text", "") or ""
+            ).strip()
+            if _partial:
+                final_response = _partial
             break
 
         # Aggregate input budget for detached auxiliary forks (background
@@ -7420,6 +7428,21 @@ def run_conversation(
             _turn_exit_reason = "all_retries_exhausted_no_response"
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
             agent._persist_session(messages, conversation_history)
+            # Fix: recover partial streamed content before breaking
+            _partial_streamed = (
+                getattr(agent, "_current_streamed_assistant_text", "") or ""
+            )
+            if _partial_streamed and agent._has_content_after_think_block(_partial_streamed):
+                final_response = agent._strip_think_blocks(_partial_streamed).strip()
+                logger.info(
+                    "Recovered partial streamed content (%d chars) as final response "
+                    "after API retries exhausted",
+                    len(final_response),
+                )
+                agent._emit_status(
+                    "↻ API retries exhausted — using delivered content "
+                    f"({len(final_response)} chars)"
+                )
             break
 
         try:
@@ -8403,6 +8426,9 @@ def run_conversation(
                 # chokepoint below, after final_msg is built, so it catches
                 # every path that reaches turn finalization, not just this one.)
                 final_response = assistant_message.content or ""
+                # Guard: ensure final_response is never None
+                if final_response is None:
+                    final_response = ""
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery

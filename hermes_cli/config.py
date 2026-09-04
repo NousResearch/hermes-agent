@@ -1216,6 +1216,25 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+def _validate_delegation_profiles(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """delegation.profiles / default_profile: a malformed profile otherwise fails only at the
+    first delegate_task spawn; surface it at startup / `hermes config check` instead. The parse
+    rules live in the resolver (agent/delegation_model_routing.py) — one source of truth."""
+    delegation_cfg = config.get("delegation")
+    if not isinstance(delegation_cfg, dict):
+        return
+    if not (delegation_cfg.get("profiles") or delegation_cfg.get("default_profile")):
+        return  # legacy config — nothing profile-shaped to validate
+    try:
+        from agent.delegation_model_routing import profile_config_errors
+    except Exception:
+        return
+    for message in profile_config_errors(delegation_cfg):
+        _issue(issues, "error", message,
+               "Fix the entry under delegation.profiles in config.yaml — each profile needs at "
+               "minimum a 'model', and default_profile must name a configured profile")
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1253,6 +1272,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Move '{key}' under the appropriate section")
 
     _validate_web_backends(config, issues)
+    _validate_delegation_profiles(config, issues)
     return issues
 
 

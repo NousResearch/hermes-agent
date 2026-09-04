@@ -2782,7 +2782,7 @@ def cmd_canary(args) -> None:
 
     version = tag_name.lstrip("v")
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
-    changelog = generate_changelog(
+    changelog = "Bug fixes, features, and performance improvements." if args.no_changelog else generate_changelog(
         commits, tag_name, version, prev_tag=since, first_release=False
     )
 
@@ -2911,6 +2911,8 @@ def main():
                         help="Mark as first release (no previous tag expected)")
     parser.add_argument("--output", type=str,
                         help="Write changelog to file instead of stdout")
+    parser.add_argument("--no-changelog", action="store_true",
+                        help="Skip changelog")
     args = parser.parse_args()
 
     if args.canary and args.bump:

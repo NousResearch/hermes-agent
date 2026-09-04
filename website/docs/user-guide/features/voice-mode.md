@@ -472,6 +472,14 @@ tts:
     ref_text: ''
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
+  minimax:
+    model: "speech-02-hd"
+    voice_id: "English_expressive_narrator"
+    # emotion: "happy"             # optional: happy, sad, angry, fearful,
+    #                              # disgusted, surprised, calm. Leave it unset
+    #                              # and MiniMax picks the most natural emotion
+    #                              # for each request from the text itself; set
+    #                              # "neutral" to keep the previous flat delivery.
 ```
 
 ### Environment Variables

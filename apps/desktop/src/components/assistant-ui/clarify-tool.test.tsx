@@ -54,6 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  messageRunning = true
   clearClarifyRequest()
   resetServerRequestsForTests()
   $activeSessionId.set(null)
@@ -586,6 +587,16 @@ function renderLiveBatch(lockedAnswers?: Record<string, string>, multiSelect = f
 
   return { request, respond }
 }
+
+describe('ClarifyTool batch pending liveness', () => {
+  it('keeps a restored batch visible when its hydrated message is complete', () => {
+    messageRunning = false
+    renderLiveBatch()
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+  })
+})
 
 describe('readClarifyBatchResult', () => {
   it('parses responses with string and list answers plus timed_out', () => {

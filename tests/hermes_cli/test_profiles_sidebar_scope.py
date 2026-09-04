@@ -132,6 +132,29 @@ class TestSidebarScope:
 
 class TestCrossProfileProjectTree:
 
+    def test_project_carries_the_profile_that_defaults_to_its_folder(self, client, profiles_on_disk, tmp_path):
+        default_project = tmp_path / "repos" / "home-base"
+        worker_project = tmp_path / "repos" / "ventures"
+        default_project.mkdir(parents=True)
+        worker_project.mkdir(parents=True)
+
+        (profiles_on_disk["default"] / "config.yaml").write_text(
+            f"terminal:\n  cwd: {default_project}\n", encoding="utf-8"
+        )
+        (profiles_on_disk["worker"] / "config.yaml").write_text(
+            f"terminal:\n  cwd: {worker_project}\n", encoding="utf-8"
+        )
+        _seed_project(profiles_on_disk["default"], "Home Base", default_project)
+        _seed_project(profiles_on_disk["worker"], "Ventures", worker_project)
+        _seed_session(profiles_on_disk["default"], "home-base-chat", source="cli", cwd=default_project)
+        _seed_session(profiles_on_disk["worker"], "ventures-chat", source="cli", cwd=worker_project)
+
+        payload = client.get("/api/profiles/projects/tree").json()
+        owners = {project["label"]: project.get("defaultProfile") for project in payload["projects"]}
+
+        assert owners["Home Base"] == "default"
+        assert owners["Ventures"] == "worker"
+
     def test_one_folder_worked_in_by_two_profiles_is_one_project(self, client, profiles_on_disk, tmp_path):
         # A folder is a folder no matter who opened it. Two profiles working the
         # same checkout is the normal case (that's the point of profiles), so it

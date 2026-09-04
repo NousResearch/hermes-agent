@@ -147,7 +147,9 @@ class TestProfileScopedMcp:
         monkeypatch.setattr(
             mcp_config,
             "_probe_single_server",
-            lambda name, config, connect_timeout=30, details=None, **kwargs: [("tool-a", "desc")],
+            lambda name, config, connect_timeout=30, details=None, **kwargs: [
+                ("tool-a", "", "desc")
+            ],
         )
         monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: False)
 
@@ -182,7 +184,7 @@ class TestProfileScopedMcp:
         def fake_probe(name, config, connect_timeout=30, details=None, **kwargs):
             if details is not None:
                 details["schema_chars"] = {"tool-a": 420}
-            return [("tool-a", "desc-a"), ("tool-b", "desc-b")]
+            return [("tool-a", "", "desc-a"), ("tool-b", "", "desc-b")]
 
         monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
 
@@ -211,7 +213,9 @@ class TestProfileScopedMcp:
         monkeypatch.setattr(
             mcp_config,
             "_probe_single_server",
-            lambda name, config, connect_timeout=30, details=None, **kwargs: [("tool-a", "desc")],
+            lambda name, config, connect_timeout=30, details=None, **kwargs: [
+                ("tool-a", "", "desc")
+            ],
         )
 
         resp = client.post(
@@ -219,6 +223,35 @@ class TestProfileScopedMcp:
         )
         assert resp.status_code == 200
         assert resp.json()["tools"] == [{"name": "tool-a", "description": "desc"}]
+
+    def test_mcp_test_includes_title_when_server_sets_one(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """When the probe reports a non-empty title, it rides along on the
+        wire as an additive field — same convention as schema_chars."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  titled-srv:\n    url: http://x/mcp\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            mcp_config,
+            "_probe_single_server",
+            lambda name, config, connect_timeout=30, details=None, **kwargs: [
+                ("abc_xyz_123", "abc xyz 123", "desc"),
+                ("no_title_tool", "", "desc2"),
+            ],
+        )
+
+        resp = client.post(
+            "/api/mcp/servers/titled-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        tools = {t["name"]: t for t in resp.json()["tools"]}
+        assert tools["abc_xyz_123"]["title"] == "abc xyz 123"
+        # Empty title → key omitted entirely, not sent as "".
+        assert "title" not in tools["no_title_tool"]
 
 
 class TestProfileScopedModel:

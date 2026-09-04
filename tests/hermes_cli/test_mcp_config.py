@@ -183,7 +183,7 @@ class TestMcpAdd:
         ]
 
         def mock_probe(name, config, **kw):
-            return [(t.name, t.description) for t in fake_tools]
+            return [(t.name, "", t.description) for t in fake_tools]
 
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server", mock_probe
@@ -216,7 +216,7 @@ class TestMcpAdd:
                 "MY_API_KEY": "secret123",
                 "DEBUG": "true",
             }
-            return [(t.name, t.description) for t in fake_tools]
+            return [(t.name, "", t.description) for t in fake_tools]
 
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server", mock_probe
@@ -257,7 +257,7 @@ class TestMcpAdd:
             assert config["command"] == "npx"
             assert config["args"] == ["-y", "test-mcp-server"]
             assert "env" not in config
-            return [(t.name, t.description) for t in fake_tools]
+            return [(t.name, "", t.description) for t in fake_tools]
 
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server", mock_probe
@@ -290,7 +290,7 @@ class TestMcpTest:
         })
 
         def mock_probe(name, config, **kw):
-            return [("create_service", "Deploy"), ("list_services", "List all")]
+            return [("create_service", "", "Deploy"), ("list_services", "", "List all")]
 
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server", mock_probe
@@ -506,6 +506,7 @@ class TestProbeEnvResolution:
 
         class _FakeTool:
             name = "do_thing"
+            title = "Do The Thing"
             description = "a tool"
 
         class _FakeServer:
@@ -525,8 +526,35 @@ class TestProbeEnvResolution:
             "headers": {"Authorization": "Bearer ${MCP_N8N_API_KEY}"},
         })
 
-        assert tools == [("do_thing", "a tool")]
+        assert tools == [("do_thing", "Do The Thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+    def test_probe_defaults_title_to_empty_when_tool_has_none(self, monkeypatch):
+        """A server that doesn't set `title` on its tools (older SDK, or a
+        server that simply never opted in) must not crash the probe — the
+        MCP spec defines `title` as optional. `_probe_single_server` should
+        fall back to an empty string, leaving callers to fall back to
+        `name` for display."""
+        import hermes_cli.mcp_config as mc
+
+        class _FakeToolNoTitle:
+            name = "legacy_tool"
+            description = "no title on this one"
+
+        class _FakeServer:
+            _tools = [_FakeToolNoTitle()]
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+
+        tools = mc._probe_single_server("legacy-srv", {"url": "http://x/mcp"})
+
+        assert tools == [("legacy_tool", "", "no title on this one")]
 
 
 class TestProbeCapabilityGating:

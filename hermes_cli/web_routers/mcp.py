@@ -312,11 +312,12 @@ async def test_mcp_server(
         "tools": [
             {
                 "name": t,
-                # Empty when the server doesn't set one — frontends should
-                # fall back to `name` for display. Additive key: older
-                # renderers built before this field existed simply ignore it.
-                "title": title,
                 "description": d,
+                # Additive-optional, same convention as schema_chars below:
+                # only present when the server actually set one, so a plain
+                # probe with no titles produces byte-identical output to
+                # before this field existed — old renderers see nothing new.
+                **({"title": title} if title else {}),
                 **(
                     {"schema_chars": schema_chars[t]}
                     if isinstance(schema_chars.get(t), int)

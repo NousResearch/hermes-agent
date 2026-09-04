@@ -748,8 +748,131 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _plant_profile_skill(home: Path, profile: str, skill_name: str, category: str = "general") -> Path:
+    """Write a minimal SKILL.md the assignee catalog scanner can see."""
+    if profile == "default":
+        root = home / "skills" / category / skill_name
+    else:
+        root = home / "profiles" / profile / "skills" / category / skill_name
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "SKILL.md").write_text(
+        f"---\nname: {skill_name}\ndescription: test fixture\n---\n\n# {skill_name}\n",
+        encoding="utf-8",
+    )
+    return root
 
 
+def test_create_task_drops_skills_missing_from_assignee_catalog(kanban_home):
+    """Pinning a skill the assignee cannot load must not be stored.
+
+    That used to spawn ``hermes --skills <unknown>`` and crash the worker
+    on boot when every pinned name was missing from the profile.
+    """
+    _plant_profile_skill(kanban_home, "orch", "human-in-loop-agent-graphs")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="drop unknown pins",
+            assignee="orch",
+            skills=["human-in-loop-agent-graphs", "revenueos"],
+        )
+        task = kb.get_task(conn, tid)
+        payload = json.loads(
+            conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created'",
+                (tid,),
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+    assert task.skills == ["human-in-loop-agent-graphs"]
+    assert payload.get("dropped_skills") == ["revenueos"]
+
+
+def test_create_task_keeps_skills_when_assignee_has_no_catalog(kanban_home):
+    """No profile dir means we cannot tell — leave the pin list alone.
+
+    Review-dispatch tests (and first-time assignees) rely on this: they
+    pin skills without planting a profile tree.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="unknown assignee",
+            assignee="ghost",
+            skills=["domain-specific-review"],
+        )
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    assert task.skills == ["domain-specific-review"]
+
+
+def test_create_task_sees_symlinked_skill_on_assignee(kanban_home):
+    """A skill installed as a symlink into the profile still counts as present."""
+    real = _plant_profile_skill(kanban_home, "default", "hermes-profiles", "autonomous-ai-agents")
+    dest_parent = kanban_home / "profiles" / "orch" / "skills" / "autonomous-ai-agents"
+    dest_parent.mkdir(parents=True)
+    os.symlink(real, dest_parent / "hermes-profiles")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="symlink pin",
+            assignee="orch",
+            skills=["hermes-profiles", "revenueos"],
+        )
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    assert task.skills == ["hermes-profiles"]
+
+
+def test_default_spawn_omits_skills_missing_from_assignee(kanban_home, monkeypatch):
+    """Dispatcher must not pass ``--skills`` for names the profile lacks.
+
+    Belt-and-suspenders for rows written before the create-time filter,
+    or updated by hand.
+    """
+    _plant_profile_skill(kanban_home, "orch", "plan")
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 4242
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stale pin", assignee="orch", skills=["plan"])
+        conn.execute(
+            "UPDATE tasks SET skills = ? WHERE id = ?",
+            (json.dumps(["plan", "revenueos"]), tid),
+        )
+        conn.commit()
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        pid = kb._default_spawn(task, str(workspace))
+        assert pid == 4242
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    skills_flags = [
+        cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--skills"
+    ]
+    assert skills_flags == ["plan"], cmd
 
 
 

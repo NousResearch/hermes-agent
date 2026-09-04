@@ -1925,6 +1925,8 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return {}
 
         if not isinstance(data, dict):
+            _warn_config_parse_failure(
+                config_path, TypeError(f"top-level YAML must be a mapping, got {type(data).__name__}"))
             data = {}
         # The cache stores its own deepcopy. The readonly path returns THAT object (identity
         # invariant: later cache hits return the same dict); the mutable path returns the parse.

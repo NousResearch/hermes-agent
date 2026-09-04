@@ -37,6 +37,7 @@ def _configured_peers() -> dict:
 
 def _peer_from_entry(entry: dict, **extra: Any) -> dict:
     return {"url": entry.get("url", ""), "auth": entry.get("auth", {}) or {},
+            "headers": entry.get("headers", {}) or {},
             "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)), **extra}
 
 
@@ -53,7 +54,8 @@ def _auth_header(auth: dict) -> dict:
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    req = urllib.request.Request(url, data=data,
+                                 headers={"User-Agent": "Hermes-A2A/1.0", **headers}, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
@@ -99,8 +101,17 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
     ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
     base_url = peer.get("url", "")
-    headers = _auth_header(peer.get("auth", {}) or {})
+    # Per-peer custom headers over the derived auth header; a custom
+    # Authorization is operator-controlled proxy auth and wins, with a
+    # warning so the override is never silent.
+    headers = {**_auth_header(peer.get("auth", {}) or {}), **(peer.get("headers", {}) or {})}
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+    auth = peer.get("auth", {}) or {}
+    if auth and any(k.lower() == "authorization" for k in (peer.get("headers", {}) or {})):
+        logger.warning(
+            "A2A: peer '%s' custom headers override the derived Authorization "
+            "header — deliberate proxy auth schemes only",
+            agent_label)
     try:
         card = _fetch_card(base_url, headers, min(timeout, 30))  # best-effort, to learn the rpc URL
     except Exception:

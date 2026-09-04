@@ -2126,11 +2126,17 @@ _USAGE_STATE: Dict[str, Any] = {
     "session_completion_tokens": 0,
     "session_total_tokens": 0,
     "session_api_calls": 0,
+    # Provider calls with trustworthy usage facets. These stay separate from
+    # session_api_calls because a completed call may omit usage metadata.
+    "session_usage_report_calls": 0,
+    "session_cache_usage_report_calls": 0,
+    "session_context_usage_report_calls": 0,
     "session_input_tokens": 0,
     "session_output_tokens": 0,
     "session_cache_read_tokens": 0,
     "session_cache_write_tokens": 0,
     "session_reasoning_tokens": 0,
+    "session_last_prompt_tokens": 0,
     "session_estimated_cost_usd": 0.0,
     "session_cost_status": "unknown",
     "session_cost_source": "none",

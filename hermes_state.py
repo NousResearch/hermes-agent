@@ -10801,6 +10801,51 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return victims
 
         return self._execute_write(_do) or []
+    def finalize_abandoned_sessions(
+        self, *, idle_minutes: float = 1440, batch_size: int = 500
+    ) -> int:
+        """Finalize old live rows that never recorded an activity heartbeat.
+
+        These rows have a durable transcript, but no explicit lifecycle end
+        and no ``last_activity_at`` for the gateway expiry watcher to key off.
+        Select candidate ids through the existing ``started_at`` index and
+        update only a bounded batch so startup and watcher maintenance remain
+        cheap on large stores.
+
+        ``abandoned`` is intentionally terminal: unlike accidental cleanup
+        reasons such as ``agent_close`` and ``ws_orphan_reap``, stale-route
+        recovery must not reopen these sessions.
+        """
+        window_seconds = max(0.0, float(idle_minutes)) * 60.0
+        limit = max(1, int(batch_size))
+        cutoff = time.time() - window_seconds
+
+        def _do(conn):
+            now = time.time()
+            result = conn.execute(
+                """
+                UPDATE sessions
+                   SET ended_at = ?,
+                       end_reason = 'abandoned'
+                 WHERE id IN (
+                       SELECT id
+                         FROM sessions
+                        WHERE ended_at IS NULL
+                          AND end_reason IS NULL
+                          AND last_activity_at IS NULL
+                          AND COALESCE(message_count, 0) >= 1
+                          AND started_at < ?
+                        ORDER BY started_at
+                        LIMIT ?
+                 )
+                   AND ended_at IS NULL
+                   AND end_reason IS NULL
+                """,
+                (now, cutoff, limit),
+            )
+            return result.rowcount
+
+        return self._execute_write(_do) or 0
 
     # ── Cross-backend heartbeat API (#94895) ───────────────────────────
     # Each serve / tui_gateway process registers a heartbeat row at startup

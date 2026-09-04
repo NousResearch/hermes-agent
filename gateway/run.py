@@ -13827,6 +13827,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._loop_heartbeat_task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
+    async def _sweep_abandoned_sessions(self) -> int:
+        """Finalize one bounded batch per served profile state store."""
+        if getattr(self.config, "multiplex_profiles", False):
+            try:
+                profile_homes = _multiplex_profile_homes(self.config)
+            except Exception as exc:
+                logger.debug("Abandoned session profile enumeration failed: %s", exc)
+                profile_homes = []
+
+            finalized = 0
+            for profile_name, profile_home in profile_homes:
+                try:
+                    with _profile_runtime_scope(profile_home):
+                        profile_config = load_gateway_config()
+                        finalized += await self._sweep_abandoned_sessions_for_active_profile(
+                            profile_config.default_reset_policy.idle_minutes,
+                            profile_name=profile_name,
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "Abandoned session sweep skipped for profile %s: %s",
+                        profile_name,
+                        exc,
+                    )
+            return finalized
+
+        return await self._sweep_abandoned_sessions_for_active_profile(
+            getattr(self.config.default_reset_policy, "idle_minutes", 1440)
+        )
+
+    async def _sweep_abandoned_sessions_for_active_profile(
+        self, idle_minutes: float, *, profile_name: str = ""
+    ) -> int:
+        """Sweep the state store resolved by the current profile scope."""
+        session_db = self._session_db
+        if session_db is None:
+            return 0
+        try:
+            finalized = await session_db.finalize_abandoned_sessions(
+                idle_minutes=idle_minutes
+            )
+        except Exception as exc:
+            logger.debug("Abandoned session sweep skipped: %s", exc)
+            return 0
+        if finalized:
+            suffix = f" for profile {profile_name}" if profile_name else ""
+            logger.info(
+                "Finalized %d abandoned session(s)%s", finalized, suffix
+            )
+        return finalized
 
     async def start(self) -> bool:
         """
@@ -13899,6 +13949,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Startup watchdog disarm failed", exc_info=True)
         logger.info("Session storage: %s", self.config.sessions_dir)
+        await self._sweep_abandoned_sessions()
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
         # window.  When the user upgraded hermes-agent without re-running
@@ -15481,6 +15532,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _MAX_FINALIZE_RETRIES = 3
         while self._running:
             try:
+                await self._sweep_abandoned_sessions()
                 await self.async_session_store._ensure_loaded()
                 # Collect expired sessions first, then log a single summary.
                 _expired_entries = []

@@ -308,3 +308,95 @@ class TestAdoption:
             db, "no_key_donor", keyed=False, started_at=time.time() - 100
         )
         assert db.adopt_orphaned_gateway_session(orphan, "no_key_donor") is False
+
+
+class TestAbandonedSessionFinalization:
+    def test_finalizes_old_heartbeatless_session_with_messages(self, db):
+        now = time.time()
+        _mk_session(
+            db,
+            "abandoned",
+            started_at=now - 1500 * 60,
+            last_activity_at=None,
+            messages=2,
+        )
+
+        assert db.finalize_abandoned_sessions(idle_minutes=1440) == 1
+
+        row = db.get_session("abandoned")
+        assert row["end_reason"] == "abandoned"
+        assert row["ended_at"] is not None
+
+    def test_preserves_rows_outside_the_zombie_signature(self, db):
+        now = time.time()
+        old = now - 1500 * 60
+        _mk_session(db, "empty", started_at=old, messages=0)
+        _mk_session(
+            db,
+            "active",
+            started_at=old,
+            last_activity_at=now - 60,
+            messages=2,
+        )
+        _mk_session(
+            db,
+            "recent",
+            started_at=now - 60,
+            last_activity_at=None,
+            messages=2,
+        )
+        _mk_session(
+            db,
+            "already-ended",
+            started_at=old,
+            ended_at=now - 30,
+            end_reason="new_command",
+            messages=2,
+        )
+
+        assert db.finalize_abandoned_sessions(idle_minutes=1440) == 0
+        assert db.get_session("empty")["ended_at"] is None
+        assert db.get_session("active")["ended_at"] is None
+        assert db.get_session("recent")["ended_at"] is None
+        assert db.get_session("already-ended")["end_reason"] == "new_command"
+
+    def test_is_idempotent_and_bounded(self, db):
+        old = time.time() - 1500 * 60
+        for index in range(3):
+            _mk_session(
+                db,
+                f"abandoned-{index}",
+                started_at=old + index,
+                last_activity_at=None,
+                messages=1,
+            )
+
+        assert db.finalize_abandoned_sessions(
+            idle_minutes=1440, batch_size=2
+        ) == 2
+        assert db.finalize_abandoned_sessions(
+            idle_minutes=1440, batch_size=2
+        ) == 1
+        assert db.finalize_abandoned_sessions(
+            idle_minutes=1440, batch_size=2
+        ) == 0
+
+    def test_abandoned_reason_is_not_recoverable(self, db):
+        now = time.time()
+        _mk_session(
+            db,
+            "older-live",
+            started_at=now - 1600 * 60,
+            last_activity_at=None,
+            messages=2,
+        )
+
+        assert db.finalize_abandoned_sessions(idle_minutes=1440) == 1
+        resolved = db.find_latest_gateway_session_for_peer(
+            source=PEER["source"],
+            user_id=PEER["user_id"],
+            session_key=PEER["session_key"],
+            chat_id=PEER["chat_id"],
+            chat_type=PEER["chat_type"],
+        )
+        assert resolved is None

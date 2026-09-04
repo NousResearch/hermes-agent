@@ -578,6 +578,22 @@ future reuse. In practice that covers:
 - When it hit errors or dead ends and found the working path
 - When the user corrected its approach
 
+### What a skill entry looks like
+
+Skills capture **lessons, not logs**. Whether written in a foreground turn, by the
+background review, or by the curator's consolidation pass, an entry is a generalizable
+rule plus one clause of *why* (the mechanism), stated once. Incident narration, PR or
+issue numbers, dates, and quoted chat are not skill content; the rule has to stand
+without the story behind it. Always-on rules live in `SKILL.md` itself; `references/`
+holds a small set of files named by topic (a decision table, a recipe, provider quirks),
+extended in place rather than accumulated one file per session. Skills also do not
+restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).
+
+`skill_manage` runs an advisory linter on `create` and on `references/` writes and
+returns its findings in the tool result. Two rules exist specifically for this shape:
+`incident-log-shape` (a body dense in PR/issue numbers) and `references-sprawl` (more
+than 60 reference files). They warn; they never block a write.
+
 ### Actions
 
 | Action | Use for | Key params |

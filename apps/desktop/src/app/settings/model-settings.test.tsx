@@ -409,6 +409,27 @@ describe('ModelSettings', () => {
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
+
+  it('does not flag an aux slot pinned to the main alias as stale', async () => {
+    // `main` is a valid backend alias meaning "follow the current main
+    // provider" (e.g. Moonshot's guide configures auxiliary.vision.provider:
+    // main). It resolves to the main model, so it must not trip the stale-aux
+    // banner. #97310
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'main', model: 'kimi-k3', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    // Wait for the aux data to load and the task rows to render before
+    // asserting the banner is absent — otherwise the assertion runs before
+    // the async load resolves and passes vacuously.
+    await screen.findAllByRole('button', { name: 'Set to main' })
+
+    // No banner on load — `main` correctly follows the main model.
+    expect(screen.queryByText(/still run on/)).toBeNull()
+  })
 })
 
 describe('ModelSettings MoA preset editor', () => {

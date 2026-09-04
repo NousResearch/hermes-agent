@@ -532,6 +532,81 @@ class TestSchemaValidation:
         assert "brand_new_future_key" in content
 
 
+# ---------------------------------------------------------------------------
+# #96764: --quiet for scripted/non-interactive `config set`
+# ---------------------------------------------------------------------------
+
+class TestQuietFlag:
+    """``quiet=True`` mutes the success-path confirmation and unknown-key
+    notice so a caller can trust "empty stdout + exit 0" as the success
+    signal. It must never suppress a real failure (those still raise /
+    exit non-zero and still print to stderr), and the value must still be
+    written exactly as it would be without --quiet."""
+
+    def test_quiet_suppresses_confirmation_line(self, _isolated_hermes_home, capsys):
+        set_config_value("model.reasoning_effort", "high", quiet=True)
+        out = capsys.readouterr().out
+        assert out == ""
+        # The value was still written — quiet only mutes the echo.
+        assert "reasoning_effort: high" in _read_config(_isolated_hermes_home)
+
+    def test_non_quiet_still_prints_confirmation_line(self, _isolated_hermes_home, capsys):
+        """Default behavior (quiet=False) is unchanged."""
+        set_config_value("model.reasoning_effort", "high")
+        out = capsys.readouterr().out
+        assert "Set model.reasoning_effort = high" in out
+
+    def test_quiet_suppresses_unknown_key_notice(self, _isolated_hermes_home, capsys):
+        set_config_value("brand_new_future_key", "value", quiet=True)
+        out = capsys.readouterr().out
+        assert out == ""
+        # The value was still written even though the key is unrecognized —
+        # --quiet mutes the notice, it does not change what gets saved.
+        assert "brand_new_future_key" in _read_config(_isolated_hermes_home)
+
+    def test_quiet_suppresses_env_key_confirmation(self, _isolated_hermes_home, capsys):
+        """API-key-shaped values route to .env through an earlier return —
+        that confirmation line must be muted too."""
+        set_config_value("OPENROUTER_API_KEY", "sk-or-test", quiet=True)
+        out = capsys.readouterr().out
+        assert out == ""
+        assert "OPENROUTER_API_KEY=sk-or-test" in _read_env(_isolated_hermes_home)
+
+    def test_quiet_does_not_suppress_real_failure(self, _isolated_hermes_home, capsys):
+        """A genuine write failure must still surface — --quiet only mutes
+        the success-path notes, never error signal."""
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text("broken: [unterminated\n", encoding="utf-8")
+        with pytest.raises(RuntimeError):
+            set_config_value("model.default", "gpt-4o", quiet=True)
+
+    def test_quiet_via_config_command_set(self, _isolated_hermes_home, capsys):
+        """The ``hermes config set --quiet`` CLI path threads through to
+        set_config_value the same way ``--force`` already does."""
+        ns = argparse.Namespace(
+            config_command="set", key="model.reasoning_effort", value="high",
+            force=False, quiet=True,
+        )
+        config_command(ns)
+        out = capsys.readouterr().out
+        assert out == ""
+        assert "reasoning_effort: high" in _read_config(_isolated_hermes_home)
+
+    def test_config_command_set_without_quiet_attr_defaults_false(
+        self, _isolated_hermes_home, capsys
+    ):
+        """A Namespace without a ``quiet`` attribute (e.g. built by an older
+        test or caller) must not break — defaults to the old, non-quiet
+        behavior via getattr."""
+        ns = argparse.Namespace(
+            config_command="set", key="model.reasoning_effort", value="high",
+            force=False,
+        )
+        config_command(ns)
+        out = capsys.readouterr().out
+        assert "Set model.reasoning_effort = high" in out
+
+
 class TestValidateConfigKey:
     """Unit tests for the validator itself."""
 

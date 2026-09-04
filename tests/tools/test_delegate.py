@@ -831,6 +831,57 @@ class TestDelegateFailedChildStatus(unittest.TestCase):
         self.assertEqual(entry["exit_reason"], "error")
         self.assertFalse(entry["truncated"])
 
+    def test_hard_guardrail_halt_is_not_completed(self):
+        """A controlled guardrail explanation is useful output, not success."""
+        entry = self._delegate_single(
+            {
+                "final_response": (
+                    "I stopped retrying web_search because it hit the tool-call "
+                    "guardrail (loop_web_search_cap)."
+                ),
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 12,
+                "messages": [],
+                "guardrail": {
+                    "action": "block",
+                    "code": "loop_web_search_cap",
+                    "message": "Blocked runaway search loop.",
+                    "tool_name": "web_search",
+                    "count": 10,
+                },
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "guardrail_halt")
+        self.assertFalse(entry["truncated"])
+        self.assertEqual(entry["failure_reason"], "guardrail_halt")
+        self.assertEqual(entry["guardrail"]["code"], "loop_web_search_cap")
+        self.assertNotIn("message", entry["guardrail"])
+        self.assertIn("loop_web_search_cap", entry["error"])
+
+    def test_non_halting_guardrail_warning_stays_completed(self):
+        """Warnings are metadata only and must not change successful status."""
+        entry = self._delegate_single(
+            {
+                "final_response": "All work completed.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+                "guardrail": {
+                    "action": "warn",
+                    "code": "repeated_tool_warning",
+                    "message": "Repeated call warning.",
+                    "tool_name": "web_search",
+                    "count": 2,
+                },
+            }
+        )
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["exit_reason"], "completed")
+        self.assertEqual(entry["guardrail"]["action"], "warn")
+
     def test_empty_error_with_summary_is_completed(self):
         """REGRESSION PIN: an empty-string ``error`` field must NOT be treated as
         a failure. ``result.get('error')`` returns ``''`` which is falsy, so the

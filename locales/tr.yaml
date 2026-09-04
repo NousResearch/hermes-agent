@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nMevcut mod: `{mode}`\\n\\nBir seçenek seçin:"
     choice_fast:           "fast — Priority Processing açık"
     choice_normal:         "normal — standart işleme"
+    choice_auto:           "auto — her turun ilk saniyelerinde hızlı"
+    choice_cold:           "cold — yalnızca oturumun ilk turunda hızlı"
 
   footer:
     status:                "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"

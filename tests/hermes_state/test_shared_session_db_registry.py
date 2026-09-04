@@ -35,10 +35,12 @@ def _clean_registry():
     registry.close_all()
     registry._generations.clear()
     registry._retired.clear()
+    registry._opening.clear()
     yield
     registry.close_all()
     registry._generations.clear()
     registry._retired.clear()
+    registry._opening.clear()
 
 
 def _replace_file_preserving_schema(src: Path, dst: Path) -> None:
@@ -178,6 +180,127 @@ def stats_live_for(path: Path):
 
 
 class TestTeardownOutsideLock:
+    def test_concurrent_cold_acquire_opens_one_writer(self, tmp_path, monkeypatch):
+        """Concurrent first callers must not construct redundant writers.
+
+        Returning one winning object is not enough: every losing constructor
+        has already opened its own writable SQLite connection by then.  Hold
+        the first construction so peer callers overlap deterministically and
+        assert the registry single-flights the open itself.
+        """
+        db_path = tmp_path / "state.db"
+        callers = 6
+        ready = threading.Barrier(callers + 1)
+        release_open = threading.Event()
+        count_lock = threading.Lock()
+        open_calls = 0
+        results = []
+        errors = []
+
+        class _FakeDB:
+            def __init__(self, path):
+                self.db_path = path
+                self._shared_registry_owned = False
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        def _blocked_open(path):
+            nonlocal open_calls
+            with count_lock:
+                open_calls += 1
+            assert release_open.wait(5.0)
+            return _FakeDB(path)
+
+        monkeypatch.setattr(registry, "_open_session_db", _blocked_open)
+
+        def _acquire():
+            try:
+                ready.wait()
+                results.append(registry.acquire(db_path))
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_acquire) for _ in range(callers)]
+        for thread in threads:
+            thread.start()
+        ready.wait()
+        time.sleep(0.1)
+        release_open.set()
+        for thread in threads:
+            thread.join(10.0)
+            assert not thread.is_alive(), "concurrent acquire deadlocked"
+
+        assert errors == []
+        assert open_calls == 1
+        assert len({id(db) for db in results}) == 1
+        for db in results:
+            assert registry.release(db) is True
+
+    def test_waiter_retries_after_cold_open_failure(self, tmp_path, monkeypatch):
+        """A failed elected opener must wake a peer to retry the path."""
+        db_path = tmp_path / "state.db"
+        first_entered = threading.Event()
+        release_failure = threading.Event()
+        open_calls = 0
+        results = []
+        errors = []
+
+        class _FakeDB:
+            def __init__(self, path):
+                self.db_path = path
+                self._shared_registry_owned = False
+
+            def close(self):
+                pass
+
+        def _fail_then_open(path):
+            nonlocal open_calls
+            open_calls += 1
+            if open_calls == 1:
+                first_entered.set()
+                assert release_failure.wait(5.0)
+                raise OSError("transient open failure")
+            return _FakeDB(path)
+
+        monkeypatch.setattr(registry, "_open_session_db", _fail_then_open)
+
+        def _acquire():
+            try:
+                results.append(registry.acquire(db_path))
+            except BaseException as exc:
+                errors.append(exc)
+
+        first = threading.Thread(target=_acquire)
+        second = threading.Thread(target=_acquire)
+        first.start()
+        assert first_entered.wait(5.0)
+        second.start()
+        time.sleep(0.1)
+        release_failure.set()
+        first.join(10.0)
+        second.join(10.0)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert open_calls == 2
+        assert len(errors) == 1
+        assert isinstance(errors[0], OSError)
+        assert len(results) == 1
+        assert registry.release(results[0]) is True
+
+    def test_equivalent_path_spellings_share_generation(self, tmp_path):
+        """Registry identity is the resolved file, not caller spelling."""
+        db_path = tmp_path / "nested" / "state.db"
+        equivalent = tmp_path / "nested" / ".." / "nested" / "state.db"
+
+        first = registry.acquire(db_path)
+        second = registry.acquire(equivalent)
+        assert first is second
+        assert registry.release(first) is True
+        assert registry.release(second) is True
+
     def test_final_release_does_not_hold_registry_lock_during_close(self, tmp_path, monkeypatch):
         """A final release's teardown (token-writer stop, WAL checkpoint,
         read-pool drain) must run OUTSIDE the registry lock — otherwise
@@ -231,10 +354,16 @@ class TestTeardownOutsideLock:
 
         def _worker(n):
             try:
-                for _ in range(20):
+                for index in range(20):
                     db = registry.acquire(db_path)
                     try:
-                        db.get_session("nonexistent")
+                        db.create_session(
+                            session_id=f"worker-{n}-{index}",
+                            source="test",
+                            model="test-model",
+                            model_config={},
+                            system_prompt=None,
+                        )
                     finally:
                         registry.release(db)
             except Exception as exc:  # pragma: no cover - failure path
@@ -248,6 +377,12 @@ class TestTeardownOutsideLock:
             assert not t.is_alive(), "worker deadlocked"
 
         assert errors == []
+        verifier = registry.acquire(db_path)
+        try:
+            with verifier._lock:
+                assert verifier._conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            registry.release(verifier)
         stats = registry.stats()
         assert stats["live_generations"] == 0
         assert stats["retired_generations"] == 0

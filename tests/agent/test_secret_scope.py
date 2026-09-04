@@ -347,3 +347,34 @@ class TestRelayRoutingStampGlobals:
             ss.set_multiplex_active(False)
         for name in self.AUTH_VARS:
             assert not ss._is_global_env(name), name
+
+
+class TestSecretScopeAcrossExecutorThreads:
+    """Multiplexed profile state must reach pool workers (see #95119).
+
+    The context-compression timeout fence runs auxiliary LLM calls in a
+    daemon thread pool.  Bundled CPython runtime builds omit
+    ``ThreadPoolExecutor``'s context propagation, so the profile secret
+    scope was absent in the worker and ``get_secret`` failed closed with
+    ``UnscopedSecretError``, silently degrading compression to lossy
+    deterministic summaries.  ``DaemonThreadPoolExecutor.submit`` restores
+    stdlib context semantics; these tests lock that in.
+    """
+
+    def test_scoped_read_works_in_daemon_pool_worker(self, monkeypatch):
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        monkeypatch.setenv("SURPLUS_API_KEY", "env-key")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"SURPLUS_API_KEY": "scope-key"})
+        pool = DaemonThreadPoolExecutor(max_workers=1)
+        try:
+            # The scope (authoritative under multiplex) must reach the worker.
+            seen = pool.submit(ss.get_secret, "SURPLUS_API_KEY").result(timeout=10)
+            assert seen == "scope-key"
+            # A scoped miss must still not borrow the (cross-profile) env value.
+            monkeypatch.setenv("OPENAI_API_KEY", "env-leak")
+            assert pool.submit(ss.get_secret, "OPENAI_API_KEY").result(timeout=10) is None
+        finally:
+            pool.shutdown(wait=True)
+            ss.reset_secret_scope(token)

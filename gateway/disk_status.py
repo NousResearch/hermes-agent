@@ -1,103 +1,49 @@
-"""Disk-usage rollup for ``/api/status`` (NS-656).
+"""Disk-usage rollup for ``/api/status``.
 
-Companion to :mod:`gateway.memory_status`, closing the same class of gap
-for storage: a hosted agent can fill its data volume completely — SQLite
-writes failing, session persistence dead, config saves lost — while its
-dashboard and the NAS agent card both look perfectly healthy.  Fleet
-incidents OOF-2 (unrecoverable disk-full) and OOF-107 (fleet-wide disk
-exhaustion, remediated by hand) are exactly this failure mode.
-
-The readiness endpoint already probes disk (``gateway/readiness.py::
-_probe_disk``), but readiness is a component verdict, not user-facing
-telemetry — nothing renders it.  This module produces the public block
-the dashboard SPA and the NAS availability sweep actually consume.
-
-Unlike the memory block (which distills already-persisted heartbeat
-files), disk is sampled live via :func:`shutil.disk_usage` — a single
-``statvfs`` call, the same thing the readiness probe does per request.
-There is no meaningful "staleness" dimension, so no ``sampled_at``.
-
-Public-safety note: ``/api/status`` is an unauthenticated liveness probe
-(``PUBLIC_API_PATHS``).  This block carries only coarse numbers (MB
-granularity, whole-percent usage) and an enum — the same disclosure
-class as the ``memory`` block.
-
-Everything is best-effort and read-only: an unreadable filesystem
-degrades to ``pressure="unknown"`` rather than raising into the status
-endpoint.
+Companion to :mod:`gateway.memory_status`: a hosted agent can fill its data
+volume (SQLite writes failing, config saves lost) while its dashboard looks
+healthy.  Sampled live via one ``statvfs`` call, so there is no ``sampled_at``.
+``/api/status`` is unauthenticated: only coarse numbers (MB, one-decimal
+percent) and an enum.  Best-effort: an unreadable filesystem degrades to
+``pressure="unknown"`` rather than raising into the status endpoint.
 """
 
 from __future__ import annotations
 
-import logging
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+from gateway.memory_status import _nonneg_int
 
-# Disk-pressure thresholds. Percent alone misleads in both directions:
-# 90% used on a 100 GB volume leaves a comfortable 10 GB, while 50% used
-# on a tiny volume can be one image download from write failures. So the
-# percent triggers are gated on absolute headroom also being low, and a
-# hard absolute floor applies regardless of size — below it, SQLite
-# journaling and config writes are at genuine risk on any volume.
-_CRITICAL_FREE_MB = 256  # < 256 MB free: critical on any volume
-_CRITICAL_PERCENT = 95.0  # >= 95% used AND < 1 GB free: critical
-_CRITICAL_HEADROOM_MB = 1024
-_ELEVATED_FREE_MB = 512  # < 512 MB free: elevated on any volume
-_ELEVATED_PERCENT = 85.0  # >= 85% used AND < 4 GB free: elevated
-_ELEVATED_HEADROOM_MB = 4096
-
+# Percent alone misleads both ways: 90% used on 100 GB leaves 10 GB, while 50% on a tiny
+# volume is one download from write failures.  So percent triggers are gated on absolute
+# headroom also being low, and a hard floor applies regardless of size (below it SQLite
+# journaling / config writes are at risk).  Rows: (level, free floor, used-%, headroom); worst first.
+_PRESSURE_TIERS = (
+    ("critical", 256, 95.0, 1024),  # < 256 MB free, or >= 95% used AND < 1 GB free
+    ("elevated", 512, 85.0, 4096),  # < 512 MB free, or >= 85% used AND < 4 GB free
+)
 _BYTES_PER_MB = 1024 * 1024
 
 
-def _coerce_mb(value: Any) -> Optional[int]:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
 def classify_disk_pressure(free_mb: Any, total_mb: Any) -> str:
-    """Map free/total MB to ``ok``/``elevated``/``critical``.
-
-    ``unknown`` when the sample is missing or malformed — the caller must
-    not treat "we could not read it" as "disk is fine".
-    """
-    free = _coerce_mb(free_mb)
-    total = _coerce_mb(total_mb)
-    if free is None or total is None or total <= 0:
+    """``ok``/``elevated``/``critical`` from free/total MB; ``unknown`` when the sample
+    is missing/malformed — "could not read it" must never read as "fine"."""
+    free, total = _nonneg_int(free_mb), _nonneg_int(total_mb)
+    if free is None or not total:
         return "unknown"
     used_percent = (1 - free / total) * 100.0
-    if free < _CRITICAL_FREE_MB or (
-        used_percent >= _CRITICAL_PERCENT and free < _CRITICAL_HEADROOM_MB
-    ):
-        return "critical"
-    if free < _ELEVATED_FREE_MB or (
-        used_percent >= _ELEVATED_PERCENT and free < _ELEVATED_HEADROOM_MB
-    ):
-        return "elevated"
+    for level, free_floor, percent_floor, headroom in _PRESSURE_TIERS:
+        if free < free_floor or (used_percent >= percent_floor and free < headroom):
+            return level
     return "ok"
 
 
 def collect_disk_status(home: Optional[Path] = None) -> Dict[str, Any]:
-    """Build the ``disk`` block for ``/api/status``.
-
-    ``home`` scopes the sample to a profile's HERMES_HOME (the status
-    endpoint's ``?profile=`` handling passes it through); on hosted
-    images every profile shares the ``/opt/data`` volume, so the answer
-    is the same — but scoping keeps the contract identical to the
-    ``memory`` block's.
-
-    Always returns a dict — an unreadable/unmounted filesystem yields
-    ``{"pressure": "unknown", ...}``.  Never raises.
-    """
-    status: Dict[str, Any] = {
-        "pressure": "unknown",
-        "total_mb": None,
-        "free_mb": None,
-        "used_percent": None,
-    }
+    """``disk`` block for ``/api/status`` (same ``home`` contract as ``memory``).
+    Never raises — an unreadable/unmounted filesystem yields ``pressure="unknown"``."""
+    status: Dict[str, Any] = {"pressure": "unknown", "total_mb": None, "free_mb": None, "used_percent": None}
     try:
         if home is None:
             from hermes_constants import get_hermes_home
@@ -108,10 +54,30 @@ def collect_disk_status(home: Optional[Path] = None) -> Dict[str, Any]:
         return status
     if usage.total <= 0:
         return status
-    total_mb = usage.total // _BYTES_PER_MB
-    free_mb = usage.free // _BYTES_PER_MB
-    status["total_mb"] = total_mb
-    status["free_mb"] = free_mb
-    status["used_percent"] = round((usage.used / usage.total) * 100, 1)
-    status["pressure"] = classify_disk_pressure(free_mb, total_mb)
+    total_mb, free_mb = usage.total // _BYTES_PER_MB, usage.free // _BYTES_PER_MB
+    status.update(total_mb=total_mb, free_mb=free_mb, used_percent=round((usage.used / usage.total) * 100, 1),
+                  pressure=classify_disk_pressure(free_mb, total_mb))
     return status
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import logging  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'logger': ('gateway.run', 'logger'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

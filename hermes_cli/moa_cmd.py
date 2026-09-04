@@ -52,7 +52,10 @@ def _model_options() -> list[dict[str, Any]]:
 def _prompt_max_tokens_override() -> int | None:
     """Return a per-reference token cap, or None to inherit the preset default."""
     while True:
-        raw = input("Max tokens override (blank to inherit preset default): ").strip()
+        try:
+            raw = input("Max tokens override (blank to inherit preset default): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("\nMoA configuration cancelled.") from None
         if not raw:
             return None
         try:

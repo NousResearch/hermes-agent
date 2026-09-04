@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.moa_cmd import (
     _format_slot,
     _pick_slot,
@@ -50,6 +52,14 @@ def test_invalid_max_tokens_override_reprompts(capsys):
         assert _prompt_max_tokens_override() == 800
 
     assert capsys.readouterr().out.count("Enter a positive integer") == 2
+
+
+@pytest.mark.parametrize("interruption", [EOFError(), KeyboardInterrupt()])
+def test_max_tokens_override_interruptions_cancel_cleanly(interruption):
+    with patch("builtins.input", side_effect=interruption), pytest.raises(
+        SystemExit, match="MoA configuration cancelled"
+    ):
+        _prompt_max_tokens_override()
 
 
 def test_aggregator_slot_does_not_offer_reference_override():

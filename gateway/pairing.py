@@ -900,7 +900,7 @@ class PairingStore:
     # ----- Cleanup -----
 
     def _cleanup_expired(self, platform: str) -> None:
-        """Remove expired pending codes.
+        """Remove expired pending codes and stale per-user rate-limit keys.
 
         Tolerant of malformed / legacy entries — anything without a numeric
         ``created_at`` is treated as expired (it's effectively unusable
@@ -924,6 +924,31 @@ class PairingStore:
             for entry_id in expired:
                 del pending[entry_id]
             self._save_json(path, pending)
+
+        # The rate-limit file is shared across platforms. Prune only the
+        # current platform's per-user timestamps so failed-attempt counters
+        # for other platforms remain untouched. Malformed timestamps are
+        # unusable and are safe to discard.
+        rate_path = self._rate_limit_path()
+        limits = self._load_json(rate_path)
+        prefix = f"{platform}:"
+        stale_keys = [
+            key
+            for key, timestamp in limits.items()
+            if key.startswith(prefix)
+            and (
+                not isinstance(timestamp, (int, float))
+                or (now - timestamp) >= RATE_LIMIT_SECONDS
+            )
+        ]
+        lockout_key = f"_lockout:{platform}"
+        lockout_until = limits.get(lockout_key)
+        if isinstance(lockout_until, (int, float)) and lockout_until <= now:
+            stale_keys.append(lockout_key)
+        if stale_keys:
+            for key in stale_keys:
+                limits.pop(key, None)
+            self._save_json(rate_path, limits)
 
     def _all_platforms(self, suffix: str) -> list:
         """List all platforms that have data files of a given suffix."""

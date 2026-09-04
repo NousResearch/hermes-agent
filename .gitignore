@@ -68,6 +68,8 @@ wandb/
 testlogs
 playwright-report/
 test-results/
+/log.txt
+/sqlite_leak_fix.png
 # Playwright visual regression baselines — cached from main in CI, not committed
 *-snapshots/
 

@@ -45,7 +45,26 @@ def _env_int(name: str, default: int) -> int:
     return _coerce_int(os.getenv(name, default), default)
 
 
-def max_pingpong_turns() -> int:
+def max_pingpong_turns(peer: Optional[str] = None) -> int:
+    """Return the anti-loop turn cap.
+
+    ``peer`` is an optional peer name used to look up a per-peer override in
+    the A2A config (``a2a_agents.<peer>.max_turns``). When no override exists
+    or the peer is unknown, fall back to the global ``A2A_MAX_PINGPONG_TURNS``
+    env variable (default 5, hard max 20).
+    """
+    # Per-peer override from config
+    if peer:
+        try:
+            from . import tools as _tools  # local import to avoid cycle
+            cfg = _tools._load_config()
+            entry = (cfg.get("a2a_agents") or {}).get(peer, {})
+            if isinstance(entry, dict) and "max_turns" in entry:
+                v = int(entry["max_turns"])
+                return max(1, min(v, _HARD_MAX_PINGPONG))
+        except Exception:
+            pass  # config missing or unreadable — fall through to env
+
     v = _env_int("A2A_MAX_PINGPONG_TURNS", _DEFAULT_MAX_PINGPONG)
     return max(1, min(v, _HARD_MAX_PINGPONG))
 
@@ -189,10 +208,24 @@ def extract_context_id(params: dict) -> str:
     return (str(msg.get("contextId") or "") if isinstance(msg, dict) else "") or str(params.get("contextId") or "")
 
 
-def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *, created_at: str = "") -> dict:
+def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *,
+               created_at: str = "", turn: Optional[int] = None, max_turns: Optional[int] = None) -> dict:
     """A2A v1.0 Task. ``created_at`` is accepted but NOT serialized: the v1.0 Task proto has no
-    createdAt and strict ProtoJSON parsers (a2a-sdk) reject unknown fields."""
+    createdAt and strict ProtoJSON parsers (a2a-sdk) reject unknown fields.
+
+    ``turn`` and ``max_turns`` surface the anti-loop budget so peers know how many turns remain
+    before rejection. They live under ``metadata.turnBudget`` (non-spec but tolerated by lenient
+    parsers; strict clients ignore it).
+    """
     task: dict[str, Any] = {"id": task_id, "contextId": context_id, "status": {"state": state, "timestamp": now_iso()}}
+    if turn is not None and max_turns is not None:
+        task["metadata"] = {
+            "turnBudget": {
+                "current": turn,
+                "max": max_turns,
+                "remaining": max(0, max_turns - turn),
+            }
+        }
     if agent_text:
         task["status"]["message"] = text_message(ROLE_AGENT, agent_text, context_id)
         if state == STATE_COMPLETED:
@@ -247,6 +280,25 @@ class TurnTracker:
     def reset(self, context_id: str) -> None:
         with self._lock:
             self._turns.pop(context_id, None)
+
+    def refund(self, context_id: str) -> int:
+        """Decrement the turn count for a context (transport failure refund).
+
+        When a turn is consumed by a transport failure (timeout, empty reply,
+        dispatch error) — not genuine agent work — it should not count toward
+        the anti-loop cap. Returns the new count (floor 0).
+        """
+        with self._lock:
+            current = self._turns.get(context_id, (0, time.time()))[0]
+            if current > 0:
+                self._turns[context_id] = (current - 1, time.time())
+                return current - 1
+            return 0
+
+    def get_count(self, context_id: str) -> int:
+        """Return current turn count without incrementing."""
+        with self._lock:
+            return self._turns.get(context_id, (0, time.time()))[0]
 
 
 class RateLimiter:

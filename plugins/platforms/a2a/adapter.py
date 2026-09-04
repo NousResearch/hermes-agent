@@ -498,7 +498,7 @@ class A2AAdapter(BasePlatformAdapter):
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
         turn = self._turns.track(context_id)
-        max_turns = protocol.max_pingpong_turns()
+        max_turns = protocol.max_pingpong_turns(peer)
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
         if turn > max_turns:
             protocol.metrics.anti_loop_triggers += 1
@@ -578,8 +578,33 @@ class A2AAdapter(BasePlatformAdapter):
                 m.record_latency(time.time() - started)
         else:
             m.tasks_failed += 1
+        if state == protocol.STATE_FAILED and self._is_transport_failure(reply):
+            # Transport failure (timeout, disconnect, dispatch error, empty
+            # reply) — not genuine agent work. Refund the turn so recovery
+            # loops don't trip the anti-loop cap.
+            self._turns.refund(context_id)
+            logger.debug("A2A: refunded turn for context %s (transport failure)", context_id)
         self.tasks.complete(task_id, state, reply)
         self._send_push_notification(task_id, context_id, reply, state)
+
+    @staticmethod
+    def _is_transport_failure(reply: str) -> bool:
+        """Detect if a failure message indicates a transport issue rather than
+        genuine agent work. Returns True for timeouts, empty replies, dispatch
+        errors, and client disconnections.
+        """
+        if not reply:
+            return True
+        # Match known transport failure patterns
+        transport_markers = (
+            "[agent did not reply in time]",
+            "[client disconnected]",
+            "Dispatch failed:",
+            "Agent gateway not ready",
+            "Profile dispatch failed:",
+            "[profile did not reply in time]",
+        )
+        return any(marker in reply for marker in transport_markers)
 
     def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:
         """Record a dispatched task's outcome; returns (state, reply) after redaction and

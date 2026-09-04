@@ -1,21 +1,67 @@
-//! Honor reduced motion (Vercel: `prefers-reduced-motion`).
+//! Hermes Ink motion: status FaceTicker + thinking/tool braille families.
 //!
-//! `HERMES_TUI_REDUCED_MOTION` or `PREFERS_REDUCED_MOTION` = 1/true/on.
+//! Cadence matches `ui-tui` (`appChrome.tsx`, `thinking.tsx`, `content/faces.ts`).
+//! Transcript spinners stay 1 cell so the stream does not jitter.
 
-const SPIN: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TICK_MS: u64 = 50;
+
+/// Classic braille (`unicode-animations` `braille`, 80ms).
+const BRAILLE: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ASCII: &[&str] = &["|", "/", "-", "\\"];
-const EMOJI: &[&str] = &["⚕", "🌀", "🤔", "✨", "🍵", "🔮"];
+/// Caduceus first, then the Ink emoji set. Trailing space on ⚕ keeps width 2.
+const EMOJI: &[&str] = &["⚕ ", "🌀", "🤔", "✨", "🍵", "🔮"];
+/// Official Ink `FACES` (`ui-tui/src/content/faces.ts`).
 const KAOMOJI: &[&str] = &[
     "(｡•́︿•̀｡)",
     "(◔_◔)",
     "(¬‿¬)",
+    "( •_•)>⌐■-■",
+    "(⌐■_■)",
     "(´･_･`)",
     "◉_◉",
     "(°ロ°)",
+    "( ˘⌣˘)♡",
+    "ヽ(>∀<☆)☆",
+    "٩(๑❛ᴗ❛๑)۶",
     "(⊙_⊙)",
     "(¬_¬)",
+    "( ͡° ͜ʖ ͡°)",
     "ಠ_ಠ",
 ];
+
+/// First cell of Ink `THINK` families (helix is weak at 1-col, so orbit leads).
+const THINK: &[&[&str]] = &[
+    &["⠃", "⠉", "⠘", "⠰", "⢠", "⣀", "⡄", "⠆"], // orbit
+    &["⠋", "⠉", "⠙", "⠚", "⠒", "⠂", "⠂", "⠒", "⠲", "⠴", "⠤", "⠄"], // dna
+    &[
+        "⠖", "⡠", "⣠", "⣄", "⠢", "⠙", "⠉", "⠊", "⠜", "⡤", "⣀", "⢤", "⠣", "⠑", "⠉", "⠋",
+    ], // waverows
+    &[
+        "⣁", "⣉", "⡉", "⠉", "⠈", "⠀", "⠐", "⠒", "⠖", "⠶", "⠦", "⠤", "⠠", "⠀", "⢀", "⣀",
+    ], // snake
+    &[
+        "⠀", "⠂", "⠌", "⡑", "⢕", "⢝", "⣫", "⣟", "⣿", "⣟", "⣫", "⢝", "⢕", "⡑", "⠌", "⠂", "⠀",
+    ], // breathe
+    &["⠀", "⠰", "⢾", "⣏", "⡁"],                // pulse
+];
+
+/// First cell of Ink `TOOL` families with real 1-col motion.
+const TOOL: &[&[&str]] = &[
+    &["⡡", "⠊", "⢔", "⡁", "⢔", "⠨"], // sparkle
+    &["⢁", "⠂", "⠄", "⡈", "⠐", "⠠", "⢁", "⠂", "⠄", "⡈", "⠐", "⠠"], // rain
+    &["⣀", "⣤", "⣶", "⣿", "⣿", "⣿", "⣶", "⣤", "⣀", "⠀", "⠀"], // fillsweep
+    &[
+        "⠁", "⠋", "⠟", "⡿", "⣿", "⣿", "⣿", "⣿", "⣾", "⣴", "⣠", "⢀", "⠀", "⠀", "⠀", "⠀",
+    ], // diagswipe
+    &["⠀", "⠁", "⠋", "⠞", "⡴", "⣠", "⢀"], // cascade (blanks stripped)
+];
+
+const FACE_MS: u64 = 2500;
+const EMOJI_MS: u64 = 600;
+const ASCII_MS: u64 = 100;
+const BRAILLE_MS: u64 = 80;
+const THINK_MS: u64 = 90;
+const TOOL_MS: u64 = 70;
 
 pub fn reduced_motion() -> bool {
     flag("HERMES_TUI_REDUCED_MOTION") || flag("PREFERS_REDUCED_MOTION")
@@ -36,28 +82,66 @@ pub fn frame(frame: u64) -> u64 {
     }
 }
 
+fn at(frames: &[&'static str], interval_ms: u64, frame: u64) -> &'static str {
+    if frames.is_empty() {
+        return "●";
+    }
+    if reduced_motion() {
+        return frames[0];
+    }
+    let ticks = (frame.saturating_mul(TICK_MS)) / interval_ms.max(1);
+    frames[(ticks as usize) % frames.len()]
+}
+
+fn family(sets: &[&[&'static str]], salt: u64, interval_ms: u64, frame: u64) -> &'static str {
+    let set = sets[(salt as usize) % sets.len()];
+    at(set, interval_ms, frame)
+}
+
 pub fn spinner(frame: u64) -> &'static str {
     spinner_for(crate::state::IndicatorStyle::Unicode, frame)
 }
 
+/// Status-bar FaceTicker (`/indicator`). Unicode is a bare braille cell.
 pub fn spinner_for(style: crate::state::IndicatorStyle, frame: u64) -> &'static str {
     if reduced_motion() {
         return match style {
-            crate::state::IndicatorStyle::Emoji => "⚕",
+            crate::state::IndicatorStyle::Emoji => "⚕ ",
             crate::state::IndicatorStyle::Kaomoji => "(´･_･`)",
             crate::state::IndicatorStyle::Ascii => "+",
             crate::state::IndicatorStyle::Unicode => "●",
         };
     }
-    let tick = self::frame(frame);
     match style {
-        crate::state::IndicatorStyle::Unicode => SPIN[(tick / 2 % SPIN.len() as u64) as usize],
-        crate::state::IndicatorStyle::Ascii => ASCII[(tick / 2 % ASCII.len() as u64) as usize],
-        crate::state::IndicatorStyle::Emoji => EMOJI[(tick / 6 % EMOJI.len() as u64) as usize],
-        crate::state::IndicatorStyle::Kaomoji => {
-            KAOMOJI[(tick / 8 % KAOMOJI.len() as u64) as usize]
-        }
+        crate::state::IndicatorStyle::Unicode => at(BRAILLE, BRAILLE_MS, frame),
+        crate::state::IndicatorStyle::Ascii => at(ASCII, ASCII_MS, frame),
+        crate::state::IndicatorStyle::Emoji => at(EMOJI, EMOJI_MS, frame),
+        crate::state::IndicatorStyle::Kaomoji => at(KAOMOJI, FACE_MS, frame),
     }
+}
+
+/// Transcript thinking (Ink `Spinner variant="think"`).
+pub fn think_spinner(frame: u64) -> &'static str {
+    if reduced_motion() {
+        return "●";
+    }
+    family(THINK, 0, THINK_MS, frame)
+}
+
+/// Running tool row (Ink `Spinner variant="tool"`). `salt` picks a family.
+pub fn tool_spinner(frame: u64, salt: u64) -> &'static str {
+    if reduced_motion() {
+        return "●";
+    }
+    family(TOOL, salt, TOOL_MS, frame)
+}
+
+pub fn salt_id(id: &str) -> u64 {
+    let mut h = 0u64;
+    for b in id.as_bytes() {
+        h = h.wrapping_mul(16777619) ^ u64::from(*b);
+    }
+    h
 }
 
 pub fn ellipsis_at(frame: u64, reduced: bool) -> &'static str {
@@ -89,6 +173,25 @@ mod tests {
         assert_eq!(ellipsis_at(12, false), "...");
         assert_eq!(spinner_for(crate::state::IndicatorStyle::Ascii, 0).len(), 1);
         assert!(!spinner_for(crate::state::IndicatorStyle::Kaomoji, 8).is_empty());
+    }
+
+    #[test]
+    fn hermes_emoji_leads_with_caduceus() {
+        assert!(EMOJI[0].starts_with('⚕'));
+        assert!(KAOMOJI.iter().any(|f| f.contains("⌐■")));
+    }
+
+    #[test]
+    fn think_and_tool_families_move() {
+        let a = think_spinner(0);
+        let b = think_spinner(8);
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+        let t0 = tool_spinner(0, 1);
+        let t1 = tool_spinner(12, 1);
+        assert!(!t0.is_empty());
+        assert!(!t1.is_empty());
+        assert_ne!(tool_spinner(0, 0), tool_spinner(0, 3));
     }
 
     fn matches_truthy(v: &str) -> bool {

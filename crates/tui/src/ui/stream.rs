@@ -20,41 +20,16 @@ pub fn clock(ts: DateTime<Local>) -> String {
         .to_string()
 }
 
-pub fn tool_icon(name: &str) -> &'static str {
-    let n = name.to_ascii_lowercase();
-    if n.contains("todo") {
-        "☑"
-    } else if n.contains("skill") {
-        "✦"
-    } else if n.contains("replace")
-        || n.contains("edit")
-        || n.contains("write")
-        || n.contains("patch")
-    {
-        "✎"
-    } else if n.contains("search") || n.contains("grep") || n.contains("glob") || n.contains("find")
-    {
-        "⌕"
-    } else if n.contains("read") || n.contains("view") || n == "cat" {
-        "▣"
-    } else if n.contains("terminal")
-        || n.contains("bash")
-        || n.contains("shell")
-        || n.contains("exec")
-        || n == "run"
-    {
-        "❯"
-    } else if n.contains("web") || n.contains("fetch") || n.contains("browser") {
-        "◎"
-    } else if n.contains("git") {
-        "⌥"
+/// Ink tool bullet. Running rows swap this for `tool_spinner`; failures use ✗.
+pub fn tool_icon(_name: &str) -> &'static str {
+    "●"
+}
+
+pub fn tool_done_icon(failed: bool) -> &'static str {
+    if failed {
+        "✗"
     } else {
-        match tool_kind(name) {
-            ToolKind::Read | ToolKind::Search => "◇",
-            ToolKind::Edit | ToolKind::Run => "◆",
-            ToolKind::Todo => "☑",
-            ToolKind::Other => "●",
-        }
+        "●"
     }
 }
 
@@ -784,17 +759,18 @@ mod tests {
         assert_eq!(tool_kind("search_replace"), ToolKind::Edit);
         assert_eq!(tool_kind("terminal"), ToolKind::Run);
         assert_eq!(tool_kind("todo_write"), ToolKind::Todo);
-        assert_eq!(tool_icon("todo"), "☑");
-        assert_eq!(tool_icon("skill_view"), "✦");
-        assert_eq!(tool_icon("search_files"), "⌕");
-        assert_eq!(tool_icon("read_file"), "▣");
-        assert_eq!(tool_icon("terminal"), "❯");
+        assert_eq!(tool_icon("todo"), "●");
+        assert_eq!(tool_icon("skill_view"), "●");
+        assert_eq!(tool_icon("search_files"), "●");
+        assert_eq!(tool_icon("read_file"), "●");
+        assert_eq!(tool_icon("terminal"), "●");
+        assert_eq!(tool_done_icon(true), "✗");
         assert_eq!(
             run_command(r#"{"command":"cargo test --offline"}"#),
             "cargo test --offline"
         );
         assert_eq!(run_command(r#"{"argv":["ls","-la"]}"#), "ls -la");
-        assert_eq!(tool_icon("search_replace"), "✎");
+        assert_eq!(tool_icon("search_replace"), "●");
         assert_eq!(tool_kind("skill_view"), ToolKind::Other);
         assert_eq!(
             tool_headline("skill_view", r#"{"path":"docs/SKILL.md"}"#, "completed"),

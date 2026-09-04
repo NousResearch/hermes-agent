@@ -92,7 +92,7 @@ impl ChatScrollback {
             .borders(Borders::NONE)
             .style(Style::default().bg(Theme::bg_base()));
 
-        let spin = super::motion::spinner_for(state.indicator, frame_count);
+        let spin = super::motion::think_spinner(frame_count);
         let dots = super::rhythm::ellipsis(frame_count);
         let view_h = area.height as usize;
         let empty = state.messages.is_empty();
@@ -113,7 +113,16 @@ impl ChatScrollback {
                 state.expand_epoch,
             );
             let messages = state.visible_messages();
-            rebuild_cache(cache, messages, state, highlighter, col_width, spin, dots);
+            rebuild_cache(
+                cache,
+                messages,
+                state,
+                highlighter,
+                col_width,
+                spin,
+                dots,
+                frame_count,
+            );
             let total: usize = cache.blocks.iter().map(|b| b.lines.len()).sum();
             let y = scroll_y(total, view_h, state.scroll_from_bottom) as usize;
             state.hit_tools = tool_hits(&cache.blocks, y, view_h, area);
@@ -201,6 +210,7 @@ fn rebuild_cache(
     col_width: usize,
     spin: &'static str,
     dots: &'static str,
+    frame_count: u64,
 ) {
     let mut plan: Vec<(usize, usize, u64, bool)> = Vec::new();
     let mut i = 0;
@@ -231,6 +241,7 @@ fn rebuild_cache(
                 col_width,
                 spin,
                 dots,
+                frame_count,
             );
             next.push(CachedBlock {
                 hash,
@@ -308,6 +319,7 @@ fn emit_span(
     col_width: usize,
     spin: &'static str,
     dots: &'static str,
+    frame_count: u64,
 ) -> Option<String> {
     let mut click_id = None;
     match &messages[start].role {
@@ -345,7 +357,7 @@ fn emit_span(
         MessageRole::Tool { name, status, .. } => {
             if let Some((end, reads, searches)) = next_tool_cluster(messages, start) {
                 lines.push(tool_row(
-                    "▣",
+                    "●",
                     cluster_label(reads, searches),
                     Theme::text_secondary(),
                     false,
@@ -367,7 +379,11 @@ fn emit_span(
                 push_todo_card(lines, &messages[start], state, running, spin);
                 return Some(messages[start].id.clone());
             }
-            let mark = tool_icon(name);
+            let mark = if failed {
+                crate::ui::stream::tool_done_icon(true)
+            } else {
+                tool_icon(name)
+            };
             let color = if running {
                 Theme::brand_gold()
             } else if failed {
@@ -380,16 +396,18 @@ fn emit_span(
             let headline = tool_headline(name, &messages[start].content, status);
             let expanded = kind == ToolKind::Run
                 && (running || failed || state.expanded_tools.contains(&messages[start].id));
+            let tool_spin = super::motion::tool_spinner(
+                frame_count,
+                super::motion::salt_id(&messages[start].id),
+            );
             let glyph = if running {
-                spin
+                tool_spin
             } else if kind == ToolKind::Run {
                 if expanded {
                     "▾"
                 } else {
                     "▸"
                 }
-            } else if kind == ToolKind::Edit {
-                "◆"
             } else {
                 mark
             };
@@ -399,13 +417,13 @@ fn emit_span(
                 lines.push(edit_row(
                     &messages[start].content,
                     running,
-                    spin,
+                    tool_spin,
                     hot || open,
                     open,
                 ));
                 click_id = Some(messages[start].id.clone());
             } else {
-                lines.push(tool_row(glyph, headline, color, running, spin));
+                lines.push(tool_row(glyph, headline, color, running, tool_spin));
             }
             if kind == ToolKind::Run {
                 click_id = Some(messages[start].id.clone());
@@ -939,10 +957,10 @@ mod tests {
             },
         ];
         let state = AppState::new();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "");
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
         assert_eq!(cache.blocks.len(), 2);
         let ptr = cache.blocks[1].lines.as_ptr();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "");
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
         assert_eq!(cache.blocks[1].lines.as_ptr(), ptr);
     }
 
@@ -961,7 +979,7 @@ mod tests {
             is_streaming: false,
         }];
         let state = AppState::new();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "");
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
         assert_eq!(cache.blocks[0].lines.len(), 1);
         assert_eq!(cache.blocks[0].click_id.as_deref(), Some("r"));
         let blob: String = cache.blocks[0]
@@ -976,7 +994,7 @@ mod tests {
         let mut state = AppState::new();
         state.toggle_tool_expand("r");
         cache.reset_if_stale(80, "gold", false, false, 0, state.expand_epoch);
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "");
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
         let blob: String = cache.blocks[0]
             .lines
             .iter()
@@ -1008,7 +1026,7 @@ mod tests {
             is_streaming: false,
         }];
         let mut state = AppState::new();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "");
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
         let blob: String = cache.blocks[0]
             .lines
             .iter()
@@ -1023,7 +1041,7 @@ mod tests {
         }
         live[0].output = "◆ Python\n  ✓ 3.12".into();
         cache.reset_if_stale(80, "gold", false, false, 1, 0);
-        rebuild_cache(&mut cache, &live, &state, &hl, 80, " ", "");
+        rebuild_cache(&mut cache, &live, &state, &hl, 80, " ", "", 0);
         let blob: String = cache.blocks[0]
             .lines
             .iter()
@@ -1033,7 +1051,7 @@ mod tests {
         assert!(blob.contains("3.12"));
         state.toggle_tool_expand("term");
         cache.reset_if_stale(80, "gold", false, false, 0, state.expand_epoch);
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "");
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
         let blob: String = cache.blocks[0]
             .lines
             .iter()

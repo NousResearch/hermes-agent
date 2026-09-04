@@ -2889,6 +2889,19 @@ export const ja = defineLocale({
   zones: {
     showTabStrip: 'タブを表示',
     hideTabStrip: 'タブを隠す',
+    backgroundTint: '背景の色合い',
+    defaultBackground: 'デフォルトの背景',
+    backgroundTintOption: tint =>
+      ({
+        red: '赤',
+        orange: 'オレンジ',
+        yellow: '黄',
+        green: '緑',
+        cyan: 'シアン',
+        blue: '青',
+        purple: '紫'
+      })[tint] ?? tint,
+    zoneActions: 'ゾーン操作',
     showStripTab: title => `${title} を表示`,
     hideStripTab: title => `${title} を隠す`,
     lastTabKeptTitle: '最後のタブは残ります',

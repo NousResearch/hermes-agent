@@ -365,6 +365,9 @@
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-chat-surface-background: var(--ui-bg-chrome);
+    --ui-zone-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-sidebar-surface-background: var(--ui-bg-sidebar);
     /* The integrated terminal wears the transcript's background, not the
        editor's — it reads as part of the conversation surface. Its own token so
        the two can diverge without dragging the terminal along, and so a skin
@@ -610,6 +613,9 @@
     --ui-chat-surface-background: transparent;
     --ui-sidebar-surface-background: transparent;
     --ui-editor-surface-background: transparent;
+    --ui-zone-chat-surface-background: transparent;
+    --ui-zone-editor-surface-background: transparent;
+    --ui-zone-sidebar-surface-background: transparent;
     --ui-terminal-surface-background: var(--ui-bg-chrome);
   }
 
@@ -661,6 +667,9 @@
   :root[data-hermes-glass] [data-glass-opaque] {
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-chat-surface-background: var(--ui-bg-chrome);
+    --ui-zone-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
   }
 
@@ -682,6 +691,9 @@
       transparent
     );
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-chat-surface-background: var(--ui-bg-chrome);
+    --ui-zone-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-sidebar-surface-background: var(--ui-bg-sidebar);
   }
 
   /* Clear mode (native window opacity) fades EVERYTHING in the window
@@ -2954,7 +2966,8 @@ button[data-slot='aui_msg-reactions'] svg {
    Widgets on the shared shell (components/chat/widget-shell.ts →
    `--ui-widget-surface-background`) and any chat-surface card are matched on
    their class, so new ones inherit this without touching the list. */
-[data-hud-shell] [data-slot='composer-bounds']
+[data-hud-shell]
+  [data-slot='composer-bounds']
   :is(
     [data-slot='clarify-inline'],
     [data-slot='tool-block'],

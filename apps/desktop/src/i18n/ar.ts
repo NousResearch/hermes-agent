@@ -2445,6 +2445,19 @@ export const ar = defineLocale({
   zones: {
     showTabStrip: 'إظهار علامات التبويب',
     hideTabStrip: 'إخفاء علامات التبويب',
+    backgroundTint: 'صبغة الخلفية',
+    defaultBackground: 'الخلفية الافتراضية',
+    backgroundTintOption: tint =>
+      ({
+        red: 'أحمر',
+        orange: 'برتقالي',
+        yellow: 'أصفر',
+        green: 'أخضر',
+        cyan: 'سماوي',
+        blue: 'أزرق',
+        purple: 'أرجواني'
+      })[tint] ?? tint,
+    zoneActions: 'إجراءات المنطقة',
     showStripTab: title => `إظهار ${title}`,
     hideStripTab: title => `إخفاء ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',

@@ -43,7 +43,13 @@ import {
   resolveRememberedActivePane,
   workspaceScopeKey
 } from '../../workspace-scope'
-import type { DropPosition, GroupNode } from '../model'
+import {
+  type DropPosition,
+  type GroupNode,
+  isZoneBackgroundTint,
+  ZONE_BACKGROUND_TINTS,
+  type ZoneBackgroundTint
+} from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
@@ -67,6 +73,7 @@ import {
   restoreTreePane,
   SESSION_TILE_DRAG,
   setStripTabHidden,
+  setTreeGroupBackgroundTint,
   setTreeGroupMinimized,
   setTreeGroupTabStrip,
   treeTabCloseTargets
@@ -85,12 +92,17 @@ import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
 
+function swatchForTint(tint: ZoneBackgroundTint | undefined): null | string {
+  return tint ? `var(--ui-${tint})` : null
+}
+
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
  *  all) plus the strip's own chrome toggles. Same items and icons as a session
  *  tab's menu, so every tab in a strip answers a right-click the same way —
  *  a pane with no domain menu of its own (the file tree, a terminal, the main
  *  tab on a fresh draft) falls through to this one. */
 function ZoneMenu({
+  backgroundTint,
   children,
   closable,
   minimizable = true,
@@ -100,6 +112,7 @@ function ZoneMenu({
   tabMenuPrefix,
   targetPane
 }: {
+  backgroundTint?: ZoneBackgroundTint
   children: ReactNode
   /** The pane the menu closes (the right-clicked chip / the active pane);
    *  undefined = not closable (the main zone). */
@@ -204,6 +217,47 @@ function ZoneMenu({
             label: minimized ? t.zones.restore : t.zones.minimize,
             onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
           })}
+        <kit.Sub>
+          <kit.SubTrigger>
+            <Codicon name="symbol-color" size="0.875rem" />
+            <span>{t.zones.backgroundTint}</span>
+            {backgroundTint && (
+              <span
+                aria-hidden="true"
+                className="ml-auto size-2.5 rounded-full ring-1 ring-(--ui-stroke-primary)"
+                style={{ backgroundColor: swatchForTint(backgroundTint) ?? undefined }}
+              />
+            )}
+          </kit.SubTrigger>
+          <kit.SubContent aria-label={t.zones.backgroundTint} className="w-44">
+            {ZONE_BACKGROUND_TINTS.map(tint => (
+              <kit.Item
+                aria-checked={backgroundTint === tint}
+                key={tint}
+                onSelect={() => setTreeGroupBackgroundTint(nodeId, tint)}
+                role="menuitemradio"
+              >
+                <span
+                  aria-hidden="true"
+                  className="size-3.5 rounded-full ring-1 ring-(--ui-stroke-primary)"
+                  style={{ backgroundColor: swatchForTint(tint) ?? undefined }}
+                />
+                <span>{t.zones.backgroundTintOption(tint)}</span>
+                {backgroundTint === tint && <Codicon className="ml-auto" name="check" size="0.75rem" />}
+              </kit.Item>
+            ))}
+            <kit.Separator />
+            <kit.Item
+              aria-checked={!backgroundTint}
+              onSelect={() => setTreeGroupBackgroundTint(nodeId, undefined)}
+              role="menuitemradio"
+            >
+              <Codicon name="circle-slash" size="0.875rem" />
+              <span>{t.zones.defaultBackground}</span>
+              {!backgroundTint && <Codicon className="ml-auto" name="check" size="0.75rem" />}
+            </kit.Item>
+          </kit.SubContent>
+        </kit.Sub>
       </>
     )
   }
@@ -405,6 +459,7 @@ export function TreeGroup({
 
   // Same menu on the header strip and the edit veil — one prop bag.
   const zoneMenu = {
+    backgroundTint: node.backgroundTint,
     closable,
     minimizable,
     minimized: node.minimized,
@@ -413,6 +468,25 @@ export function TreeGroup({
     tabMenuPrefix: (kit: MenuKit) => paneChrome(paneFor(targetPane())).tabMenuPrefix?.(kit),
     targetPane
   }
+
+  const safeBackgroundTint = isZoneBackgroundTint(node.backgroundTint) ? node.backgroundTint : undefined
+
+  const tintedSurface = (base: string) =>
+    safeBackgroundTint ? `color-mix(in srgb, var(--ui-${safeBackgroundTint}) 10%, var(${base}))` : undefined
+
+  const zoneStyle =
+    wcOverlap || safeBackgroundTint
+      ? ({
+          ...(safeBackgroundTint
+            ? {
+                '--ui-chat-surface-background': tintedSurface('--ui-zone-chat-surface-background'),
+                '--ui-editor-surface-background': tintedSurface('--ui-zone-editor-surface-background'),
+                '--ui-sidebar-surface-background': tintedSurface('--ui-zone-sidebar-surface-background')
+              }
+            : {}),
+          ...(wcOverlap ? { paddingTop: wcOverlap.y + wcOverlap.height } : {})
+        } as CSSProperties)
+      : undefined
 
   return (
     <div
@@ -430,7 +504,7 @@ export function TreeGroup({
         setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
       }}
       ref={ref}
-      style={wcOverlap ? { paddingTop: wcOverlap.y + wcOverlap.height } : undefined}
+      style={zoneStyle}
     >
       {wcOverlap && (
         <div
@@ -732,6 +806,7 @@ export function TreeGroup({
             // barely-tinted wash; the light blur reads as "edit mode" the same
             // way the zone editor's backdrop does.
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
+            data-zone-edit-veil={node.id}
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
             style={{
               top: headerVisible ? 28 : 0,
@@ -743,6 +818,30 @@ export function TreeGroup({
             <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
               <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
               <span className="min-w-0 truncate">{active?.title ?? activeId}</span>
+              <button
+                aria-haspopup="menu"
+                aria-label={t.zones.zoneActions}
+                className="-mr-1 flex size-5 shrink-0 items-center justify-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-bg-hover) hover:text-(--ui-text-primary) focus-visible:outline-2 focus-visible:outline-(--ui-accent)"
+                onClick={event => {
+                  event.stopPropagation()
+                  const rect = event.currentTarget.getBoundingClientRect()
+
+                  event.currentTarget.dispatchEvent(
+                    new MouseEvent('contextmenu', {
+                      bubbles: true,
+                      button: 2,
+                      cancelable: true,
+                      clientX: rect.right,
+                      clientY: rect.bottom
+                    })
+                  )
+                }}
+                onPointerDown={event => event.stopPropagation()}
+                title={t.zones.zoneActions}
+                type="button"
+              >
+                <Codicon name="kebab-horizontal" size="0.8125rem" />
+              </button>
             </span>
           </div>
         </ZoneMenu>

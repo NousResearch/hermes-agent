@@ -3433,6 +3433,19 @@ export const zh: Translations = {
   zones: {
     showTabStrip: '显示标签',
     hideTabStrip: '隐藏标签',
+    backgroundTint: '背景色调',
+    defaultBackground: '默认背景',
+    backgroundTintOption: tint =>
+      ({
+        red: '红色',
+        orange: '橙色',
+        yellow: '黄色',
+        green: '绿色',
+        cyan: '青色',
+        blue: '蓝色',
+        purple: '紫色'
+      })[tint] ?? tint,
+    zoneActions: '区域操作',
     showStripTab: title => `显示 ${title}`,
     hideStripTab: title => `隐藏 ${title}`,
     lastTabKeptTitle: '保留最后一个标签',

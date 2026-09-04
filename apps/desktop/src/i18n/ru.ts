@@ -3290,6 +3290,19 @@ export const ru = defineLocale({
   zones: {
     showTabStrip: 'Показать вкладки',
     hideTabStrip: 'Скрыть вкладки',
+    backgroundTint: 'Оттенок фона',
+    defaultBackground: 'Фон по умолчанию',
+    backgroundTintOption: tint =>
+      ({
+        red: 'Красный',
+        orange: 'Оранжевый',
+        yellow: 'Жёлтый',
+        green: 'Зелёный',
+        cyan: 'Бирюзовый',
+        blue: 'Синий',
+        purple: 'Фиолетовый'
+      })[tint] ?? tint,
+    zoneActions: 'Действия зоны',
     showStripTab: title => `Показать ${title}`,
     hideStripTab: title => `Скрыть ${title}`,
     lastTabKeptTitle: 'Последняя вкладка остаётся',

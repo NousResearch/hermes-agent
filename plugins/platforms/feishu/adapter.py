@@ -436,6 +436,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    smart_mention: bool = False
     # DM allow-all (FEISHU_ALLOW_ALL_USERS / GATEWAY_ALLOW_ALL_USERS), resolved
     # per-profile so multiplexed secondary adapters honor their own .env.
     allow_all_dm: bool = False
@@ -449,6 +450,7 @@ class FeishuGroupRule:
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
     require_mention: Optional[bool] = None  # None = inherit global
+    smart_mention: Optional[bool] = None  # None = inherit global
 
 
 @dataclass
@@ -468,6 +470,7 @@ RejectReason = Literal[
     "self_ids_unknown",
     "bots_disabled",
     "bot_not_mentioned",
+    "mentions_other_party",
     "group_policy_rejected",
 ]
 
@@ -1666,11 +1669,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 per_chat_require_mention: Optional[bool] = None
                 if "require_mention" in rule_cfg:
                     per_chat_require_mention = _to_boolean(rule_cfg.get("require_mention"))
+                per_chat_smart_mention: Optional[bool] = None
+                if "smart_mention" in rule_cfg:
+                    per_chat_smart_mention = _to_boolean(rule_cfg.get("smart_mention"))
                 group_rules[str(chat_id)] = FeishuGroupRule(
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
                     allowlist={str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()},
                     blacklist={str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()},
                     require_mention=per_chat_require_mention,
+                    smart_mention=per_chat_smart_mention,
                 )
 
         # Bot-level admins
@@ -1760,6 +1767,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            smart_mention=_to_boolean(
+                extra.get("smart_mention", _get_scoped_secret("FEISHU_SMART_MENTION", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1793,6 +1803,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._allow_bots = settings.allow_bots
         self._allow_all_dm = settings.allow_all_dm
         self._require_mention = settings.require_mention
+        self._smart_mention = settings.smart_mention
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -4518,6 +4529,19 @@ class FeishuAdapter(BasePlatformAdapter):
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
         ):
             return "group_policy_rejected"
+        if self._smart_mention_for(chat_id):
+            # Smart mention gating: when a message explicitly @-mentions
+            # someone else (another bot or user), stay silent and let that
+            # party handle it — no interjecting, no interrupting our own
+            # work.  Messages with no mentions pass (the sender may have
+            # forgotten to @ anyone), as do messages that mention this bot
+            # or @_all (checked inside _mentions_self).
+            mentions = getattr(message, "mentions", None) or []
+            if mentions and not self._mentions_self(message):
+                # Explicitly addressed to someone else (another bot or user),
+                # not a forgotten @ of this bot — keep the drop reason distinct
+                # from bot_not_mentioned so gateway logs stay unambiguous.
+                return "mentions_other_party"
         if require_mention and not self._mentions_self(message):
             return "group_policy_rejected"
         return None
@@ -4527,6 +4551,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _smart_mention_for(self, chat_id: str) -> bool:
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule and rule.smart_mention is not None:
+            return rule.smart_mention
+        return self._smart_mention
 
     # --- Group policy ---------------------------------------------------------
 

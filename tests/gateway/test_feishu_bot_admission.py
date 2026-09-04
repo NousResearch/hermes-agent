@@ -640,3 +640,70 @@ def test_dm_admission_config_falls_back_to_os_environ_when_unscoped(monkeypatch)
     adapter = object.__new__(FeishuAdapter)
     adapter._apply_settings(settings)
     assert adapter._admit(make_sender(open_id="ou_anyone"), make_message(chat_type="p2p")) is None
+
+
+# --- Smart mention gating -----------------------------------------------------
+
+
+def test_smart_mention_rejects_message_mentioning_others():
+    """When smart_mention is on, a message @-mentioning someone else is ignored."""
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    adapter._smart_mention = True
+    sender = make_sender()
+    message = make_message(chat_type="group", chat_id="oc_1",
+                           mentions=[SimpleNamespace(
+                               id=SimpleNamespace(open_id="ou_other_bot", user_id=""),
+                               name="OtherBot")])
+    stub_mention(adapter, mentions_self=False)
+    assert adapter._admit(sender, message) == "mentions_other_party"
+
+
+def test_smart_mention_accepts_unmentioned_message():
+    """No @ at all (sender may have forgotten) — both bots may participate."""
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    adapter._smart_mention = True
+    sender = make_sender()
+    message = make_message(chat_type="group", chat_id="oc_1", mentions=[])
+    stub_mention(adapter, mentions_self=False)
+    assert adapter._admit(sender, message) is None
+
+
+def test_smart_mention_accepts_message_mentioning_self():
+    """Explicit @ of this bot always passes."""
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    adapter._smart_mention = True
+    sender = make_sender()
+    message = make_message(chat_type="group", chat_id="oc_1",
+                           mentions=[SimpleNamespace(
+                               id=SimpleNamespace(open_id="ou_me", user_id=""),
+                               name="Hermes")])
+    stub_mention(adapter, mentions_self=True)
+    assert adapter._admit(sender, message) is None
+
+
+def test_smart_mention_per_group_rule_overrides_global():
+    """Per-group smart_mention rule wins over the global flag."""
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    adapter._smart_mention = False
+    adapter._group_rules = {"oc_1": FeishuGroupRule(policy="open", smart_mention=True)}
+    sender = make_sender()
+    message = make_message(chat_type="group", chat_id="oc_1",
+                           mentions=[SimpleNamespace(
+                               id=SimpleNamespace(open_id="ou_other", user_id=""),
+                               name="Other")])
+    stub_mention(adapter, mentions_self=False)
+    assert adapter._admit(sender, message) == "mentions_other_party"
+
+
+def test_smart_mention_disabled_keeps_open_behavior():
+    """With smart_mention off, a message @-mentioning others still passes (no gate)."""
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    adapter._smart_mention = False
+    sender = make_sender()
+    message = make_message(chat_type="group", chat_id="oc_1",
+                           mentions=[SimpleNamespace(
+                               id=SimpleNamespace(open_id="ou_other", user_id=""),
+                               name="Other")])
+    stub_mention(adapter, mentions_self=False)
+    assert adapter._admit(sender, message) is None

@@ -17,6 +17,7 @@ contract: the plugin scans ALL of your sessions, not the first 200.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import threading
@@ -301,3 +302,80 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_rescan_endpoint_does_not_block_the_event_loop(plugin_api):
+    """POST /rescan must offload its scan instead of running it on the loop.
+
+    ``rescan()`` is an async endpoint, so FastAPI awaits it directly on the
+    event loop. It used to call ``evaluate_all(force=True)`` synchronously,
+    which runs the same SessionDB walk + per-message regex analysis that
+    ``scan_sessions`` documents as taking "tens of seconds to several
+    minutes" on a cold cache — freezing the whole gateway for the duration,
+    not just this request. Same class of stall as #46601 in disk-cleanup.
+
+    The proof is a heartbeat coroutine: while the scan is in flight the loop
+    must still be able to run other tasks. Under the old code the heartbeat
+    never gets a turn, ``loop_ran_during_scan`` is never set, and the scan
+    sits on the loop for the full ``gate_timeout``.
+    """
+    gate_timeout = 5.0
+
+    fake_db = _FakeSessionDB(session_count=5)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    scan_started = threading.Event()
+    loop_ran_during_scan = threading.Event()
+    gate_released: List[bool] = []
+
+    original_scan = plugin_api.scan_sessions
+
+    def gated_scan(*args, **kwargs):
+        # Hold the scan open until the heartbeat proves the loop is still
+        # turning. Bounded so a blocked loop fails an assertion instead of
+        # hanging the suite; wait() returning False IS the regression signal.
+        scan_started.set()
+        gate_released.append(loop_ran_during_scan.wait(timeout=gate_timeout))
+        return original_scan(*args, **kwargs)
+
+    plugin_api.scan_sessions = gated_scan
+
+    ticks: List[float] = []
+
+    async def heartbeat(stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            ticks.append(time.monotonic())
+            if scan_started.is_set():
+                loop_ran_during_scan.set()
+            await asyncio.sleep(0.02)
+
+    async def drive() -> Dict[str, Any]:
+        stop = asyncio.Event()
+        beat = asyncio.create_task(heartbeat(stop))
+        await asyncio.sleep(0.05)  # let the heartbeat settle before measuring
+        ticks_before = len(ticks)
+        result = await plugin_api.rescan()
+        await asyncio.sleep(0.1)  # record post-scan ticks before stopping
+        stop.set()
+        await beat
+        return {"result": result, "ticks_before": ticks_before}
+
+    out = asyncio.run(drive())
+
+    assert out["result"]["ok"] is True
+    assert scan_started.is_set(), "the scan never ran"
+    assert gate_released == [True], (
+        "the event loop did not run a single task while /rescan was scanning "
+        "— rescan() is executing evaluate_all() on the loop instead of "
+        "offloading it"
+    )
+    assert len(ticks) > out["ticks_before"], (
+        "heartbeat made no progress during the scan"
+    )
+
+    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    worst = max(gaps) if gaps else 0.0
+    # Generous bound: the fix leaves gaps at the 0.02s sleep interval, the
+    # bug parks the loop for the full gate timeout. Anything in between is
+    # scheduler noise on a loaded CI box, not a regression.
+    assert worst < 2.0, f"event loop stalled {worst:.2f}s during /rescan"

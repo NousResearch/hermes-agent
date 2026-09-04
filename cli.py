@@ -1260,9 +1260,18 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
                 _mm = getattr(_active_agent_ref, '_memory_manager', None)
                 if _mm is not None and hasattr(_mm, 'flush_pending'):
                     try:
-                        _mm.flush_pending(timeout=10)
+                        # flush_pending() catches its own exceptions and reports
+                        # failure via a False return, so `except` alone never
+                        # fires here. Check the result or the drop stays silent.
+                        if not _mm.flush_pending(timeout=10):
+                            logger.warning(
+                                "Memory flush did not drain before exit; "
+                                "pending extraction may be lost"
+                            )
                     except Exception:
-                        pass
+                        logger.warning(
+                            "Memory flush failed before exit", exc_info=True
+                        )
                 # Forward the agent's own transcript so memory providers'
                 # on_session_end hooks see the real conversation instead of
                 # an empty list (#15165). ``_session_messages`` is set on

@@ -223,6 +223,42 @@ def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
     mm.flush_pending.assert_called_once_with(timeout=10)
 
 
+def test_run_cleanup_warns_when_flush_pending_reports_failure(caplog):
+    """A failed/timed-out drain must not exit silently.
+
+    ``MemoryManager.flush_pending`` swallows its own exceptions and reports
+    failure through a ``False`` return, so the caller's ``except`` clause never
+    fires. Ignoring the return value drops the old session's extraction with no
+    trace — the exact loss the surrounding bounded-drain logic exists to stop.
+    """
+    import logging
+
+    import cli as _cli_mod
+
+    agent = MagicMock()
+    mm = MagicMock()
+    mm.flush_pending.return_value = False  # drain timed out or failed
+    agent._memory_manager = mm
+    agent._session_messages = []
+
+    old_ref = _cli_mod._active_agent_ref
+    _cli_mod._active_agent_ref = agent
+    _cli_mod._cleanup_done = False
+    try:
+        with caplog.at_level(logging.WARNING):
+            _cli_mod._run_cleanup(notify_session_finalize=False)
+    finally:
+        _cli_mod._cleanup_done = True
+        _cli_mod._active_agent_ref = old_ref
+
+    mm.flush_pending.assert_called_once_with(timeout=10)
+    assert any(
+        "memory" in r.message.lower() and "flush" in r.message.lower()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+    ), "a failed memory flush must be logged, not swallowed"
+
+
 
 
 

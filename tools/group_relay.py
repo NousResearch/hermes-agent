@@ -188,20 +188,45 @@ def enqueue(
             return existing
         receipt = _receipt_from_replies(base, envelope["id"])
         if receipt is not None:
-            # Claimed, acted on, and swept from claimed/ — the receipt line at
-            # the head of the reply file is the durable record of what was sent.
+            # The receipt at the head of the reply file is the durable record
+            # of what this key sent; it outlives outbox/ and claimed/.
             if any(receipt.get(field) != envelope[field] for field in _IDEMPOTENCY_FIELDS):
                 raise conflict
-            return envelope
-        # First enqueue for this key: pin the receipt BEFORE the envelope is
-        # visible, so conflict detection survives every later sweep.
-        append_reply_line(
-            root,
-            envelope["id"],
-            {"kind": "receipt", **{field: envelope[field] for field in _IDEMPOTENCY_FIELDS}},
-        )
+            if _desktop_took_delivery(base, envelope["id"]):
+                return envelope
+            # Receipt exists but no envelope and the Desktop never saw it: a
+            # crash landed between the receipt and the outbox write (below).
+            # Recreate the outbox entry — idempotently, same id — so the
+            # message is not lost.
+        else:
+            # First enqueue for this key: pin the receipt BEFORE the envelope
+            # is visible so conflict detection survives every later sweep.
+            append_reply_line(
+                root,
+                envelope["id"],
+                {"kind": "receipt", **{field: envelope[field] for field in _IDEMPOTENCY_FIELDS}},
+            )
     _atomic_write_json(base / OUTBOX_DIR, f"{envelope['id']}.json", envelope, prefix=".env-")
     return envelope
+
+
+def _desktop_took_delivery(base: Path, envelope_id: str) -> bool:
+    """True once the reply file shows the Desktop acted on the envelope
+    (``accepted``/``done``/``error``) — the only states where suppressing a
+    requeue cannot lose the message."""
+    path = base / REPLIES_DIR / f"{envelope_id}.jsonl"
+    try:
+        with open(path, "rb") as handle:
+            for raw in handle:
+                try:
+                    line = json.loads(raw.decode("utf-8"))
+                except ValueError:
+                    continue
+                if isinstance(line, dict) and line.get("kind") in ("accepted", "reply", "done", "error"):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def pending_count(root: Path | str, *, older_than_seconds: float = 0.0) -> int:

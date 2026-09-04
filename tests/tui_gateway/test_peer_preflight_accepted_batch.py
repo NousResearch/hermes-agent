@@ -16,7 +16,10 @@ from tui_gateway.hosted_room_peer_transport import PeerHostedRoomTransport, Peer
 from tests.tui_gateway.test_hosted_room_driver_runtime import BINDING, _identity, db  # noqa: F401
 
 
-def test_lease_loss_cannot_delete_already_admitted_batch(db, tmp_path, monkeypatch):
+@pytest.mark.parametrize("response_loss", ["staging", "pre_dispatch"])
+def test_lease_loss_cannot_delete_already_admitted_batch(
+    db, tmp_path, monkeypatch, response_loss
+):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr("socket.socket.connect", lambda *_a, **_k: pytest.fail("network forbidden"))
@@ -36,7 +39,8 @@ def test_lease_loss_cannot_delete_already_admitted_batch(db, tmp_path, monkeypat
                  authority_epoch=1, member_id="ops", target_install_id="install-target", target_profile="ops",
                  execution_policy_digest="b" * 64)
     secret = b"s" * 32
-    grant = issue_room_grant(secret, grant_id="old", issued_at=initial - 3299,
+    issued_at = initial if response_loss == "staging" else initial - 3299
+    grant = issue_room_grant(secret, grant_id="old", issued_at=issued_at,
                              ttl_seconds=3600, status_expires_at=initial + 10000, **scope)
     spool = RoomAttachmentSpool(tmp_path / "target.db", root=tmp_path / "spool", clock=clock)
     accepted_paths, deletes = [], []
@@ -60,20 +64,19 @@ def test_lease_loss_cannot_delete_already_admitted_batch(db, tmp_path, monkeypat
             for item in attachments:
                 spool.put(claims=claims(checked), task_id=checked.task_id,
                           execution_generation=checked.execution_generation, attachment_id=item["attachment_id"], data=item["data"])
+            if response_loss == "staging":
+                admit_successor(checked)
+                raise PeerRunsHTTPError(
+                    "the complete upload response was lost",
+                    retryable=True,
+                    ambiguous=True,
+                )
             instant[0] = initial + 2
             return {"complete": True}
 
         def refresh_grant(self, **_kwargs):
             # The old worker's lease expires while its refresh is outstanding.
-            instant[0] = initial + 31
-            successor = state.acquire_lease(db, room_id="room-1", gateway_id=BINDING.gateway_id,
-                authority_epoch=1, process_generation="worker-b", ttl_seconds=30, clock=clock)
-            state.recover_room(db, successor, clock=clock)
-            assert state.get_task(db, identity)["status"] == "indeterminate"
-            other = Peer()
-            result = other.recover_dispatch(dispatch=self.staged_dispatch.as_mapping(), grant=grant)
-            assert result["run_id"] == "accepted-run"
-            assert accepted_paths and accepted_paths[0].read_bytes() == data
+            admit_successor(self.staged_dispatch)
             raise PeerRunsHTTPError("refresh refused after target policy changed", status_code=403,
                                     error_code="room_reauthorization_required")
 
@@ -87,6 +90,23 @@ def test_lease_loss_cannot_delete_already_admitted_batch(db, tmp_path, monkeypat
             task, generation = path.rsplit("/", 2)[-2:]
             deletes.append((task, int(generation)))
             return {"removed": spool.discard_attempt(claims=token_claims, task_id=task, execution_generation=int(generation))}
+
+    def admit_successor(dispatch):
+        instant[0] = initial + 31
+        successor = state.acquire_lease(
+            db,
+            room_id="room-1",
+            gateway_id=BINDING.gateway_id,
+            authority_epoch=1,
+            process_generation="worker-b",
+            ttl_seconds=30,
+            clock=clock,
+        )
+        state.recover_room(db, successor, clock=clock)
+        assert state.get_task(db, identity)["status"] == "indeterminate"
+        result = Peer().recover_dispatch(dispatch=dispatch.as_mapping(), grant=grant)
+        assert result["run_id"] == "accepted-run"
+        assert accepted_paths and accepted_paths[0].read_bytes() == data
 
     peer = Peer()
     wrapper = _RouteStatusPeerClient(peer, grant=grant, on_ready=lambda **_: None,

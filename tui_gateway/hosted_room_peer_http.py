@@ -452,15 +452,28 @@ class PeerRunsHTTPClient:
                     "Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
                 room_grant=grant)
 
+        replaying_ambiguous = False
         try:
             result = admit()
         except PeerRunsHTTPError as exc:
             if not exc.ambiguous:
                 raise
-            result = admit()
+            replaying_ambiguous = True
+            try:
+                result = admit()
+            except PeerRunsHTTPError as replay_error:
+                raise PeerRunsHTTPError(
+                    str(replay_error),
+                    retryable=exc.retryable or replay_error.retryable,
+                    ambiguous=True,
+                    status_code=replay_error.status_code,
+                    error_code=replay_error.error_code,
+                ) from replay_error
         run_id = str(result.get("run_id") or "")
         if not run_id:
-            raise PeerRunsHTTPError("peer did not return a run id")
+            raise PeerRunsHTTPError(
+                "peer did not return a run id", ambiguous=replaying_ambiguous
+            )
         receipt = {
             "run_id": run_id, "session_id": session_id,
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
@@ -538,14 +551,19 @@ class PeerRunsHTTPClient:
             return []
         status = self._poll_receipt(receipt, grant=grant)
         state = str(status.get("status") or "")
-        if state not in {"completed", "failed", "interrupted"}:
+        if state not in {"completed", "failed", "interrupted", "cancelled"}:
             return []
+        target_interrupted = state in {"interrupted", "cancelled"}
         return [{
             "role": "assistant", "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
-            "content": status.get("output") or status.get("error") or "",
+            "content": "" if target_interrupted else status.get("output") or status.get("error") or "",
+            **({
+                "error": "The Group Chat member turn was interrupted on its target gateway.",
+                "reason_code": "target_interrupted",
+            } if target_interrupted else {}),
             **({"artifacts": status.get("artifacts"), "run_id": status.get("run_id")}
                if status.get("artifacts") else {})}]
 

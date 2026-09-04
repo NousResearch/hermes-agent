@@ -1193,3 +1193,67 @@ def test_peer_revoke_discards_the_scoped_attachment_spool(home, monkeypatch):
     assert result["revoked"] is True
     assert discarded[0]["room_id"] == "room-revoke"
     assert discarded[0]["member_id"] == "member-peer"
+
+
+def test_peer_scope_revoke_discards_output_but_exact_old_grant_revoke_does_not(
+    home, monkeypatch
+):
+    from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+
+    monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
+    common = {
+        "room_id": "room-output-revoke",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "install-home",
+        "authority_epoch": 1,
+        "member_id": "member-peer",
+    }
+    old = _result(
+        srv._methods["groups.peer.invite"](
+            1, {**common, "grant_id": "grant-output-old"}
+        )
+    )
+    current = _result(
+        srv._methods["groups.peer.invite"](
+            2, {**common, "grant_id": "grant-output-current"}
+        )
+    )
+    claims = decode_room_grant(
+        gateway_room_grant_secret(home), current["grant"], permission="status"
+    )
+    scope = RoomArtifactScope.from_mapping(
+        {
+            **{
+                key: claims[key]
+                for key in (
+                    "room_id",
+                    "home_install_id",
+                    "authority_gateway_id",
+                    "authority_epoch",
+                    "member_id",
+                    "target_install_id",
+                    "target_profile",
+                )
+            },
+            "task_id": "task-output-revoke",
+            "execution_generation": 1,
+        }
+    )
+    outbox = RoomArtifactOutbox(home / "state.db")
+    outbox.put_bytes(scope=scope, source_name="private.txt", data=b"private")
+
+    assert _result(
+        srv._methods["groups.peer.revoke_exact"](
+            3, {"grant": old["grant"]}
+        )
+    ) == {"revoked": True}
+    assert len(outbox.list(scope)) == 1
+
+    assert _result(
+        srv._methods["groups.peer.revoke"](
+            4, {"grant": current["grant"]}
+        )
+    ) == {"revoked": True}
+    assert outbox.list(scope) == []
+    assert list(outbox.blob_root.iterdir()) == []

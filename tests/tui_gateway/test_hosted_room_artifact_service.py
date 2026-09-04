@@ -868,6 +868,10 @@ def test_lost_peer_artifact_ack_retries_without_duplicate_member_message(
     )
     _wait_for(lambda: len(peer.acks) == 1)
     assert service.stop(timeout=1.0)
+    with service._artifact_retry_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_artifact_retries"
+        ).fetchone()[0] == 1
     resumed = HostedRoomService(
         _server(),
         db_path=db,
@@ -898,6 +902,13 @@ def test_lost_peer_artifact_ack_retries_without_duplicate_member_message(
         and event["payload"].get("member_id") == "member-reviewer"
         for event in events
     ) == 1
+    with resumed._artifact_retry_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_artifact_retries"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_artifact_completions"
+        ).fetchone()[0] == 1
     assert peer.dispatches[0]["target_profile"] == "reviewer"
 
 
@@ -943,13 +954,20 @@ def test_artifact_retry_store_migrates_and_backfills_member_id(tmp_path: Path):
                VALUES ('room-1', 'task-old', 1, 1, 10, 1, 1)"""
         )
 
-    HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), db_path=db)
     with sqlite3.connect(db) as conn:
         row = conn.execute(
             """SELECT member_id FROM hosted_room_artifact_retries
                WHERE room_id='room-1' AND task_id='task-old'"""
         ).fetchone()
     assert row == ("ops",)
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "DELETE FROM hosted_room_driver_tasks WHERE task_id='task-old'"
+        )
+    service._prune_artifact_metadata()
+    assert service._artifact_retry_keys("room-1") == set()
 
 
 def test_authoritative_stop_discards_crash_stranded_local_output(tmp_path: Path):

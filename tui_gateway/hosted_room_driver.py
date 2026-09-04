@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+from tools.bot_failure_reasons import TARGET_INTERRUPTED
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -28,6 +29,9 @@ MAX_TERMINAL_TEXT_BYTES = 64 * 1024
 _TERMINAL_TRUNCATION_NOTICE = (
     "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]")
 _STOP_PENDING = "stop retry remains pending: {exc}"
+_TARGET_INTERRUPTION_ERROR = (
+    "The Group Chat member turn was interrupted on its target gateway."
+)
 
 
 class InternalSessionRPC(Protocol):
@@ -305,10 +309,6 @@ class HostedRoomRuntime:
         inspection = self._inspect_recovery_session(binding, task)
         if inspection.terminal is not None:
             return self._resolve_indeterminate(binding, task, lease, inspection.terminal)
-        if inspection.status == "cancelled":
-            return self._fenced(
-                state.resolve_indeterminate_cancellation, binding, task, lease,
-                cancel_id=f"remote-cancel:{task['execution_generation']}")
         if inspection.active:
             self._set_blocked(identity.room_id, True)
             raise state.InvalidTaskTransitionError(
@@ -769,14 +769,28 @@ class HostedRoomRuntime:
     ) -> None:
         """Durably commit one in-process terminal receipt for ``attempt``."""
         status = receipt.get("status")
-        if status == "cancelled":
+        target_interrupted = (
+            status in {"cancelled", "interrupted"}
+            and receipt.get("target_interrupted") is True
+            and str(receipt.get("task_id") or "") == attempt.identity.task_id
+            and int(receipt.get("execution_generation") or 0)
+            == attempt.execution_generation
+        )
+        if status in {"cancelled", "interrupted"} and not target_interrupted:
             self.wakeup()
             return
-        terminal = _TerminalReceipt(
-            status="settled" if status == "settled" else "failed",
-            settlement_id=receipt.get("settlement_id")
-            or f"reply:{attempt.identity.task_id}:{attempt.execution_generation}",
-            result=_bounded_terminal_result(receipt))
+        terminal = (
+            _target_interruption_receipt(
+                attempt.identity, attempt.execution_generation
+            )
+            if target_interrupted
+            else _TerminalReceipt(
+                status="settled" if status == "settled" else "failed",
+                settlement_id=receipt.get("settlement_id")
+                or f"reply:{attempt.identity.task_id}:{attempt.execution_generation}",
+                result=_bounded_terminal_result(receipt),
+            )
+        )
         try:
             self._publish(
                 binding,
@@ -785,10 +799,19 @@ class HostedRoomRuntime:
             with suppress(state.StaleLeaseError, state.StaleTaskError):
                 current = state.get_task(self.db_path, attempt.identity)
                 if current["status"] == "stopping":
-                    self._fenced(
-                        state.settle_stopping_task, binding, current, attempt.lease,
-                        **asdict(terminal),
-                        expected_execution_generation=attempt.execution_generation)
+                    if target_interrupted:
+                        self._complete_acknowledged_stop(
+                            binding, current, attempt.lease
+                        )
+                    else:
+                        self._fenced(
+                            state.settle_stopping_task,
+                            binding,
+                            current,
+                            attempt.lease,
+                            **asdict(terminal),
+                            expected_execution_generation=attempt.execution_generation,
+                        )
         except state.StaleLeaseError:
             # Cancellation, disband, or authority transfer won the durable race: the model
             # result is discarded rather than turning a correct fence into a thread exception.
@@ -826,6 +849,12 @@ class HostedRoomRuntime:
             if receipt is not None:
                 return receipt
             info = transport.info(**_session_kw(profile, session_id))
+            if transport is not self.rpc:
+                interruption = _target_interruption_from_info(
+                    info, task["identity"], int(task["execution_generation"])
+                )
+                if interruption is not None:
+                    return interruption
             self._report_pending_action(task, session_id=session_id, info=info)
             remaining = max(0.0, deadline_monotonic - time.monotonic())
             self._wake.wait(min(self.active_poll_interval_seconds, remaining))
@@ -882,7 +911,7 @@ class HostedRoomRuntime:
 
     def _inspect_session(
         self, transport: InternalSessionRPC, task: Mapping[str, Any], session_id: str,
-        *, read_history: bool) -> _RecoveryInspection:
+        *, read_history: bool, target_side: bool = False) -> _RecoveryInspection:
         """Probe one resolved session: optional terminal receipt from history, then live info."""
         profile = task["payload"]["target_profile"]
         receipt = (
@@ -890,6 +919,10 @@ class HostedRoomRuntime:
             if read_history else None)
         info = transport.info(**_session_kw(profile, session_id))
         self._report_pending_action(task, session_id=session_id, info=info)
+        if target_side:
+            receipt = _target_interruption_from_info(
+                info, task["identity"], int(task["execution_generation"])
+            ) or receipt
         return _RecoveryInspection(
             terminal=receipt, active=_info_is_active_for(info, task["identity"]),
             status=str(info.get("status") or "") or None)
@@ -901,7 +934,13 @@ class HostedRoomRuntime:
             session_id = self._resume_exact(transport, task["identity"].room_id, profile)
             if session_id is None:
                 return _NO_INSPECTION
-            return self._inspect_session(transport, task, session_id, read_history=True)
+            return self._inspect_session(
+                transport,
+                task,
+                session_id,
+                read_history=True,
+                target_side=transport is not self.rpc,
+            )
 
     def _inspect_local_recovery_session(self, task: Mapping[str, Any]) -> _RecoveryInspection:
         """Check only live process state (no resume, no history) before explicit local recovery.
@@ -952,13 +991,6 @@ class HostedRoomRuntime:
                     self._record_error(
                         f"task {task['identity'].task_id} recovery probe failed: {exc}")
                 inspected.add(attempt_key)
-            if inspection.status == "cancelled":
-                # Remote-probe resolutions are not republished here.
-                self._fenced(
-                    state.resolve_indeterminate_cancellation, binding, task, lease, publish=False,
-                    cancel_id=f"remote-cancel:{task['execution_generation']}")
-                inspected.discard(attempt_key)
-                continue
             if inspection.terminal is not None:
                 self._resolve_indeterminate(
                     binding, task, lease, inspection.terminal, publish=False)
@@ -1101,12 +1133,42 @@ def _truncate_utf8(value: Any, *, max_bytes: int) -> tuple[str, bool]:
 def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
     text, truncated = _truncate_utf8(receipt.get("text", ""), max_bytes=MAX_TERMINAL_TEXT_BYTES)
     error, error_truncated = _truncate_utf8(receipt.get("error", ""), max_bytes=4096)
+    reason_code = str(receipt.get("reason_code") or "").strip()
     return {
         "message_id": receipt.get("message_id"), "text": text,
         **({"artifacts": receipt.get("artifacts")} if receipt.get("artifacts") else {}),
         **({"run_id": receipt.get("run_id")} if receipt.get("run_id") else {}),
         **({"error": error} if error else {}),
+        **({"reason_code": reason_code} if reason_code else {}),
         **({"truncated": True} if truncated or error_truncated else {})}
+
+
+def _target_interruption_receipt(
+    identity: state.TaskIdentity, execution_generation: int
+) -> _TerminalReceipt:
+    return _TerminalReceipt(
+        status="failed",
+        settlement_id=(
+            f"target-interrupted:{identity.task_id}:{execution_generation}"
+        ),
+        result={
+            "error": _TARGET_INTERRUPTION_ERROR,
+            "reason_code": TARGET_INTERRUPTED,
+        },
+    )
+
+
+def _target_interruption_from_info(
+    info: Mapping[str, Any], identity: state.TaskIdentity, execution_generation: int
+) -> _TerminalReceipt | None:
+    if (
+        _info_active(info)
+        or str(info.get("status") or "") not in {"cancelled", "interrupted"}
+        or str(info.get("task_id") or "") != identity.task_id
+        or int(info.get("execution_generation") or 0) != execution_generation
+    ):
+        return None
+    return _target_interruption_receipt(identity, execution_generation)
 
 
 def _find_terminal_receipt(
@@ -1126,6 +1188,7 @@ def _find_terminal_receipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
                 {"message_id": receipt_id, "text": message.get("content", ""),
+                 "error": message.get("error"), "reason_code": message.get("reason_code"),
                  "artifacts": message.get("artifacts"), "run_id": message.get("run_id")}))
     return None
 

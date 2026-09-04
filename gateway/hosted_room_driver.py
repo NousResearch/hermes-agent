@@ -29,6 +29,8 @@ MAX_IDENTIFIER_CHARS = 128
 MAX_PROMPT_BYTES = 128 * 1024
 MAX_RESULT_JSON_BYTES = 256 * 1024
 TERMINAL_TASK_RETENTION_SECONDS = 30 * 24 * 60 * 60
+# Source artifacts retain 30 days of bytes plus a 30-day ACK tombstone.
+ARTIFACT_RETRY_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_RETAINED_TERMINAL_TASKS = 2048
 MAX_TASK_PRUNE_BATCH = 1000
 TASK_STATUSES = frozenset(get_args(TaskStatus))
@@ -877,17 +879,35 @@ def prune_published_terminal_tasks(
             return 0
         retries = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_artifact_retries'").fetchone()
-        retry_guard = (
-            "AND NOT EXISTS (SELECT 1 FROM hosted_room_artifact_retries r "
-            "WHERE r.room_id=t.room_id AND r.task_id=t.task_id)" if retries is not None else ""
-        )
+        retry_guard, retry_params = "", ()
+        if retries is not None:
+            retry_columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    "PRAGMA table_info(hosted_room_artifact_retries)"
+                ).fetchall()
+            }
+            retry_age_column = next(
+                (name for name in ("created_at", "updated_at") if name in retry_columns),
+                None,
+            )
+            retry_guard = (
+                "AND NOT EXISTS (SELECT 1 FROM hosted_room_artifact_retries r "
+                "WHERE r.room_id=t.room_id AND r.task_id=t.task_id "
+                "AND r.execution_generation=t.execution_generation"
+            )
+            if retry_age_column is not None:
+                retry_guard += f" AND r.{retry_age_column}>?"
+                retry_params = (now - ARTIFACT_RETRY_RETENTION_SECONDS,)
+            retry_guard += ")"
         rows = conn.execute(f"""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
                 WHERE t.room_id=? AND t.status IN ('settled', 'failed', 'cancelled')
                   AND EXISTS (SELECT 1 FROM hosted_room_policy_publications p
                               WHERE p.room_id=t.room_id AND p.task_id=t.task_id
                                 AND p.kind IN ('turn.settled', 'turn.failed', 'turn.cancelled'))
                 {retry_guard}
-                ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id,)).fetchall()
+                ORDER BY t.terminal_at DESC, t.task_id ASC""",
+            (room_id, *retry_params)).fetchall()
         cutoff = now - float(retention_seconds)
         candidates = [
             str(row["task_id"]) for index, row in enumerate(rows)

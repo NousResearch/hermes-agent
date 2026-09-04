@@ -246,6 +246,35 @@ def test_scoped_peer_runs_client_stops_exact_run(peer_server):
     assert FakePeer.runs["run-1"]["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("terminal_status", ["cancelled", "interrupted"])
+def test_target_interruption_history_is_an_exact_truthful_failure(
+    peer_server, terminal_status
+):
+    client = PeerRunsHTTPClient(base_url=peer_server, api_key="")
+    accepted = client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    FakePeer.runs["run-1"]["status"] = terminal_status
+
+    assert client.history(
+        room_id="room-1",
+        profile="reviewer",
+        session_id=accepted["session_id"],
+        grant="signed.room.grant",
+    ) == [
+        {
+            "role": "assistant",
+            "task_id": "task-1",
+            "execution_generation": 1,
+            "status": "failed",
+            "message_id": "peer-run:run-1",
+            "content": "",
+            "error": (
+                "The Group Chat member turn was interrupted on its target gateway."
+            ),
+            "reason_code": "target_interrupted",
+        }
+    ]
+
+
 def test_named_profile_prefixes_every_roomlink_request(monkeypatch):
     captured = {}
 
@@ -399,6 +428,40 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     assert restarted.recover_dispatch(
         dispatch=_dispatch(), grant="signed.room.grant"
     )["run_id"] == "run-recovered"
+
+
+def test_replay_rejection_cannot_downgrade_prior_ambiguous_admission(tmp_path):
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+    )
+    attempts = 0
+
+    def accepted_then_rejected(_path, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PeerRunsHTTPError(
+                "the accepted admission response was lost",
+                retryable=True,
+                ambiguous=True,
+            )
+        raise PeerRunsHTTPError(
+            "the replay grant was rejected",
+            status_code=403,
+            error_code="room_reauthorization_required",
+            not_admitted=True,
+        )
+
+    client._request = accepted_then_rejected
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert attempts == 2
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert caught.value.needs_reauthorization is True
 
 
 def test_ambiguous_admission_recovery_is_bounded_and_backed_off(tmp_path):

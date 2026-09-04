@@ -916,6 +916,80 @@ def test_prune_removes_only_old_published_terminal_tasks(db):
     ] == ["task-unpublished"]
 
 
+def test_prune_retains_recoverable_artifact_retry_but_releases_expired_block(db):
+    clock = FakeClock()
+    lease = _lease(db, clock)
+    identities = (
+        _identity("task-expired-block", turn_id="turn-expired-block"),
+        _identity("task-recoverable", turn_id="turn-recoverable"),
+    )
+    for identity in identities:
+        _admit(db, identity, clock)
+        attempt = driver.start_task(
+            db, identity, lease, expected_cancel_generation=0, clock=clock
+        )
+        driver.settle_task(
+            db,
+            attempt,
+            settlement_id=f"result:{identity.task_id}",
+            status="settled",
+            result={"artifacts": {"version": 1}},
+            clock=clock,
+        )
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE hosted_room_policy_publications (
+                room_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL DEFAULT 0,
+                seq INTEGER NOT NULL,
+                PRIMARY KEY(room_id, task_id, kind, execution_generation)
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO hosted_room_policy_publications VALUES (?, ?, ?, 0, ?)",
+            (
+                ("room-1", identity.task_id, "turn.settled", index)
+                for index, identity in enumerate(identities, start=1)
+            ),
+        )
+        conn.execute(
+            """CREATE TABLE hosted_room_artifact_retries (
+                room_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL,
+                member_id TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                next_attempt_at REAL NOT NULL,
+                blocked INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(room_id, task_id, execution_generation)
+            )"""
+        )
+        conn.executemany(
+            """INSERT INTO hosted_room_artifact_retries
+               VALUES ('room-1', ?, 1, 'ops', 1, 0, 1, ?)""",
+            ((identities[0].task_id, clock()), (identities[1].task_id, clock())),
+        )
+
+    clock.advance(driver.ARTIFACT_RETRY_RETENTION_SECONDS + 1)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """UPDATE hosted_room_artifact_retries SET updated_at=?
+               WHERE task_id=?""",
+            (clock(), identities[1].task_id),
+        )
+
+    assert driver.prune_published_terminal_tasks(
+        db, room_id="room-1", clock=clock
+    ) == 1
+    assert [
+        task["identity"].task_id for task in driver.list_tasks(db, room_id="room-1")
+    ] == [identities[1].task_id]
+
+
 def test_unpublished_legacy_driver_schema_fails_closed(db):
     conn = sqlite3.connect(db)
     try:

@@ -41,14 +41,18 @@ def _current_runtime(cli) -> dict:
         "api_mode": cli.api_mode,
         "command": cli.acp_command,
         "args": list(cli.acp_args or []),
-        "credential_pool": getattr(cli, "_credential_pool", None)}
+        "credential_pool": getattr(cli, "_credential_pool", None),
+        "request_overrides": dict(getattr(cli, "_runtime_request_overrides", {}) or {}),
+    }
 
 
 def _route_signature(model, runtime: dict) -> tuple:
     """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
     return (
         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
-        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
+        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()),
+        repr(runtime.get("request_overrides") or {}),
+    )
 
 
 def _keyless_custom_base(base_url) -> bool:
@@ -199,6 +203,7 @@ class CLIAgentSetupMixin:
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
+        resolved_request_overrides = dict(runtime.get("request_overrides") or {})
         # A callable api_key is a bearer-token provider (Azure Entra ID): the OpenAI SDK
         # invokes it per request, so skip string validation / placeholder substitution.
         if not callable(api_key) and not (isinstance(api_key, str) and api_key):
@@ -223,9 +228,13 @@ class CLIAgentSetupMixin:
                   "Check your provider config or run: hermes setup")
             return False
         credentials_changed = api_key != self.api_key or base_url != self.base_url
-        routing_changed = resolved_routing != (self.provider, self.api_mode, self.acp_command, self.acp_args)
+        routing_changed = (
+            resolved_routing != (self.provider, self.api_mode, self.acp_command, self.acp_args)
+            or resolved_request_overrides != getattr(self, "_runtime_request_overrides", {})
+        )
         self.provider, self.api_mode, self.acp_command, self.acp_args = resolved_routing
         self._credential_pool = runtime.get("credential_pool")
+        self._runtime_request_overrides = resolved_request_overrides
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -375,16 +384,23 @@ class CLIAgentSetupMixin:
         auto/cold tiers are applied per request by agent.fast_mode instead."""
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
-        route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
-        overrides = None
+        request_overrides = dict(runtime.get("request_overrides") or {})
         if getattr(self, "service_tier", None) == "priority":
             try:
-                overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
+                fast_overrides = resolve_fast_mode_overrides(
+                    self.model, provider=runtime["provider"], base_url=runtime["base_url"])
             except Exception:
-                pass
-        route["request_overrides"] = overrides
-        return route
+                fast_overrides = None
+            if fast_overrides:
+                request_overrides.update(fast_overrides)
+        request_overrides = request_overrides or None
+        return {
+            "model": self.model,
+            "runtime": runtime,
+            "request_overrides": request_overrides,
+            "signature": _route_signature(
+                self.model, {**runtime, "request_overrides": request_overrides}),
+        }
 
     def _follow_compression_chain(self, session_meta, announce):
         """If the resumed id is an empty compression-chain head, announce and switch to
@@ -502,6 +518,8 @@ class CLIAgentSetupMixin:
             return False
         try:
             runtime = runtime_override or _current_runtime(self)
+            if request_overrides is None:
+                request_overrides = dict(runtime.get("request_overrides") or {}) or None
             effective_model = model_override or self.model
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
@@ -565,7 +583,8 @@ class CLIAgentSetupMixin:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
-            self._active_agent_route_signature = _route_signature(effective_model, runtime)
+            self._active_agent_route_signature = _route_signature(
+                effective_model, {**runtime, "request_overrides": request_overrides})
 
             # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db:

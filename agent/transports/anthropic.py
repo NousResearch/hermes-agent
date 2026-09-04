@@ -9,6 +9,18 @@ _MCP_PREFIX = "mcp__"
 _THINKING_TYPES = ("thinking", "redacted_thinking")
 
 
+def _merge_extra_body(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge request-body mappings, with ``override`` winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_extra_body(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _unprefix_oauth_tool_name(name: str) -> str:
     """Reverse the OAuth-wire ``mcp__`` prefix back to the registered tool name.
     Two originals map onto one wire name (``read_file`` / ``mcp_linear_get_issue``), so
@@ -27,6 +39,7 @@ def _unprefix_oauth_tool_name(name: str) -> str:
 _BUILD_KWARG_DEFAULTS = {
     "max_tokens": 16384, "reasoning_config": None, "tool_choice": None, "is_oauth": False, "preserve_dots": False,
     "context_length": None, "base_url": None, "fast_mode": False, "drop_context_1m_beta": False,
+    "request_overrides": None,
 }
 
 
@@ -57,10 +70,18 @@ class AnthropicTransport(ProviderTransport):
     ) -> Dict[str, Any]:
         """Build Anthropic messages.create() kwargs (converts messages and tools internally)."""
         from agent.anthropic_adapter import build_anthropic_kwargs
-        return build_anthropic_kwargs(
+        kwargs = build_anthropic_kwargs(
             model=model, messages=messages, tools=tools,
             **{key: params.get(key, default) for key, default in _BUILD_KWARG_DEFAULTS.items()},
         )
+        overrides = params.get("request_overrides")
+        extra_body = overrides.get("extra_body") if isinstance(overrides, dict) else None
+        if isinstance(extra_body, dict):
+            kwargs["extra_body"] = _merge_extra_body(
+                kwargs.get("extra_body") if isinstance(kwargs.get("extra_body"), dict) else {},
+                extra_body,
+            )
+        return kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Parse content blocks (text/thinking/tool_use), map stop_reason, collect reasoning_details."""

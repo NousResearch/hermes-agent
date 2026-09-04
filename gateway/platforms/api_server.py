@@ -251,7 +251,9 @@ _REQUEST_OPTION_MISSING = object()
 # vocabulary clamping happens downstream in agent.reasoning_effort.
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
-    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens")
+    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens",
+    "request_overrides",
+)
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -330,7 +332,9 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
     return {
         **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode", "command")},
         "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"), "max_tokens": max_tokens}
+        "credential_pool": runtime.get("credential_pool"), "max_tokens": max_tokens,
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
+    }
 
 
 def _request_agent_overrides(

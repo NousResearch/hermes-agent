@@ -525,6 +525,14 @@ starts a new room thread, later sends from the same session
 `--new-thread` starts over; `--thread` overrides for that send only. A room
 keeps only the latest pending user message per thread.
 
+**Desktop-coordinated rooms (interim).** `hermes group list` also shows the
+Group Chats the Desktop app coordinates, tagged `[desktop]`. Sending to one
+requires the Hermes Desktop to be open: the CLI queues the request on the
+gateway, the app writes it into the room on your behalf (it appears as
+"You"), and the members' replies stream back. Omit `--thread` to start a new
+thread; pass an existing Desktop thread id (see `hermes group log --json`) to
+continue one. Use `--kind hosted|desktop` when a name exists in both.
+
 Exit codes: `0` settled/bounded, `1` error, `2` usage, `3` timeout (replies
 received so far are already printed), `4` superseded by a room stop. A room
 stop is room-wide — it cancels every pending user turn in every thread,

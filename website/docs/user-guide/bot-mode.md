@@ -103,7 +103,7 @@ Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot
 
 ### Relaying into a group from another session (`hermes group`)
 
-Any agent session — a Discord thread, the CLI, a Desktop chat — can push a request into a gateway-hosted group **on your behalf** and report the deliberation back: `hermes group send <group> "…" --as "Ada via Discord" --wait`. The relaying agent is not a member; the message lands as a user message with the relay recorded as who sent it, the members deliberate headlessly in the gateway's hosted-room worker, and `--wait` streams their replies until the room settles. Run it in the background and the completion notification carries the replies into the originating session. See [`hermes group`](../reference/cli-commands.md#hermes-group).
+Any agent session — a Discord thread, the CLI, a Desktop chat — can push a request into a gateway-hosted group **on your behalf** and report the deliberation back: `hermes group send <group> "…" --as "Ada via Discord" --wait`. The relaying agent is not a member; the message lands as a user message with the relay recorded as who sent it, the members deliberate headlessly in the gateway's hosted-room worker, and `--wait` streams their replies until the room settles. Run it in the background and the completion notification carries the replies into the originating session. The same command reaches the Group Chats in the Bots pane (tagged `[desktop]` in `hermes group list`) while the app is open. See [`hermes group`](../reference/cli-commands.md#hermes-group).
 
 ## Bot-to-bot messaging
 

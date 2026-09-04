@@ -74,6 +74,44 @@ def _rows(db, sql: str, cutoff: float) -> List[Dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
+def _display_model_name(raw) -> str:
+    """Strip provider prefix for display (e.g. deepseek-ai/DeepSeek-V4 -> DeepSeek-V4).
+
+    Mirrors agent.insights._short_model and desktop modelBaseId: the last
+    '/' segment is the model id. Handles artifact prefixes like @cf/zai-org/...
+    by returning the final segment. Empty -> 'unknown'.
+    """
+    if not raw or not str(raw).strip():
+        return "unknown"
+    return str(raw).strip().split("/")[-1] or str(raw).strip()
+
+
+def _normalize_by_model_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge rows that collapse to the same display name and replace model with display name.
+
+    Provider-prefixed variants (deepseek-ai/Foo vs Foo) and case variants are
+    merged so the Top Models list shows one entry per logical model (#103063).
+    """
+    if not rows:
+        return rows
+    merged: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        raw = r.get("model") or "unknown"
+        display = _display_model_name(raw)
+        key = display.lower()
+        if key in merged:
+            target = merged[key]
+            for k in ("input_tokens", "output_tokens", "estimated_cost", "sessions", "api_calls"):
+                target[k] = (target.get(k) or 0) + (r.get(k) or 0)
+            if r.get("aux_tasks"):
+                target.setdefault("aux_tasks", []).extend(r["aux_tasks"])
+        else:
+            nr = dict(r)
+            nr["model"] = display
+            merged[key] = nr
+    return sorted(merged.values(), key=lambda x: (x.get("input_tokens") or 0) + (x.get("output_tokens") or 0), reverse=True)
+
+
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
@@ -94,16 +132,59 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             GROUP BY day ORDER BY day
         """, cutoff)
 
-        by_model = _rows(db, """
-            SELECT model,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, cutoff)
+        # Per-call attribution via session_model_usage so mid-conversation
+        # /model switches are not misattributed to the session\\'s final model
+        # (#103063). Falls back to the legacy sessions GROUP BY when the
+        # table is unavailable or empty (older DB).
+        by_model: List[Dict[str, Any]] = []
+        try:
+            by_model_u = _rows(db, """
+                SELECT u.model,
+                       SUM(u.input_tokens) as input_tokens,
+                       SUM(u.output_tokens) as output_tokens,
+                       COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
+                       COUNT(DISTINCT u.session_id) as sessions,
+                       SUM(COALESCE(u.api_call_count, 0)) as api_calls
+                FROM session_model_usage u
+                JOIN sessions s ON s.id = u.session_id
+                WHERE s.started_at > ? AND u.task = '' AND u.model IS NOT NULL AND u.model != ''
+                GROUP BY u.model ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
+            """, cutoff)
+            residual = _rows(db, """
+                SELECT s.model,
+                       SUM(s.input_tokens) as input_tokens,
+                       SUM(s.output_tokens) as output_tokens,
+                       COALESCE(SUM(s.estimated_cost_usd), 0) as estimated_cost,
+                       COUNT(*) as sessions,
+                       SUM(COALESCE(s.api_call_count, 0)) as api_calls
+                FROM sessions s
+                LEFT JOIN session_model_usage u ON u.session_id = s.id AND u.task = ''
+                WHERE s.started_at > ? AND s.model IS NOT NULL AND s.model != '' AND u.session_id IS NULL
+                GROUP BY s.model ORDER BY SUM(s.input_tokens) + SUM(s.output_tokens) DESC
+            """, cutoff)
+            combined: Dict[str, Dict[str, Any]] = {}
+            for row in (by_model_u + residual):
+                raw = row.get("model") or "unknown"
+                if raw in combined:
+                    for k in ("input_tokens", "output_tokens", "estimated_cost", "sessions", "api_calls"):
+                        combined[raw][k] = (combined[raw].get(k) or 0) + (row.get(k) or 0)
+                else:
+                    combined[raw] = dict(row)
+            by_model = list(combined.values())
+            if not by_model:
+                raise ValueError("empty per-call by_model")
+            by_model = sorted(by_model, key=lambda x: (x.get("input_tokens") or 0) + (x.get("output_tokens") or 0), reverse=True)
+        except Exception:
+            by_model = _rows(db, """
+                SELECT model,
+                       SUM(input_tokens) as input_tokens,
+                       SUM(output_tokens) as output_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COUNT(*) as sessions,
+                       SUM(COALESCE(api_call_count, 0)) as api_calls
+                FROM sessions WHERE started_at > ? AND model IS NOT NULL
+                GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            """, cutoff)
 
         # Fold in auxiliary usage (vision, compression, ...) from session_model_usage.
         # Aux calls never touch the sessions counters, so this is add-only — no double count.
@@ -111,6 +192,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         # burning tokens (issue #23270).
         aux_rows = _aux_usage_rows(db, cutoff)
         by_model = _merge_aux_into_by_model(by_model, aux_rows)
+        by_model = _normalize_by_model_rows(by_model)
 
         totals = _rows(db, """
             SELECT SUM(input_tokens) as total_input,

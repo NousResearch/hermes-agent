@@ -37,7 +37,7 @@ def _refresh_bindings_against_live_module():
     """Rebind module-level names to the *current* defining modules.
 
     Other tests in the suite reload modules from ``sys.modules``; when that
-    happens on the same xdist worker before we run, our top-of-file bindings
+    happens in the same process before we run, our top-of-file bindings
     end up pointing at the *old* module object and ``patch("<module>.X")``
     patches the *new* one, so every patch becomes a no-op and the kill path
     silently returns early. Refreshing the bindings keeps them consistent.
@@ -164,11 +164,11 @@ class TestFindStaleDashboardPids:
         with patch("subprocess.run", side_effect=sp.TimeoutExpired("ps", 10)):
             assert _find_stale_dashboard_pids() == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_ps_timeout_returns_empty_linux(self):
         self._assert_ps_timeout_returns_empty()
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_ps_timeout_returns_empty_macos(self):
         self._assert_ps_timeout_returns_empty()
 
@@ -267,9 +267,9 @@ class TestKillStaleDashboardPosix:
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_taskkill_invoked_for_each_pid(self, capsys):
-        """``windows_only``: ``taskkill.exe`` only exists on Windows, and the
+        """``platforms("windows")``: ``taskkill.exe`` only exists on Windows, and the
         faked platform also silently skipped the POSIX-only cgroup/argv
         snapshot the real Windows path must not take.
         """
@@ -837,9 +837,9 @@ class TestCmdlineCapture:
 
         assert argv == ["hermes", "serve", "--port", "8300"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_returns_none_on_windows(self):
-        """``windows_only``: the contract is "no graceful-argv capture on a
+        """``platforms("windows")``: the contract is "no graceful-argv capture on a
         real Windows host" — asserting it against a faked platform only
         restated the branch condition.
         """

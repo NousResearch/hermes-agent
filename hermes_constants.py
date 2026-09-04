@@ -1170,3 +1170,65 @@ def emit_partial_update_hint(exc: BaseException, *, file=None) -> bool:
     for line in (f"Error: {exc}", *lines):
         print(line, file=sys.stderr if file is None else file)
     return True
+
+def _pm_node_executable(command: str) -> str | None:
+    """The pm store's node/npm/npx binary for *command*, when installed.
+
+    node and npm are pm packages; npx ships inside npm's store entry, so it
+    resolves as a sibling of the npm binary. Returns ``None`` when pm has not
+    installed the package (the caller falls back to PATH).
+    """
+    base = Path(str(command)).name.lower()
+    for suffix in (".cmd", ".exe", ".ps1"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+    package_name = {"node": "node", "npm": "npm", "npx": "npm"}.get(base)
+    if package_name is None:
+        return None
+    try:
+        import pm
+
+        if not pm.is_installed(package_name):
+            return None
+        from pm.ensure import _facts, _store
+        from pm.registry import get_package
+        from pm.store import current_target
+
+        fact = _facts().get(package_name)
+        if fact is None:
+            return None
+        binary = get_package(package_name).binary(
+            _store().entry(fact["entry"]), current_target()
+        )
+        if binary is None or not binary.is_file():
+            return None
+        if base == "npx":
+            for name in _candidate_node_command_names("npx"):
+                candidate = binary.parent / name
+                if candidate.is_file():
+                    return str(candidate)
+            return None
+        return str(binary)
+    except Exception:
+        pass
+    return None
+
+def normalize_scope(scope: str | Path | None) -> str | None:
+    """Normalize a WRITE-side registry scope key, preserving ``None``.
+
+    Two different contracts live on the same registries — do not unify them:
+
+    * **Write / slot paths** (``register_*``, ``snapshot_registration``,
+      ``restore_registration``, tool-registry slot lookup): ``None`` means
+      the process-global layer and must stay ``None``. Use this function.
+    * **Read paths** (``list_providers``, ``get_provider``): ``None`` means
+      "the active home's scope" and must go through :func:`hermes_home_key`
+      (falsy input resolves to the active default home). Using this
+      function there hides every scoped registration — the exact bug
+      fixed after e66a627aa5.
+
+    Both normalize non-None values identically (resolved absolute path,
+    normcase on Windows) so writes and reads agree on the key.
+    """
+    return hermes_home_key(scope) if scope is not None else None
+

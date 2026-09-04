@@ -133,11 +133,11 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
-        # Windows-only: the fake ``sys.platform`` could not reproduce the
-        # ``Scripts/python.exe`` launcher layout or the CREATE_NO_WINDOW
-        # creationflags this branch exists for.
+        # Windows-only: the real ``Scripts/python.exe`` launcher layout and
+        # CREATE_NO_WINDOW creationflags this branch exists for cannot be
+        # reproduced with a patched ``sys.platform``.
         from cron import scheduler as sched_mod
         from cron import scheduler_script as sched_script
         from cron.scheduler_script import _run_job_script
@@ -145,18 +145,40 @@ class TestRunJobScript:
         script = cron_env / "scripts" / "probe.py"
         script.write_text('print("ok")\n')
 
-        venv = tmp_path / "venv"
-        venv_scripts = venv / "Scripts"
+        # pm bundled-install layout: store + manifest + relocatable venv,
+        # with facts recording both the venv and the staged interpreter.
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        venv = payload / "venv"
         site_packages = venv / "Lib" / "site-packages"
-        base = tmp_path / "base"
-        venv_scripts.mkdir(parents=True)
+        python_entry = store / "python-3.11.13"
         site_packages.mkdir(parents=True)
-        base.mkdir()
-        venv_python = venv_scripts / "python.exe"
-        base_python = base / "python.exe"
-        venv_python.write_text("", encoding="utf-8")
+        python_entry.mkdir(parents=True)
+        base_python = python_entry / "python.exe"
         base_python.write_text("", encoding="utf-8")
-        (venv / "pyvenv.cfg").write_text(f"home = {base}\nuv = true\n", encoding="utf-8")
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        (store / "facts.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "packages": {
+                        "venv": {"stamp": "abc", "extras": []},
+                        "python": {"entry": "python-3.11.13", "version": "3.11.13"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        # No ambient VIRTUAL_ENV anywhere: resolution must come from pm.
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
+        # The launcher the gateway hands over (a venv python) — the invocation
+        # must swap it for the pm store python.
+        venv_scripts = venv / "Scripts"
+        venv_scripts.mkdir(parents=True)
+        venv_python = venv_scripts / "python.exe"
+        venv_python.write_text("", encoding="utf-8")
 
         captured = {}
 

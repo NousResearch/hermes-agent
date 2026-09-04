@@ -11,8 +11,9 @@ code has two failure modes:
   how a generated systemd unit or launchd plist can bake a system Node in and
   keep resolving it across reboots.
 
-The fix per call site is one of ``find_node_executable()``,
-``iter_hermes_node_dirs()``, ``resolve_uv()``, or ``ensure_uv()``. This test is
+The fix per call site is one of ``find_node_executable()``, ``pm.env_for()``,
+``pm.ensure()``, or (transitional)
+``pm.uv()``. This test is
 the ratchet that stops a new bare lookup from being added back.
 
 Reading source is normally banned (see AGENTS.md). It is the right tool here and
@@ -26,8 +27,7 @@ whose behavior is separately covered by a real test.
 from __future__ import annotations
 
 import ast
-import functools
-import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -64,26 +64,18 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/update_cmd_deps.py", "uv"): (
-        "Termux fallback: a pkg-installed uv lands on PATH but not in the "
-        "managed bin dir, and it is checked only after resolve_uv() misses."
-    ),
     ("hermes_cli/update_cmd_deps.py", "npm"): (
         "WSL diagnostic: deliberately inspects what PATH resolves so it can "
         "warn that the only reachable npm is the Windows one."
     ),
-    ("tools/lazy_deps.py", "uv"): (
-        "Fallback after resolve_uv(), plus the except-branch for the "
-        "hermes_cli import guard."
-    ),
     ("tools/browser_use_cli.py", "uv"): (
-        "install_cli()'s fallback after ensure_uv() misses — a user-installed "
+        "install_cli()'s fallback after pm.uv() misses — a user-installed "
         "uv on PATH is a legitimate last rung before giving up with install "
         "guidance."
     ),
     ("hermes_cli/gateway.py", "node"): (
-        "Fallback rung of _append_node_dir_for_service(), after the managed "
-        "dirs from iter_hermes_node_dirs() are already appended."
+        "Fallback rung of _append_node_dir_for_service(), after the pm "
+        "store's managed dirs are already appended."
     ),
     ("hermes_cli/main_tui_launch.py", "node"): (
         "_ensure_tui_node()'s idempotence gate: the question really is 'is "
@@ -125,42 +117,37 @@ def _iter_which_calls(tree: ast.AST):
 
 
 def _source_files() -> list[Path]:
-    files: list[Path] = []
-    # os.walk instead of Path.rglob: rglob raises FileNotFoundError when a
-    # directory vanishes mid-scan — a sibling CI job's sdist extraction
-    # (hermes_agent-<version>/) gets created and deleted concurrently, and
-    # that TOCTOU failed this guard on runs 33531869442/33455779041-era
-    # workspaces. os.walk tolerates vanishing dirs (onerror=None), and
-    # pruning exempt/packaging dirs at the top level also skips their
-    # subtrees entirely.
-    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-        rel_dir = Path(dirpath).relative_to(REPO_ROOT)
-        if rel_dir == Path("."):
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in _EXEMPT_DIRS and not _is_packaging_copy(d)
-            ]
-        for fname in filenames:
-            if fname.endswith(".py"):
-                files.append(Path(dirpath) / fname)
-    return files
-
-
-@functools.lru_cache(maxsize=None)
-def _is_packaging_copy(top_level: str) -> bool:
-    """Whether *top_level* (a dir name under REPO_ROOT) is a build artifact."""
-    if top_level in ("build", "dist") or top_level.endswith(".egg-info"):
-        return True
-    candidate = REPO_ROOT / top_level
-    if not candidate.is_dir():
-        return False
-    return (candidate / "PKG-INFO").exists()
+    # Enumerate the .py files git TRACKS, not the working directory. git knows
+    # the source of truth, and that excludes every build artifact by
+    # construction — .venv/, .worktrees/, apps/desktop/build/ and
+    # apps/desktop/release/ (which each bundle a full copy of this source tree
+    # for the MSIX pack), and any sdist/egg extraction. Walking the disk with
+    # rglob would re-find every already-exempted call site inside those copies
+    # under a nested path prefix that can never match an _ALLOWED key. A
+    # gitignored dir cannot carry this branch's real code, so skipping it is
+    # correct, not lossy.
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.py"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Not a git checkout (installed copy, etc.) — fall back to a disk
+        # walk so the guard still runs rather than silently passing.
+        return sorted(REPO_ROOT.rglob("*.py"))
+    rels = out.decode("utf-8", "replace").split("\0")
+    return [REPO_ROOT / rel for rel in rels if rel]
 
 
 def _findings() -> list[tuple[str, str, int]]:
     """Return (relpath, command, lineno) for every bare managed lookup."""
     found: list[tuple[str, str, int]] = []
     for path in _source_files():
+        rel = path.relative_to(REPO_ROOT)
+        if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
+            continue
         try:
             source = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -171,9 +158,8 @@ def _findings() -> list[tuple[str, str, int]]:
             tree = ast.parse(source)
         except SyntaxError:
             continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
         for command, lineno in _iter_which_calls(tree):
-            found.append((rel, command, lineno))
+            found.append((rel.as_posix(), command, lineno))
     return found
 
 
@@ -192,9 +178,9 @@ def test_no_unreviewed_bare_managed_runtime_lookups():
         "arbitrary process's PATH, so this resolves a system copy — or nothing "
         "— on an install that has a managed one.\n"
         "Use instead:\n"
-        "  uv       -> managed_uv.resolve_uv() (lookup) or ensure_uv() (may install)\n"
+        "  uv       -> pm.uv(realize=False) (lookup) or pm.uv() (may realize)\n"
         "  node/npm -> hermes_constants.find_node_executable()\n"
-        "  PATH env -> hermes_constants.iter_hermes_node_dirs()\n"
+        "  PATH env -> hermes_constants.with_hermes_node_path()\n"
         "If PATH really is the right question, add the site to _ALLOWED with a "
         "reason."
     )
@@ -216,8 +202,6 @@ def test_allowlist_has_no_stale_entries():
     "helper",
     [
         "find_node_executable",
-        "find_hermes_node_executable",
-        "iter_hermes_node_dirs",
         "with_hermes_node_path",
     ],
 )
@@ -229,8 +213,8 @@ def test_managed_node_helpers_exist(helper):
 
 
 def test_managed_uv_helpers_exist():
-    from hermes_cli.managed_uv import ensure_uv, managed_uv_path, resolve_uv
+    from pm import ensure, env_for, uv
 
-    assert callable(resolve_uv)
-    assert callable(ensure_uv)
-    assert managed_uv_path().parent.name == "bin"
+    assert callable(uv)
+    assert callable(ensure)
+    assert callable(env_for)

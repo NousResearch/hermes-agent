@@ -318,7 +318,7 @@ UTF-8 stdio 垫片未激活。检查 `HERMES_DISABLE_WINDOWS_UTF8` 是否**未**
 
 ## 下一步
 
-- **[安装](../getting-started/installation.md)** — 完整安装页面，包括 Linux/macOS/WSL2/Termux。
+- **[安装](../getting-started/installation.md)** — 完整安装页面，包括 Linux/macOS/WSL2。
 - **[Windows（WSL2）指南](./windows-wsl-quickstart.md)** — 如果你需要 POSIX 语义或 dashboard 终端面板。
 - **[CLI 参考](../reference/cli-commands.md)** — 所有 `hermes` 子命令。
 - **[FAQ](../reference/faq.md)** — 常见的非 Windows 专属问题。

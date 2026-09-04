@@ -101,7 +101,7 @@ def _load_catalog(lang: str) -> dict[str, str]:
         return _cache_catalog(lang, flat)
     try:
         import yaml
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             _flatten_into(yaml.safe_load(f) or {}, "", flat)
     except Exception as exc:
         logger.warning("Failed to load i18n catalog %s: %s", path, exc)

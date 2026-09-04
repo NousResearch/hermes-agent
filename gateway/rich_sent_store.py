@@ -23,7 +23,7 @@ def _store_path() -> str:
 
 def _load(path: str) -> dict:
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (FileNotFoundError, ValueError):
         return {}

@@ -350,6 +350,7 @@ class TestPrintMigrationReport:
 
 
 class TestDetectOpenclawProcesses:
+    @pytest.mark.platforms("linux")
     def test_returns_match_when_pgrep_finds_openclaw(self):
         with patch.object(claw_mod, "subprocess") as mock_subprocess:
             # systemd check misses, pgrep finds openclaw
@@ -363,7 +364,7 @@ class TestDetectOpenclawProcesses:
             assert "1234" in result[0]
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_returns_empty_on_windows_when_nothing_found(self):
         """Faking win32 picked the tasklist/powershell branch on a host that has
         neither; only a real Windows host resolves those executables.

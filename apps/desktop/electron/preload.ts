@@ -10,14 +10,12 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
-const launchFlags = ipcRenderer.sendSync('hermes:launch-flags')
+const featureFlags = ipcRenderer.sendSync('hermes:feature-flags')
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
-  // Launch-flag fact: the app was started with --local, so the renderer may
-  // show the local-models surfaces. Static for the window's lifetime.
-  localModelsEnabled: launchFlags?.localModels === true,
+  localModelsEnabled: featureFlags?.localModels === true,
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
@@ -277,6 +275,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
+  onExternalOpenFailed: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:external-open-failed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:external-open-failed', listener)
+  },
   mcpOauth: {
     // One-shot loopback listener for MCP OAuth against remote backends: bind
     // on this machine, hand redirectUri to mcp.servers.oauth.start, then wait
@@ -317,6 +321,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Fire-and-forget: persists a renderer error-boundary catch (with component
   // stack) to desktop.log so crashes survive the window (#79428).
   reportRendererError: report => ipcRenderer.send('hermes:logs:renderer-error', report),
+  logLine: line => ipcRenderer.send('hermes:logs:renderer-line', line),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
@@ -493,6 +498,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
+  getSyncStatus: () => ipcRenderer.invoke('hermes:sync-status'),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {

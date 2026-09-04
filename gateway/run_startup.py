@@ -640,7 +640,7 @@ class GatewayStartupMixin:
         from gateway.run import get_hermes_home
         log_dir = getattr(self.config, "log_dir", None) or os.path.join(str(get_hermes_home()), "logs")
         os.makedirs(log_dir, exist_ok=True)
-        return open(os.path.join(log_dir, "gateway_faulthandler.log"), "a", encoding="utf-8")
+        return open(os.path.join(log_dir, "gateway_faulthandler.log"), "a", encoding="utf-8")  # windows-footgun: ok (append log writer, not a read)
 
     def _start_install_faulthandler(self) -> None:
         """Enable faulthandler (stderr or a log file) plus the SIGUSR2 stack-dump hook."""

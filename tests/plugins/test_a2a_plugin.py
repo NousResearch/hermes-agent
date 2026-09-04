@@ -1581,6 +1581,7 @@ class TestV1SpecRegressionFixes:
         assert "one" in adapter._agents
         assert "two" not in adapter._agents
 
+    @pytest.mark.platforms("linux")
     def test_forward_to_profile_first_contact_creates_then_resumes_fake_hermes(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig

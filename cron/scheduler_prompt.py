@@ -93,7 +93,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             if not output_files:
                 continue  # silent skip — no output yet
-            latest_output = output_files[0].read_text(encoding="utf-8").strip()
+            latest_output = output_files[0].read_text(encoding="utf-8-sig").strip()
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (
                     latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")

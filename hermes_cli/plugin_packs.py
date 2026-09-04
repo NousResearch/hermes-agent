@@ -183,7 +183,7 @@ def load_pack(path_or_url: str) -> PluginPack:
         raise PackError(f"Pack file not found: {path}")
     if path.stat().st_size > _MAX_PACK_BYTES:
         raise PackError("Pack file exceeds the 1 MiB size limit.")
-    return parse_pack(path.read_text(encoding="utf-8"), source=str(path))
+    return parse_pack(path.read_text(encoding="utf-8-sig"), source=str(path))
 
 
 # ── Resolution (bare index names → owner/repo) + review screen ──────────────────────────────

@@ -74,9 +74,14 @@ def _anydoc() -> Optional[Any]:
                 and time.monotonic() - _anydoc_failed_at < ANYDOC_RETRY_SECONDS):
             return None
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("tool.doc_extract", prompt=False)  # read_file must never block on a prompt
-            _anydoc_module = importlib.import_module("anydoc")
+            from pm import ensure_import
+
+            # read_file must never block on an install prompt.
+            ensure_import("doc-extract")
+        except Exception:
+            _anydoc_failed_at = time.monotonic()
+            return None
+        try:            _anydoc_module = importlib.import_module("anydoc")
         except Exception:  # install failure, ImportError or a broken native binding
             _anydoc_failed_at = time.monotonic()
             return None
@@ -403,7 +408,7 @@ _CELL_LABELS = {"markdown": "Markdown", "code": "Code", "raw": "Raw"}
 
 def _extract_notebook(path: str) -> str:
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             nb = json.load(fh)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ExtractionError(f"Not a valid notebook: {exc}") from exc

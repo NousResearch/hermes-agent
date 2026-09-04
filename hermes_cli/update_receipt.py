@@ -1,7 +1,29 @@
 """Structured update receipts + post-update fleet version verification.
 
-The updater must *prove* its outcome instead of assuming it. Every public entry point is
-exception-swallowing so a failure inside receipts can never break an update.
+Phase 1 of the fleet-update reliability plan (#91277): the updater must
+*prove* its outcome instead of assuming it.
+
+Two additive capabilities, both designed so a failure inside them can never
+break an update (every public entry point is exception-swallowing):
+
+1. **Update receipt** — a machine-readable JSON record of what one
+   ``hermes update`` run discovered, did, skipped (and why), written to
+   ``<HERMES_HOME>/logs/update_receipts/``. Silent-failure classes this
+   makes visible: #88848 (helper died after "success" printed), #74973
+   (restart silently skipped), #85753 (restart phase never ran), #81193
+   (desktop shows failure for a successful update).
+
+2. **Fleet version verification** — after the restart phase, read every
+   profile's ``gateway_state.json``, compare each live gateway's stamped
+   ``code_sha`` (written by ``gateway/status.py`` on every runtime-status
+   write) against the freshly-updated checkout's HEAD, and print a fleet
+   version matrix. Mixed-version fleets (#88654, #69754, #77553, #56717)
+   become a loud, actionable report instead of a latent state.
+
+Deployment-kind awareness (docker/image-managed installs) rides on
+``hermes_cli.version_info.get_code_identity()``: a packaged build reports
+its install-stamp provenance (``source="docker"``/``"nix"``/…) and the
+receipt records that the install is not in-place updatable.
 """
 
 from __future__ import annotations
@@ -172,6 +194,23 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
+        # EMBED the pm sync sections (the settled receipts contract): the
+        # update's rebuild/bisect ran through pm's own sync receipt, which
+        # finalizes before this one. Fold the newest sync receipt's
+        # venv_rebuild + plugin_bisect into the update receipt so ONE file
+        # carries the whole story (desktop reads a single latest.json).
+        try:
+            from pm import receipt as pm_receipt
+
+            sync = pm_receipt.latest()
+            if isinstance(sync, dict):
+                for key in ("venv_rebuild", "plugin_bisect", "feature_list"):
+                    if sync.get(key) is not None:
+                        receipt.data[f"pm_{key}"] = sync[key]
+                if sync.get("outcome") is not None:
+                    receipt.data["pm_sync_outcome"] = sync.get("outcome")
+        except Exception as exc:  # pragma: no cover — embedding is additive
+            logger.debug("pm sync-section embed skipped: %s", exc)
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
@@ -218,9 +257,10 @@ def read_latest_receipt() -> Optional[dict[str, Any]]:
     """Read the most recent update receipt, or None. Never raises."""
     with suppress(Exception):
         path = _receipt_dir() / "latest.json"
-        if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, dict) else None
+        if not path.is_file():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        return payload if isinstance(payload, dict) else None
     return None
 
 
@@ -252,8 +292,6 @@ def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
     try:
         # Prefer the gateway-owned control socket (#92091): identity declared by the process itself,
         # including its own supervisor provenance — no argv/PID inference. Scan fallback below.
-        # Prefer the gateway-owned control socket (#92091): a live `identify` answer is authoritative — no
-        # PID-reuse or stale-file heuristics.
         from gateway.control_socket import identify_gateway
 
         identity = identify_gateway(home)

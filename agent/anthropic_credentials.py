@@ -74,7 +74,7 @@ def _load_json_if_exists(path: Path, what: str) -> Optional[Any]:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as e:
         logger.debug("Failed to read %s: %s", what, e)
         return None
@@ -136,7 +136,9 @@ def _read_spent_rotation_sidecar(source_path: Optional[Path]) -> set:
     if source_path is None:
         return set()
     try:
-        raw = json.loads(_spent_rotation_sidecar_path(source_path).read_text(encoding="utf-8"))
+        raw = json.loads(
+            _spent_rotation_sidecar_path(source_path).read_text(encoding="utf-8-sig")
+        )
     except (OSError, ValueError):
         return set()
     fingerprints = raw.get("fingerprints") if isinstance(raw, dict) else None
@@ -377,7 +379,7 @@ def _write_claude_code_credentials(
     >=2.1.81 gates on ``"user:inference"`` being present."""
     cred_path = claude_code_credentials_path()
     try:
-        existing = json.loads(cred_path.read_text(encoding="utf-8")) if cred_path.exists() else {}
+        existing = json.loads(cred_path.read_text(encoding="utf-8-sig")) if cred_path.exists() else {}
     except (OSError, ValueError) as e:
         logger.error("Failed to write refreshed credentials to %s: %s", cred_path, e)
         raise CredentialPersistError(cred_path, e) from e

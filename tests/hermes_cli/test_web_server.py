@@ -895,28 +895,24 @@ class TestWebServerEndpoints:
 
 
 
-    def test_post_memory_provider_setup_routes_pip_through_lazy_deps(self, monkeypatch):
-        """NS-605: dashboard pip installs must use the environment-aware
-        lazy_deps pipeline (durable-target redirect on immutable hosted
-        images), never a direct `pip install --python sys.executable`."""
+    def test_post_memory_provider_setup_routes_pip_through_pm(self, monkeypatch):
+        """NS-605 lineage: dashboard pip installs must route through pm
+        (venv sync of the owning extra), never a direct
+        `pip install --python sys.executable`."""
         import subprocess as _subprocess
 
         import hermes_cli.web_server as web_server
-        from tools import lazy_deps as ld
+        import pm
 
         # honcho declares pip_dependencies: [honcho-ai]; force it missing.
         monkeypatch.setattr(_web_server_memory, "_dependency_importable", lambda dep: False)
 
         installed = []
 
-        def fake_install_specs(specs, *, timeout=300):
-            installed.append(tuple(specs))
-            return ld.InstallSpecsResult(
-                ok=True, command="uv pip install --target /opt/data/lazy-packages honcho-ai",
-                stdout="ok", stderr="",
-            )
-
-        monkeypatch.setattr(ld, "install_specs", fake_install_specs)
+        monkeypatch.setattr(
+            pm, "sync_venv",
+            lambda extras=None, explicit=False: installed.append(tuple(extras or ())),
+        )
 
         # Any direct pip/uv subprocess from the memory-provider pip path is
         # a regression; external-dep checks may still run subprocess, so only
@@ -936,8 +932,8 @@ class TestWebServerEndpoints:
         data = resp.json()
         pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
         assert pip_rows and pip_rows[0]["status"] == "installed"
-        assert "--target /opt/data/lazy-packages" in pip_rows[0]["command"]
-        assert installed == [("honcho-ai",)]
+        assert pip_rows[0]["command"] == "hermes pm install"
+        assert installed == [("honcho",)]
 
 
 
@@ -1272,45 +1268,22 @@ class TestWebServerEndpoints:
         assert status_data["pid"] is None
         assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
 
-    def test_update_hermes_returns_apt_guidance_without_spawning(self, monkeypatch):
+    def test_update_check_legacy_apt_stamp_resolves_to_unknown(self, monkeypatch):
+        # The Termux 'apt' install-method lane was removed. A legacy
+        # .install_method stamp of 'apt' now resolves to 'unknown' (see
+        # detect_install_method) and gets the generic "hermes update"
+        # guidance instead of Termux-specific refusal.
         import hermes_cli.web_server as web_server
 
-        spawned = False
-
-        def fail_spawn(*_args, **_kwargs):
-            nonlocal spawned
-            spawned = True
-            raise AssertionError("APT-managed update guard should not spawn hermes update")
-
-        monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: False)
-        # The shared admission gate (#91277 Phase 3) resolves the install
-        # method through hermes_cli.config directly, so patch it there (the
-        # web_server module alias only feeds the /update/check endpoint).
-        monkeypatch.setattr(
-            "hermes_cli.config.detect_install_method", lambda *_a, **_k: "apt"
-        )
-        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda _root: "apt")
-        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", fail_spawn)
-        _web_server_gateway._ACTION_PROCS.pop("hermes-update", None)
-        _web_server_gateway._ACTION_RESULTS.pop("hermes-update", None)
-
-        resp = self.client.post("/api/hermes/update")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert data["pid"] is None
-        assert data["error"] == "apt_update_required"
-        assert data["update_command"] == "pkg upgrade hermes-agent"
-        assert spawned is False
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda _root: "unknown")
 
         check = self.client.get("/api/hermes/update/check")
         assert check.status_code == 200
         check_data = check.json()
-        assert check_data["install_method"] == "apt"
-        assert check_data["can_apply"] is False
-        assert check_data["update_command"] == "pkg upgrade hermes-agent"
-        assert "Termux APT" in check_data["message"]
+        assert check_data["install_method"] == "unknown"
+        assert check_data["update_command"] == "hermes update"
+        assert "Termux" not in (check_data["message"] or "")
 
     def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server

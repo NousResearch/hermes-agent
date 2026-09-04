@@ -36,21 +36,11 @@ from hermes_cli.config import (
 
 class TestGetHermesHome:
     def test_default_path(self):
+        from hermes_constants import _get_platform_default_hermes_home
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            if sys.platform == "win32":
-                # Windows default is %LOCALAPPDATA%\hermes — see
-                # hermes_constants._get_platform_default_hermes_home.
-                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-                base = (
-                    Path(local_appdata)
-                    if local_appdata
-                    else Path.home() / "AppData" / "Local"
-                )
-                assert home == base / "hermes"
-            else:
-                assert home == Path.home() / ".hermes"
+            assert home == _get_platform_default_hermes_home()
 
 
 class TestEnsureHermesHome:
@@ -1372,7 +1362,7 @@ class TestEnvWriteDenylist:
         assert _env_line_defines_key(line, "PATH", is_windows=True)
         assert not _env_line_defines_key(line, "PATH", is_windows=False)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     @pytest.mark.parametrize(
         "protected_key",
         [

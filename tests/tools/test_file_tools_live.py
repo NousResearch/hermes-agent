@@ -98,6 +98,7 @@ class TestLocalEnvironmentExecute:
         _assert_clean(result["output"])
 
 
+    @pytest.mark.platforms("linux")
     def test_cat_deterministic_content(self, env, tmp_path):
         f = tmp_path / "det.txt"
         f.write_text(SIMPLE_CONTENT)
@@ -225,6 +226,7 @@ class TestSearch:
 # ── _expand_path ─────────────────────────────────────────────────────────
 
 class TestExpandPath:
+    @pytest.mark.platforms("linux")
     def test_tilde_exact(self, ops):
         result = ops._expand_path("~/test.txt")
         expected = f"{Path.home()}/test.txt"
@@ -261,6 +263,7 @@ class TestTerminalOutputCleanliness:
         assert result["output"].strip() == "CLEAN_TEST"
         _assert_clean(result["output"])
 
+    @pytest.mark.platforms("linux")
     def test_cat(self, env, tmp_path):
         f = tmp_path / "cat_test.txt"
         f.write_text("CAT_CONTENT_EXACT\n")

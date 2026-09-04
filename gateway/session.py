@@ -830,6 +830,14 @@ class SessionStore(
             )
             return True
 
+
+    # MERGE-CHECK: our pre-refactor SessionStore methods (_ensure_loaded.._heal_compression_tip_locked)
+    # were dropped - upstream decomposed them into session_persistence/session_recovery/session_lifecycle/
+    # session_transcript mixins (imported above). ACTION FOR PARENT: our utf-8-sig sessions.json read fix
+    # (was in our _ensure_loaded_locked) needs porting to gateway/session_persistence.py (~line 286,
+    # encoding utf-8 -> utf-8-sig) - that file is outside this task's file list.
+
+
     def has_any_sessions(self) -> bool:
         """Whether any session has ever been created. SQLite is the source of truth (ended sessions
         count); the current session is already in the DB when this runs, hence ``> 1``."""

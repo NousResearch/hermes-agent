@@ -256,7 +256,7 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
             logger.debug("Persisted Copilot JWT store exceeds %d bytes; ignoring",
                          _JWT_DISK_MAX_BYTES)
             return None
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
         return loaded if isinstance(loaded, dict) else None
     except Exception as exc:
         logger.debug("Failed to read persisted Copilot JWT store: %s", exc)

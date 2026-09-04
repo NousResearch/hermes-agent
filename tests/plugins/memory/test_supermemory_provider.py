@@ -312,7 +312,7 @@ def test_client_passes_custom_base_url_to_sdk(monkeypatch):
     module = types.ModuleType("supermemory")
     module.Supermemory = StubSupermemory
     monkeypatch.setitem(sys.modules, "supermemory", module)
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    monkeypatch.setattr("pm.ensure_import", lambda *args, **kwargs: None)
 
     client = _SupermemoryClient(
         api_key="test-key",

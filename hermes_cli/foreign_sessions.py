@@ -45,14 +45,20 @@ class ForeignSession:
 
 def _read_json_lines(path: Path):
     """Yield parsed JSON objects, silently skipping unparseable lines."""
-    with contextlib.suppress(OSError), open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict):
-                yield obj
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
+        return
 
 
 def _block_text(block: Any) -> str:

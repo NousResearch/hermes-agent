@@ -132,7 +132,8 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
         from hermes_cli.config import fast_safe_load
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            # utf-8-sig: tolerate a BOM in Windows-authored profile config.yaml (#pm).
+            with open(config_path, encoding="utf-8-sig") as f:
                 raw = fast_safe_load(f)
         except Exception as exc:
             raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc

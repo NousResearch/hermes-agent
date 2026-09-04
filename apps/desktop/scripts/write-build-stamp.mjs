@@ -6,12 +6,18 @@
  *
  * Schema (subject to bump via STAMP_SCHEMA_VERSION):
  *   {
- *     "schemaVersion": 1,
- *     "commit":        "<40-char SHA>",
- *     "branch":        "<branch name>",
- *     "builtAt":       "<ISO 8601 UTC timestamp>",
- *     "dirty":         true|false,
- *     "source":        "ci" | "local" | "fallback"
+ *     "schemaVersion":    1,
+ *     "commit":           "<40-char SHA>",
+ *     "branch":           "<branch name>",
+ *     "builtAt":          "<ISO 8601 UTC timestamp>",
+ *     "dirty":            true|false,
+ *     "source":           "ci" | "local" | "fallback",
+ *     // Staged desktop builds only (HERMES_DESKTOP_VARIANT set):
+ *     "payload":          "bundled" | "light" | "bootstrap",
+ *     "store":            true|false,
+ *     "distribution":     "desktop-app",
+ *     "updateMechanism":  "external",
+ *     "tag":              "<release tag>"
  *   }
  *
  * Source preference order:
@@ -149,17 +155,8 @@ function main() {
     )
   }
 
-  const payload = {
-    schemaVersion: STAMP_SCHEMA_VERSION,
-    commit: stamp.commit,
-    branch: stamp.branch,
-    builtAt: new Date().toISOString(),
-    dirty: stamp.dirty,
-    source: stamp.source
-  }
-
   mkdirSync(OUT_DIR, { recursive: true })
-  writeFileSync(OUT_FILE, JSON.stringify(payload, null, 2) + "\n", "utf8")
+  writeFileSync(OUT_FILE, JSON.stringify(buildStampPayload(stamp, process.env), null, 2) + "\n", "utf8")
   console.log(
     "[write-build-stamp] wrote " +
       relative(REPO_ROOT, OUT_FILE) +
@@ -171,6 +168,47 @@ function main() {
   )
 }
 
+/**
+ * Build the install-stamp.json payload. The legacy 5-field shape (schemaVersion
+ * 1: commit/branch/builtAt/dirty/source) is always present; when the desktop
+ * build is staged (HERMES_DESKTOP_VARIANT set), the full-schema fields the
+ * updater mechanism resolution reads are added: payload, distribution,
+ * updateMechanism, tag, and the store-submission flag. The variant is a
+ * BUILD-TIME fact — process.windowsStore cannot tell a Microsoft Store
+ * deployment from an App Installer sideload (Electron sets it true for any
+ * MSIX package), so the resolver must read it from the baked stamp.
+ *
+ * Mirrors scripts/write_install_stamp.py::build_stamp's variant handling:
+ *   store -> payload 'bundled' (steward-owned, no in-app updater)
+ *   bundled -> payload 'bundled'
+ *   light -> payload 'light'
+ *   '' / bootstrap -> payload 'bootstrap'
+ * Dev/local builds (no variant) keep the old shape; installShape() then treats
+ * them as checkout, which is correct for a dev run.
+ */
+export function buildStampPayload(stamp, env = process.env) {
+  const variant = (env.HERMES_DESKTOP_VARIANT || "").trim()
+  const base = {
+    schemaVersion: STAMP_SCHEMA_VERSION,
+    commit: stamp.commit,
+    branch: stamp.branch,
+    builtAt: new Date().toISOString(),
+    dirty: stamp.dirty,
+    source: stamp.source
+  }
+  if (!variant) return base
+
+  return {
+    ...base,
+    payload: variant === "store" ? "bundled" : variant || "bootstrap",
+    store: variant === "store",
+    distribution: "desktop-app",
+    updateMechanism: "external", // sealed artifact — the OS/steward owns updates
+    tag: env.HERMES_PAYLOAD_TAG || null
+  }
+}
+
 if (isMain(import.meta.url)) {
   main()
 }
+

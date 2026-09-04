@@ -278,7 +278,7 @@ def _existing_log_is_larger(log_file, count: int) -> bool:
     if not log_file.exists():
         return False
     try:
-        existing = json.loads(log_file.read_text(encoding="utf-8"))
+        existing = json.loads(log_file.read_text(encoding="utf-8-sig"))
         existing_count = existing.get("message_count", len(existing.get("messages", [])))
     except Exception:
         return False

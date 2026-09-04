@@ -51,7 +51,7 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     bootstrap without python-dotenv); decode errors fall back to latin-1 like ``_load_dotenv_with_fallback``."""
     keys: set[str] = set()
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
         try:
             text = path.read_text(encoding="latin-1", errors="replace")
@@ -531,7 +531,11 @@ def _load_secrets_config(home_path: Path) -> dict:
         except Exception:
             pass
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        import yaml  # type: ignore
+    except ImportError:
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8-sig") as f:
             data = fast_safe_load(f) or {}
     except Exception:  # noqa: BLE001
         return {}

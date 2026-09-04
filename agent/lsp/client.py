@@ -477,7 +477,7 @@ class LSPClient:
             raise LSPProtocolError("client not running")
         abs_path = os.path.abspath(path)
         try:
-            text = Path(abs_path).read_text(encoding="utf-8", errors="replace")
+            text = Path(abs_path).read_text(encoding="utf-8-sig", errors="replace")
         except OSError as e:
             raise LSPProtocolError(f"cannot read {abs_path}: {e}") from e
         uri = file_uri(abs_path)

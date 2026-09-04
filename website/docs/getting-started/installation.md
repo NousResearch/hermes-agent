@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows, or Android via Termux"
+description: "Install Hermes Agent on Linux, macOS, WSL2, or native Windows"
 ---
 
 # Installation
@@ -20,7 +20,7 @@ To easily install the command-line and desktop applications, [download the Herme
 ### Without Hermes Desktop:
 For a command-line only install without Hermes Desktop, run:
 
-#### Linux / macOS / WSL2 / Android (Termux)
+#### Linux / macOS / WSL2
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
@@ -131,12 +131,9 @@ Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service
    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
    ```
 
-   If you want to skip the Playwright step entirely — for example because you're running headless and don't need browser automation — pass `--skip-browser`:
-   ```bash
-   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
-   ```
-
-   The installer also pre-installs [`cua-driver`](../user-guide/features/computer-use.md) so the Computer Use toolset works the moment you enable it; pass `--skip-computer-use` to opt out (it will then install on demand when you enable the tool).
+   Browsers, node, and other tool binaries are not part of the bootstrap:
+   pm installs them on demand the first time a feature needs them, or all at
+   once with `hermes pm install`.
 
 3. **Make `hermes` available to the service user's shells.** The installer writes the launcher to `~/.local/bin/hermes`. System service accounts often have a minimal PATH that doesn't include `~/.local/bin`. Either add it to the user's environment, or symlink the launcher into a system location:
    ```bash

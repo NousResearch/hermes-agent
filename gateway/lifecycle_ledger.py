@@ -49,7 +49,7 @@ def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
     """``{dst: int}`` for each ``src: dst`` key found in a ``Key: value`` /proc file."""
     found: Dict[str, int] = {}
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             for line in fh:
                 key = line.split(":", 1)[0]
                 if key in wanted:
@@ -76,7 +76,7 @@ def sample_memory() -> Dict[str, Any]:
 
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None

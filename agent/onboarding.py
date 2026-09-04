@@ -161,7 +161,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
     try:
         cfg: dict = {}
         if config_path.exists():
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 cfg = yaml.safe_load(f) or {}
         if not isinstance(cfg.get("onboarding"), dict):
             cfg["onboarding"] = {}

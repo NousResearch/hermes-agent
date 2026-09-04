@@ -119,6 +119,50 @@ def test_catalog_never_hides_unaffordable_models(client, monkeypatch):
 # ── downloads ────────────────────────────────────────────────
 
 
+class _FakeRangeOpener:
+    """Stands in for pm.downloader._OPENER: serves `body` with honest Range
+    support (the downloader probes bytes=0-0 and then fetches 8-way ranges)."""
+
+    def __init__(self, body: bytes, content_length: int | None = None):
+        self._body = body
+        self._length = content_length if content_length is not None else len(body)
+
+    def open(self, req, timeout=None):
+        parent = self
+
+        class _Resp(io.BytesIO):
+            status = 200
+            headers = {"Content-Length": str(parent._length)}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        rng = req.headers.get("Range") if req.headers else None
+        if rng and rng.startswith("bytes="):
+            lo_hi = rng[len("bytes="):]
+            if lo_hi == "0-0":
+                # probe: 206 with full Content-Range so range support is detected
+                probe = _Resp(b"")
+                probe.status = 206
+                probe.headers = {
+                    "Content-Range": f"bytes 0-0/{parent._length}",
+                    "Content-Length": "1",
+                }
+                return probe
+            lo, hi = (int(x) for x in lo_hi.split("-"))
+            part = parent._body[lo:hi + 1]
+            resp = _Resp(part)
+            resp.headers = {
+                "Content-Range": f"bytes {lo}-{hi}/{parent._length}",
+                "Content-Length": str(len(part)),
+            }
+            return resp
+        return _Resp(parent._body)
+
+
 def test_download_unknown_model_404s(client):
     r = client.post("/api/local-models/download", json={"model_id": "nope"})
     assert r.status_code == 404
@@ -131,18 +175,10 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
     fewer bytes than the server promised means a dropped connection, so
     the job errors and nothing is staged."""
 
-    class FakeResponse(io.BytesIO):
-        # Body is 17 bytes; the server promises 32 — a truncated stream.
-        headers = {"Content-Length": "32"}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr("urllib.request.urlopen",
-                        lambda *a, **k: FakeResponse(b"not the real body"))
+    # Body is 17 bytes; the server promises 32 — a truncated stream.
+    monkeypatch.setattr(
+        "pm.downloader._OPENER",
+        _FakeRangeOpener(b"not the real body", content_length=32))
 
     # Pin a generous budget: variant selection prices against the machine
     # running the test, and a GPU-less CI runner honestly refuses every
@@ -250,17 +286,8 @@ def test_download_tolerates_stale_catalog_size(client, monkeypatch):
 
     body = b"x" * 48  # server-consistent: Content-Length == body length
 
-    class FakeResponse(io.BytesIO):
-        headers = {"Content-Length": str(len(body))}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr("urllib.request.urlopen",
-                        lambda *a, **k: FakeResponse(body))
+    monkeypatch.setattr(
+        "pm.downloader._OPENER", _FakeRangeOpener(body))
 
     from hermes_cli.local_runtime.estimator import HardwareBudget
 
@@ -291,3 +318,118 @@ def test_download_tolerates_stale_catalog_size(client, monkeypatch):
             break
         time.sleep(0.05)
     assert status is not None and status["status"] == "done", status.get("error")
+
+
+def test_download_pause_and_resume_unknown_404(client):
+    assert client.post("/api/local-models/download/pause",
+                       json={"job_id": "deadbeef"}).status_code == 404
+    assert client.post("/api/local-models/download/resume",
+                       json={"job_id": "deadbeef"}).status_code == 404
+
+
+def test_download_finished_job_releases_handles(client, monkeypatch):
+    """A finished download drops its live download + resume handles, so the
+    job dict stays JSON-serializable and nothing lingers to pause/resume."""
+    body = b"x" * 48
+
+    monkeypatch.setattr("pm.downloader._OPENER", _FakeRangeOpener(body))
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(usable_vram_bytes=64 << 30,
+                            total_device_bytes=64 << 30,
+                            ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+                        lambda **kw: budget)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        lambda: False)
+    from hermes_cli.local_runtime.catalog import CATALOG
+
+    r = client.post("/api/local-models/download", json={"model_id": CATALOG[0].id})
+    job_id = r.json()["job_id"]
+    deadline = time.time() + 10
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        if status["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert status is not None and status["status"] == "done"
+
+    from hermes_cli.web_routers import local_models as lm
+
+    assert job_id not in lm._RUNNING
+
+
+def test_download_pause_reaches_paused_status(client, monkeypatch):
+    """A running download can be paused; the job lands in a 'paused' state
+    (partials preserved for resume) instead of erroring."""
+    import threading
+
+    gate = threading.Event()
+
+    class _BlockingOpener:
+        """Stands in for pm.downloader._OPENER: the probe answers honestly
+        (1 MiB, range-supported) and every body read blocks on the gate, so
+        the worker is mid-download when the test pauses it."""
+
+        def open(self, req, timeout=None):
+            parent = self
+
+            class _Resp:
+                status = 206
+                headers = {"Content-Range": "bytes 0-0/1048576",
+                           "Content-Length": "1"}
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self, size=-1):
+                    gate.wait(timeout=15)   # hold the worker until let go
+                    return b""
+
+            rng = req.headers.get("Range") if req.headers else None
+            if rng and rng.startswith("bytes=") and rng != "bytes=0-0":
+                # body range: answer the probe shape with full length so the
+                # worker blocks inside read()
+                _Resp.headers = {"Content-Range": "bytes 0-1048575/1048576",
+                                 "Content-Length": "1048576"}
+            return _Resp()
+
+    monkeypatch.setattr("pm.downloader._OPENER", _BlockingOpener())
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(usable_vram_bytes=64 << 30,
+                            total_device_bytes=64 << 30,
+                            ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+                        lambda **kw: budget)
+
+    r = client.post("/api/local-models/download", json={"model_id": CATALOG[0].id})
+    job_id = r.json()["job_id"]
+
+    # Pause as soon as the live download handle is in place (idempotent).
+    deadline = time.time() + 10
+    paused = False
+    while time.time() < deadline:
+        pr = client.post("/api/local-models/download/pause",
+                         json={"job_id": job_id})
+        if pr.status_code == 200 and pr.json()["paused"] is True:
+            paused = True
+            break
+        time.sleep(0.05)
+    assert paused
+    gate.set()
+
+    deadline = time.time() + 10
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        if status["status"] in ("paused", "done", "error"):
+            break
+        time.sleep(0.05)
+    assert status is not None and status["status"] == "paused"

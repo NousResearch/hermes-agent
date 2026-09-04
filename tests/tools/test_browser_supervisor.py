@@ -65,20 +65,18 @@ def _find_chrome() -> str:
 def chrome_cdp(request):
     """Start a headless Chrome with --remote-debugging-port, yield its WS URL.
 
-    Uses a unique port per xdist worker to avoid cross-worker collisions.
+    Binds an ephemeral port (bind port 0, read back the real one) so
+    concurrently-running test files in the per-file parallel runner can
+    never collide on a fixed port.
     Always launches with ``--site-per-process`` so cross-origin iframes
     become real OOPIFs (needed by the iframe interaction tests).
     """
+    import socket
 
-    # xdist worker_id is "master" in single-process mode or "gw0".."gwN" otherwise.
-    # Under subprocess-per-file isolation there's no xdist, so we fall back
-    # to "master" via the session-scoped fixture below.
-    worker_id = request.getfixturevalue("worker_id") if "worker_id" in request.fixturenames else "master"
-    if worker_id == "master":
-        port_offset = 0
-    else:
-        port_offset = int(worker_id.lstrip("gw"))
-    port = 9225 + port_offset
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
     profile = tempfile.mkdtemp(prefix="hermes-supervisor-test-")
     proc = subprocess.Popen(
         [

@@ -6,6 +6,7 @@ Check bodies live in the ``doctor_*`` siblings.
 
 import os
 import sys
+from pathlib import Path
 
 from hermes_cli.config import get_env_path, get_hermes_home, get_project_root
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -64,6 +65,14 @@ _PROVIDER_ENV_HINTS = (
     "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY",
 )
 
+def _python_install_cmd() -> str:
+    return "uv pip install"
+
+
+def _system_package_install_cmd(pkg: str) -> str:
+    if sys.platform == "darwin":
+        return f"brew install {pkg}"
+    return f"sudo apt install {pkg}"
 
 @doctor_check()
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
@@ -184,6 +193,162 @@ def run_doctor(args):
     _print_summary(should_fix, total)
 
 
+def _pm_tool_path(name: str) -> Path | None:
+    """Answer a tool's binary from the pm store (facts.json), not PATH.
+
+    Doctor probes tools (git, rg, ffmpeg, ...) that pinned installs run
+    out of the store; nothing puts the store on an interactive shell's
+    PATH, so a PATH-only probe reports a healthy managed install as
+    "not found". This answers from facts.json + the store: the recorded
+    entry's binary when it exists on disk, None when unstaged or the
+    recorded binary is gone (deleted = report missing, never guess).
+    Contract tests: tests/hermes_cli/test_doctor_pm_store_probe.py.
+    """
+    try:
+        import json
+
+        from pm.paths import store_root
+    except Exception:
+        return None
+    facts_path = store_root() / "facts.json"
+    if not facts_path.is_file():
+        return None
+    try:
+        facts = json.loads(facts_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(facts, dict):
+        return None
+    entry_name = (facts.get("packages") or {}).get(name) or {}
+    if not isinstance(entry_name, dict):
+        return None
+    entry_dir = entry_name.get("entry")
+    if not isinstance(entry_dir, str) or not entry_dir:
+        return None
+    entry = store_root() / entry_dir
+    if not entry.is_dir():
+        return None  # recorded but deleted
+    # resolve the binary: the store entry's package definition knows the
+    # relative binary path; without importing packages, probe common shapes
+    binary_names = {
+        "ripgrep": ("rg.exe", "rg"),
+        "git": ("cmd/git.exe", "bin/git"),
+        "node": ("node.exe", "bin/node"),
+        "gh": ("bin/gh.exe", "bin/gh"),
+    }.get(name, (f"{name}.exe", name))
+    for rel in binary_names:
+        candidate = entry / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _has_provider_env_config(content: str) -> bool:
+    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
+    return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+
+def _honcho_is_configured_for_doctor() -> bool:
+    """Return True when Honcho is configured, even if this process has no active session."""
+    try:
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig.from_global_config()
+        return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
+    except Exception:
+        return False
+
+
+def _is_kanban_worker_env_gate(item: dict) -> bool:
+    """Return True when Kanban is unavailable only because this is not a worker process."""
+    if item.get("name") != "kanban":
+        return False
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+
+    tools = item.get("tools") or []
+    return bool(tools) and all(str(tool).startswith("kanban_") for tool in tools)
+
+
+def _doctor_tool_availability_detail(toolset: str) -> str:
+    """Optional explanatory suffix for toolsets whose doctor status needs context."""
+    if toolset == "kanban" and not os.environ.get("HERMES_KANBAN_TASK"):
+        return "(runtime-gated; loaded only for dispatcher-spawned workers)"
+    return ""
+
+
+def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
+    """Return doctor rows for web search/extract provider readiness (#78412).
+
+    Each row is ``(status, label, detail)`` where *status* is ``ok`` or ``warn``.
+    Uses the same active-provider resolvers as the tools, but reports readiness
+    from ``is_available()`` so an explicitly selected but unconfigured backend
+    does not look healthy.
+    """
+    rows: list[tuple[str, str, str]] = []
+    try:
+        from agent.web_search_registry import (
+            get_active_extract_provider,
+            get_active_search_provider,
+        )
+        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+
+        # Doctor runs in a fresh process — bundled web providers register
+        # during plugin discovery, which nothing has triggered yet here.
+        # Without this the registry is empty and every row reads
+        # "no provider selected or registered" (idempotent, cheap on rerun).
+        _ensure_web_plugins_loaded()
+    except Exception:
+        return rows
+
+    for capability, getter in (
+        ("web search", get_active_search_provider),
+        ("web extract", get_active_extract_provider),
+    ):
+        try:
+            provider = getter()
+        except Exception:
+            provider = None
+        if provider is None:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    "(no provider selected or registered)",
+                )
+            )
+            continue
+        name = getattr(provider, "name", None) or type(provider).__name__
+        if _provider_is_ready(provider):
+            rows.append(("ok", capability, f"({name})"))
+        else:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    f"({name} selected; provider not configured)",
+                )
+            )
+    return rows
+
+def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
+    """Adjust runtime-gated tool availability for doctor diagnostics."""
+    updated_available = list(available)
+    updated_unavailable = []
+    for item in unavailable:
+        name = item.get("name")
+        if _is_kanban_worker_env_gate(item):
+            if "kanban" not in updated_available:
+                updated_available.append("kanban")
+            continue
+        if name == "honcho" and _honcho_is_configured_for_doctor():
+            if "honcho" not in updated_available:
+                updated_available.append("honcho")
+            continue
+        updated_unavailable.append(item)
+    return updated_available, updated_unavailable
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
@@ -203,6 +368,14 @@ def check_warn(text: str, detail: str = ""):
     print(f"  {color('⚠', Colors.YELLOW)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
 
+# MERGE-CHECK: HEAD side of this conflict was our legacy monolithic run_doctor body (pre-#102117
+# structure + pm-era fixes: inline connectivity probes, memory-provider/profiles checks, state-db
+# stats, s6/TCC checks, _pm_venv_active). Upstream decomposed doctor.py into DOCTOR_CHECKS + the
+# hermes_cli/doctor_* siblings, so per the merge brief the upstream structure wins and the legacy
+# body is dropped. pm-era helpers kept alive above (_pm_tool_path, _doctor_web_capability_rows,
+# _apply_doctor_tool_availability_overrides, _is_kanban_worker_env_gate, _honcho_is_configured_for_doctor,
+# _has_provider_env_config, _python_install_cmd, _system_package_install_cmd) for the parent to wire
+# into the doctor_* siblings. Parent: verify pm wiring / utf-8-sig reads landed in the siblings.
 _PLUGIN_COMPAT_LAZY = {
     'FTS_STORAGE_VERSION': ('hermes_state_common', 'FTS_STORAGE_VERSION'),
     'OPENROUTER_MODELS_URL': ('hermes_constants', 'OPENROUTER_MODELS_URL'),

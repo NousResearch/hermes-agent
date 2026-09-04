@@ -135,6 +135,7 @@ def test_safe_extract_member_rejects_traversal(tmp_path, evil_name):
 
 
 
+@pytest.mark.platforms("linux")
 def test_install_bws_happy_path(hermes_home, monkeypatch):
     fake_binary = b"#!/bin/sh\necho 'bws fake 2.0.0'\n"
     zip_bytes = _make_fake_zip(fake_binary)
@@ -334,6 +335,7 @@ def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
 
 
 
+@pytest.mark.platforms("linux")
 def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     """Encrypted cache stores last-good secrets without raw values on disk."""
     home = tmp_path / ".hermes"

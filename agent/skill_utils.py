@@ -9,7 +9,7 @@ import sys
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import get_config_path, get_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def read_active_org_id(skills_dir: Path) -> Optional[str]:
     """The org id whose mirror may resolve, or None (no org skills load)."""
     marker = skills_dir / ORG_MIRROR_DIR_NAME / ORG_ACTIVE_MARKER
     try:
-        return (marker.read_text(encoding="utf-8").strip() or None) if marker.exists() else None
+        return (marker.read_text(encoding="utf-8-sig").strip() or None) if marker.exists() else None
     except OSError:
         return None
 
@@ -124,13 +124,13 @@ def skill_matches_platform_list(platforms: Any) -> bool:
     """Return True when *platforms* is compatible with the current OS."""
     if not platforms:
         return True
-    running_in_termux = is_termux()
-    for platform in platforms if isinstance(platforms, list) else [platforms]:
+    if not isinstance(platforms, list):
+        platforms = [platforms]
+    current = sys.platform
+    for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
-        # Termux is a Linux userland on Android: accept linux-tagged skills
-        # whether sys.platform is "linux" (pre-3.13) or "android" (3.13+).
-        if sys.platform.startswith(mapped) or (running_in_termux and mapped in ("linux", "termux", "android")):
+        if current.startswith(mapped):
             return True
     return False
 
@@ -230,7 +230,7 @@ def _load_raw_config() -> Dict[str, Any]:
     if cached is not None:
         return cached
     try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
     except Exception as e:
         logger.debug("Could not read skill config %s: %s", config_path, e)
         return {}
@@ -671,7 +671,7 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
             continue
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             try:
-                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8-sig"))
             except Exception:
                 continue
             skill_name = str(frontmatter.get("name") or skill_file.parent.name)

@@ -28,7 +28,102 @@
 
 import path from 'node:path'
 
-const UNINSTALL_MODES = ['gui', 'lite', 'full']
+import type { ArtifactKind } from './install-stamp'
+
+const UNINSTALL_MODES = ['gui', 'lite', 'full', 'data']
+
+// How this desktop app got onto the machine, read from the install stamp
+// (install-stamp.json) that every packager writes:
+//   'nix'      — a Nix build (stamp distribution 'nix'). The store is
+//                immutable and the install is owned by Nix tooling, so the
+//                app must not remove any code, its own bundle included.
+//   'bundled'  — an embedded artifact (agent payload in resources; the
+//                stamp has payload:true). There is no agent venv under
+//                HERMES_HOME, and the OS owns app removal (Apps & Features
+//                / Trash / delete the AppImage).
+//   'standard' — everything else: the git-clone install the desktop
+//                installer bootstraps, or a `hermes desktop` source build.
+//                The classic script flow (venv python + rm the bundle) works.
+//
+// Only 'standard' installs may remove code. 'nix' and 'bundled' installs
+// may only remove user data (mode 'data') — the app itself is removed the
+// native way, per nativeRemovalInstructions().
+const INSTALL_KINDS = ['nix', 'bundled', 'standard']
+
+/**
+ * Classify the install from the stamp. Pure so it can be unit-tested:
+ * callers pass the stamp fields (`distribution`, `source`, `payload`).
+ * `distribution` is authoritative; `source` is the schema-1 fallback.
+ * The 'bundled' and 'light' artifact kinds both classify as the managed
+ * 'bundled' flow — neither has agent code the app may remove, and the OS
+ * owns app removal.
+ */
+function resolveInstallKind({
+  distribution,
+  source,
+  payload = 'bootstrap'
+}: { distribution?: string | null; source?: string | null; payload?: ArtifactKind } = {}) {
+  if (distribution === 'nix' || source === 'nix') {
+    return 'nix'
+  }
+
+  if (payload === 'bundled' || payload === 'light') {
+    return 'bundled'
+  }
+
+  return 'standard'
+}
+
+/** True when this install kind lets the app remove code (agent / bundle). */
+function installKindAllowsCodeRemoval(kind) {
+  return kind === 'standard'
+}
+
+/**
+ * The modes the uninstall UI may offer for an install kind. Every kind can
+ * remove user data. Only 'standard' may also remove code — there the 'full'
+ * mode already covers data, so 'data' alone is not offered. Managed installs
+ * (nix, bundled) get exactly one destructive action — remove user data —
+ * with app removal handed to the steward via nativeRemovalInstructions().
+ */
+function allowedUninstallModes(kind) {
+  return installKindAllowsCodeRemoval(kind) ? ['gui', 'lite', 'full'] : ['data']
+}
+
+/**
+ * Human instructions for removing the app itself the native way. Used when
+ * the install kind forbids code removal: Windows owns the bundled app
+ * through Apps & Features, macOS through the Trash, a Linux AppImage is a
+ * single file the user placed somewhere, and a Nix install belongs to the
+ * flake / profile that made it. `appPath` is the resolveRemovableAppPath()
+ * result (the AppImage path on Linux), used only to name the exact file.
+ */
+function nativeRemovalInstructions(kind, platform, appPath = null) {
+  if (kind === 'nix') {
+    return (
+      'This Hermes desktop app was installed by Nix. Uninstall it the same way you installed it: ' +
+      'remove hermes-agent from your flake or profile, then rebuild.'
+    )
+  }
+
+  if (platform === 'win32') {
+    return 'To uninstall, go to Windows Settings → Apps → Installed apps.'
+  }
+
+  if (platform === 'darwin') {
+    return 'Quit the app and drag Hermes.app from Applications to the Trash.'
+  }
+
+  if (appPath && /\.appimage$/i.test(String(appPath))) {
+    return `Delete the AppImage file at ${appPath}.`
+  }
+
+  if (appPath) {
+    return `Delete the app directory at ${appPath}.`
+  }
+
+  return 'Delete the Hermes AppImage (or app directory) from wherever you saved it.'
+}
 
 /**
  * Map an uninstall mode to the `python -m hermes_cli.uninstall` argv (after the
@@ -37,7 +132,7 @@ const UNINSTALL_MODES = ['gui', 'lite', 'full']
  * lite/full delete — see the Finding-3 note in buildWindowsCleanupScript.
  * Throws on an unknown mode so a typo can't silently become a full wipe.
  */
-function uninstallArgsForMode(mode) {
+function uninstallArgsForMode(mode: string) {
   if (!UNINSTALL_MODES.includes(mode)) {
     throw new Error(`Unknown uninstall mode: ${mode}`)
   }
@@ -45,14 +140,14 @@ function uninstallArgsForMode(mode) {
   return ['-m', 'hermes_cli.uninstall', '--mode', mode]
 }
 
-/** True when `mode` removes the agent (lite/full), false for gui-only. */
-function modeRemovesAgent(mode) {
+/** True when `mode` removes the agent code (lite/full), false otherwise. */
+function modeRemovesAgent(mode: string) {
   return mode === 'lite' || mode === 'full'
 }
 
-/** True when `mode` removes user data (full only). */
-function modeRemovesUserData(mode) {
-  return mode === 'full'
+/** True when `mode` removes user data (full and data). */
+function modeRemovesUserData(mode: string) {
+  return mode === 'full' || mode === 'data'
 }
 
 /**
@@ -257,10 +352,15 @@ function buildWindowsCleanupScript({
 }
 
 export {
+  allowedUninstallModes,
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  INSTALL_KINDS,
+  installKindAllowsCodeRemoval,
   modeRemovesAgent,
   modeRemovesUserData,
+  nativeRemovalInstructions,
+  resolveInstallKind,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   UNINSTALL_MODES,

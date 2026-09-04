@@ -52,23 +52,6 @@ def main_mod(monkeypatch):
 
 
 
-def test_termux_skips_bundled_skill_sync_when_stamp_fresh(monkeypatch, tmp_path, main_mod):
-    calls = []
-
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
-    main_mod._mark_termux_bundled_skills_synced()
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.skills_sync",
-        types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
-    )
-
-    assert main_mod._sync_bundled_skills_for_startup() is False
-    assert calls == []
-
-
 
 
 
@@ -127,7 +110,7 @@ def test_oneshot_subprocess_exits_without_teardown_abort():
     )
 
     assert result.returncode == 0
-    assert result.stdout == b"ok\n"
+    assert result.stdout in (b"ok\n", b"ok\r\n")
     # Don't demand byte-empty stderr — an import-time warning from the heavy
     # CLI import chain shouldn't fail this. What matters is no crash traceback.
     assert b"Traceback" not in result.stderr
@@ -280,7 +263,9 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
-    assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
+    assert len(calls) == 1
+    assert calls[0][0][-2:] == ["run", "build"]
+    assert calls[0][1] == str(ink_dir)
 
 
 

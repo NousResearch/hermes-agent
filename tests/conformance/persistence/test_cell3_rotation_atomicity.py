@@ -78,6 +78,7 @@ def _completed_rotations(journal: Path) -> int:
 
 
 @pytest.mark.parametrize("requested_mode", [None, "DELETE", "WAL"])
+@pytest.mark.platforms("linux")
 def test_rotation_is_atomic_under_sigkill(tmp_path, requested_mode):
     db_path = tmp_path / "state.db"
     journal = tmp_path / "rotations.jsonl"

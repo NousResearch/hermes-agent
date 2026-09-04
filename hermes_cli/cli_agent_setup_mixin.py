@@ -474,7 +474,7 @@ class CLIAgentSetupMixin:
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
-        from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
+        from cli import ChatConsole, _DIM, _RST, _accent_hex, _cprint, _prepare_deferred_agent_startup, logger
         from run_agent import AIAgent
         if self.agent is not None:
             return True

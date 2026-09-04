@@ -37,6 +37,7 @@ def _make_hermes_node(hermes_home: Path) -> Path:
 
 
 
+@pytest.mark.require_symlinks
 def test_leaves_unrelated_symlinks_untouched(fake_home):
     """A node symlink the user repointed at nvm must survive uninstall."""
     hermes_home = fake_home / ".hermes"
@@ -64,6 +65,7 @@ def test_leaves_unrelated_symlinks_untouched(fake_home):
 
 
 
+@pytest.mark.require_symlinks
 def test_removes_fhs_symlinks_in_usr_local_bin(fake_home, tmp_path, monkeypatch):
     """Root FHS installs place node symlinks in /usr/local/bin.
 

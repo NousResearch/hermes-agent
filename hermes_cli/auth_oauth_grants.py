@@ -224,7 +224,7 @@ def _adopt_oauth_material(target: Dict[str, Any], winner: Dict[str, Any]) -> Dic
 def _singleton_as_row(path: Path) -> Optional[Dict[str, Any]]:
     """Read a ``.anthropic_oauth.json`` as a pool-row-shaped dict, or None."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict) or not str(data.get("accessToken") or "").strip():

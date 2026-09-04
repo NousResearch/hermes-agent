@@ -453,7 +453,7 @@ class _DiscordNonConversationalMessageTracker:
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(data, list):
                 return [str(message_id) for message_id in data if str(message_id).strip()]
         except Exception:
@@ -576,14 +576,18 @@ def discord_deps_present() -> bool:
 
 
 def check_discord_requirements() -> bool:
-    """Check Discord deps; lazy-installs discord.py on first call and re-binds
-    module globals so ``DISCORD_AVAILABLE`` becomes True."""
+    """Check if Discord dependencies are available.
+
+    Lazy-installs discord.py via ``pm.ensure_import("discord")``
+    on first call if not present. After successful install, re-binds module
+    globals so ``DISCORD_AVAILABLE`` becomes True.
+    """
     global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
     if DISCORD_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.discord", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("discord")
     except Exception:
         return False
     try:
@@ -1826,7 +1830,7 @@ class DiscordAdapter(BasePlatformAdapter):
             path = self._command_sync_state_path()
             if not path.exists():
                 return {}
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}

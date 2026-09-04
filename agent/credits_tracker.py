@@ -327,7 +327,7 @@ def dev_fixture_credits_state() -> Optional[CreditsState]:
         return None
     if os.path.sep in name or "/" in name:  # looks like a path → read the name from the file
         try:
-            with open(name, "r", encoding="utf-8") as fh:
+            with open(name, "r", encoding="utf-8-sig") as fh:
                 name = fh.read().strip()
         except OSError:
             return None

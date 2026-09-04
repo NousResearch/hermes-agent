@@ -159,9 +159,13 @@ def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:
-    # If no node binary on PATH the adapter should refuse to start.
+    # If no node binary is resolvable — neither in the pm store nor on PATH —
+    # the adapter should refuse to start. Resolution is pm-store-first
+    # (_node_command → find_node_executable) with shutil.which as fallback,
+    # so both must return None to model a machine with no node at all.
     from plugins.platforms.photon import adapter as adapter_mod
 
+    monkeypatch.setattr(adapter_mod, "_node_command", lambda _name: None)
     monkeypatch.setattr(adapter_mod.shutil, "which", lambda _name: None)
     assert adapter_mod.check_requirements() is False
 

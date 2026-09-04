@@ -48,7 +48,9 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
-def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+def _read_text_with_timeout(
+    path: Path, timeout: Optional[float] = None, encoding: str = "utf-8-sig"
+) -> Optional[str]:
     """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
 
     Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
@@ -62,7 +64,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
 
     def _reader() -> None:
         try:
-            result.put((True, path.read_text(encoding="utf-8")))
+            result.put((True, path.read_text(encoding=encoding)))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 
@@ -1104,7 +1106,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     """The disk snapshot if it exists, is current-version, and its manifest still matches."""
     try:
-        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8"))
+        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
@@ -1131,9 +1133,17 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     }
     if org_id:
         entry["org_id"] = org_id
-        try:  # author from the pull-time provenance sidecar; best-effort
-            prov = json.loads((skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE).read_text(encoding="utf-8"))
-            entry["org_author"] = str(prov.get("author_device") or "") or str(prov.get("author_user_id") or "")
+        # Author from the pull-time provenance sidecar (token-verified at
+        # push by the plane's author_mismatch guard). Best-effort.
+        try:
+            import json as _json
+
+            prov_path = (
+                skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE
+            )
+            prov = _json.loads(prov_path.read_text(encoding="utf-8-sig"))
+            device = str(prov.get("author_device") or "")
+            entry["org_author"] = device or str(prov.get("author_user_id") or "")
         except Exception:
             entry["org_author"] = ""
     return entry
@@ -1142,7 +1152,8 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
     try:
-        frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+        raw = skill_file.read_text(encoding="utf-8-sig")
+        frontmatter, _ = parse_frontmatter(raw)
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
             return False, frontmatter, ""
@@ -1225,7 +1236,7 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for desc_file in iter_skill_index_files(root, "DESCRIPTION.md"):
         try:
-            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8"))[0].get("description")
+            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8-sig"))[0].get("description")
             if cat_desc:
                 rel = desc_file.relative_to(root)
                 found["/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"] = str(cat_desc).strip().strip("'\"")

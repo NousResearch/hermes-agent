@@ -16,7 +16,8 @@ import subprocess
 import sys
 import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from pathlib import PurePosixPath, PureWindowsPath
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
@@ -51,20 +52,36 @@ def _cua_no_overlay() -> bool:
     Explicit ``True`` / ``False`` overrides auto-detection. See #28152, #47032.
     """
     val = _computer_use_cfg().get("no_overlay")
-    if val is not None or sys.platform != "linux":
-        return bool(val) if val is not None else sys.platform == "darwin"
-    wsl = False
-    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8") as f:
-        wsl = "microsoft" in f.read().lower()
-    return wsl or not os.environ.get("DISPLAY") or (
-        # Linux/X11: the cursor overlay is a fullscreen, always-on-top, all-workspaces X11 window
-        # (save-unders path). An unclean session end (agent interrupted mid-capture, stale target window)
-        # can leave it stuck above every app on every workspace, wedging desktop input until the app
-        # restarts — the same failure class as the HUD window on Mutter/X11 (#83473). There is no
-        # compositor-owned surface to tear down with the client connection, so default the overlay off on
-        # X11 too; set computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the compositor
-        # owns the overlay surface lifecycle there.
-        os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"))
+    if val is not None:
+        return bool(val)
+    # Auto-detect: macOS overlay can peg a core indefinitely after a
+    # computer_use session (#47032). Prefer off until the driver teardown
+    # is solid; set computer_use.no_overlay: false to keep the cursor.
+    if sys.platform == "darwin":
+        return True
+    if sys.platform != "linux":
+        return False
+    if not os.environ.get("DISPLAY"):
+        return True
+    try:
+        with open("/proc/version", encoding="utf-8-sig") as f:
+            if "microsoft" in f.read().lower():
+                return True
+    except Exception:
+        pass
+    # Linux/X11: the cursor overlay is a fullscreen, always-on-top,
+    # all-workspaces X11 window (save-unders path). An unclean session end
+    # (agent interrupted mid-capture, stale target window) can leave it stuck
+    # above every app on every workspace, wedging desktop input until the app
+    # restarts — the same failure class as the HUD window on Mutter/X11
+    # (#83473). There is no compositor-owned surface to tear down with the
+    # client connection, so default the overlay off on X11 too; set
+    # computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the
+    # compositor owns the overlay surface lifecycle there.
+    if os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return False
+
 
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
@@ -84,7 +101,8 @@ def _manifest_is_mode_independent(path: str) -> bool:
     failure; bounded forwards unconditionally anyway)."""
     try:
         import yaml
-        with open(path, "r", encoding="utf-8") as handle:
+
+        with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)
     except Exception:
         logger.debug("could not read capability manifest %s", path, exc_info=True)
@@ -254,11 +272,20 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
                                + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
                                   if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
         _maybe_nudge_update()
-        # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
-        # raises FeatureUnavailable with the exact `uv pip install` hint.
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.computer_use", prompt=False)
-        importlib.invalidate_caches()  # a just-installed package may not be importable yet
+        # The MCP client SDK (`mcp`) is an optional dependency (the
+        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # Lazy-install it on first use — the same pattern every other optional
+        # backend uses — so users never hit an opaque `No module named 'mcp'`
+        # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
+        # (default on); when it's disabled or fails, ensure_import() raises
+        # InstallError carrying an actionable `uv pip install mcp==…`
+        # hint, which surfaces via the backend-unavailable path in tool.py.
+        from pm import ensure_import
+        ensure_import("computer-use")
+        # A just-installed package may not be importable until the import
+        # machinery's caches are refreshed within this process.
+        import importlib
+        importlib.invalidate_caches()
         with contextlib.ExitStack() as rollback:  # a failed start stops the private daemon, then re-raises
             if self._embedded_daemon is not None:
                 rollback.callback(self._embedded_daemon.stop) and self._embedded_daemon.start()

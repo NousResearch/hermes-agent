@@ -1290,9 +1290,9 @@ class TestBuildSafeEnv:
 
         fake_env = {
             "PATH": r"C:\Windows\System32",
-            "ProgramFiles": r"C:\Program Files",
-            "ProgramData": r"C:\ProgramData",
-            "ProgramW6432": r"C:\Program Files",
+            "PROGRAMFILES": r"C:\Program Files",
+            "PROGRAMDATA": r"C:\ProgramData",
+            "PROGRAMW6432": r"C:\Program Files",
             "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
             "APPDATA": r"C:\Users\alice\AppData\Roaming",
             "USERPROFILE": r"C:\Users\alice",
@@ -1302,9 +1302,9 @@ class TestBuildSafeEnv:
         with patch.dict("os.environ", fake_env, clear=True):
             result = _build_safe_env(None)
 
-        assert result["ProgramFiles"] == r"C:\Program Files"
-        assert result["ProgramData"] == r"C:\ProgramData"
-        assert result["ProgramW6432"] == r"C:\Program Files"
+        assert result["PROGRAMFILES"] == r"C:\Program Files"
+        assert result["PROGRAMDATA"] == r"C:\ProgramData"
+        assert result["PROGRAMW6432"] == r"C:\Program Files"
         assert result["LOCALAPPDATA"].endswith("Local")
         assert result["APPDATA"].endswith("Roaming")
         assert result["USERPROFILE"] == r"C:\Users\alice"

@@ -34,12 +34,13 @@
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
     "pack": "npm run build && npm run builder -- --dir --publish never",
     "dist": "npm run build && npm run builder",
+    "payload": "node scripts/stage-payload.mjs",
+    "dist:bundled": "npm run payload && npm run dist",
     "dist:mac": "npm run build && npm run builder -- --mac",
     "dist:mac:dmg": "npm run build && npm run builder -- --mac dmg",
     "dist:mac:zip": "npm run build && npm run builder -- --mac zip",
-    "dist:win": "npm run build && npm run builder -- --win",
-    "dist:win:msi": "npm run build && npm run builder -- --win msi",
-    "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
+    "dist:win": "npm run build && npm run builder -- --win msix",
+    "dist:win:msix": "npm run build && npm run builder -- --win msix",
     "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
     "perf": "node scripts/perf/run.mjs",
     "update:shim": "bash ../../scripts/desktop-update/repro.sh shim",
@@ -53,10 +54,10 @@
     "test:desktop": "node scripts/test-desktop.mjs",
     "test:desktop:all": "node scripts/test-desktop.mjs all",
     "test:desktop:dmg": "node scripts/test-desktop.mjs dmg",
-    "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
+    "test:desktop:msix": "node scripts/test-desktop.mjs msix",
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
-    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit && tsc --ignoreConfig --allowJs --checkJs --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 electron-builder.config.cjs",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
@@ -173,7 +174,7 @@
     "concurrently": "10.0.4",
     "cross-env": "10.1.0",
     "electron": "40.10.2",
-    "electron-builder": "26.15.3",
+    "electron-builder": "27.0.0-alpha.6",
     "esbuild": "0.28.1",
     "jsdom": "29.1.1",
     "prettier": "3.9.5",
@@ -183,124 +184,5 @@
     "vite": "8.2.0",
     "vitest": "4.1.10",
     "wait-on": "9.0.10"
-  },
-  "build": {
-    "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
-    "protocols": [
-      {
-        "name": "Hermes Protocol",
-        "schemes": [
-          "hermes"
-        ]
-      }
-    ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
-    "icon": "assets/icon",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**",
-      "assets/**",
-      "public/**",
-      "package.json"
-    ],
-    "beforeBuild": "scripts/before-build.mjs",
-    "beforePack": "scripts/before-pack.mjs",
-    "afterPack": "scripts/after-pack.mjs",
-    "extraResources": [
-      {
-        "from": "build/install-stamp.json",
-        "to": "install-stamp.json"
-      },
-      {
-        "from": "assets/icon.ico",
-        "to": "icon.ico"
-      }
-    ],
-    "asar": true,
-    "afterSign": "scripts/notarize.mjs",
-    "asarUnpack": [
-      "**/*.node",
-      "**/prebuilds/**",
-      "dist/**"
-    ],
-    "mac": {
-      "category": "public.app-category.developer-tools",
-      "entitlements": "electron/entitlements.mac.plist",
-      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
-      "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
-        "NSCalendarsUsageDescription": "Hermes needs access to Calendar to provide requested meeting and scheduling support.",
-        "NSCalendarsFullAccessUsageDescription": "Hermes needs full access to Calendar to read and manage events when explicitly requested.",
-        "NSRemindersUsageDescription": "Hermes needs access to Reminders to provide requested personal-assistant and scheduling support.",
-        "NSRemindersFullAccessUsageDescription": "Hermes needs full access to Reminders to read and manage reminders when explicitly requested.",
-        "NSScreenCaptureUsageDescription": "Hermes captures the screen when you ask the agent to screenshot or record it.",
-        "NSLocalNetworkUsageDescription": "Hermes connects to devices on your local network when a plugin or feature you enable requests it.",
-        "NSAppleMusicUsageDescription": "Hermes accesses your music library when a plugin or feature you enable requests it."
-      },
-      "gatekeeperAssess": false,
-      "hardenedRuntime": true,
-      "target": [
-        "dmg",
-        "zip"
-      ]
-    },
-    "dmg": {
-      "title": "Install Hermes",
-      "backgroundColor": "#f5f5f7",
-      "iconSize": 96,
-      "window": {
-        "width": 560,
-        "height": 360
-      },
-      "contents": [
-        {
-          "x": 160,
-          "y": 170,
-          "type": "file"
-        },
-        {
-          "x": 400,
-          "y": 170,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
-    },
-    "win": {
-      "legalTrademarks": "Hermes",
-      "target": [
-        "nsis",
-        "msi"
-      ],
-      "signAndEditExecutable": false
-    },
-    "linux": {
-      "category": "Development",
-      "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
-      "target": [
-        "AppImage",
-        "deb",
-        "rpm"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
-      "warningsAsErrors": false
-    }
   }
 }

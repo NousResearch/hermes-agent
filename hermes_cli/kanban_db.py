@@ -424,9 +424,15 @@ def get_current_board() -> str:
     try:
         f = current_board_path()
         if f.exists():
-            found = _existing(f.read_text(encoding="utf-8").strip())
-            if found:
-                return found
+            # utf-8-sig read fix (ours): tolerate BOM-persisted current-board files.
+            val = f.read_text(encoding="utf-8-sig").strip()
+            if val:
+                try:
+                    normed = _normalize_board_slug(val)
+                    if normed and board_exists(normed):
+                        return normed
+                except ValueError:
+                    pass
     except OSError:
         pass
     return DEFAULT_BOARD
@@ -545,7 +551,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     try:
         p = board_metadata_path(slug)
         if p.exists():
-            raw = json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8-sig"))
             if isinstance(raw, dict):
                 # Never let the metadata file claim a different slug than
                 # its directory — trust the filesystem.
@@ -4049,7 +4055,7 @@ def read_worker_log(
         return None
     try:
         if tail_bytes is None:
-            return path.read_text(encoding="utf-8", errors="replace")
+            return path.read_text(encoding="utf-8-sig", errors="replace")
         size = path.stat().st_size
         with open(path, "rb") as f:
             if size > tail_bytes:

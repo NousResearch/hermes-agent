@@ -319,7 +319,7 @@ If you edited Hermes config or a skill on Windows using a non-UTF-8 editor (Note
 
 ## Where to go next
 
-- **[Installation](../getting-started/installation.md)** — the full install page, including Linux/macOS/WSL2/Termux.
+- **[Installation](../getting-started/installation.md)** — the full install page, including Linux/macOS/WSL2.
 - **[Windows (WSL2) Guide](./windows-wsl-quickstart.md)** — if you want POSIX semantics or the dashboard terminal pane.
 - **[CLI Reference](../reference/cli-commands.md)** — every `hermes` subcommand.
 - **[FAQ](../reference/faq.md)** — common non-Windows-specific questions.

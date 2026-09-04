@@ -359,7 +359,7 @@ class TestCreateBackendRouting:
 
     def _provider(self, monkeypatch, *, mode="platform", api_key="k", host=""):
         # Neutralize lazy-install so the routing decision is all we exercise.
-        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr("pm.ensure_import", lambda *a, **k: None, raising=False)
         provider = Mem0MemoryProvider()
         provider._mode = mode
         provider._api_key = api_key

@@ -39,23 +39,26 @@ class TestResolveVerifyFallback:
         else:
             assert result is True
 
-    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path, monkeypatch):
+    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path):
         import ssl
+
+        import certifi
+        from truststore._ssl_constants import _original_SSLContext
+
         from hermes_cli.auth import _resolve_verify
 
-        ca_file = tmp_path / "ca-bundle.pem"
-        ca_file.write_text("fake cert")
-
-        # Avoid loading actual PEM — just verify the return type
-        mock_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        monkeypatch.setattr(ssl, "create_default_context", lambda **kw: mock_ctx)
-
         result = _resolve_verify(auth_state={
-            "tls": {"insecure": False, "ca_bundle": str(ca_file)},
+            "tls": {"insecure": False, "ca_bundle": certifi.where()},
         })
-        assert isinstance(result, ssl.SSLContext), (
-            f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
+
+        # An explicitly pinned bundle must NOT come back as a truststore
+        # context — that would silently verify against the machine's store
+        # instead of the bundle the connection asked for.
+        assert isinstance(result, _original_SSLContext), (
+            f"Expected the pinned-bundle context but got {type(result).__name__}: {result!r}"
         )
+        assert not type(result).__module__.startswith("truststore")
+        assert result.verify_mode == ssl.CERT_REQUIRED
 
 
 
@@ -904,6 +907,7 @@ def test_shared_store_seat_belt_refuses_real_home_under_pytest(monkeypatch):
         _nous_shared_store_path()
 
 
+@pytest.mark.platforms("linux")
 def test_shared_store_write_and_read_roundtrip(shared_store_env):
     """Write → read must preserve refresh_token + OAuth URLs."""
     from hermes_cli.auth import (

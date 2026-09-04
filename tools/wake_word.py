@@ -325,7 +325,335 @@ def silent_audio_hint(details: Dict[str, Any]) -> str:
     return f"Microphone delivers only silence from {label}. {fix}, then toggle the wake word."
 
 
-# ── Engines (implementations live in tools.wake_word_engines) ──
+# ---------------------------------------------------------------------------
+# Engines
+# ---------------------------------------------------------------------------
+
+class _Engine:
+    """Minimal hotword-engine contract: feed int16 frames, get a bool."""
+
+    frame_length: int = 1280  # 80 ms at 16 kHz
+
+    #: Optional (matched phrase, profile name) of the most recent fire.
+    #: Multi-phrase engines (sherpa) set this for profile routing; the
+    #: single-phrase engines leave it None (callers fall back to the
+    #: configured phrase / active profile).
+    last_match: Optional[tuple[str, str]] = None
+
+    def process(self, frame) -> bool:  # frame: 1-D int16 ndarray
+        raise NotImplementedError
+
+    def reset(self) -> None:
+        """Clear any internal audio/feature buffer (called on every (re)start)."""
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def _looks_like_path(value: str) -> bool:
+    return (
+        os.sep in value
+        or value.endswith((".onnx", ".tflite", ".ppn"))
+        or os.path.exists(value)
+    )
+
+
+class _OpenWakeWordEngine(_Engine):
+    """openWakeWord — free, local ONNX hotword detection."""
+
+    # openWakeWord recommends 80 ms frames (1280 samples) for efficiency.
+    frame_length = 1280
+
+    def __init__(self, cfg: Dict[str, Any]):
+        import pm
+
+        pm.ensure_import("wake-openwakeword")
+
+        import openwakeword
+        from openwakeword.model import Model
+
+        sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
+        model_ref = str(sub.get("model") or _BUNDLED_MODEL_NAME).strip()
+        framework = resolve_inference_framework(cfg)
+        # openWakeWord returns a 0..1 score per frame; sensitivity IS the raw
+        # threshold a score must clear. Higher = stricter (fewer false fires).
+        # Default 0.6 sits above openWakeWord's permissive 0.5 baseline, which
+        # let near-misses like "hey hor" through.
+        self._threshold = _sensitivity(cfg)
+        self._confirm_needed = _confirmation_frames(cfg)
+        self._confirm_streak = 0
+
+        # openWakeWord silently downgrades tflite -> onnx when no tflite runtime
+        # imports (model.py). On macOS ARM64 that lands on the backend whose
+        # embedding model is broken, so the listener would arm and never fire.
+        # Install + bridge the runtime first, and refuse the downgrade rather
+        # than ship a dead ear.
+        if framework == "tflite" and not ensure_tflite_runtime():
+            # Same lazy-install contract as every other backend; the platform
+            # gate lives here because dep specs can't carry PEP 508 markers.
+            try:
+                import pm
+                pm.ensure_import("wake-tflite")
+            except Exception as e:
+                logger.debug("wake word: tflite runtime install failed: %s", e)
+            if not ensure_tflite_runtime():
+                if _is_macos_arm64():
+                    raise RuntimeError(
+                        "The wake word needs the tflite backend on this Mac, but its "
+                        "runtime is missing. Install it with: pip install ai-edge-litert"
+                    )
+                logger.warning("wake word: no tflite runtime available — falling back to onnx")
+                framework = "onnx"
+
+        # Default (or explicit "hey_hermes") → the bundled model; a built-in name
+        # or custom path is used as-is.
+        if model_ref.lower() in _BUNDLED_MODEL_ALIASES:
+            model_ref = _bundled_wakeword_path(framework)
+
+        # openWakeWord needs its shared feature models (melspectrogram + embedding)
+        # for ANY model — download_models() fetches those first on every call, so a
+        # custom path must call it too, else a fresh install crashes on a missing
+        # melspectrogram.onnx. A built-in name additionally pulls that pretrained
+        # model; a path matches nothing in the catalog and is a no-op beyond base.
+        try:
+            openwakeword.utils.download_models([model_ref])
+        except Exception as e:  # pragma: no cover - network/path dependent
+            logger.debug("openwakeword model download skipped: %s", e)
+        models = [model_ref]
+
+        self._model = Model(wakeword_models=models, inference_framework=framework)
+        self._labels = list(self._model.models.keys())
+
+    def process(self, frame) -> bool:
+        scores = self._model.predict(frame)
+        over = any(score >= self._threshold for score in scores.values())
+        # Require N consecutive over-threshold frames: a real phrase holds the
+        # score high across frames, a stray ambient phoneme spikes just one.
+        if over:
+            self._confirm_streak += 1
+            if self._confirm_streak >= self._confirm_needed:
+                self._confirm_streak = 0
+                return True
+            return False
+        self._confirm_streak = 0
+        return False
+
+    def reset(self) -> None:
+        # Clears openWakeWord's rolling feature/prediction buffer so stale audio
+        # captured before a pause can't re-fire the moment we resume.
+        self._confirm_streak = 0
+        try:
+            self._model.reset()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        self.reset()
+
+
+# sherpa-onnx open-vocabulary KWS model: a small streaming zipformer
+# transducer. English (GigaSpeech); one-time download, cached under
+# HERMES_HOME. Keywords are typed phrases tokenized at RUNTIME — no
+# training step, unlike openWakeWord/Porcupine custom models.
+_SHERPA_KWS_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/"
+    "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
+)
+_SHERPA_KWS_MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+
+
+def _sherpa_model_root() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "wakewords"
+
+
+def _ensure_sherpa_model(root: Optional[Path] = None) -> Path:
+    """Download + unpack the sherpa KWS model once; return its directory."""
+    root = root or _sherpa_model_root()
+    target = root / _SHERPA_KWS_MODEL_DIR
+    if (target / "tokens.txt").exists():
+        return target
+    import tarfile
+    import urllib.request
+
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / f"{_SHERPA_KWS_MODEL_DIR}.tar.bz2"
+    logger.info("wake word: downloading sherpa KWS model (one-time, ~13 MB)")
+    urllib.request.urlretrieve(_SHERPA_KWS_MODEL_URL, archive)  # noqa: S310
+    with tarfile.open(archive, "r:bz2") as tf:
+        tf.extractall(root, filter="data")
+    archive.unlink(missing_ok=True)
+    if not (target / "tokens.txt").exists():
+        raise RuntimeError(f"sherpa KWS model unpack failed: {target}")
+    return target
+
+
+class _SherpaKwsEngine(_Engine):
+    """sherpa-onnx open-vocabulary keyword spotting — any typed phrase, zero training.
+
+    The configured ``wake_word.phrase`` is BPE-tokenized at runtime against the
+    model's vocabulary, so "hey hermes", "hey coder", or any other phrase works
+    immediately. Here ``phrase`` is DETECTION config, not a cosmetic label.
+    """
+
+    # sherpa's streaming zipformer consumes arbitrary chunk sizes; 1280
+    # samples (80 ms) matches the shared capture path.
+    frame_length = 1280
+
+    def __init__(self, cfg: Dict[str, Any]):
+        import pm
+
+        pm.ensure_import("wake-sherpa")
+
+        import sherpa_onnx
+        from sherpa_onnx import text2token
+
+        sub = cfg.get("sherpa") if isinstance(cfg.get("sherpa"), dict) else {}
+        model_dir = str(sub.get("model_dir") or "").strip()
+        d = Path(model_dir) if model_dir else _ensure_sherpa_model()
+        if not (d / "tokens.txt").exists():
+            raise RuntimeError(f"sherpa KWS model not found at {d}")
+
+        # Phrase set: this profile's own phrase, plus — when profile routing is
+        # on — every other wake-enabled profile's phrase, so ONE listener can
+        # wake any profile ("hey hermes" / "hey coder" / ...). display-name →
+        # profile is kept for routing the match back.
+        phrase = str(_get(cfg, "phrase") or "hey hermes").strip()
+        own_profile = _active_profile_name()
+        phrase_map: Dict[str, str] = {phrase: own_profile}
+        if bool(cfg.get("profile_routing", True)):
+            for prof, p in enrolled_profile_phrases().items():
+                phrase_map.setdefault(p.strip(), prof)
+
+        phrases = list(phrase_map)
+        # Runtime tokenization of the arbitrary phrases — the open-vocab core.
+        tokens = text2token(
+            [p.upper() for p in phrases],
+            tokens=str(d / "tokens.txt"),
+            tokens_type="bpe",
+            bpe_model=str(d / "bpe.model"),
+        )
+        import tempfile
+
+        # sherpa keyword entries reject spaces in the @display-name; underscore
+        # them and map display → profile for match routing.
+        self._display_to_profile: Dict[str, str] = {}
+        kw = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="hermes-kws-", delete=False, encoding="utf-8"
+        )
+        for p, toks in zip(phrases, tokens):
+            display = p.upper().replace(" ", "_")
+            self._display_to_profile[display] = phrase_map[p]
+            kw.write(" ".join(toks) + f" @{display}\n")
+        kw.close()
+        self._keywords_file = kw.name
+        #: (phrase display name, profile) of the most recent fire, for routing.
+        self.last_match: Optional[tuple[str, str]] = None
+
+        # Map the shared 0..1 sensitivity onto sherpa's keywords_threshold.
+        # 0.5 lands exactly on sherpa's recommended default (0.25); live TTS
+        # matrix testing showed our previous stricter mapping (0.35) missed
+        # ~12% of true positives while 0.25 held zero false fires.
+        threshold = 0.05 + 0.4 * _sensitivity(cfg)
+
+        def _model_file(pattern: str) -> str:
+            hits = sorted(d.glob(pattern))
+            if not hits:
+                raise RuntimeError(f"sherpa KWS model file missing: {d}/{pattern}")
+            return str(hits[0])
+
+        self._spotter = sherpa_onnx.KeywordSpotter(
+            tokens=str(d / "tokens.txt"),
+            encoder=_model_file("encoder-*[!8].onnx"),
+            decoder=_model_file("decoder-*[!8].onnx"),
+            joiner=_model_file("joiner-*[!8].onnx"),
+            keywords_file=self._keywords_file,
+            keywords_threshold=threshold,
+            num_threads=1,
+        )
+        self._stream = self._spotter.create_stream()
+
+    def process(self, frame) -> bool:
+        import numpy as np
+
+        samples = np.asarray(frame, dtype=np.float32) / 32768.0
+        self._stream.accept_waveform(SAMPLE_RATE, samples)
+        fired = False
+        while self._spotter.is_ready(self._stream):
+            self._spotter.decode_stream(self._stream)
+            result = self._spotter.get_result(self._stream)
+            if result:
+                fired = True
+                display = str(result)
+                self.last_match = (
+                    display.replace("_", " ").lower(),
+                    self._display_to_profile.get(display, ""),
+                )
+                # Reset decoder state so one utterance can't fire repeatedly.
+                self._spotter.reset_stream(self._stream)
+        return fired
+
+    def reset(self) -> None:
+        # Fresh stream drops all buffered audio/decoder state (pause → resume
+        # must not re-fire on stale audio).
+        try:
+            self._stream = self._spotter.create_stream()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        try:
+            os.unlink(self._keywords_file)
+        except OSError:
+            pass
+
+
+class _PorcupineEngine(_Engine):
+    """Picovoice Porcupine — premium, on-device, needs an access key."""
+
+    def __init__(self, cfg: Dict[str, Any]):
+        import pm
+
+        pm.ensure_import("wake-porcupine")
+
+        import pvporcupine
+
+        access_key = (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip()
+        if not access_key:
+            raise RuntimeError(
+                "Porcupine wake word requires PORCUPINE_ACCESS_KEY "
+                "(get a free key at https://console.picovoice.ai)."
+            )
+
+        sub = cfg.get("porcupine") if isinstance(cfg.get("porcupine"), dict) else {}
+        keyword = str(sub.get("keyword") or "jarvis").strip()
+        # Porcupine's `sensitivities` runs the OPPOSITE way to our shared knob:
+        # per Picovoice, higher = more true positives AND more false alarms
+        # (looser). Our config contract is "higher = stricter" everywhere, so
+        # invert it here to keep one consistent meaning across all engines.
+        porcupine_sensitivity = 1.0 - _sensitivity(cfg)
+
+        kwargs: Dict[str, Any] = {"access_key": access_key, "sensitivities": [porcupine_sensitivity]}
+        if _looks_like_path(keyword):
+            kwargs["keyword_paths"] = [keyword]
+        else:
+            kwargs["keywords"] = [keyword]
+
+        self._porcupine = pvporcupine.create(**kwargs)
+        self.frame_length = self._porcupine.frame_length
+
+    def process(self, frame) -> bool:
+        # pvporcupine wants a plain list/sequence of int16 samples.
+        return self._porcupine.process(frame) >= 0
+
+    def close(self) -> None:
+        try:
+            self._porcupine.delete()
+        except Exception:
+            pass
+
 
 def _build_engine(cfg: Dict[str, Any]) -> _Engine:
     provider = _provider(cfg)
@@ -347,17 +675,44 @@ def _stt_ready() -> bool:
 
 
 def _tts_ready() -> bool:
-    """Can the configured TTS provider run (or install at first use)? PROBE, not an installer:
-    ``check_tts_requirements`` lazily pip-installs the SDK, which froze wake.status polls for a whole
-    pip run. Uninstalled deps count as ready iff lazy installs are allowed; pip is never touched here."""
+    """Can the configured text-to-speech provider run (or install at first use)?
+
+    The wake flow is fully hands-free (wake → speak → hear the reply); without
+    TTS the reply is silent and the loop is pointless.
+
+    PROBE, not an installer: ``check_tts_requirements`` lazily pip-installs the
+    provider SDK via ``_import_*`` → ``pm.ensure_import`` — running that inside
+    a status poll froze wake.status for the length of a pip install (and a
+    failed install marked the wake word unavailable, unmounting the desktop
+    ear). When the provider's deps aren't installed yet, "installable at first
+    use" counts as ready and we never touch pip from here.
+    """
     try:
         from tools.tts_tool import _get_provider, _load_tts_config, check_tts_requirements
         provider = _get_provider(_load_tts_config())
-        feature = f"tts.{provider}" if provider in ("edge", "elevenlabs", "mistral") else None
-        if feature is not None:
-            from tools import lazy_deps
-            if not lazy_deps.is_available(feature):
-                return lazy_deps._allow_lazy_installs()
+    except Exception:
+        return False
+
+    _LAZY_TTS_FEATURES = {
+        "edge": "edge-tts",
+        "elevenlabs": "tts-premium",
+        "mistral": "mistral",
+    }
+    feature = _LAZY_TTS_FEATURES.get(provider)
+    if feature is not None:
+        try:
+            import pm
+            from pm.ensure import lazy_installs_allowed
+
+            if not pm.available(feature):
+                # Not installed: ready iff it can install at first speak.
+                return lazy_installs_allowed()
+        except Exception:
+            return False
+
+    try:
+        from tools.tts_tool import check_tts_requirements
+
         return bool(check_tts_requirements())
     except Exception:
         return False
@@ -367,22 +722,57 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     """Report whether wake-word detection can run, with a remediation hint."""
     cfg = cfg if cfg is not None else load_wake_word_config()
     provider = _provider(cfg)
-    from tools import lazy_deps
-    feature = _PROVIDERS.get(provider, ("", "wake.openwakeword"))[1]
-    deps_ok = lazy_deps.is_available(feature)
-    lazy_ok = lazy_deps._allow_lazy_installs()
-    # The audio probe imports sounddevice + numpy — packages the lazy installer would
-    # fetch — so only trust it once deps are installed; on a fresh install the engine
-    # constructors' ``lazy_deps.ensure()`` + stream-open surface any real audio problem.
+    import pm
+    from pm.ensure import lazy_installs_allowed
+
+    if provider == "porcupine":
+        feature = "wake-porcupine"
+    elif provider in ("sherpa", "sherpa-onnx", "kws", "open"):
+        feature = "wake-sherpa"
+    else:
+        feature = "wake-openwakeword"
+    deps_ok = pm.available(feature)
+    lazy_ok = lazy_installs_allowed()
+    # The audio probe imports sounddevice + numpy — two of the very packages
+    # the lazy installer would fetch — so it can only be trusted once the
+    # feature's deps are installed. On a fresh install (deps missing, lazy
+    # installs allowed) we defer the mic check: the engine constructors call
+    # ``pm.ensure_import()`` and the stream-open surfaces any real audio
+    # problem. Gating ``available`` on the probe here made the lazy-install
+    # path unreachable (the probe always failed before ensure() could run).
     audio_ok = _audio_available() if deps_ok else False
-    # Loop is wake → record → STT → agent → TTS; without either end the mic hears you
-    # and nothing perceptible happens — refuse with a hint.
-    stt_ok, tts_ok = _stt_ready(), _tts_ready()
-    # tflite needs a runtime openWakeWord doesn't declare off Linux; report it as a
-    # remediation instead of arming a detector that can't fire.
-    tflite_ok = (feature != "wake.openwakeword" or resolve_inference_framework(cfg) != "tflite"
-                 or ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok)
-    key_ok = provider != "porcupine" or bool((os.getenv("PORCUPINE_ACCESS_KEY") or "").strip())
+    key_ok = True
+    # The full wake loop is wake → record → STT → agent → TTS. Arming without
+    # either end configured gives a mic that hears you and then does nothing
+    # the user can perceive — refuse with a pointer instead.
+    stt_ok = _stt_ready()
+    tts_ok = _tts_ready()
+    hint = ""
+
+    # The tflite backend needs a runtime openWakeWord doesn't declare off Linux.
+    # Report it as a real remediation instead of arming a detector that can't fire.
+    tflite_ok = True
+    if provider not in ("porcupine", "sherpa", "sherpa-onnx", "kws", "open"):
+        framework = resolve_inference_framework(cfg)
+        if framework == "tflite":
+            tflite_ok = ensure_tflite_runtime() or pm.available("wake-tflite") or lazy_ok
+
+    if provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
+        key_ok = False
+        hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
+    elif not deps_ok and not lazy_ok:
+        hint = f"uv sync --frozen --extra {feature}"
+    elif not tflite_ok:
+        hint = "The wake word needs the tflite runtime on this Mac: pip install ai-edge-litert"
+    elif deps_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
+        hint = "Microphone capture needs sounddevice + numpy and a working audio device."
+    elif not stt_ok or not tts_ok:
+        missing = " and ".join(
+            name for name, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok
+        )
+        hint = (f"Wake word needs {missing} configured — run `hermes tools` "
+                f"(Voice section) or see the voice-mode docs.")
+
     capture_mode = resolve_capture_mode(cfg)
     missing = " and ".join(n for n, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok)
 

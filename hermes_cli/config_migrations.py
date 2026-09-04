@@ -279,7 +279,7 @@ def _installed_user_plugins(disabled: set) -> List[str]:
                 if not manifest_file.exists():
                     continue
                 try:
-                    with open(manifest_file, encoding="utf-8") as _mf:
+                    with open(manifest_file, encoding="utf-8-sig") as _mf:
                         manifest = _c.fast_safe_load(_mf) or {}
                 except Exception:
                     manifest = {}

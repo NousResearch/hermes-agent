@@ -96,7 +96,7 @@ class ThreadParticipationTracker:
 
     def _load(self) -> list[str]:
         try:
-            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+            data = json.loads(self._state_path().read_text(encoding="utf-8-sig"))
         except Exception:
             return []
         return [str(thread_id) for thread_id in data] if isinstance(data, list) else []

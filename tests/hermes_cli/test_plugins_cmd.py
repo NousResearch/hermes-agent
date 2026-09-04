@@ -103,6 +103,7 @@ class TestResolveSubdirWithin:
 
 
 
+    @pytest.mark.require_symlinks
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
         clone.mkdir()
@@ -447,7 +448,7 @@ class TestCmdRemove:
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.fs_utils.shutil.rmtree")
     def test_remove_deletes_plugin(self, mock_rmtree, mock_plugins_dir, mock_sanitize):
         from hermes_cli.plugins_cmd import cmd_remove
 
@@ -458,7 +459,12 @@ class TestCmdRemove:
 
         cmd_remove("test-plugin")
 
-        mock_rmtree.assert_called_once_with(mock_target)
+        # Deletion goes through the read-only-clearing rmtree wrapper: the
+        # target is deleted with an onerror hook attached (Windows read-only
+        # git objects), never a bare rmtree.
+        assert mock_rmtree.call_count == 1
+        assert mock_rmtree.call_args.args == (mock_target,)
+        assert callable(mock_rmtree.call_args.kwargs.get("onerror"))
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

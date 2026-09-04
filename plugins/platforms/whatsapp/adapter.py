@@ -119,10 +119,15 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
         return
-    try:  # Line 1 = pid, optional line 2 = kernel start time (legacy files: pid only).
-        lines = [ln.strip() for ln in pid_file.read_text(encoding="utf-8").split("\n")]
-        pid = int(lines[0])
-        recorded_start = int(lines[1]) if len(lines) > 1 and lines[1] else None
+    pid = None
+    recorded_start = None
+    try:
+        # Format: line 1 = pid, optional line 2 = kernel start time. Legacy
+        # files written before the guard existed have only the pid.
+        lines = pid_file.read_text(encoding="utf-8-sig").split("\n")
+        pid = int(lines[0].strip())
+        if len(lines) > 1 and lines[1].strip():
+            recorded_start = int(lines[1].strip())
     except (ValueError, OSError, TypeError, IndexError):
         _unlink_quietly(pid_file)
         return
@@ -206,9 +211,36 @@ def _file_content_hash(path: Path) -> str:
         return ""
 
 
+def _pm_ensure_node(command: str) -> str | None:
+    """Lazily provision node/npm through the pm store, then re-resolve.
+
+    ``find_node_executable`` prefers the pm store's pinned Node but never
+    installs it. Node/npm ship as pm packages, so when the store is empty
+    this is the pm.ensure wiring the pm-unified-toolchain plan asks for:
+    install (respecting the lazy-install policy — raises InstallError and
+    returns None when lazy installs are refused) and re-resolve.
+    """
+    try:
+        import pm
+
+        pm.ensure("node" if command == "npm" else command)
+        return find_node_executable(command)
+    except Exception:
+        return None
+
+
 def check_whatsapp_requirements() -> bool:
-    """Node.js (Hermes-managed first, so a bad system Node on PATH can't break Windows) is available."""
-    _node = find_node_executable("node")
+    """
+    Check if WhatsApp dependencies are available.
+
+    WhatsApp requires a Node.js bridge for most implementations.
+    """
+    # Prefer Hermes-managed Node/npm so Windows installs are not broken by a
+    # bad or elevation-triggering system Node on PATH. When the pm store has
+    # no Node yet, pm.ensure lazily provisions it (policy permitting).
+    _node = find_node_executable("node") or _pm_ensure_node("node")
+    if not _node:
+        return False
     try:
         return bool(_node) and subprocess.run([_node, "--version"], timeout=5, **_RUN_TEXT).returncode == 0
     except Exception:
@@ -312,13 +344,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json hash of the last install
         _pkg_hash = _file_content_hash(bridge_dir / "package.json")
         try:
-            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8").strip() == _pkg_hash and bool(_pkg_hash):
+            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8-sig").strip() == _pkg_hash and bool(_pkg_hash):
                 return True
         except OSError:
             pass
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
         # Hermes-managed portable Node's npm.cmd first (Windows), then PATH.
-        _npm_bin = find_node_executable("npm") or "npm"
+        # MERGE-CHECK: pm.ensure provisioning kept from ours (pm store PATH wiring).
+        _npm_bin = find_node_executable("npm") or _pm_ensure_node("npm") or "npm"
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
@@ -775,7 +808,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {_MAX_TEXT_INJECT_BYTES})", flush=True)
                     continue
-                content = p.read_text(encoding="utf-8", errors="replace")
+                # MERGE-CHECK: our utf-8-sig read fix kept (BOM-tolerant document injection).
+                content = p.read_text(encoding="utf-8-sig", errors="replace")
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
                 injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"
                 body = f"{injection}\n\n{body}" if body else injection

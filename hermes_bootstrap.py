@@ -96,24 +96,12 @@ def harden_import_path(src_root: str | None = None) -> None:
     sys.path.insert(0, root)
 
 
-def activate_durable_lazy_target() -> None:
-    """Put the durable lazy-install dir (``HERMES_LAZY_INSTALL_TARGET``) on ``sys.path``.
-
-    Immutable Docker images seal the venv and redirect lazy installs to the data volume;
-    packages installed there on a previous run must be importable before any backend
-    imports its SDK. Appends to the END of ``sys.path`` so the core venv always wins name
-    collisions (see ``tools.lazy_deps``). Never raises; unset target is a no-op.
-    """
-    if not os.environ.get("HERMES_LAZY_INSTALL_TARGET", "").strip():
-        return
-    try:
-        from tools import lazy_deps
-        lazy_deps.activate_durable_lazy_target()
-    except Exception:
-        pass  # a failed activation just leaves the backend reporting itself unavailable
-
-
-# Apply on import — entry points only need ``import hermes_bootstrap`` first.
+# Apply on import — entry points just need ``import hermes_bootstrap``
+# (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
+# the very top of their module, before importing anything else.  The
+# import side effect does the right thing.
+# Upstream's ``activate_durable_lazy_target`` (tools.lazy_deps durable
+# lazy-install dir) is deliberately NOT merged: lazy_deps was removed on
+# this branch (pm replaced it). Do not reintroduce.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
-activate_durable_lazy_target()

@@ -1,0 +1,85 @@
+name: Canary Release
+
+# Publishes the canary prerelease channel: a dated prerelease versioned
+# NEXT-MINOR over the newest stable tag
+# (v<stable.minor+1>.0-canary.<YYYYMMDDHHMMSS>), so a canary always
+# outversions every stable build of the current line and loses to the
+# next stable minor — which is exactly how the electron-updater channel
+# switch works in both directions (see hermes_cli/update_channel.py).
+# Second-precision suffix: manual dispatches can publish several
+# canaries per day; the scheduled run publishes at most one because
+# release.py skips when HEAD has no new commits since the last canary.
+#
+# ALL of it lives in scripts/release.py --canary: the tag math, the
+# skip gate, the draft release, and the dispatch of the desktop build.
+# This workflow only supplies a schedule and credentials, which is why
+# `release.py --canary --publish` by hand does exactly what the cron
+# does — same tag, same draft, same build, same auto-publish.
+#
+# The desktop build uploads the installers to the Cloudflare R2 release
+# bucket and publishes the draft when the whole matrix is green. A failed
+# matrix leaves a draft: inspectable, re-runnable, and unreachable by
+# users. The prune job deletes both the GitHub releases+tags and the R2
+# canary objects older than 14 days.
+#
+# schedule: is the ONE sanctioned time trigger in this repo (nightly
+# exemption). Everything else stays event-driven.
+
+on:
+  schedule:
+    - cron: '0 8 * * *' # daily, 0300 EST / 0800 UTC, middle of the night when most stuff will be moving less
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # tag push + release create/delete for prune
+  actions: write # release.py dispatches the desktop build
+
+concurrency:
+  group: canary-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag, draft, and start the canary build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The changelog walks commits since the previous canary tag
+          fetch-depth: 0
+          # the tag math reads the full tag list
+          fetch-tags: true
+
+      - name: Tag and draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 scripts/release.py --canary --publish --remote origin
+
+  prune:
+    name: Prune canaries older than 14 days
+    runs-on: ubuntu-24.04
+    needs: tag
+    environment: release-signing
+    # Prune even when there was nothing to tag today. The desktop build
+    # runs in its own workflow run now, so this no longer waits on it —
+    # the window is 14 days, far wider than any build.
+    if: always() && needs.tag.result != 'cancelled'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py --prune-canaries --publish --remote origin
+      - name: Prune R2 canary objects
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        run: node scripts/r2-release.mjs prune-canaries --keep-days 14

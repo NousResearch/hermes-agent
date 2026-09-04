@@ -3,6 +3,12 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  externalOpenFailed: {
+    title: 'Couldn’t open this link',
+    message: 'No browser is registered to open this address. Copy the link and open it manually.',
+    copyUrl: 'Copy link',
+    close: 'Close'
+  },
   common: {
     apply: 'Apply',
     back: 'Back',
@@ -100,6 +106,9 @@ export const en: Translations = {
       back: 'Back',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
+      bundledReinstallHint:
+        'This bundled install can’t repair itself from inside the app — reinstall the app to restore its backend.',
+      reinstallApp: 'Reinstall the app',
       remoteSignInHint: signInLabel =>
         `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
       signOutAndSignIn: 'Sign out & sign in',
@@ -142,6 +151,8 @@ export const en: Translations = {
     updateReadyTitle: 'Update ready',
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
     updateReadyMessageUnknown: 'A new update is available.',
+    updateReadyMessageAppInstaller:
+      'A new version of Hermes is ready. Update now and Windows will finish it for you.',
     seeWhatsNew: "See what's new",
     mcp: {
       needsAuthTitle: 'MCP server needs re-authentication',
@@ -697,6 +708,7 @@ export const en: Translations = {
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
       updateReadyUnknown: 'A new update is ready.',
+    availableBodyRelease: tag => `Version ${tag} is ready to install.`,
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic updates',
@@ -1162,7 +1174,10 @@ export const en: Translations = {
       } as Record<string, string>,
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,
-      downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
+      downloadProgress: (done, total) => `${done} of ${total}`,
+      downloadPausedLabel: 'Paused',
+      downloadPauseAction: 'Pause',
+      downloadResumeAction: 'Resume',
       downloadDoneToast: model => `${model} is ready.`,
       installDoneToast: 'Local runtime installed and ready.',
       quickstartTitle: 'Run a model on this machine',
@@ -2751,6 +2766,8 @@ export const en: Translations = {
     availableTitleBackend: 'Backend update available',
     availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
     availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
+    availableBodyAppInstaller:
+      'A new version of Hermes is ready. Hermes will close, Windows will finish the update, and Hermes will reopen on its own.',
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
@@ -2768,6 +2785,12 @@ export const en: Translations = {
     applyingBodyBackend:
       'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'This window will close while the update runs, then Hermes reopens on its own.',
+    applyingBodyAppInstaller:
+      'Hermes will close and Windows will finish the update. Hermes will reopen when it’s done — you don’t need to do anything.',
+    applyingCloseAppInstaller: 'This window will close, Windows finishes the update, and Hermes reopens on its own.',
+    checkUnknownTitleAppInstaller: 'Couldn’t check for updates',
+    checkUnknownBodyAppInstaller:
+      'Windows couldn’t check for updates right now. Updates also install automatically when you restart Hermes.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
     blockerTitle: 'Close local previews to update Hermes?',
@@ -2800,7 +2823,47 @@ export const en: Translations = {
       notAvailable: 'Update not available for this backend.',
       failed: 'Backend update failed.',
       noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
-    }
+    },
+    // Update-status overlay + version-details (mechanism-aware update UI).
+    appName: 'Hermes',
+    version: (value: string) => `Version ${value}`,
+    versionUnavailable: 'Version unavailable',
+    checkNow: 'Check now',
+    seeWhatsNew: "See what's new",
+    releaseNotes: 'Release notes',
+    onLatest: "You're on the latest version.",
+    installing: 'An update is currently installing.',
+    cantReach: "We couldn't reach the update server.",
+    tapCheck: 'Tap "Check now" to look for updates.',
+    updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
+    updateReadyUnknown: 'A new update is ready.',
+    availableBodyRelease: tag => `Version ${tag} is ready to install.`,
+    lastChecked: age => `Last checked ${age}`,
+    never: 'never',
+    justNow: 'just now',
+    minAgo: count => `${count} min ago`,
+    hoursAgo: count => `${count}h ago`,
+    daysAgo: count => `${count}d ago`,
+    justNowSuffix: ' · just now',
+    bundleOutOfSync: 'App build out of date',
+    bundleOutOfSyncDesc:
+      'The Hermes runtime was updated, but the desktop app itself is still an older build. Update it to pick up the latest fixes.',
+    bundleOutOfSyncAction: 'Get the installer',
+    checkingShort: 'Checking…',
+    releaseAvailable: tag => `Version ${tag} is available.`,
+    versionDetailsTitle: 'Version details',
+    versionDetailsBody:
+      'This install is managed outside the app. Update it the same way you installed it.',
+    versionDetailsVersion: 'Version',
+    versionDetailsCommit: 'Commit',
+    versionDetailsBuildOrigin: 'Build Origin',
+    versionDetailsDistribution: 'Distribution',
+    versionDetailsDistributionDesktop: 'Desktop app (MSIX)',
+    versionDetailsRuntime: 'Runtime',
+    versionDetailsRuntimeEmbedded: 'Embedded runtime',
+    versionDetailsRuntimeExternal: 'External (uses the machine runtime)',
+    versionDetailsInstallId: 'Install ID',
+    versionDetailsUncommittedChanges: 'uncommitted changes'
   },
 
   install: {
@@ -2822,11 +2885,20 @@ export const en: Translations = {
     setupChoiceTitle: 'Set up Hermes Desktop',
     setupChoiceDesc:
       'Connect this app to a Hermes gateway you already run, or install Hermes locally on this computer.',
+    setupChoiceDescLocal:
+      'Install Hermes on this computer, or connect to a Hermes gateway you already run.',
     connectExistingTitle: 'Connect to existing Hermes',
     connectExistingShort: 'Connect existing',
     connectExistingDesc: 'Use a remote backend with a session token or browser sign-in. No local install will start.',
     installLocalTitle: 'Install Hermes locally',
     installLocalDesc: 'Download Hermes, create its Python environment, and run the backend on this computer.',
+    useLocalTitle: 'Use Hermes on this computer',
+    useLocalDesc: 'A Hermes runtime is already installed here — start it with one click. Nothing downloads.',
+    bundledLocalDesc: 'Use the Hermes runtime included with this app — the bundled backend is the local install.',
+    bundledDamagedTitle: 'Use Hermes bundled with this app',
+    bundledDamagedDesc:
+      "The Hermes backend bundled with this app is missing or damaged — reinstall the app to restore it.",
+    reinstallApp: 'Reinstall the app',
     localStartUnavailable: 'Local installation could not start. Restart Hermes Desktop and try again.',
     remoteSetupTitle: 'Connect to existing Hermes',
     remoteSetupDesc: 'Enter your gateway URL. Hermes Desktop will detect whether it needs a token or browser sign-in.',
@@ -3043,6 +3115,7 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
+      releaseAvailable: (tag: string) => `Version ${tag} is available.`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,

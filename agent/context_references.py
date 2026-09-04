@@ -277,7 +277,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return None, _binary_reference_block(ref, path)
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     if ref.line_start is not None:
         text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
@@ -453,7 +453,7 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
 def _file_metadata(path: Path) -> str:
     if not _is_binary_file(path):
         try:
-            return f"{path.read_text(encoding='utf-8').count(chr(10)) + 1} lines"
+            return f"{path.read_text(encoding='utf-8-sig').count(chr(10)) + 1} lines"
         except Exception:
             pass
     return f"{path.stat().st_size} bytes"

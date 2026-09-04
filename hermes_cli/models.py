@@ -88,10 +88,11 @@ def _get_json(
         return json.loads(resp.read().decode())
 
 
+
 def _read_json_cache(path: Path, *, errors=Exception) -> Optional[dict]:
     """Load a JSON-object cache file; None when missing, unreadable, or not a dict."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except errors:
         return None
@@ -121,6 +122,7 @@ def _merge_unique(primary: list[str], secondary: list[str], key=lambda m: str(m)
 def _custom_provider_ssl_context(base_url: str):
     """``ssl.SSLContext`` honoring a custom provider's ``ssl_ca_cert`` / ``ssl_verify`` (mirrors the
     httpx TLS resolution), or None so the urllib ``/models`` probe keeps the default policy."""
+
     if not base_url:
         return None
     try:
@@ -1020,7 +1022,7 @@ def _copilot_cli_config_tokens() -> list[str]:
     cli_config = os.path.expanduser("~/.copilot/config.json")
     if not os.path.isfile(cli_config):
         return []
-    with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+    with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
         raw_text = "\n".join(
             line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
     data = json.loads(raw_text) if raw_text.strip() else {}

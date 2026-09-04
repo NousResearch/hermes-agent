@@ -121,7 +121,7 @@ def _token_cache_key(token: str) -> str:
 def _read_caps_file(path: Path) -> Dict[str, Any]:
     """Disk cache contents ({token_key: {"caps", "ts"}}); {} when missing/corrupt."""
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:

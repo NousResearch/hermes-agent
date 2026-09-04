@@ -338,7 +338,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
-        original = target.read_text(encoding="utf-8")
+        original = target.read_text(encoding="utf-8-sig")
     target.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
@@ -458,9 +458,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return _err(f"File not found: {target.relative_to(skill_dir)}")
     if read_guard := _background_review_read_before_write_guard(name, target, "patch", target_label):
         return read_guard
-    content = target.read_text(encoding="utf-8")
-    # Same fuzzy engine as the file patch tool (whitespace/indent/escape normalization,
-    # block anchors) so minor formatting mismatches don't fail.
+    content = target.read_text(encoding="utf-8-sig")
+
+    # Use the same fuzzy matching engine as the file patch tool.
     from tools.fuzzy_match import fuzzy_find_and_replace
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all)

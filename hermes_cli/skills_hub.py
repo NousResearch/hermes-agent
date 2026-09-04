@@ -1122,7 +1122,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     if not (path / "SKILL.md").exists():
         _print_error(c, f"No SKILL.md found at {path}")
         return
-    skill_md = (path / "SKILL.md").read_text(encoding="utf-8").lstrip("\ufeff")  # tolerate BOM
+    skill_md = (path / "SKILL.md").read_text(encoding="utf-8-sig").lstrip("\ufeff")  # tolerate BOM
     fm = _read_frontmatter(skill_md)
     name = fm.get("name", path.name)
     if not fm.get("description", ""):
@@ -1253,7 +1253,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
         _print_error(c, f"File not found: {inp}")
         return
     try:
-        snapshot = json.loads(inp.read_text(encoding="utf-8"))
+        snapshot = json.loads(inp.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         _print_error(c, f"Invalid JSON in {inp}")
         return

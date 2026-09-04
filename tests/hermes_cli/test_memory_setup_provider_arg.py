@@ -34,63 +34,39 @@ class TestMemorySetupProviderRouting:
 
 
 class TestInstallDependenciesRunner:
-    """`_install_dependencies` must route through the canonical
-    ``_pip_install`` ladder (uv → pip → ensurepip): uv when present, standard
-    pip when uv is unavailable, and an ensurepip bootstrap for pip-less venvs
-    instead of dead-ending with "cannot install"."""
+    """`_install_dependencies` routes through pm (venv sync of the declared
+    extra) — the old uv → pip → ensurepip ladder is gone."""
 
-    def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None):
-        """Drive _install_dependencies for a plugin that declares one missing
-        pip dep, capturing every subprocess.run argv issued by the ladder."""
-        import os
-        import sys
-        from unittest.mock import patch as _patch
+    def test_syncs_declared_extra_via_pm(self, tmp_path):
+        (tmp_path / "plugin.yaml").write_text("extra: mem0\n", encoding="utf-8")
+        synced = []
 
-        (tmp_path / "plugin.yaml").write_text(
-            "pip_dependencies:\n  - definitely-not-installed-xyz\n", encoding="utf-8"
-        )
-        calls = []
+        import pm
 
-        def fake_run(cmd, **kw):
-            calls.append(cmd)
-            if run_behavior:
-                return run_behavior(cmd)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        # The hermetic conftest sets HERMES_DISABLE_LAZY_INSTALLS=1 so no test
-        # can trigger a real mid-run pip install. These tests exercise the
-        # install ladder itself (against a fully mocked subprocess.run), so
-        # they opt back in — the same both-directions override
-        # tests/tools/test_lazy_deps.py uses.
-        with _patch.dict(os.environ, {"HERMES_DISABLE_LAZY_INSTALLS": "0"}), \
-             patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
-             patch("hermes_cli.tools_config_cua.shutil.which", side_effect=which_side_effect), \
-             patch("hermes_cli.tools_config_cua.subprocess.run", fake_run):
+        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+             patch.object(pm, "available", lambda extra: False), \
+             patch.object(
+                 pm, "sync_venv",
+                 lambda extras=None, explicit=False: synced.append(
+                     (list(extras or []), explicit)
+                 ),
+             ):
             memory_setup._install_dependencies("x")
-        return calls, sys.executable
 
-    def test_uses_uv_when_available(self, tmp_path):
-        calls, _ = self._run_with_missing_dep(
-            tmp_path, lambda b: "/usr/bin/uv" if b == "uv" else None
-        )
-        assert calls
-        assert calls[0][:3] == ["/usr/bin/uv", "pip", "install"]
+        assert synced == [(["mem0"], True)]
 
-    def test_falls_back_to_pip_when_uv_missing(self, tmp_path):
-        """No uv but pip importable -> python -m pip install."""
-        calls, py = self._run_with_missing_dep(tmp_path, lambda b: None)
-        assert calls
-        # Ladder probes pip first, then installs with it.
-        assert calls[0][:3] == [py, "-m", "pip"]
-        assert calls[-1][:4] == [py, "-m", "pip", "install"]
+    def test_noop_when_extra_available(self, tmp_path):
+        (tmp_path / "plugin.yaml").write_text("extra: mem0\n", encoding="utf-8")
+        synced = []
 
-    def test_bootstraps_pip_via_ensurepip_when_missing(self, tmp_path):
-        """Neither uv nor pip -> ensurepip bootstrap, then pip install."""
-        def behavior(cmd):
-            if cmd[-1] == "--version":
-                return SimpleNamespace(returncode=1, stdout="", stderr="")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        import pm
 
-        calls, py = self._run_with_missing_dep(tmp_path, lambda b: None, behavior)
-        assert any("ensurepip" in c for c in calls)
-        assert calls[-1][:4] == [py, "-m", "pip", "install"]
+        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+             patch.object(pm, "available", lambda extra: True), \
+             patch.object(
+                 pm, "sync_venv",
+                 lambda extras=None, explicit=False: synced.append(list(extras or [])),
+             ):
+            memory_setup._install_dependencies("x")
+
+        assert synced == []

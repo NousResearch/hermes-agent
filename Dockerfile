@@ -40,7 +40,6 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make -j"$(nproc)" && \
     make install
 
-FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
 # Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm from the upstream
 # node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
@@ -57,9 +56,14 @@ FROM debian:13.4
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Store Playwright browsers outside the volume mount so the build-time
-# install survives the /opt/data volume overlay at runtime.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
+# The pm-pinned Chromium pair lives in the managed tool store at
+# /opt/hermes/tools — outside the /opt/data volume mount, so the
+# build-time install survives the volume overlay at runtime. pm's
+# chromium package fact exports the same value (PLAYWRIGHT_BROWSERS_PATH
+# at the store root); the image ENV names the same directory so
+# Playwright and the browser tool resolve the pinned build even before pm
+# composes tool env.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
@@ -68,9 +72,16 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
+# The second package list is the shared libraries the pinned Chromium links
+# against. `npx playwright install --with-deps` used to apt-install them as
+# a side effect; pm stages the pinned browser instead (below), so the libs
+# must be declared here. The list is the `ldd ... | grep "not found"` set of
+# the pinned chrome binary in this base image, mapped to trixie package
+# names (see .hermes/plans/termux-removal-commit-spec.md).
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
+    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
     rm -rf /var/lib/apt/lists/*
 
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
@@ -149,8 +160,6 @@ COPY --chmod=0755 docker/tini-shim.sh /usr/bin/tini
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
 
-COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
-
 # Node 26: copy the node binary plus the bundled npm JS install from the
 # upstream image.  npm and npx are recreated as symlinks because they're
 # symlinks in the source image (and need to live on PATH).
@@ -168,9 +177,46 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
 
 WORKDIR /opt/hermes
 
+# ---------- Pinned toolchain from pm/lock.json (single authority) ----------
+# The image used to assemble uv from a second authority — an astral image
+# tag (ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie) that had already
+# drifted to 0.11.6 while pm/lock.json pinned uv 0.12.3. That is exactly
+# the two-authorities failure the pm design exists to end. The image is now
+# a pin consumer: the stdlib-only pm provisioner reads pm/lock.json and
+# stages the pinned uv + the pinned Chromium pair (sha256-verified at
+# download — the same code path pm.sh/pm.ps1 and the desktop payload use)
+# into the image's own runtime dir, a self-contained store baked under
+# /opt/hermes, outside the /opt/data volume so it survives the overlay.
+# The pinned uv is linked onto PATH so the `uv sync` / `uv pip install`
+# build steps below run the lockfile's uv, not a second download.
+#
+# The Chromium pair is staged here rather than by `npx playwright install`,
+# which fetched whatever revision the npm-resolved playwright wanted,
+# unverified, and recorded no fact. The resolved browser binary path is
+# baked to /etc/hermes/agent-browser-executable-path for stage2-hook.sh:
+# the layout differs per arch (chrome-linux64/chrome on amd64,
+# chromium-linux-arm64/chromium on arm64), so it is resolved at build time
+# and never hunted at boot.
+ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
+COPY pm/ pm/
+# pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
+# from hermes_constants (stdlib-only) at install time — a sealed-stage
+# `python3 -m pm.cli install` fails with "No module named
+# 'hermes_constants'" without it on the path. Copy the module next to pm.
+COPY hermes_constants.py hermes_constants.py
+RUN set -eu; \
+    python3 -m pm.cli install uv chromium chromium-headless-shell; \
+    ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
+    uv --version; \
+    browser_bin="$(find /opt/hermes/tools/chromium-* -type f \( -name chrome -o -name chromium \) -print -quit)"; \
+    test -n "$browser_bin"; \
+    "$browser_bin" --version; \
+    mkdir -p /etc/hermes; \
+    printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
+
 # ---------- Layer-cached dependency install ----------
-# Copy only package manifests first so npm install + Playwright are cached
-# unless the lockfiles themselves change.
+# Copy only package manifests first so npm install is cached unless the
+# lockfiles themselves change.
 #
 # ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
 # because it is referenced as a `file:` workspace dependency from
@@ -197,10 +243,6 @@ COPY apps/shared/ apps/shared/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
-    for i in 1 2 3; do \
-        npx playwright install --with-deps chromium --only-shell && break || \
-        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
-    done && \
     npm cache clean --force
 
 # ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
@@ -236,8 +278,8 @@ RUN cd plugins/platforms/photon/sidecar && \
 # plus gateway messaging adapters that should work in the published image
 # without a first-boot lazy install.  We do NOT use `--all-extras`:
 # that would pull in `[rl]` (atroposlib + tinker + torch + wandb from
-# git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
-# redundancy), none of which belong in the published container.
+# git) and `[yc-bench]` (another git dep), neither of which belongs in
+# the published container.
 #
 # Provider packages (anthropic, bedrock, azure-identity) are included
 # so Docker users can use these providers without requiring runtime
@@ -311,35 +353,33 @@ RUN mkdir -p /opt/hermes/bin && \
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
 
-# ---------- Bake image provenance + build-time git revision ----------
+# ---------- Image provenance + install stamp ----------
+# CI (.github/workflows/docker.yml) runs scripts/write_install_stamp.py
+# before `docker build`, so the bulk `COPY . .` above already placed a
+# full-provenance /opt/hermes/install-stamp.json next to the code.
+# .dockerignore excludes .git, so the stamp is the only commit channel the
+# image carries: hermes_cli/version_info.py reads it at runtime (stamp
+# first, live git second, unknown third), and both `hermes dump` and
+# banner.get_git_banner_state() consume it through version_info.
+#
+# A local `docker build` without CI gets the minimal all-zero fallback
+# stamp below; version_info skips the placeholder commit, so dump honestly
+# reports "(unknown)". updateMechanism is `external`: the image is rebuilt
+# and re-pulled, it never updates itself.
+#
 # The versioned, non-secret provenance marker is the authoritative runtime
 # signal that this filesystem came from an immutable image.  It deliberately
 # lives outside both /opt/hermes (which operators sometimes bind-mount as a
-# checkout) and /opt/data (the mutable HERMES_HOME volume).
-# .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
-# container always returns nothing — meaning `hermes dump` reports
-# "(unknown)" and the startup banner drops its `· upstream <sha>` suffix.
-# That makes support triage from container bug reports impossible:
-# we can't tell which commit the user is actually running.
-#
-# Fix: write the commit SHA passed via the HERMES_GIT_SHA build-arg to
-# /opt/hermes/.hermes_build_sha at build time, and have
-# hermes_cli/build_info.py read it at runtime.  Both `hermes dump` and
-# banner.get_git_banner_state() try the baked SHA first, then fall back
-# to live `git rev-parse` for source installs (unchanged behaviour).
-#
-# The arg is optional — local `docker build` without --build-arg omits the
-# SHA file (and records a null provenance revision), so build-info falls back
-# to live-git lookup.  CI
-# (.github/workflows/docker.yml) passes ${{ github.sha }} so
-# every published image has it.
-ARG HERMES_GIT_SHA=
+# checkout) and /opt/data (the mutable HERMES_HOME volume).  Its `revision`
+# is read from the install stamp; the fallback stamp's all-zero commit maps
+# to null.
 RUN set -eu; \
-    if [ -n "${HERMES_GIT_SHA}" ]; then \
-        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
+    if [ ! -f /opt/hermes/install-stamp.json ]; then \
+        printf '{"schemaVersion":2,"commit":"0000000000000000000000000000000000000000","distribution":"docker","source":"fallback","updateMechanism":"external"}\n' \
+            > /opt/hermes/install-stamp.json; \
     fi; \
     mkdir -p /etc/hermes; \
-    HERMES_GIT_SHA="${HERMES_GIT_SHA}" python3 -c 'import json, os, pathlib, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": "nousresearch/hermes-agent", "version": project["version"], "revision": os.environ.get("HERMES_GIT_SHA") or None}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)'
+    python3 -c 'import json, pathlib, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; stamp = json.loads(pathlib.Path("/opt/hermes/install-stamp.json").read_text(encoding="utf-8")); commit = stamp.get("commit"); revision = commit if commit and set(commit) != {"0"} else None; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": "nousresearch/hermes-agent", "version": project["version"], "revision": revision}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)'
 
 # ---------- s6-overlay service wiring ----------
 # Static services declared at build time: main-hermes + dashboard.
@@ -386,19 +426,9 @@ ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data
 ENV HERMES_DISABLE_LAZY_INSTALLS=1
-# The published image seals /opt/hermes (root-owned, read-only) so a runtime
-# lazy install can't mutate the agent's own venv and brick it. But opt-in
-# backends (Firecrawl web search, Exa, Feishu, …) keep their SDKs in
-# tools/lazy_deps.py — deliberately NOT baked into [all] (see pyproject.toml
-# policy 2026-05-12: one quarantined release must not break every install).
-# Redirect those lazy installs to a writable dir on the durable data volume.
-# lazy_deps appends this dir to the END of sys.path, so a package installed
-# here can only ADD modules — it can never shadow or downgrade a core module,
-# so the sealed-venv guarantee holds even with installs re-enabled. The dir
-# is seeded + chowned to the hermes user by docker/stage2-hook.sh and lives
-# on the /opt/data volume, so it persists across container recreates / image
-# updates (an ABI stamp invalidates it if a rebuild bumps the interpreter).
-ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
+# Lazy installs are fully disabled in the published image (see
+# HERMES_DISABLE_LAZY_INSTALLS above): the venv is sealed and opt-in backend
+# SDKs are not installed at runtime.
 
 # `docker exec` privilege-drop shim. When operators run
 # `docker exec <c> hermes ...` they default to root, and any file the

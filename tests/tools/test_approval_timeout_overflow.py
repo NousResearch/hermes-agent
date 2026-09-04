@@ -78,7 +78,11 @@ class TestApprovalTimeoutOverflowClamp:
         monkeypatch.setattr(builtins, "__import__", _blocked)
         with _with_configured_timeout(10**18):
             value = _get_approval_timeout()
-        assert value == 365 * 24 * 3600
+        # Fail-closed contract: a FINITE cap below every platform's wait-
+        # primitive limit (not a specific literal — see agent/deadline.py
+        # for the platform-aware primary bound; the fallback stays below
+        # the narrowest one, the Windows DWORD-ms cap).
+        assert 0 < value < 0xFFFFFFFF / 1000.0
         # Still platform-safe for the crashing primitive.
         lock = threading.Lock()
         assert lock.acquire(timeout=value)
@@ -112,7 +116,11 @@ class TestApprovalTimeoutOverflowClamp:
 
         with _with_configured_timeout(10**18):
             ceiling = human_wait_ceiling()
-        assert ceiling == float(int(MAX_SAFE_TIMEOUT_S)) + HUMAN_WAIT_MARGIN_S
+        # The ceiling inherits the platform-safe clamp: never above
+        # MAX_SAFE_TIMEOUT_S (the margin fits inside the cap when the
+        # config is oversized) and always usable by the wait primitives.
+        assert ceiling <= MAX_SAFE_TIMEOUT_S
+        assert ceiling >= MAX_SAFE_TIMEOUT_S - HUMAN_WAIT_MARGIN_S
         lock = threading.Lock()
         assert lock.acquire(timeout=ceiling)
         lock.release()

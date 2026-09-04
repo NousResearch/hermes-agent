@@ -20,7 +20,7 @@ from urllib.request import urlopen
 
 import pytest
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WINDOWS_UPDATE_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"

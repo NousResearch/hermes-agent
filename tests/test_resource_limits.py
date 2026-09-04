@@ -253,6 +253,7 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     assert calls == ["limit", "server"]
 
 
+@pytest.mark.platforms("linux")
 def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_path):
     """The launcher profile must not leak its limit across machine re-exec."""
     from hermes_cli import main as cli_main

@@ -111,6 +111,7 @@ def _staging_dir_from(cmd) -> Path:
     raise AssertionError(f"no staging output override in {cmd!r}")
 
 
+
 def _packaged_exe_rel() -> Path:
     """Packaged-exe path relative to electron-builder's output dir on THIS host."""
     if sys.platform == "darwin":
@@ -118,6 +119,7 @@ def _packaged_exe_rel() -> Path:
     if sys.platform == "win32":
         return Path("win-unpacked") / "Hermes.exe"
     return Path("linux-unpacked") / "hermes"
+
 
 
 def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
@@ -135,6 +137,7 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
             return subprocess.CompletedProcess(cmd, returncode)
         return subprocess.CompletedProcess(cmd, 0)
     return _run
+
 
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
@@ -188,18 +191,43 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
     the parent PATH is stripped, so the install env MUST carry the Hermes-managed
     Node ahead of that bare PATH or the install dies with ``node: not found``.
     """
+    import json
     import os
-
-    from hermes_constants import iter_hermes_node_dirs
 
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch)
 
-    # A managed Node tree on disk so with_hermes_node_path() actually prepends it.
+    # A pm-installed Node/npm on disk so with_hermes_node_path() actually
+    # prepends the store dirs.
     home = tmp_path / "hermes-home"
-    (home / "node" / "bin").mkdir(parents=True)
+    store_root = home / "tools"
+    node_entry = store_root / "node-v22.0.0"
+    npm_entry = store_root / "npm-9.0.0" / "bin"
+    node_entry.mkdir(parents=True)
+    npm_entry.mkdir(parents=True)
+    (store_root / "facts.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "packages": {
+                    "node": {
+                        "entry": "node-v22.0.0",
+                        "version": "22.0.0",
+                        "env": {"PATH": ["{{store}}/node-v22.0.0"]},
+                    },
+                    "npm": {
+                        "entry": "npm-9.0.0",
+                        "version": "9.0.0",
+                        "env": {"PATH": ["{{store}}/npm-9.0.0/bin"]},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store_root))
     # Simulate the stripped PATH the desktop updater chain hands us.
     monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
 
@@ -222,12 +250,15 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns(skip_build=False))
 
-    managed_dirs = [str(p) for p in iter_hermes_node_dirs() if p.is_dir()]
-    assert managed_dirs, "managed node tree not discovered"
+    managed_dirs = [str(npm_entry), str(node_entry)]
     install_env = mock_install.call_args.kwargs["env"]
-    path_parts = install_env["PATH"].split(os.pathsep)
-    assert path_parts[: len(managed_dirs)] == managed_dirs
-    assert "/usr/bin" in path_parts  # the bare updater PATH is preserved, just after managed Node
+    path_parts = [
+        os.path.normpath(p) for p in install_env["PATH"].split(os.pathsep)
+    ]
+    assert path_parts[: len(managed_dirs)] == [
+        os.path.normpath(d) for d in managed_dirs
+    ]
+    assert os.path.normpath("/usr/bin") in path_parts  # the bare updater PATH is preserved, just after managed Node
 
 
 
@@ -362,7 +393,7 @@ def test_electron_dist_ok_on_this_host():
         assert main_desktop._electron_dist_ok(root) is True
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_electron_dist_binary_basename_linux():
     """``dist/electron`` on Linux — asserted against the live function.
 
@@ -378,7 +409,7 @@ def test_electron_dist_binary_basename_linux():
     )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_electron_dist_binary_basename_windows():
     """``dist/electron.exe`` on Windows — the ``.exe`` suffix is the whole point."""
     root = Path("C:/does-not-need-to-exist")
@@ -387,7 +418,7 @@ def test_electron_dist_binary_basename_windows():
     )
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_electron_dist_binary_basename_macos():
     """``dist/Electron.app/Contents/MacOS/Electron`` on macOS.
 
@@ -508,7 +539,7 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
 
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monkeypatch, capsys):
     """A failing stable sign must still leave a launchable (deep ad-hoc) bundle.
 
@@ -516,7 +547,7 @@ def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monk
     with the fallback sign and strict verification succeeding, the fixup
     reports ``True`` per its documented contract.
 
-    ``macos_only``: the subject is ``codesign`` against a real ``.app`` bundle
+    ``platforms("macos")``: the subject is ``codesign`` against a real ``.app`` bundle
     layout (``exe.parents[2]``), which only the macOS packaged tree produces.
     """
     root = _make_desktop_tree(tmp_path)
@@ -801,7 +832,7 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
 
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, monkeypatch):
     """A successful stable-identity re-sign must NOT delete the safeStorage item.
 
@@ -812,7 +843,7 @@ def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, mon
     so after the first launch the keychain ACL already matches and deleting
     the item would destroy working credentials on every update.
 
-    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    ``platforms("macos")``: the fixup no-ops on non-macOS (sys.platform guard), and
     the subject is codesign against a real ``.app`` bundle layout.
     """
     root = _make_desktop_tree(tmp_path)
@@ -837,7 +868,7 @@ def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, mon
     assert not any("delete-generic-password" in c for c in calls)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_relaunchable_fixup_default_noconfig_success_never_touches_keychain(tmp_path, monkeypatch):
     """Default no-config path (identity == '-') must not delete the keychain item.
 
@@ -845,7 +876,7 @@ def test_relaunchable_fixup_default_noconfig_success_never_touches_keychain(tmp_
     ``desktop.macos_signing_identity`` configured, the fixup signs ad-hoc with
     identifier-pinned requirements and must leave the safeStorage item alone.
 
-    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    ``platforms("macos")``: the fixup no-ops on non-macOS (sys.platform guard), and
     the subject is codesign against a real ``.app`` bundle layout.
     """
     root = _make_desktop_tree(tmp_path)
@@ -869,7 +900,7 @@ def test_relaunchable_fixup_default_noconfig_success_never_touches_keychain(tmp_
     assert not any("delete-generic-password" in c for c in calls)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_relaunchable_fixup_legacy_adhoc_failure_never_touches_keychain(tmp_path, monkeypatch):
     """A failed fallback re-sign must preserve the keychain item (no deletion).
 
@@ -880,7 +911,7 @@ def test_relaunchable_fixup_legacy_adhoc_failure_never_touches_keychain(tmp_path
     successor app/key identity. The fixup must check the codesign result,
     run strict verification, and leave the keychain untouched on failure.
 
-    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    ``platforms("macos")``: the fixup no-ops on non-macOS (sys.platform guard), and
     the subject is codesign against a real ``.app`` bundle layout.
     """
     root = _make_desktop_tree(tmp_path)
@@ -919,7 +950,7 @@ def test_relaunchable_fixup_legacy_adhoc_failure_never_touches_keychain(tmp_path
     assert not any("delete-generic-password" in c for c in calls)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_deletes(tmp_path, monkeypatch):
     """A successful fallback re-sign runs strict verification, no deletion.
 
@@ -929,7 +960,7 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
     ("Always Allow" updates the ACL partition list and preserves the key);
     deletion is not.
 
-    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    ``platforms("macos")``: the fixup no-ops on non-macOS (sys.platform guard), and
     the subject is codesign against a real ``.app`` bundle layout.
     """
     root = _make_desktop_tree(tmp_path)
@@ -972,7 +1003,7 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
 # --- Linux launcher entry registration ------------------------------------
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
     """`hermes desktop` gives the app a launcher presence on Linux."""
     root = _make_desktop_tree(tmp_path)
@@ -998,7 +1029,7 @@ def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
     assert registered == [root]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatch):
     """Launcher plumbing is a convenience — it must never block the app."""
     root = _make_desktop_tree(tmp_path)
@@ -1028,7 +1059,7 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
         assert launched == [str(packaged_exe)]
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_gui_skips_desktop_entry_off_linux(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -1093,6 +1124,7 @@ def test_desktop_launch_options_ozone_hint_defaults_auto():
         assert main_desktop._desktop_launch_options()[3] == "auto"
 
 
+@pytest.mark.platforms("linux")
 def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
     """COSMIC HUD: ``desktop.ozone_platform_hint: x11`` sets
     ``ELECTRON_OZONE_PLATFORM_HINT`` on the launched Electron process."""
@@ -1111,7 +1143,7 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
@@ -1127,7 +1159,7 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run2, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run2, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
@@ -1191,7 +1223,7 @@ def test_detect_linux_password_store_none_when_no_keychain(monkeypatch):
         assert main_desktop._detect_linux_password_store() is None
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
@@ -1217,7 +1249,7 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "gnome-libsecret"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
@@ -1241,7 +1273,7 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
@@ -1269,7 +1301,7 @@ def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     monkeypatch.setenv("HERMES_DESKTOP_PASSWORD_STORE", "basic")
@@ -1298,7 +1330,7 @@ def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "basic"
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
@@ -1317,7 +1349,7 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
-        cli_main.cmd_gui(_ns())
+            cli_main.cmd_gui(_ns())
 
     mock_detect.assert_not_called()
     launch_env = mock_run.call_args_list[1].kwargs["env"]

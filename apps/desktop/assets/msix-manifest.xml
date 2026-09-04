@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Custom MSIX manifest for Hermes desktop.
+
+    Forked from app-builder-lib's templates/msix/appxmanifest.xml. The PM
+    payload console-script aliases are uap5 extensions. The package root
+    must declare uap5 and list it in IgnorableNamespaces.
+
+    Keep this template in sync with app-builder-lib when electron-builder
+    changes. The only intended delta is the uap5 namespace declaration and
+    IgnorableNamespaces entry.
+-->
+<!--suppress XmlUnusedNamespaceDeclaration -->
+<Package
+   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+   xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+   xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+   IgnorableNamespaces="uap5 uap10 desktop4 desktop6">
+  <!-- use single quotes to avoid double quotes escaping in the publisher value  -->
+  <Identity Name="${identityName}"
+    ProcessorArchitecture="${arch}"
+    Publisher='${publisher}'
+    Version="${version}" />
+  <Properties>
+    <DisplayName>${displayName}</DisplayName>
+    <PublisherDisplayName>${publisherDisplayName}</PublisherDisplayName>
+    <Description>${description}</Description>
+    <Logo>${logo}</Logo>
+    ${packageIntegrity}
+  </Properties>
+  <Resources>
+    ${resourceLanguages}
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="${minVersion}" MaxVersionTested="${maxVersionTested}" />
+  </Dependencies>
+  ${capabilities}
+  <Applications>
+    <Application Id="${applicationId}" Executable="${executable}" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+       BackgroundColor="${backgroundColor}"
+       DisplayName="${displayName}"
+       Square150x150Logo="${square150x150Logo}"
+       Square44x44Logo="${square44x44Logo}"
+       Description="${description}">
+        ${defaultTile}
+        ${lockScreen}
+        ${splashScreen}
+      </uap:VisualElements>
+      ${extensions}
+    </Application>
+  </Applications>
+</Package>

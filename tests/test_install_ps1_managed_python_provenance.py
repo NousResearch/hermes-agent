@@ -13,7 +13,7 @@ import pytest
 from tests.install_ps1_fake_uv import compile_fake_uv
 
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 
 _INSTALL_PS1 = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
 

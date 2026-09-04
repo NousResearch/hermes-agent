@@ -52,10 +52,10 @@ _RETAIN_CONTEXT_DEFAULT = "conversation between Hermes Agent and the User"
 
 
 def _ensure_client_dependency() -> None:
-    """Lazily install the Hindsight client (``tools.lazy_deps``) before importing it."""
+    """Lazily install the Hindsight client via pm before importing it."""
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.hindsight", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("hindsight")
     except ImportError:
         pass
     except Exception as exc:
@@ -67,8 +67,7 @@ def _cloud_api_key(config: dict) -> str:
 
 
 def _maybe_upgrade_client() -> None:
-    """Auto-upgrade an outdated hindsight-client via the environment-aware lazy_deps
-    installer (sealed hosted venvs redirect to the durable target)."""
+    """Auto-upgrade an outdated hindsight-client via pm's venv sync (uv.lock owns the pin)."""
     try:
         from importlib.metadata import version as pkg_version
         from packaging.version import Version
@@ -76,18 +75,12 @@ def _maybe_upgrade_client() -> None:
         if Version(installed) < Version(_MIN_CLIENT_VERSION):
             logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
                            installed, _MIN_CLIENT_VERSION)
-            from tools.lazy_deps import install_specs
-            outcome = install_specs([f"hindsight-client>={_MIN_CLIENT_VERSION}"], timeout=120)
-            if outcome.ok:
-                logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
-            elif outcome.blocked:
-                logger.warning("Auto-upgrade unavailable: %s. Run: uv pip install 'hindsight-client>=%s'",
-                               outcome.reason, _MIN_CLIENT_VERSION)
-            else:
-                logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                               (outcome.stderr or "").strip() or "install error", _MIN_CLIENT_VERSION)
-    except Exception:
-        pass  # packaging not available or other issue — proceed anyway
+            import pm
+
+            pm.sync_venv(["hindsight"])
+            logger.info("hindsight-client resynced against uv.lock")
+    except Exception as exc:
+        logger.warning("Auto-upgrade unavailable: %s. Run: hermes pm install", exc)
 
 
 # update_mode='append' capability (Hindsight >= 0.5.0), cached per API URL per
@@ -234,12 +227,31 @@ REFLECT_SCHEMA = {
 
 
 def _load_config() -> dict:
-    """$HERMES_HOME/hindsight/config.json (profile-scoped), else ~/.hindsight/config.json
-    (legacy, shared), else environment variables."""
-    for path in (get_hermes_home() / "hindsight" / "config.json", Path.home() / ".hindsight" / "config.json"):
-        if path.exists():
-            with contextlib.suppress(Exception):
-                return json.loads(path.read_text(encoding="utf-8"))
+    """Load config from profile-scoped path, legacy path, or env vars.
+
+    Resolution order:
+      1. $HERMES_HOME/hindsight/config.json  (profile-scoped)
+      2. ~/.hindsight/config.json             (legacy, shared)
+      3. Environment variables
+    """
+    from pathlib import Path
+
+    # Profile-scoped path (preferred)
+    profile_path = get_hermes_home() / "hindsight" / "config.json"
+    if profile_path.exists():
+        try:
+            return json.loads(profile_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+
+    # Legacy shared path (backward compat)
+    legacy_path = Path.home() / ".hindsight" / "config.json"
+    if legacy_path.exists():
+        try:
+            return json.loads(legacy_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
         "apiKey": get_secret("HINDSIGHT_API_KEY", ""),
@@ -383,8 +395,10 @@ class HindsightMemoryProvider(MemoryProvider):
         config_path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if config_path.exists():
-            with contextlib.suppress(Exception):
-                existing = json.loads(config_path.read_text(encoding="utf-8"))
+            try:
+                existing = json.loads(config_path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                pass
         existing.update(values)
         atomic_json_write(config_path, existing, mode=0o600)
 

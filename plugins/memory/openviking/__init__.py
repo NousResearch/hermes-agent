@@ -556,7 +556,8 @@ def _load_ovcli_config(path: Optional[Path] = None) -> dict:
     config_path = path or _resolve_ovcli_config_path()
     if not config_path.exists():
         return {}
-    data = json.loads(config_path.read_text(encoding="utf-8"))
+    with config_path.open(encoding="utf-8-sig") as f:
+        data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError(f"OpenViking CLI config must be a JSON object: {config_path}")
     return data
@@ -2243,7 +2244,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         sessions: List[tuple[str, str]] = []
         for path in sorted(directory.glob("*.json")):
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
+                raw = json.loads(path.read_text(encoding="utf-8-sig"))
             except Exception:
                 raw = None
             raw = raw if isinstance(raw, dict) else {}

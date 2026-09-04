@@ -227,9 +227,9 @@ def test_workspace_closure_returns_none_when_start_absent(main_mod) -> None:
 
 
 def test_workspace_closure_includes_dev_deps_of_selected_child_workspace(main_mod) -> None:
-    """On Termux the install also scopes to ui-tui's child packages/* workspaces,
-    so each selected child's devDependencies join the closure — a dev dep unique
-    to a child is NOT dropped (regression for the child-scope false-negative)."""
+    """The closure includes each explicitly-selected workspace's devDependencies,
+    so a dev dep unique to a selected child is NOT dropped (regression for the
+    child-scope false-negative)."""
     packages = {
         "ui-tui": {"dependencies": {"@hermes/ink": "*"}},
         "node_modules/@hermes/ink": {
@@ -242,44 +242,11 @@ def test_workspace_closure_includes_dev_deps_of_selected_child_workspace(main_mo
     # Only ui-tui selected (desktop): the child's dev dep is not installed.
     desktop = main_tui_launch._npm_lock_workspace_closure(packages, {"ui-tui"})
     assert "node_modules/child-dev-only" not in desktop
-    # ui-tui + child selected (Termux): the child's dev dep is in the closure.
-    termux = main_tui_launch._npm_lock_workspace_closure(
+    # ui-tui + child selected: the child's dev dep is in the closure.
+    with_child = main_tui_launch._npm_lock_workspace_closure(
         packages, {"ui-tui", "ui-tui/packages/hermes-ink"}
     )
-    assert "node_modules/child-dev-only" in termux
-
-
-def test_termux_install_catches_missing_child_workspace_dev_dep(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    """On Termux the launch install selects ui-tui/packages/* too, installing
-    each child's devDependencies.  A child dev dep missing from the hidden lock
-    must trigger a reinstall — off Termux (child not selected) it must not."""
-    ws_lock = (
-        '{"packages":{'
-        '"ui-tui":{"dependencies":{"@hermes/ink":"*"}},'
-        '"node_modules/@hermes/ink":{"link":true,"resolved":"ui-tui/packages/hermes-ink"},'
-        '"ui-tui/packages/hermes-ink":{"devDependencies":{"child-dev-only":"1.0.0"}},'
-        '"node_modules/child-dev-only":{"version":"1.0.0"}'
-        "}}"
-    )
-    hidden_lock = (
-        '{"packages":{'
-        '"ui-tui":{"dependencies":{"@hermes/ink":"*"}},'
-        '"node_modules/@hermes/ink":{"link":true,"resolved":"ui-tui/packages/hermes-ink"},'
-        '"ui-tui/packages/hermes-ink":{"devDependencies":{"child-dev-only":"1.0.0"}}'
-        "}}"
-    )
-    tui_dir = _write_ws(tmp_path, ws_lock, hidden_lock)
-    child = tui_dir / "packages" / "hermes-ink"
-    child.mkdir(parents=True, exist_ok=True)
-    (child / "package.json").write_text('{"name":"@hermes/ink"}')
-
-    monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: False)
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is False
-
-    monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: True)
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is True
+    assert "node_modules/child-dev-only" in with_child
 
 
 def test_no_install_prebuilt_bundle_mode(tmp_path: Path, main_mod) -> None:
@@ -317,86 +284,6 @@ def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path, main_mod) -> 
     assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
-def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    _touch_tui_entry(tmp_path)
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-
-    def fail_run(*_args, **_kwargs):
-        raise AssertionError("fresh Termux TUI launch must not rebuild")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
-
-    argv, cwd = main_tui_launch._make_tui_argv(tmp_path, tui_dev=False)
-
-    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
-    assert cwd == tmp_path
-
-
-def test_make_tui_argv_skips_install_on_termux_when_bundle_fresh(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    _touch_tui_entry(tmp_path)
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-
-    def fail_run(*_args, **_kwargs):
-        raise AssertionError("fresh Termux TUI launch must not run npm")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
-
-    argv, cwd = main_tui_launch._make_tui_argv(tmp_path, tui_dev=False)
-
-    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
-    assert cwd == tmp_path
-
-
-def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    tui_dir = tmp_path / "ui-tui"
-    tui_dir.mkdir()
-    (tui_dir / "package.json").write_text("{}")
-    ink_dir = tui_dir / "packages" / "hermes-ink"
-    ink_dir.mkdir(parents=True)
-    (ink_dir / "package.json").write_text("{}")
-    (tmp_path / "package-lock.json").write_text("{}")
-
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: True)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    main_tui_launch._make_tui_argv(tui_dir, tui_dev=False)
-
-    install_cmd = calls[0][0][0]
-    assert install_cmd[:7] == [
-        "/bin/npm",
-        "install",
-        "--workspace",
-        "ui-tui",
-        "--workspace",
-        "ui-tui/packages/hermes-ink",
-        "--include-workspace-root=false",
-    ]
-    assert calls[0][1]["cwd"] == str(tmp_path)
-    _assert_utf8_replace_capture(calls[0][1])
-    _assert_utf8_replace_capture(calls[1][1])
-
-
 def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
@@ -405,9 +292,12 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     (tui_dir / "package.json").write_text("{}")
     (tmp_path / "package-lock.json").write_text("{}")
 
-    monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(
+        "hermes_constants.find_node_executable",
+        lambda name: f"/bin/{name}",
+    )
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -448,10 +338,13 @@ def test_make_tui_argv_npm_install_forces_include_dev(
     (tui_dir / "package.json").write_text("{}")
     (tmp_path / "package-lock.json").write_text("{}")
 
-    monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setenv("NODE_ENV", "production")
     monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(
+        "hermes_constants.find_node_executable",
+        lambda name: f"/bin/{name}",
+    )
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -472,10 +365,12 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
     _touch_tui_entry(tmp_path)
-    monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(
+        "hermes_constants.find_node_executable",
+        lambda name: f"/bin/{name}",
+    )
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -502,6 +397,10 @@ def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
     tsx.write_text("")
 
     monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(
+        "hermes_constants.find_node_executable",
+        lambda name: f"/bin/{name}",
+    )
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -537,7 +436,7 @@ def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
             return "/usr/bin/node"
         raise AssertionError(f"unexpected shutil.which({name!r}) call — bundled path must not need npm/git")
 
-    monkeypatch.setattr(main_mod.shutil, "which", which)
+    monkeypatch.setattr("hermes_constants.find_node_executable", which)
 
     def fail_run(*_args, **_kwargs):
         raise AssertionError("bundled TUI path must not spawn any subprocess (no npm install/build, no git restore)")
@@ -751,11 +650,15 @@ def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
     # Parent also has lockfile (but _workspace_root prefers tui_dir's own)
     (tmp_path / "package-lock.json").write_text("{}")
 
-    monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
     monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(
+        "hermes_constants.find_node_executable",
+        lambda name: f"/bin/{name}",
+    )
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+
     calls = []
 
     def fake_run(*args, **kwargs):

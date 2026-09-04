@@ -29,7 +29,13 @@ def _root() -> Path:
 
 
 def _read_active() -> Optional[Dict[str, Any]]:
-    return read_json(_root() / ".active.json")
+    p = _active_file()
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
 
 
 def _write_active(data: Dict[str, Any]) -> None:
@@ -105,9 +111,26 @@ def status() -> Dict[str, Any]:
     if not active:
         return dict(_NO_ACTIVE)
     pid = int(active.get("pid", 0))
-    return {"ok": True, "alive": _pid_alive(pid), "pid": pid, "meetingId": active.get("meeting_id"),
-            "url": active.get("url"), "startedAt": active.get("started_at"), "outDir": active.get("out_dir"),
-            **(read_json(Path(active.get("out_dir", "")) / "status.json") or {})}
+    alive = _pid_alive(pid) if pid else False
+
+    status_path = Path(active.get("out_dir", "")) / "status.json"
+    bot_status: Dict[str, Any] = {}
+    if status_path.is_file():
+        try:
+            bot_status = json.loads(status_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "alive": alive,
+        "pid": pid,
+        "meetingId": active.get("meeting_id"),
+        "url": active.get("url"),
+        "startedAt": active.get("started_at"),
+        "outDir": active.get("out_dir"),
+        **bot_status,
+    }
 
 
 def transcript(last: Optional[int] = None) -> Dict[str, Any]:
@@ -116,7 +139,15 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
     if not active:
         return dict(_NO_ACTIVE)
     tp = Path(active.get("out_dir", "")) / "transcript.txt"
-    text = tp.read_text(encoding="utf-8", errors="replace") if tp.is_file() else ""
+    if not tp.is_file():
+        return {
+            "ok": True,
+            "meetingId": active.get("meeting_id"),
+            "lines": [],
+            "total": 0,
+            "path": str(tp),
+        }
+    text = tp.read_text(encoding="utf-8-sig", errors="replace")
     all_lines = [ln for ln in text.splitlines() if ln.strip()]
     return {"ok": True, "meetingId": active.get("meeting_id"),
             "lines": all_lines[-last:] if last else all_lines, "total": len(all_lines), "path": str(tp)}

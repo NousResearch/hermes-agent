@@ -487,8 +487,12 @@ class TestLaunchdRestartWedgedIntegration:
         assert ("drain", 4242, 195.0) in events
 
 
+@pytest.mark.platforms("linux")
 class TestLoopTickWitness:
     """Two-witness liveness (#90502 review).
+
+    Windows CPython builds don't expose AF_UNIX, so this POSIX-socket
+    transport class gates to Linux.
 
     The heartbeat write moved off-loop, so a stale file no longer proves a
     wedged loop and a fresh file no longer proves an alive one. The loop

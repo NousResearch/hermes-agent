@@ -442,7 +442,7 @@ def probe_gateway_loop_liveness(
         from gateway.shutdown_watchdog import get_loop_heartbeat_path
         path = get_loop_heartbeat_path(home)
         mtime = path.stat().st_mtime
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
         heartbeat_pid = int(payload.get("pid", 0))
     except Exception:
         return GATEWAY_LOOP_UNKNOWN
@@ -1101,7 +1101,7 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
     if not unit_path.exists():
         return None
     try:
-        text = unit_path.read_text(encoding="utf-8")
+        text = unit_path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
     for line in text.splitlines():
@@ -2229,7 +2229,7 @@ def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
             try:
                 if not unit_path.exists():
                     continue
-                text = unit_path.read_text(encoding="utf-8", errors="ignore")
+                text = unit_path.read_text(encoding="utf-8-sig", errors="ignore")
             except (OSError, PermissionError):
                 continue
             if any(marker in text for marker in _LEGACY_UNIT_EXECSTART_MARKERS):
@@ -2365,7 +2365,7 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
 def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
     if not unit_path.exists():
         return None
-    for line in unit_path.read_text(encoding="utf-8").splitlines():
+    for line in unit_path.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith("User="):
             return line.split("=", 1)[1].strip() or None
     return None
@@ -2546,8 +2546,13 @@ def launchd_gateway_labels_for_install() -> list[str]:
 
 
 def _detect_venv_dir() -> Path | None:
-    """Active virtualenv dir: ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it without changing
-    sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""
+    """Active virtualenv dir: pm-provisioned runtime venv first (facts + store
+    layout — the authority under no-boot-through-venv, where ``sys.prefix`` no
+    longer distinguishes and bundled installs carry no ``VIRTUAL_ENV``), then
+    ``sys.prefix`` / ``VIRTUAL_ENV`` / .venv/venv under PROJECT_ROOT."""
+    pm_venv = _pm_runtime_venv_dir()
+    if pm_venv is not None:
+        return pm_venv
     candidates: list[Path] = []
     if sys.prefix != sys.base_prefix:
         candidates.append(Path(sys.prefix))
@@ -2865,7 +2870,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
-    installed = unit_path.read_text(encoding="utf-8")
+    installed = unit_path.read_text(encoding="utf-8-sig")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
@@ -3730,7 +3735,7 @@ def launchd_plist_is_current() -> bool:
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
-    installed = plist_path.read_text(encoding="utf-8")
+    installed = plist_path.read_text(encoding="utf-8-sig")
     norm = _normalize_launchd_plist_for_comparison
     return norm(installed) == norm(generate_launchd_plist())
 
@@ -6148,10 +6153,17 @@ def _cmd_migrate_legacy(args):
     remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
 
 
+def _cmd_service(args):
+    """Windows SCM frontend (MSIX HermesGateway service): translate the SCM
+    protocol onto the payload launcher (sealed-install surface)."""
+    _windows_scm_service_command(getattr(args, "gateway_service_action", None))
+
+
 _GATEWAY_SUBCOMMANDS = {
     None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "install": _cmd_install,
     "uninstall": _cmd_uninstall, "start": _cmd_start, "stop": _cmd_stop, "restart": _cmd_restart,
     "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy,
+    "service": _cmd_service,
 }
 
 
@@ -6194,3 +6206,180 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+def _try_scm_service_restart() -> bool:
+    """Restart the HermesGateway Windows Service when it's the running
+    gateway's manager: sealed MSIX install + service present + running.
+
+    Returns True when the SCM restart was issued (the caller must NOT arm
+    a detached watcher); False on any other machine shape (source
+    installs, service absent or stopped — the normal paths apply).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import win32serviceutil
+    except ImportError:
+        return False
+    try:
+        from gateway.windows_service import SERVICE_NAME
+        from pm.ensure import sealed
+
+        if not sealed():
+            return False
+        status = win32serviceutil.QueryServiceStatus(SERVICE_NAME)
+        running = bool(status and status[1] == 4)  # SERVICE_RUNNING
+        if not running:
+            return False
+        win32serviceutil.RestartService(SERVICE_NAME)
+        print(f"  ⏻ Restarting {SERVICE_NAME} service (graceful drain → respawn)")
+        return True
+    except Exception:
+        # Not service-managed (most installs): the ordinary restart paths
+        # own it. Never fail the update over a service lookup.
+        return False
+
+def _pm_runtime_venv_dir() -> Path | None:
+    """The venv pm provisioned for this install, resolved from pm's own
+    records (facts.json + store layout) — never from interpreter state.
+
+    Under no-boot-through-venv the gateway runs the store python with the
+    venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
+    ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
+    prefix/env probing silently degrades. pm is the authority instead: a
+    bundled install keeps its relocatable venv beside the manifest (a
+    sibling of the store), a dev install syncs the project venv
+    (``venv``/``.venv``, per ``hermes_constants.project_venv_dir`` — the
+    same layout ``pm.packages.Venv.venv_dir`` materializes). The venv fact
+    must exist: pm only vouches for what it provisioned.
+    """
+    try:
+        from pm import paths
+        from pm.lock import Facts
+    except Exception:
+        return None
+    try:
+        if not Facts(paths.facts_path()).get("venv"):
+            return None
+    except Exception:
+        return None
+    store = paths.store_root()
+    bundled = store.parent / "venv"
+    if (store.parent / "manifest.json").is_file():
+        return bundled if bundled.is_dir() else None
+    try:
+        from hermes_constants import project_venv_dir
+    except ImportError:
+        return None
+    return project_venv_dir(paths.repo_root())
+
+def _systemd_watchdog_service_fields(
+    hermes_home: str | Path | None = None,
+) -> tuple[str, str]:
+    """Return systemd service fields for the effective gateway config."""
+    seconds = _systemd_watchdog_seconds(hermes_home)
+    if seconds <= 0:
+        return "simple", ""
+    return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
+
+def _windows_scm_service_command(action: str | None) -> None:
+    """`hermes gateway service on|off|status` — the MSIX HermesGateway
+    Windows Service (SCM-registered at MSIX install, demand-start;
+    plan: gateway-msix-windows-service, Task 5; config-only posture).
+
+    "on"  = automatic-at-logon + start now (persisted via gateway.service).
+    "off" = demand-start + stop now.
+    "status" = SCM state + the config key.
+    """
+    if sys.platform != "win32":
+        print_error("`hermes gateway service` manages the MSIX HermesGateway "
+                    "Windows Service — not available on this platform.")
+        return
+    try:
+        import win32service
+        import win32serviceutil
+    except ImportError:
+        print_error("pywin32 is required for service management.")
+        return
+
+    from gateway.windows_service import SERVICE_NAME
+
+    def _config_get() -> bool:
+        try:
+            from hermes_cli.config import get_config_value
+
+            return bool(get_config_value("gateway.service", False))
+        except Exception:
+            return False
+
+    def _scm_status() -> tuple[bool, str]:
+        """(installed, state-name) — service absent = (False, 'not installed')."""
+        try:
+            status = win32serviceutil.QueryServiceStatus(SERVICE_NAME)
+            states = {
+                1: "stopped",
+                2: "start pending",
+                3: "stop pending",
+                4: "running",
+                5: "continue pending",
+                6: "pause pending",
+                7: "paused",
+            }
+            return True, states.get(status[1], f"unknown ({status[1]})")
+        except Exception:
+            return False, "not installed"
+
+    if action in (None, "status"):
+        installed, state = _scm_status()
+        enabled = _config_get()
+        print(f"HermesGateway service: {state}" if installed else
+              "HermesGateway service: not installed (MSIX bundles only)")
+        print(f"  config gateway.service: {'on' if enabled else 'off'}")
+        if installed and state == "running" and not enabled:
+            print_warning("service is running but the config key is off — "
+                         "run `hermes gateway service on` to persist")
+        return
+
+    if action == "on":
+        installed, _ = _scm_status()
+        if not installed:
+            print_error("HermesGateway service is not installed — it ships "
+                        "with the MSIX bundle (desktop app install).")
+            return
+        try:
+            # Automatic at logon + start now, gracefully.
+            win32serviceutil.ChangeServiceConfig(
+                SERVICE_NAME, starttype=win32service.SERVICE_AUTO_START
+            )
+            win32serviceutil.StartService(SERVICE_NAME)
+            from cli import save_config_value
+
+            save_config_value("gateway.service", True)
+            print(f"✓ {SERVICE_NAME}: automatic at logon + starting now")
+            print("  Bots keep running without the desktop app.")
+        except Exception as exc:
+            print_error(f"Could not enable service: {exc}")
+        return
+
+    if action == "off":
+        installed, _ = _scm_status()
+        if not installed:
+            print_error("HermesGateway service is not installed.")
+            return
+        try:
+            win32serviceutil.ChangeServiceConfig(
+                SERVICE_NAME, starttype=win32service.SERVICE_DEMAND_START
+            )
+            win32serviceutil.StopService(SERVICE_NAME)  # graceful: frontend marker path
+            from cli import save_config_value
+
+            save_config_value("gateway.service", False)
+            print(f"✓ {SERVICE_NAME}: demand-start + stopping (graceful drain)")
+        except Exception as exc:
+            print_error(f"Could not disable service: {exc}")
+        return
+
+    print_error(f"Unknown service action: {action!r} (on|off|status)")
+
+

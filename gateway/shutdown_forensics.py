@@ -40,7 +40,7 @@ def _signal_name(sig: Any) -> str:
 
 def _read_proc_field(pid: int, key: str) -> Optional[str]:
     """Read a single field from /proc/<pid>/status.  Linux only; None elsewhere."""
-    with contextlib.suppress(OSError), open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+    with contextlib.suppress(OSError), open(f"/proc/{pid}/status", encoding="utf-8-sig") as fh:
         for line in fh:
             if line.startswith(key + ":"):
                 return line.split(":", 1)[1].strip()
@@ -72,7 +72,7 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
 def _read_marker(path: Path) -> Optional[str]:
     """Return the marker file's text, or None if absent/unreadable."""
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
 
@@ -199,7 +199,7 @@ def check_systemd_timing_alignment(
         return None  # Not running under systemd (or at least not directly)
     # /proc/self/cgroup: "0::/user.slice/.../hermes-gateway.service"
     unit_name: Optional[str] = None
-    with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
+    with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8-sig") as fh:
         for line in fh:
             parts = reversed(line.strip().split("/"))
             unit_name = next((p for p in parts if p.endswith(".service")), None)

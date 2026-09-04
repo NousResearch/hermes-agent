@@ -122,7 +122,7 @@ def _load_pyproject_project(root: Path) -> dict | None:
 def _read_marker_attempts(marker_path: Path) -> int:
     """Attempt counter from a marker's opportunistic JSON body; corrupt/missing → 0."""
     try:
-        raw = marker_path.read_text(encoding="utf-8", errors="replace").strip()
+        raw = marker_path.read_text(encoding="utf-8-sig", errors="replace").strip()
     except OSError:
         return 0
     if not raw:
@@ -188,7 +188,7 @@ def _pid_is_running(pid: int) -> bool:
 def _marker_owner_is_live(marker: Path) -> bool:
     """True when a legacy update marker names a process still running."""
     try:
-        body = marker.read_text(encoding="utf-8", errors="replace")
+        body = marker.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return False
     for line in body.splitlines():
@@ -466,7 +466,8 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
     try:
         from hermes_cli import _install_repair as ir
 
-        # Read attempts before claiming the lock so a persistently-failing install stops early.
+        # Upstream refactor: attempt counter read moved into the helper below.
+        # Kept our utf-8-sig read fix inside the helper (BOM-tolerant marker).
         attempts = _read_marker_attempts(core_marker)
         if attempts >= _EARLY_CORE_INSTALL_MAX_ATTEMPTS:
             print("⚠ Pending interrupted-update install has already failed "

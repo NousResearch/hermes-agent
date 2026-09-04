@@ -44,8 +44,46 @@ def _ensure_vercel_sdk() -> None:
     # The SDK (>=0.7) ships default-on telemetry; Hermes policy is opt-in only, so disable it
     # before the SDK is imported. setdefault: an explicit user value is never overridden.
     os.environ.setdefault("VERCEL_TELEMETRY_DISABLED", "1")
-    ensure_lazy_dep("terminal.vercel")
+    try:
+        from pm import ensure_import as _lazy_ensure
+    except ImportError:
+        return  # pm unavailable — vercel's own import sites decide
+    try:
+        _lazy_ensure("vercel")
+    except Exception as e:
+        raise ImportError(str(e))
 
+
+_CREATE_RETRY_ATTEMPTS = 3
+_WRITE_RETRY_ATTEMPTS = 3
+_TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+_RETRY_BACKOFF_STEP = timedelta(milliseconds=100)
+_MIN_SANDBOX_TIMEOUT = timedelta(minutes=5)
+_MIN_RUNNING_WAIT = timedelta(seconds=1)
+_RUNNING_WAIT_TIMEOUT = timedelta(seconds=30)
+_RUNNING_WAIT_POLL_INTERVAL = timedelta(milliseconds=250)
+_STOP_TIMEOUT = timedelta(seconds=15)
+_STOP_POLL_INTERVAL = timedelta(milliseconds=500)
+_SNAPSHOT_STORE_NAME = "vercel_sandbox_snapshots.json"
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _extract_status_code(exc: BaseException) -> int | None:
+    response = getattr(exc, "response", None)
+    for value in (getattr(exc, "status_code", None), getattr(response, "status_code", None)):
+        if isinstance(value, int):
+            return value
+    return None
 
 def _is_transient_vercel_error(exc: BaseException) -> bool:
     """True when any exception in the cause/context chain looks retryable."""

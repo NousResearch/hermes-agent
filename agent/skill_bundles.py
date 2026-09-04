@@ -49,7 +49,7 @@ def _max_mtime(files: List[Path]) -> float:
 def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     """Parse one bundle YAML; ``None`` (logged) on any error so a broken bundle can't break discovery."""
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except OSError as exc:
         logger.warning("Could not read bundle %s: %s", path, exc)
         return None

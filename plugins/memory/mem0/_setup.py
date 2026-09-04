@@ -427,20 +427,27 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
 
 
 def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> None:
-    deps = {registry[pid]["pip_dep"] for (_, registry), pid in zip(SECTION_REGISTRIES, (llm_id, embedder_id, vector_id)) if registry.get(pid, {}).get("pip_dep")}
+    """Point at the pip deps the selected OSS backends need.
+
+    These are third-party backend SDKs (ollama, qdrant-client, ...), not
+    hermes dependencies — pm does not install arbitrary specs into the
+    hermes venv. Print the exact command instead."""
+    deps: set[str] = set()
+    for registry, pid in [(LLM_PROVIDERS, llm_id), (EMBEDDER_PROVIDERS, embedder_id),
+                          (VECTOR_PROVIDERS, vector_id)]:
+        dep = registry.get(pid, {}).get("pip_dep")
+        if dep:
+            deps.add(dep)
+    missing = []
     for dep in sorted(deps):
-        print(f"  Installing {dep}...")
-        try:
-            # Environment-aware install: sealed hosted venvs redirect to the durable data-volume target instead of /opt/hermes.
-            from tools.lazy_deps import install_specs
-            outcome = install_specs([dep], timeout=60)
-        except Exception:
-            outcome = None
-        print(f"  ✓ Installed {dep}" if outcome is not None and outcome.ok else f"  Warning: cannot install {dep}: {outcome.reason}" if outcome is not None and outcome.blocked
-              else f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
-    if deps:
-        import importlib
-        importlib.invalidate_caches()
+        import importlib.util
+
+        if importlib.util.find_spec(dep.replace("-", "_").split("[")[0]) is None:
+            missing.append(dep)
+    if missing:
+        print("\n  The selected backends need extra packages:")
+        print(f"    uv pip install {' '.join(missing)}")
+        print("  Run that inside the hermes venv, then re-run setup.")
 
 
 def _probe(fn, ok: str, fail: str, exc=Exception) -> tuple[bool, str]:

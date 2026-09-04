@@ -125,7 +125,7 @@ def _read_pyproject_version() -> str | None:
     """Read the ``[project]`` version from pyproject.toml; None for installed wheels (no pyproject) or unreadable files."""
     from hermes_cli.doctor import PROJECT_ROOT
     try:
-        text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     in_project = False

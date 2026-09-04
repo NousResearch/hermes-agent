@@ -154,6 +154,7 @@ class TestBusyInputMode:
 
 
 class TestPromptToolkitTerminalCompatibility:
+    @pytest.mark.platforms("linux")
     def test_lf_enter_binding_respects_multiline_shortcuts(self):
         """Ctrl+J is reserved by default, with legacy LF-submit available as an opt-out.
 
@@ -222,7 +223,7 @@ class TestPromptToolkitTerminalCompatibility:
             assert bindings[("c-m",)] is submit_handler
             assert ("c-j",) not in bindings
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_leaves_ctrl_j_unbound(self):
         """On native Windows only enter submits; c-j is free for the newline
         binding added separately in the prompt setup."""
@@ -251,12 +252,13 @@ class TestPromptToolkitTerminalCompatibility:
 
 
 
+    @pytest.mark.platforms("linux")
     def test_cpr_gating_posix_suppresses_without_ssh(self, monkeypatch):
         """POSIX suppresses CPR without SSH.
 
         The native-Windows arm (``_terminal_may_leak_cpr() is False``, plus
         the ``PROMPT_TOOLKIT_NO_CPR`` override that outranks it) lives in
-        ``tests/cli/test_cpr_local_leak.py`` under ``windows_only``, where it
+        ``tests/cli/test_cpr_local_leak.py`` under ``platforms("windows")``, where it
         runs against a real Windows console.
         """
         from cli import _terminal_may_leak_cpr

@@ -142,6 +142,7 @@ class TestMatcher:
 # ── End-to-end subprocess behaviour ───────────────────────────────────────
 
 
+@pytest.mark.platforms("linux")
 class TestCallbackSubprocess:
 
 
@@ -678,6 +679,7 @@ class TestEvaluateResult:
 
 
 class TestFailSemanticsEndToEnd:
+    @pytest.mark.platforms("linux")
     def test_exit_2_script_blocks(self, tmp_path):
         script = _write_script(
             tmp_path, "exit2.sh",
@@ -705,6 +707,7 @@ class TestFailSemanticsEndToEnd:
         assert result is not None and result["action"] == "block"
         assert "failed closed" in result["message"]
 
+    @pytest.mark.platforms("linux")
     def test_run_once_reflects_exit_2_block(self, tmp_path):
         """hermes hooks test must mirror production semantics."""
         script = _write_script(
@@ -722,6 +725,7 @@ class TestFailSemanticsEndToEnd:
         assert result["returncode"] == 2
         assert result["parsed"] == {"action": "block", "message": "denied"}
 
+    @pytest.mark.platforms("linux")
     def test_run_once_reflects_fail_closed_timeout(self, tmp_path):
         script = _write_script(
             tmp_path, "sleepy.sh",

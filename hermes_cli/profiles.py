@@ -45,7 +45,15 @@ _CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.j
 # dropping user data from a named-profile source. Export uses a root allow-list instead
 # (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot, a clone must run.
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
-    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
+    "hermes-agent",
+    ".worktrees",
+    "profiles",
+    "bin",
+    "node_modules",
+    # Managed runtime trees — install artifacts, never profile state
+    # (install/profile bucket split; see test_install_bucket_separation).
+    ".hermes-runtime",
+    "node",
 })
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store
@@ -94,13 +102,50 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
-# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the cwd
-# (Docker/custom deployments) the default home holds arbitrary user files that must NOT
-# be bundled. Only known Hermes profile artifacts at the root survive; sensitive runtime
-# infrastructure (``state.db``, ``logs/``, ``auth.*``, other profiles) is deliberately
-# absent so the export stays a portable, credential-free snapshot. Add new artifacts here
-# when introduced in ``hermes_constants``.
-# See #58394.
+# Directories/files to exclude when exporting the default (~/.hermes) profile.
+# The default profile contains infrastructure (repo checkout, worktrees, DBs,
+# caches, binaries) that named profiles don't have.  We exclude those so the
+# export is a portable, reasonable-size archive of actual profile data.
+# The ONE exclude-list authority for "infrastructure / runtime state that is
+# not profile data". The export path (``_default_export_ignore``) consumes it
+# directly; the distribution path (``profile_distribution.USER_OWNED_EXCLUDE``)
+# layers its distribution-specific additions on top of it. Keep new root
+# artifacts here — not in a downstream copy.
+_DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-export
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    ".hermes-runtime",      # managed runtime tree (install artifact)
+    "node",                 # legacy pre-split managed Node tree
+    # Databases & runtime state
+    "state.db", "state.db-shm", "state.db-wal",
+    "hermes_state.db",
+    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
+    "auth.lock", "active_profile", ".update_check",
+    "errors.log",
+    ".hermes_history",
+    # Caches (regenerated on use)
+    "image_cache", "audio_cache", "document_cache",
+    "browser_screenshots", "checkpoints",
+    "sandboxes",
+    "logs",                 # gateway logs
+})
+
+# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
+# cwd (Docker/custom deployments), the default profile home is the working
+# directory and contains arbitrary user files that should NOT be bundled
+# into the export. The set below identifies the *known Hermes profile
+# artifacts* at the root of HERMES_HOME; everything else is excluded.
+# Sensitive runtime infrastructure (``state.db``, ``logs/``, ``auth.*``,
+# other profiles) is intentionally *not* in this list so the export stays
+# a portable, credential-free snapshot of the user-facing surface
+# (#58394). Add new artifacts here when introduced in ``hermes_constants``.
 _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
     "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
@@ -155,7 +200,7 @@ def _wrapper_path(alias: str) -> Path:
 def _is_our_wrapper(path: Path) -> bool:
     """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
     try:
-        return "hermes -p" in path.read_text(encoding="utf-8")
+        return "hermes -p" in path.read_text(encoding="utf-8-sig")
     except Exception:
         return False
 
@@ -416,7 +461,7 @@ def build_alias_map() -> dict[str, str]:
         if not is_windows and entry.suffix:
             continue
         try:
-            with open(entry, "r", encoding="utf-8", errors="strict") as f:
+            with open(entry, "r", encoding="utf-8-sig", errors="strict") as f:
                 content = f.read(_WRAPPER_READ_LIMIT)
         except (OSError, UnicodeDecodeError):
             continue  # UnicodeDecodeError = a binary on PATH, not a wrapper
@@ -474,7 +519,7 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
         return None
     try:
         import yaml
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception:
         return None
     return data if isinstance(data, dict) else None
@@ -1288,7 +1333,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
     if not pid_file.exists():
         return
     try:
-        raw = pid_file.read_text(encoding="utf-8").strip()
+        raw = pid_file.read_text(encoding="utf-8-sig").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         # Cross-profile kill refusal: the record's hermes_home stamp names the gateway's TRUE
@@ -1324,8 +1369,11 @@ def get_active_profile() -> str:
     """Read the sticky active profile name."""
     path = _get_active_profile_path()
     try:
-        return path.read_text(encoding="utf-8").strip() or "default"
-    except (UnicodeDecodeError, OSError):
+        name = path.read_text(encoding="utf-8-sig").strip()
+        if not name:
+            return "default"
+        return name
+    except (FileNotFoundError, UnicodeDecodeError, OSError):
         return "default"
 
 
@@ -1495,7 +1543,7 @@ def _scrub_export_secrets(staged: Path) -> None:
         if not _should_redact_export_file(path):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8-sig")
         except (UnicodeDecodeError, OSError):
             continue
         redacted = redact_sensitive_text(text, force=True)
@@ -1608,7 +1656,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             continue
         seen.add(resolved)
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             continue
         hosts = raw.get("hosts")

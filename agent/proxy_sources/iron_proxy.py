@@ -278,8 +278,10 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
 
 
 def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse ``sha256sum`` output (``<hex>  <filename>``)."""
-    for line in checksum_file.read_text(encoding="utf-8", errors="replace").splitlines():
+    """Parse the standard ``sha256sum`` output: ``<hex>  <filename>``."""
+
+    text = checksum_file.read_text(encoding="utf-8-sig", errors="replace")
+    for line in text.splitlines():
         parts = line.strip().split()
         if len(parts) >= 2 and parts[-1] == asset_name:
             return parts[0]
@@ -380,23 +382,46 @@ def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
 def _read_text_or_none(p: Path) -> Optional[str]:
     """Stripped file contents, or None when missing/unreadable/empty."""
     try:
-        return p.read_text(encoding="utf-8").strip() or None
+        return p.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
 
 def ensure_management_token(*, force: bool = False) -> str:
-    """Return the management-API bearer key (0600 at <proxy>/management.token), minting on first call."""
-    p = _proxy_state_dir() / "management.token"
-    if not force and (existing := _read_text_or_none(p)):
-        return existing
+    """Return the management-API bearer key, minting it on first call.
+
+    Stored at ``<hermes_home>/proxy/management.token`` with 0600 perms.
+    The daemon receives it via the ``HERMES_IRON_PROXY_MGMT_KEY`` env var
+    (named in the generated config's ``management.api_key_env``);
+    ``hermes egress reload`` reads the same file to authenticate.
+    """
+
+    p = _management_token_path()
+    if not force and p.exists():
+        try:
+            existing = p.read_text(encoding="utf-8-sig").strip()
+            if existing:
+                return existing
+        except OSError:
+            pass
     token = mint_proxy_token(prefix="hermes-mgmt")
     _write_private_file(p, token.encode("utf-8"))
     return token
 
 
+# MERGE-CHECK: kept our utf-8-sig token reader; no in-file caller after upstream's #102117 refactor
+def _read_management_token() -> Optional[str]:
+    p = _proxy_state_dir_ro() / "management.token"
+    try:
+        token = p.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    return token or None
+
+
 def _yaml():
     """PyYAML module or None (it is a Hermes dep, but never a hard requirement here)."""
+
     try:
         import yaml
         return yaml
@@ -406,6 +431,7 @@ def _yaml():
 
 def _parse_listen(listen) -> Optional[Tuple[str, int]]:
     """``"host:port"`` -> ``(host, port)``; empty host means loopback."""
+
     if not isinstance(listen, str) or ":" not in listen:
         return None
     host, _, port_s = listen.rpartition(":")
@@ -421,7 +447,7 @@ def _config_listen(section: str, *keys: str, config_path: Optional[Path] = None)
     yaml, data = _yaml(), {}
     if yaml is not None:
         with suppress(OSError, yaml.YAMLError):
-            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8-sig")) or {}
     block = data.get(section) or {}
     return _parse_listen(next((block[k] for k in keys if block.get(k)), ""))
 
@@ -608,7 +634,7 @@ def load_mappings() -> List[TokenMapping]:
     if not (f := _proxy_state_dir() / "mappings.json").exists():
         return []
     try:
-        payload = json.loads(f.read_text(encoding="utf-8"))
+        payload = json.loads(f.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Failed to read iron-proxy mappings.json: %s", exc)
         return []
@@ -654,8 +680,9 @@ def _pidfile() -> Path:
 
 def _read_pid() -> Optional[int]:
     try:
-        pid = int(_read_text_or_none(_proxy_state_dir_ro() / "iron-proxy.pid") or "")
-    except ValueError:
+        pid = int((_proxy_state_dir_ro() / "iron-proxy.pid").read_text(encoding="utf-8-sig", errors="replace").strip())
+    except (OSError, ValueError):
+
         return None
     return pid if pid > 0 else None
 
@@ -663,7 +690,7 @@ def _read_pid() -> Optional[int]:
 def _pid_proc_starttime(pid: int) -> Optional[str]:
     """/proc/<pid>/stat starttime (field 22) on Linux, else None — cheap PID-recycling detector."""
     try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     # comm may contain spaces/parens, so split after the LAST ")"; field 22 -> tail index 19.

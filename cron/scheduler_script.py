@@ -104,7 +104,7 @@ def _get_session_db_timeout() -> float:
 
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     try:
-        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return {}
     return {

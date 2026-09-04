@@ -161,7 +161,8 @@ def _account_dir(hermes_home: str) -> Path:
 
 def _read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        # utf-8-sig (ours): tolerate BOM-persisted JSON files.
+        return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else None
     except Exception:
         return None
 
@@ -198,7 +199,7 @@ class ContextTokenStore:
         if not path.exists():
             return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             logger.warning("weixin: failed to restore context tokens for %s: %s", _safe_id(account_id), exc)
             return

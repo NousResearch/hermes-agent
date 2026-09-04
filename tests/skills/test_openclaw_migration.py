@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -247,6 +249,7 @@ def test_absent_config_is_still_created(tmp_path: Path):
     assert "anthropic/claude-sonnet-4" in config_path.read_text(encoding="utf-8")
 
 
+@pytest.mark.require_symlinks
 def test_symlinked_config_stays_a_symlink(tmp_path: Path):
     """Managed deployments symlink ~/.hermes/config.yaml into a dotfiles repo.
 

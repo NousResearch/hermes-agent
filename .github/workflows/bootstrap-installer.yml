@@ -1,0 +1,150 @@
+name: Bootstrap installer
+
+# Exercises the bootstrap-installer path on PRs that can affect it: the
+# POSIX shell installer (scripts/install.sh), its generated pin fragments,
+# and the version stamp the `complete` stage ships. The PowerShell installer
+# keeps its own Windows-only lane (installer-tests.yml); this lane runs the
+# cheap cross-checks plus a real sandboxed install against the PR checkout.
+#
+# Deliberately minimal: the heavy `python-deps` stage (uv sync of every
+# extra) is skipped — the pm/uv machinery under it is covered by the Python
+# lanes, and pulling the whole dependency graph per installer PR would make
+# this lane slower than everything it protects.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bootstrap-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  posix:
+    name: install.sh sandbox install + stamp verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # NOTE: `runner.temp` is only available in step-level env, not job-level
+    # env — a job-env `${{ runner.temp }}` makes GitHub reject the workflow
+    # graph at dispatch (0 jobs). Each step that needs these exports them.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The mirror step pushes HEAD to a fresh bare repo — a shallow
+          # checkout can't (git: "shallow update not allowed").
+          fetch-depth: 0
+
+      - name: Stage manifest is well-formed protocol v1
+        shell: bash
+        run: |
+          bash scripts/install.sh --manifest | python3 -c '
+          import json, sys
+          m = json.load(sys.stdin)
+          assert m["protocol_version"] == 1, m
+          names = [s["name"] for s in m["stages"]]
+          expected = ["prerequisites", "repository", "venv", "python-deps",
+                      "node-deps", "path", "config", "setup", "gateway", "complete"]
+          assert names == expected, names
+          assert m["stages"][-1]["name"] == "complete"
+          print("stage manifest ok:", " -> ".join(names))
+          '
+
+      - name: Generated bootstrap pins match pm/lock.json
+        shell: bash
+        run: python3 scripts/gen-bootstrap-pins.py --check
+
+      - name: Publish the PR checkout as the install source
+        id: source
+        shell: bash
+        run: |
+          # The installer clones --branch <branch>; a PR checkout is a
+          # detached HEAD, so mirror it onto a named branch first.
+          mirror="$RUNNER_TEMP/source-mirror.git"
+          git init --bare "$mirror"
+          sha="$(git rev-parse HEAD)"
+          git push "$mirror" "HEAD:refs/heads/ci-under-test"
+          echo "mirror=$mirror" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Run the installer stages against the PR checkout
+        shell: bash
+        env:
+          # install.sh reads HERMES_INSTALL_DIR, not INSTALL_DIR (its default
+          # is $HOME/.hermes/hermes-agent); the marker/verification steps
+          # below use the same env var so they agree on the install root.
+          HERMES_INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+          HERMES_RUNTIME_DIR: ${{ runner.temp }}/hermes-tools
+          HERMES_REPO_URL: ${{ steps.source.outputs.mirror }}
+        run: |
+          set -euo pipefail
+          sha="${{ steps.source.outputs.sha }}"
+          run_stage() {
+            echo "::group::stage $1"
+            bash scripts/install.sh --branch ci-under-test --commit "$sha" \
+              --non-interactive --stage "$1" --json
+            echo "::endgroup::"
+          }
+          run_stage prerequisites
+          run_stage repository
+          run_stage venv
+          # python-deps (uv sync --extra all) is deliberately skipped — the
+          # comment at the top of this file explains why.
+          run_stage node-deps
+          run_stage path
+          run_stage config
+          run_stage complete
+          test -f "$HERMES_INSTALL_DIR/.hermes-bootstrap-complete"
+
+      - name: Verify the shipped version stamp
+        shell: bash
+        env:
+          HERMES_INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
+        run: |
+          python3 scripts/verify-bootstrap-version-stamp.py \
+            --stamp "$HERMES_INSTALL_DIR/.hermes-bootstrap-complete" \
+            --repo "$HERMES_INSTALL_DIR" \
+            --expect-commit "${{ steps.source.outputs.sha }}" \
+            --expect-branch ci-under-test
+
+      - name: The pinned commit is on the branch the installer cloned
+        shell: bash
+        env:
+          HERMES_INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
+        run: |
+          # The stamp must describe the bytes actually checked out: the
+          # installed repo's HEAD is exactly the commit the installer pinned.
+          head="$(git -C "$HERMES_INSTALL_DIR" rev-parse HEAD)"
+          test "$head" = "${{ steps.source.outputs.sha }}" \
+            || { echo "::error::installed HEAD $head != pinned ${{ steps.source.outputs.sha }}"; exit 1; }
+
+  windows:
+    name: install.ps1 protocol surface
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Windows PowerShell 5.1 is what ships with Windows and what `irm | iex`
+      # lands in for most users — the protocol surface must parse there.
+      - name: Protocol version + stage manifest (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $pv = powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -ProtocolVersion
+          if ("$pv" -ne "1") { Write-Error "protocol version '$pv' != 1"; exit 1 }
+          $json = powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Manifest | ConvertFrom-Json
+          if ($json.protocol_version -ne 1) { Write-Error "manifest protocol_version != 1"; exit 1 }
+          $names = @($json.stages | ForEach-Object { $_.name })
+          if ($names -notcontains "complete") { Write-Error "manifest missing complete stage"; exit 1 }
+          Write-Host "stage manifest ok: $($names -join ' -> ')"
+
+      - name: Protocol version + stage manifest (pwsh 7)
+        shell: pwsh
+        run: |
+          $pv = pwsh -NoProfile -File scripts/install.ps1 -ProtocolVersion
+          if ("$pv" -ne "1") { Write-Error "protocol version '$pv' != 1"; exit 1 }
+          $json = pwsh -NoProfile -File scripts/install.ps1 -Manifest | ConvertFrom-Json
+          if ($json.protocol_version -ne 1) { Write-Error "manifest protocol_version != 1"; exit 1 }
+          Write-Host "stage manifest ok (pwsh 7)"

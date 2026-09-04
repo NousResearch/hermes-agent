@@ -10,7 +10,7 @@ import pytest
 import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 # Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
-# at module level. Run them in the same xdist worker so they don't race
+# at module level. They run in the same file so they don't race
 # against each other (and against any other file that also touches
 # ``app.state``) — the marker name is shared across all dashboard-auth test
 # files that gate the app.
@@ -162,7 +162,7 @@ def test_start_server_loopback_sets_auth_required_false(monkeypatch):
     # Force a fresh state to detect that start_server actually set it.
     web_server.app.state.auth_required = None
     web_server.start_server(
-        host="127.0.0.1", port=9119,
+        host="127.0.0.1", port=0,
         open_browser=False, allow_public=False,
     )
     assert web_server.app.state.auth_required is False
@@ -180,7 +180,7 @@ def test_start_server_insecure_public_no_longer_bypasses_gate(monkeypatch):
     web_server.app.state.auth_required = None
     with pytest.raises(SystemExit):
         web_server.start_server(
-            host="0.0.0.0", port=9119,
+            host="0.0.0.0", port=0,
             open_browser=False, allow_public=True,
         )
     assert web_server.app.state.auth_required is True
@@ -199,7 +199,7 @@ def test_start_server_public_without_insecure_records_auth_required(monkeypatch)
     web_server.app.state.auth_required = None
     with pytest.raises(SystemExit):
         web_server.start_server(
-            host="0.0.0.0", port=9119,
+            host="0.0.0.0", port=0,
             open_browser=False, allow_public=False,
         )
     assert web_server.app.state.auth_required is True
@@ -227,7 +227,7 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
     try:
         web_server.app.state.auth_required = None
         web_server.start_server(
-            host="0.0.0.0", port=9119,
+            host="0.0.0.0", port=0,
             open_browser=False, allow_public=False,
         )
         assert web_server.app.state.auth_required is True
@@ -372,7 +372,7 @@ def test_start_server_loopback_public_url_enables_gate(monkeypatch):
     )
     try:
         web_server.start_server(
-            host="127.0.0.1", port=9119,
+            host="127.0.0.1", port=0,
             open_browser=False, allow_public=False,
         )
         assert web_server.app.state.auth_required is True
@@ -405,7 +405,7 @@ def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypa
 
     with pytest.raises(SystemExit, match=r"no auth providers"):
         web_server.start_server(
-            host="127.0.0.1", port=9119,
+            host="127.0.0.1", port=0,
             open_browser=False, allow_public=False,
         )
     assert web_server.app.state.auth_required is True
@@ -436,7 +436,7 @@ def test_loopback_public_url_fail_closed_message_is_actionable(monkeypatch):
 
     with pytest.raises(SystemExit) as exc:
         web_server.start_server(
-            host="127.0.0.1", port=9119,
+            host="127.0.0.1", port=0,
             open_browser=False, allow_public=False,
         )
     msg = str(exc.value)

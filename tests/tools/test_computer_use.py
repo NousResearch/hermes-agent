@@ -787,10 +787,10 @@ class TestLazyMcpInstall:
                  return_value={"ready": True},
              ), \
              patch.object(cua_backend, "_maybe_nudge_update"), \
-             patch("tools.lazy_deps.ensure") as mock_ensure, \
+             patch("pm.ensure_import") as mock_ensure, \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             cua_backend.CuaDriverBackend().start()
-        mock_ensure.assert_called_once_with("tool.computer_use", prompt=False)
+        mock_ensure.assert_called_once_with("computer-use")
         mock_sess_start.assert_called_once()
 
     def test_start_reports_incompatible_existing_driver_before_mcp_setup(self):
@@ -804,7 +804,7 @@ class TestLazyMcpInstall:
                  cua_backend,
                  "cua_driver_runtime_contract_status",
                  return_value=state,
-             ), patch("tools.lazy_deps.ensure") as mock_ensure:
+             ), patch("pm.ensure_import") as mock_ensure:
             with pytest.raises(RuntimeError, match="hermes computer-use install"):
                 cua_backend.CuaDriverBackend().start()
 
@@ -815,9 +815,9 @@ class TestLazyMcpInstall:
         surfaces the actionable FeatureUnavailable rather than a session that
         crashes later on a bare import."""
         from tools.computer_use import cua_backend
-        from tools.lazy_deps import FeatureUnavailable
+        from pm import InstallError as FeatureUnavailable
         unavailable = FeatureUnavailable(
-            "tool.computer_use", ("mcp==1.28.1",), "lazy installs disabled"
+            "computer-use", "lazy installs disabled"
         )
         with patch.object(
                  cua_backend,
@@ -825,7 +825,7 @@ class TestLazyMcpInstall:
                  return_value={"ready": True},
              ), \
              patch.object(cua_backend, "_maybe_nudge_update"), \
-             patch("tools.lazy_deps.ensure", side_effect=unavailable), \
+             patch("pm.ensure_import", side_effect=unavailable), \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             with pytest.raises(FeatureUnavailable):
                 cua_backend.CuaDriverBackend().start()
@@ -865,7 +865,7 @@ class TestContractAutoRepair:
              patch("hermes_cli.tools_config.install_cua_driver",
                    return_value=True) as installer, \
              patch.object(cua_backend, "_maybe_nudge_update"), \
-             patch("tools.lazy_deps.ensure"):
+             patch("pm.ensure_import"):
             backend.start()
 
         installer.assert_called_once_with(
@@ -885,7 +885,7 @@ class TestContractAutoRepair:
              ), \
              patch("hermes_cli.tools_config.install_cua_driver",
                    return_value=False), \
-             patch("tools.lazy_deps.ensure") as mock_ensure:
+             patch("pm.ensure_import") as mock_ensure:
             with pytest.raises(RuntimeError, match="0.20.0 or newer"):
                 cua_backend.CuaDriverBackend().start()
         mock_ensure.assert_not_called()
@@ -902,7 +902,7 @@ class TestContractAutoRepair:
              ), \
              patch("hermes_cli.tools_config.install_cua_driver",
                    return_value=False) as installer, \
-             patch("tools.lazy_deps.ensure"):
+             patch("pm.ensure_import"):
             for _ in range(2):
                 with pytest.raises(RuntimeError):
                     cua_backend.CuaDriverBackend().start()
@@ -920,7 +920,7 @@ class TestContractAutoRepair:
                  return_value=self._incompatible(),
              ), \
              patch("hermes_cli.tools_config.install_cua_driver") as installer, \
-             patch("tools.lazy_deps.ensure"):
+             patch("pm.ensure_import"):
             with pytest.raises(RuntimeError, match="HERMES_CUA_DRIVER_CMD"):
                 cua_backend.CuaDriverBackend().start()
         installer.assert_not_called()
@@ -942,7 +942,7 @@ class TestContractAutoRepair:
                  return_value=state,
              ), \
              patch("hermes_cli.tools_config.install_cua_driver") as installer, \
-             patch("tools.lazy_deps.ensure"):
+             patch("pm.ensure_import"):
             with pytest.raises(RuntimeError, match="not installed"):
                 cua_backend.CuaDriverBackend().start()
         installer.assert_not_called()
@@ -1424,8 +1424,11 @@ class TestCuaDriverSessionReconnect:
             returncode = 0
             stderr = ""
             # Daemon returns a path, not inline base64.
-            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+            stdout = json.dumps({
+                "element_count": 7,
+                "tree_markdown": "- [0] AXButton",
+                "screenshot_file_path": str(shot),
+            })
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -2314,7 +2317,7 @@ class TestSessionLifecycle:
         with patch(
             "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
             return_value={"ready": True},
-        ), patch("tools.lazy_deps.ensure"):
+        ), patch("pm.ensure_import"):
             backend.start()
 
         # First call_tool after _session.start() must be start_session
@@ -2341,7 +2344,7 @@ class TestSessionLifecycle:
         with patch(
             "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
             return_value={"ready": True},
-        ), patch("tools.lazy_deps.ensure"):
+        ), patch("pm.ensure_import"):
             backend.start()  # must not raise
 
 

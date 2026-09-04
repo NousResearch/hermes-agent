@@ -144,6 +144,7 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=False) is False
             warn.assert_called()
 
+    @pytest.mark.platforms("linux")
     def test_upgrade_with_binary_present_runs_installer(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -163,6 +164,7 @@ class TestInstallCuaDriverUpgrade:
             kwargs = runner.call_args.kwargs
             assert kwargs.get("verbose") is False
 
+    @pytest.mark.platforms("linux")
     def test_upgrade_without_binary_runs_installer(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -173,9 +175,9 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=True) is True
             runner.assert_called_once()
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_quiet_refresh_prints_single_contextual_progress_line(self):
-        """``linux_only``: reaches Popen through the POSIX download-then-exec
+        """``platforms("linux")``: reaches Popen through the POSIX download-then-exec
         branch, which this lane takes for real."""
         from unittest.mock import MagicMock
 
@@ -207,9 +209,9 @@ class TestInstallCuaDriverUpgrade:
             "→ Refreshing cua-driver (Computer Use)..."
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_quiet_refresh_can_suppress_progress_line(self):
-        """``linux_only``: same POSIX Popen path as the test above."""
+        """``platforms("linux")``: same POSIX Popen path as the test above."""
         from unittest.mock import MagicMock
 
         from hermes_cli import tools_config_cua as tools_config
@@ -279,6 +281,7 @@ class TestInstallCuaDriverUpgrade:
         assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
         fake_proc.communicate.assert_called_once_with(timeout=120)
 
+    @pytest.mark.platforms("linux")
     def test_upgrade_can_suppress_installer_progress(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -342,11 +345,11 @@ class TestInstallCuaDriverUpgrade:
                 for call in info.call_args_list
             )
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_install_target_writability_is_probed_for_real_on_macos(self):
         """The ``_cua_install_target_writable`` seam the two tests above patch.
 
-        ``macos_only``: ``/Applications`` is the only install target Hermes
+        ``platforms("macos")``: ``/Applications`` is the only install target Hermes
         checks, and the probe short-circuits to True on every other platform —
         so this is the one host where the real filesystem answer means
         anything.
@@ -456,6 +459,7 @@ class TestInstallCuaDriverUpgrade:
 
         runner.assert_not_called()
 
+    @pytest.mark.platforms("linux")
     def test_non_upgrade_without_binary_runs_installer(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -559,7 +563,7 @@ class TestRequireConfirmedUpdate:
         runner.assert_called_once()
         assert runner.call_args.kwargs["installer_timeout"] == 120
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_incompatible_driver_defers_interactive_repair(self):
         incompatible = {
             "ready": False,
@@ -579,7 +583,7 @@ class TestRequireConfirmedUpdate:
             for call in info.call_args_list
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_missing_binary_defers_interactive_install(self):
         """Driver enabled but never installed (or wiped by a failed install):
         the automatic update must not launch install.ps1 either — this path
@@ -706,14 +710,15 @@ class TestUpdateCheckTimeoutDefaults:
             cua_backend_driver.cua_driver_update_check()
         return captured.get("timeout")
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_default_is_generous(self):
-        """``windows_only``: the 25s default exists because a real Windows
+        """``platforms("windows")``: the 25s default exists because a real Windows
         first-spawn is delayed by Defender/SmartScreen scanning — a faked
         platform asserted the constant, never the host it is chosen for.
         """
         assert self._captured_timeout() == 25.0
 
+    @pytest.mark.platforms("linux")
     def test_posix_default_unchanged(self):
         # Unmarked: the POSIX default is what this (Linux) host already picks,
         # so no platform faking is involved.
@@ -880,9 +885,9 @@ class TestPosixStaleInstallLockClear:
 
 
 class TestWindowsStaleInstallLockClearDispatch:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_branch_uses_file_lock_probe(self):
-        """``windows_only``: which lock protocol applies IS the host fact under
+        """``platforms("windows")``: which lock protocol applies IS the host fact under
         test — on Linux the faked platform asserted the dispatch and skipped
         the ``.install.lock.d`` directory that really exists here.
         """
@@ -896,10 +901,10 @@ class TestWindowsStaleInstallLockClearDispatch:
         clear_windows.assert_called_once_with()
 
 
-# ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
-# dedicated Windows CI job selects ``-m windows_only``, so a bare skipif left
+# ``platforms("windows")`` rather than ``skipif(sys.platform != "win32")``: the
+# dedicated Windows CI job selects ``-m platforms("windows")``, so a bare skipif left
 # these real-CreateFileW tests running on no host at all.
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWindowsStaleInstallLockClear:
     def _make_lock(self, tmp_path):
         import os
@@ -970,11 +975,11 @@ class TestInstallerTimeoutKillsProcessGroup:
 
     The POSIX cases drop the old ``platform.system`` → "Linux" fake: this lane
     IS Linux, so the branch is selected for real. The Windows cases are
-    ``windows_only`` — the psutil tree-kill only runs when ``is_windows``, and
+    ``platforms("windows")`` — the psutil tree-kill only runs when ``is_windows``, and
     on Linux the fake picked that branch on a host with no such process model.
     """
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_timeout_kills_process_group_and_returns_false(self):
         import signal
         import subprocess
@@ -1021,7 +1026,7 @@ class TestInstallerTimeoutKillsProcessGroup:
         # lock; our ceiling must give that window room to complete.
         assert tools_config._CUA_INSTALLER_TIMEOUT > tools_config._CUA_LOCK_STALE_AFTER
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_installer_runs_in_new_session_on_posix(self):
         from unittest.mock import MagicMock
         from hermes_cli import tools_config_cua as tools_config
@@ -1045,7 +1050,7 @@ class TestInstallerTimeoutKillsProcessGroup:
 
         assert captured.get("start_new_session") is True
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_timeout_kills_descendants_and_parent(self):
         import subprocess
         from unittest.mock import MagicMock
@@ -1082,7 +1087,7 @@ class TestInstallerTimeoutKillsProcessGroup:
             == tools_config._CUA_INSTALLER_DRAIN_GRACE
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_tree_enumeration_failure_falls_back_to_direct_kill(self):
         import psutil
         import subprocess
@@ -1141,9 +1146,9 @@ class TestInstallerTimeoutDrainIsBounded:
             < tools_config._CUA_INSTALLER_TIMEOUT / 10
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_post_kill_drain_passes_a_deadline(self):
-        """``linux_only``: reaches the timeout handler through the real POSIX
+        """``platforms("linux")``: reaches the timeout handler through the real POSIX
         ``killpg`` branch, so the drain under test is the one this lane runs.
         """
         import subprocess
@@ -1175,7 +1180,7 @@ class TestInstallerTimeoutDrainIsBounded:
         )
         assert drain_timeout == tools_config._CUA_INSTALLER_DRAIN_GRACE
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_verbose_path_drains_under_the_same_deadline(self):
         """The streaming install has the same handler and had the same hole.
 
@@ -1212,7 +1217,7 @@ class TestInstallerTimeoutDrainIsBounded:
         )
         assert drain_timeout == tools_config._CUA_INSTALLER_DRAIN_GRACE
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_unkillable_elevated_descendant_does_not_stall_the_drain(self):
         """The reported scenario, with the kill refused exactly where it is.
 
@@ -1258,7 +1263,7 @@ class TestInstallerTimeoutDrainIsBounded:
         )
         assert drain_timeout == tools_config._CUA_INSTALLER_DRAIN_GRACE
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_drain_that_times_out_still_surfaces_the_run_timeout(self):
         """A guardrail, not a regression test — it passes without the fix too.
 
@@ -1296,14 +1301,14 @@ class TestInstallerTimeoutDrainIsBounded:
         assert "timed out after" in warned
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestInstallerNoShell:
     """The POSIX installer path must not use shell=True or command
     substitution: the script is downloaded to a mkstemp file and exec'd
     as a plain argv list (salvage of #34974's intent, without the fixed
     /tmp path TOCTOU that PR introduced).
 
-    ``linux_only``: the download-then-exec argv IS the POSIX branch, and this
+    ``platforms("linux")``: the download-then-exec argv IS the POSIX branch, and this
     lane already takes it — the old ``platform.system`` → "Linux" fake was
     asserting a branch the host had already selected.
     """
@@ -1463,12 +1468,12 @@ class TestConfirmedVersionPinning:
         assert runner.call_args.kwargs.get("pin_version") is None
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestRunInstallerPinEnv:
     """_run_cua_driver_installer(pin_version=...) exports CUA_DRIVER_RS_VERSION
     into the installer child env; unpinned runs leave it untouched.
 
-    ``linux_only``: the helper reaches Popen through the POSIX
+    ``platforms("linux")``: the helper reaches Popen through the POSIX
     download-then-exec branch, which this lane takes for real — no
     ``platform.system`` fake needed. The pin itself is host-agnostic
     (``TestConfirmedVersionPinning`` covers the caller side unmarked).
@@ -1515,9 +1520,9 @@ class TestRunInstallerPinEnv:
 
 
 class TestWindowsAutostartRepair:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_existing_task_skips_elevated_powershell_repair(self):
-        """``windows_only``: ``_repair_cua_driver_autostart_windows`` returns
+        """``platforms("windows")``: ``_repair_cua_driver_autostart_windows`` returns
         True unconditionally off Windows, so only the fake made the schtasks
         probe run at all.
         """
@@ -1541,9 +1546,9 @@ class TestWindowsAutostartRepair:
         ]
         which.assert_not_called()
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_installer_runs_autostart_repair_after_success(self):
-        """``windows_only``: the PowerShell install argv and the autostart
+        """``platforms("windows")``: the PowerShell install argv and the autostart
         repair hook are both inside the ``is_windows`` branch, so on Linux the
         fake selected a branch whose `powershell` doesn't exist on PATH."""
         from unittest.mock import MagicMock
@@ -1585,9 +1590,9 @@ class TestWindowsAutostartRepair:
             verbose=False,
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_autostart_repair_quotes_username_space_path_via_file_path(self):
-        """``windows_only``: same early return off Windows — the elevated
+        """``platforms("windows")``: same early return off Windows — the elevated
         PowerShell command string is only built on a real Windows host.
         """
         from hermes_cli import tools_config_cua as tools_config

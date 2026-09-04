@@ -24,7 +24,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
     if problem:
         logger.warning(problem)
         return False
+    scope = normalize_scope(scope)
     name = source.name
     with _REGISTRY_LOCK:
         effective = dict(_SOURCES)
@@ -145,6 +146,7 @@ def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSour
 def snapshot_registration(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     """Return the registration owned by exactly one registry layer."""
     _ensure_builtin_sources()
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         return (_SOURCES if scope is None else _SCOPED_SOURCES.get(scope, {})).get(name)
 
@@ -153,6 +155,7 @@ def restore_registration(name: str, current: SecretSource, previous: Optional[Se
                          scope: Optional[str] = None) -> bool:
     """Restore a host-owned source registration if it is still current."""
     _ensure_builtin_sources()
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
         if target.get(name) is not current:

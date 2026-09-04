@@ -176,6 +176,7 @@ class TestSkinConfigHook:
         assert skin.get_color("banner_text") == "#FFF8DC"
 
 
+@pytest.mark.platforms("linux")
 class TestOsc11DrainGuard:
     """Regression: a late-arriving OSC 11 reply must not leak into
     prompt_toolkit's input buffer (#40250).

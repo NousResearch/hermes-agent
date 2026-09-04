@@ -95,8 +95,14 @@ class TestSnapshotRealProfile:
         (root / "Default" / "Cache" / "Cache_Data" / "big").write_text("x" * 1000)
         (root / "Code Cache" / "js" / "blob").write_text("y" * 1000)
         (root / "Crashpad" / "dump").write_text("z")
-        # Live-instance leftovers that must never reach the copy
-        os.symlink("dead-target-1", root / "SingletonLock")
+        # Live-instance leftovers that must never reach the copy. On Windows
+        # without the SeCreateSymbolicLink privilege os.symlink raises
+        # WinError 1314 — a regular dangling-ish placeholder exercises the
+        # same exclusion contract there.
+        try:
+            os.symlink("dead-target-1", root / "SingletonLock")
+        except OSError:
+            (root / "SingletonLock").write_text("dead-target-1")
         return root
 
     def test_fresh_snapshot_copies_auth_and_skips_caches(self, tmp_path, monkeypatch):
@@ -145,6 +151,7 @@ class TestSnapshotRealProfile:
         assert dst is None
         assert err and "was not found" in err
 
+    @pytest.mark.platforms("linux")
     def test_snapshot_files_are_owner_only(self, tmp_path, monkeypatch):
         """Every copied file must be 0600 and every dir 0700 (#96729).
 
@@ -176,6 +183,7 @@ class TestSnapshotRealProfile:
                     offenders.append((os.path.join(root, f), oct(mode)))
         assert not offenders, f"group/world-accessible snapshot entries: {offenders}"
 
+    @pytest.mark.platforms("linux")
     def test_existing_lax_snapshot_heals_on_refresh(self, tmp_path, monkeypatch):
         """A snapshot left 0644 by an older build tightens on the next pass."""
         import stat
@@ -956,16 +964,27 @@ class TestReviewRound3:
         import tools.browser_tool as bt
         bt._real_profile_cdp_cache.clear()
         proc = Mock(returncode=0, stdout="", stderr="")
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("9251\n/devtools/browser/x\n")
+            return FakeChrome()
+
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
              patch.object(bt_lightpanda_fallback, "_using_lightpanda_engine", return_value=False), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile",
                    return_value=(str(tmp_path), None)) as snap, \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:9251"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert err is None

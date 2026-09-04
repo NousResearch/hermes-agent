@@ -44,6 +44,7 @@ class TestReadFileHandler:
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -132,6 +133,7 @@ class TestWriteFileHandler:
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_replace_mode_calls_patch_replace(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -225,6 +227,7 @@ class TestPatchSensitivePathExtraction:
     """
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_patch_move_to_sensitive_dst_blocked(self, mock_get):
         from tools.file_tools import patch_tool
         patch_text = (
@@ -239,6 +242,7 @@ class TestPatchSensitivePathExtraction:
 
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.platforms("linux")
     def test_patch_update_no_space_after_asterisks_blocked(self, mock_get):
         """``***Update File:`` (no space after asterisks) must also be caught.
 
@@ -312,7 +316,7 @@ class TestSearchHandler:
 class TestWindowsMsysPathResolution:
     """File tools must translate Git Bash drive paths before Path resolution."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
@@ -325,7 +329,7 @@ class TestWindowsMsysPathResolution:
         assert str(resolved) == r"C:\Users\Mark\project\app.py"
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_container_paths_skip_msys_translation(self, monkeypatch):
         """WSL/docker Linux paths must not be rewritten as Windows drives.
 
@@ -455,6 +459,7 @@ class TestSensitivePathCheck:
         assert "Hermes config" in result["error"]
 
 
+    @pytest.mark.platforms("linux")
     def test_system_path_still_blocked(self, monkeypatch):
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
@@ -464,6 +469,7 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "sensitive system path" in result["error"]
 
+    @pytest.mark.platforms("linux")
     def test_macos_private_var_carveouts(self):
         """macOS temp dirs under /private/var must not be blanket-blocked,
         while the genuinely-sensitive /private/var subtrees still are."""

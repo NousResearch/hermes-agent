@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -156,7 +157,7 @@ def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
     calls = []
     monkeypatch.setattr(
         m,
-        "_run_package_only_install",
+        "_run_install_with_heartbeat",
         lambda cmd, *, env=None: calls.append((cmd, env)),
     )
     monkeypatch.setattr(
@@ -179,7 +180,7 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     tmp_path, monkeypatch
 ):
     """The updater must carry pre-rebuild state into its repair refresh."""
-    from hermes_cli import managed_uv, update_cmd
+    from hermes_cli import update_cmd
 
     (tmp_path / ".git").mkdir()
     snapshot = ["platform.telegram"]
@@ -197,9 +198,8 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def fake_refresh(prefix, *, env=None, features=None):
-        refresh_calls.append((prefix, env, features))
-        return True
+    def fake_sync(extras=None, *, explicit=False):
+        refresh_calls.append((sorted(extras or []), explicit))
 
     def fake_restore(dependencies, prefix, *, env=None):
         restore_calls.append((dependencies, prefix, env))
@@ -227,11 +227,19 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     monkeypatch.setattr(
         m, "_install_python_dependencies_with_optional_fallback", lambda *a, **k: None
     )
-    monkeypatch.setattr(m, "_refresh_active_lazy_features", fake_refresh)
     monkeypatch.setattr(m, "_restore_active_tool_dependencies", fake_restore)
     monkeypatch.setattr(m.subprocess, "run", fake_run)
-    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kwargs: None)
-    monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kwargs: "uv")
+    import pm
+    from pm.packages import uv_env as _uv_env
+
+    def fake_uv(**kw):
+        env = _uv_env()
+        if kw.get("venv"):
+            env["VIRTUAL_ENV"] = str(kw["venv"])
+        return "uv", env
+
+    monkeypatch.setattr(pm, "uv", fake_uv)
+    monkeypatch.setattr(pm, "sync_venv", fake_sync)
 
     args = SimpleNamespace(
         yes=True,
@@ -244,20 +252,14 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     with pytest.raises(RestoreReached):
         update_cmd._cmd_update_impl(args, gateway_mode=False)
 
-    # The repair env is now built via managed_python_env (#83914): third-party
-    # UV vars are stripped, managed pins set, then VIRTUAL_ENV re-pointed at
-    # the install's venv. Assert the CONTRACT, not the raw environ copy.
-    from hermes_cli.managed_uv import managed_python_env
+    # The repair phase is one explicit pm sync carrying the pre-rebuild
+    # extras snapshot; tool-dep restore still runs against the managed env
+    # (#83914: UV vars stripped, VIRTUAL_ENV pointed at the install's venv).
+    from pm.packages import uv_env as managed_python_env
 
     expected_env = managed_python_env()
     expected_env["VIRTUAL_ENV"] = str(tmp_path / "venv")
-    assert refresh_calls == [
-        (
-            ["uv", "pip"],
-            expected_env,
-            snapshot,
-        )
-    ]
+    assert refresh_calls == [(sorted(["all", *snapshot]), True)]
     assert restore_calls == [
         (
             tool_snapshot,

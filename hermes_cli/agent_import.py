@@ -47,7 +47,7 @@ def normalize_text(text: str) -> str:
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+    return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
 class ConfigReadError(RuntimeError):

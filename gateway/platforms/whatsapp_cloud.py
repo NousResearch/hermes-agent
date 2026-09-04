@@ -950,7 +950,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     logger.info("[whatsapp_cloud] skipping text injection for %s (%d bytes > %d)", doc, file_size, _MAX_TEXT_INJECT_BYTES)
                     continue
-                injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8', errors='replace')}"
+                injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8-sig', errors='replace')}"
                 body = f"{injection}\n\n{body}" if body else injection
             except OSError:
                 logger.exception("[whatsapp_cloud] failed to read document text: %s", doc)

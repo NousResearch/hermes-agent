@@ -84,3 +84,72 @@ test('resolveStamp falls back when neither CI nor git is available', () => {
     source: 'fallback'
   })
 })
+
+// ── buildStampPayload — the staged-desktop full schema ─────────────────────
+
+import { buildStampPayload } from './write-build-stamp.mjs'
+
+const baseStamp = {
+  commit: 'c'.repeat(40),
+  branch: 'main',
+  builtAt: '2026-08-14T00:00:00Z',
+  dirty: false,
+  source: 'ci'
+}
+
+test('buildStampPayload without a variant keeps the legacy 5-field shape', () => {
+  const payload = buildStampPayload(baseStamp, {})
+  assert.deepEqual(payload, {
+    schemaVersion: 1,
+    commit: baseStamp.commit,
+    branch: 'main',
+    builtAt: payload.builtAt, // stamped at write time, not the fixture's
+    dirty: false,
+    source: 'ci'
+  })
+  assert.equal(typeof payload.builtAt, 'string')
+  assert.ok(!('payload' in payload))
+  assert.ok(!('store' in payload))
+  assert.ok(!('tag' in payload))
+})
+
+test('buildStampPayload with bundled variant stamps payload bundled, store false', () => {
+  const payload = buildStampPayload(baseStamp, {
+    HERMES_DESKTOP_VARIANT: 'bundled',
+    HERMES_PAYLOAD_TAG: 'v0.27.1-canary.20260901072553'
+  })
+  assert.equal(payload.payload, 'bundled')
+  assert.equal(payload.store, false)
+  assert.equal(payload.distribution, 'desktop-app')
+  assert.equal(payload.updateMechanism, 'external')
+  assert.equal(payload.tag, 'v0.27.1-canary.20260901072553')
+})
+
+test('buildStampPayload with store variant stamps payload bundled, store true', () => {
+  const payload = buildStampPayload(baseStamp, {
+    HERMES_DESKTOP_VARIANT: 'store',
+    HERMES_PAYLOAD_TAG: 'v0.27.1'
+  })
+  assert.equal(payload.payload, 'bundled')
+  assert.equal(payload.store, true)
+})
+
+test('buildStampPayload with light variant stamps payload light', () => {
+  const payload = buildStampPayload(baseStamp, {
+    HERMES_DESKTOP_VARIANT: 'light',
+    HERMES_PAYLOAD_TAG: 'v0.27.1'
+  })
+  assert.equal(payload.payload, 'light')
+  assert.equal(payload.store, false)
+})
+
+test('buildStampPayload keeps schemaVersion + provenance in the staged shape', () => {
+  const payload = buildStampPayload(baseStamp, {
+    HERMES_DESKTOP_VARIANT: 'bundled'
+  })
+  assert.equal(payload.schemaVersion, 1)
+  assert.equal(payload.commit, baseStamp.commit)
+  assert.equal(payload.source, 'ci')
+  assert.equal(payload.tag, null)
+})
+

@@ -114,7 +114,7 @@ def summarize(log: Path, since_ts_ms: int) -> dict[str, Any]:
     frame_events: list[dict[str, Any]] = []
     if not log.exists():
         return {"error": f"no log at {log}", "react": [], "frame": []}
-    for line in log.read_text(encoding="utf-8").splitlines():
+    for line in log.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -516,7 +516,7 @@ def main() -> int:
         if not path.exists():
             print(f"\n⚠ no baseline at {path} — run with --save {args.compare} first")
         else:
-            before = json.loads(path.read_text(encoding="utf-8"))
+            before = json.loads(path.read_text(encoding="utf-8-sig"))
             print(f"\n═══ A/B diff vs /tmp/perf-{args.compare}.json ═══")
             print(format_diff(before, metrics))
 

@@ -8,8 +8,11 @@ def test_dry_run_prints_plan_without_mutating(monkeypatch, tmp_path, capsys):
     project_root = tmp_path / "hermes-agent"
     hermes_home = tmp_path / ".hermes"
     project_root.mkdir()
+    # A .git dir marks the tree as a removable git checkout — without it the
+    # install-kind gate refuses before the dry-run plan prints.
+    (project_root / ".git").mkdir()
     hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text("model: {}\n")
+    (hermes_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
 
     called = False
 

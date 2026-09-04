@@ -121,3 +121,30 @@ def test_cp932_content_is_lossy_but_never_raises(repo):
     assert result["success"] is True
     assert "legacy.txt" in result["diff"]
     assert "\ufffd" in result["diff"]  # lossy by design, matching _run_git
+
+
+def test_external_differ_is_ignored(repo):
+    # A user-configured external differ (diff.external in gitconfig, e.g.
+    # difftastic) replaces the unified-diff output of every plain "git
+    # diff". collect_working_diff must force the internal engine
+    # (--no-ext-diff) so the collected output stays parseable unified diff.
+    _git(repo, "config", "diff.external", "echo EXTERNAL-DIFF-GARBAGE")
+    (repo / "tracked.py").write_text("print('changed')\n")
+    (repo / "brand_new.py").write_text("print('new')\n")
+
+    result = collect_working_diff(str(repo))
+
+    assert result["success"] is True
+    assert "EXTERNAL-DIFF-GARBAGE" not in result["diff"]
+    # tracked change comes through the plain-diff call site
+    assert "-print('hello')" in result["diff"]
+    assert "+print('changed')" in result["diff"]
+    # untracked file comes through the --no-index call site
+    assert "+print('new')" in result["diff"]
+
+    # staged call site (--cached) is covered too
+    _git(repo, "add", "tracked.py")
+    staged = collect_working_diff(str(repo), mode="staged")
+    assert staged["success"] is True
+    assert "EXTERNAL-DIFF-GARBAGE" not in staged["diff"]
+    assert "+print('changed')" in staged["diff"]

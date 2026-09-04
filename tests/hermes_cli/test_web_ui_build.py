@@ -131,13 +131,12 @@ class TestBuildWebUISkipsWhenFresh:
         web_dir, _ = _make_web_dir(tmp_path)
         (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
         (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
-        monkeypatch.delenv("TERMUX_VERSION", raising=False)
         monkeypatch.setenv("PREFIX", "/usr")
         monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
              patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_build:
             result = _build_web_ui(web_dir)
@@ -165,12 +164,11 @@ class TestBuildWebUISkipsWhenFresh:
         (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
         (tmp_path / "ui-tui").mkdir()
         (tmp_path / "ui-tui" / "package.json").write_text("{}", encoding="utf-8")
-        monkeypatch.delenv("TERMUX_VERSION", raising=False)
         monkeypatch.setenv("PREFIX", "/usr")
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
              patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp):
             result = _build_web_ui(web_dir)
@@ -188,12 +186,11 @@ class TestBuildWebUISkipsWhenFresh:
         fails hard on a --workspace that doesn't exist."""
         web_dir, _ = _make_web_dir(tmp_path)
         (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
-        monkeypatch.delenv("TERMUX_VERSION", raising=False)
         monkeypatch.setenv("PREFIX", "/usr")
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
              patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp):
             result = _build_web_ui(web_dir)
@@ -215,7 +212,7 @@ class TestBuildWebUISkipsWhenFresh:
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
              patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_idle:
             result = _build_web_ui(web_dir)
@@ -225,7 +222,7 @@ class TestBuildWebUISkipsWhenFresh:
         mock_idle.assert_called_once()
         args, kwargs = mock_idle.call_args
         # Positional: [npm, "run", "build"]; cwd passed as kwarg.
-        assert args[0] == ["/usr/bin/npm", "run", "build"]
+        assert args[0][-2:] == ["run", "build"]
         assert kwargs["cwd"] == web_dir
 
 
@@ -239,7 +236,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         # build attempt 1: fail; build attempt 2: success.
         build_fail = Subprocess.CompletedProcess([], 1, stdout="EPERM", stderr="")
         build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main_web_build._time.sleep") as mock_sleep, \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main_web_build._run_with_idle_timeout",
@@ -259,7 +256,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         Subprocess = __import__("subprocess")
         install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
         build_fail = Subprocess.CompletedProcess([], 1, stdout="vite ENOMEM", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main_web_build._time.sleep"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main_web_build._run_with_idle_timeout",
@@ -274,6 +271,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert "vite ENOMEM" in out  # combined output surfaced to user
 
 
+@pytest.mark.platforms("linux")
 class TestBuildWebUIFlock:
     """Cross-process build serialization (salvaged from PR #63455).
 
@@ -309,7 +307,7 @@ class TestBuildWebUIFlock:
         t = threading.Timer(0.2, release_after_building)
         t.start()
         try:
-            with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+            with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
                  patch("hermes_cli.main.subprocess.run") as mock_run:
                 result = build(web_dir)
         finally:

@@ -272,7 +272,7 @@ def store_client_secret(path: str) -> None:
     if not src.exists():
         _fail(f"ERROR: File not found: {src}")
     try:
-        data = json.loads(src.read_text(encoding="utf-8"))
+        data = json.loads(src.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         _fail("ERROR: File is not valid JSON.")
     if "installed" not in data and "web" not in data:
@@ -296,7 +296,7 @@ def _load_pending_auth(email: Optional[str] = None) -> dict:
     if not pending.exists():
         _fail("ERROR: No pending OAuth session found. Run --auth-url first.")
     try:
-        data = json.loads(pending.read_text(encoding="utf-8"))
+        data = json.loads(pending.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         _fail(f"ERROR: Could not read pending OAuth session: {exc}", "Run --auth-url again to start a fresh session.")
     if not data.get("state") or not data.get("code_verifier"):

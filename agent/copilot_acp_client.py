@@ -88,7 +88,12 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
         return cached
     try:
         probe = subprocess.run(
-            [command, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            [command, "--help"],
+            # Explicit codec because text=True alone decodes with the
+            # locale default and crashes on non-ASCII help text under
+            # GBK/CP932 locales.
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=5,
             stdin=subprocess.DEVNULL,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -214,7 +219,7 @@ def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
     if block_error := get_read_block_error(str(path)):
         raise PermissionError(block_error)
     try:
-        content = path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         content = ""
     line, limit = params.get("line"), params.get("limit")

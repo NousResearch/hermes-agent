@@ -60,18 +60,24 @@ from tools.tts_tool_plugins import (
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
 
 
+# MERGE-CHECK: pm (our branch) replaces upstream's removed tools.lazy_deps; upstream lazy_deps
+# feature ids mapped to the pm extras they install.
+_PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
+
 # --- Lazy SDK importers -- providers import only when used (headless boxes lack PortAudio etc.) ---
 def _sdk_importer(module: str, attr: Optional[str] = None, feature: Optional[str] = None) -> Callable[[], Any]:
     """Lazy SDK importer: returns ``module`` (or ``module.attr``), raising ImportError when absent.
 
-    ``feature`` names a ``tools.lazy_deps`` feature to best-effort install first (users who enabled
+    ``feature`` names a ``pm.ensure_import`` extra to best-effort install first (users who enabled
     a provider in config.yaml never ran the post-setup hook); any failure there falls through so
     the raw import still raises cleanly. sounddevice also raises OSError without PortAudio."""
     def _import():
         if feature:
+            # MERGE-CHECK: upstream refactor wins; pm.ensure_import replaces the removed
+            # tools.lazy_deps feature-install (pm extras: tts.edge->edge-tts etc.)
             with contextlib.suppress(Exception):
-                from tools.lazy_deps import ensure
-                ensure(feature, prompt=False)
+                from pm import ensure_import as _pm_ensure
+                _pm_ensure(_PM_FEATURE_ALIASES.get(feature, feature))
         mod = importlib.import_module(module)
         return getattr(mod, attr) if attr else mod
     _import.__name__ = f"_import_{module.split('.')[0]}"

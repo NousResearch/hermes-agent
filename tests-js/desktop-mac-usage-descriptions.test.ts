@@ -54,7 +54,13 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
+const DESKTOP_DIR = path.join(REPO_ROOT, 'apps', 'desktop')
+// The desktop build config lives in electron-builder.config.cjs — the repo
+// deliberately keeps package.json free of a `build` field (see the config
+// header: "run-electron-builder.mjs always passes --config, so a stray
+// package.json field would be silently ignored"). extendInfo is read from
+// that file, exactly what electron-builder consumes.
+const DESKTOP_CONFIG = path.join(DESKTOP_DIR, 'electron-builder.config.cjs')
 
 interface UsageDescriptionRow {
   key: string
@@ -62,21 +68,22 @@ interface UsageDescriptionRow {
   reason: string
 }
 
-function desktopPkg(): Record<string, unknown> {
-  assert.ok(fs.existsSync(DESKTOP_PKG), `missing ${DESKTOP_PKG}`)
+function desktopConfig(): Record<string, unknown> {
+  assert.ok(fs.existsSync(DESKTOP_CONFIG), `missing ${DESKTOP_CONFIG}`)
 
-  return JSON.parse(fs.readFileSync(DESKTOP_PKG, 'utf-8'))
+  // The config is a .cjs module (CommonJS); require it like the builder does.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require(DESKTOP_CONFIG) as Record<string, unknown>
 }
 
 function extendInfo(): Record<string, string> {
-  const pkg = desktopPkg()
-  const build = (pkg.build ?? {}) as Record<string, unknown>
-  const mac = (build.mac ?? {}) as Record<string, unknown>
+  const config = desktopConfig()
+  const mac = (config.mac ?? {}) as Record<string, unknown>
   assert.ok(
     typeof mac.extendInfo === 'object' &&
       mac.extendInfo !== null &&
       !Array.isArray(mac.extendInfo),
-    'build.mac.extendInfo is missing or invalid in apps/desktop/package.json'
+    'build.mac.extendInfo is missing or invalid in electron-builder.config.cjs'
   )
   const extend = mac.extendInfo as Record<string, unknown>
 
@@ -84,8 +91,13 @@ function extendInfo(): Record<string, string> {
   // for NS*UsageDescription is string, but electron-builder's `extendInfo`
   // accepts arbitrary plist scalars (bool, number, array, object) and we want
   // a clean assertion error here, not a downstream `value.trim is not a
-  // function` crash in the whitespace test.
+  // function` crash in the whitespace test. Only the privacy usage keys must
+  // be strings; other plist scalars (LSRequiresNativeExecution, etc.) are
+  // legitimate booleans/numbers.
   for (const [key, value] of Object.entries(extend)) {
+    if (!key.startsWith('NS') || !key.endsWith('UsageDescription')) {
+      continue
+    }
     assert.equal(
       typeof value,
       'string',
@@ -167,7 +179,7 @@ test.each(EXPECTED_USAGE_DESCRIPTIONS)(
     assert.ok(
       value !== undefined,
       `Info.plist privacy usage description \`${key}\` is missing from ` +
-        'apps/desktop/package.json build.mac.extendInfo. macOS will surface ' +
+        'electron-builder.config.cjs mac.extendInfo. macOS will surface ' +
         'a misleading system prompt or silently deny the related API.\n' +
         `Reason: ${reason}`
     )
@@ -184,6 +196,11 @@ test('every extendInfo value is free of leading/trailing whitespace and newlines
   const info = extendInfo()
 
   for (const [key, value] of Object.entries(info)) {
+    // Only string values carry whitespace concerns; plist scalars
+    // (booleans/numbers like LSRequiresNativeExecution) are exempt.
+    if (typeof value !== 'string') {
+      continue
+    }
     assert.equal(
       value,
       value.trim(),

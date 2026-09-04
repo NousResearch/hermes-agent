@@ -356,7 +356,7 @@ class WebhookAdapter(BasePlatformAdapter):
             mtime = subs_path.stat().st_mtime
             if mtime <= self._dynamic_routes_mtime:
                 return  # No change
-            data = json.loads(subs_path.read_text(encoding="utf-8"))
+            data = json.loads(subs_path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 return
             self._dynamic_routes = {  # static routes take precedence

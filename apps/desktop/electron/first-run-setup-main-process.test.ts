@@ -117,3 +117,108 @@ test('a primary apply without an active first-run gate tears down before reconne
   assert.deepEqual(teardownPrimaryBackend.mock.calls, [[{ soft: true }]])
   assert.deepEqual(order, ['clear-failure', 'teardown', 'notify'])
 })
+
+const bundledDamagedBackend = {
+  activeRoot: '/tmp/hermes-home/hermes-agent',
+  kind: 'bundled-unusable',
+  platform: 'win32',
+  local: 'bundled-damaged'
+}
+
+test('a bundled-unusable continueLocal never reaches an installer — the local step refuses instead', async () => {
+  const gate = createFirstRunSetupGate({ stuckAfterMs: 0 })
+
+  const runBootstrap = vi.fn()
+
+  // Production ordering (electron/main.ts ensureRuntime): the
+  // bundled-unusable branch throws the reinstall error BEFORE any
+  // runBootstrap call. Model that contract — the installer must never fire
+  // for a bundled install, damaged or not.
+  const ensureLocalRuntime = vi.fn(async (backend: any) => {
+    assert.equal(backend.kind, 'bundled-unusable')
+    assert.equal(backend.local, 'bundled-damaged')
+
+    throw new Error('This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.')
+  })
+
+  const pendingConnection = runPrimaryBackendStartup({
+    connectRemote: vi.fn(),
+    ensureLocalRuntime,
+    prepareLocalBackend: vi.fn(async () => bundledDamagedBackend),
+    resolveRemote: vi.fn(async () => null),
+    waitForDecision: gate.wait,
+    waitForLocalStart: vi.fn(async () => {})
+  })
+
+  await vi.waitFor(() => assert.equal(gate.hasWaiter(), true))
+
+  gate.continueLocal()
+
+  await assert.rejects(pendingConnection, /Reinstall Hermes Desktop to restore it/)
+  assert.equal(ensureLocalRuntime.mock.calls.length, 1)
+  assert.equal(runBootstrap.mock.calls.length, 0)
+})
+
+test('a bundled-unusable remote apply connects without ensuring or bootstrapping locally', async () => {
+  const gate = createFirstRunSetupGate({ stuckAfterMs: 0 })
+
+  const candidateRemote = {
+    authMode: 'token',
+    baseUrl: 'https://gateway.example.com/hermes',
+    source: 'settings',
+    token: 'secret',
+    wsUrl: 'wss://gateway.example.com/hermes/api/ws?token=secret'
+  }
+
+  let savedRemote: typeof candidateRemote | null = null
+
+  const resolveRemote = vi.fn(async () => savedRemote)
+  const connectRemote = vi.fn(async remote => ({ ...remote, mode: 'remote' as const }))
+  const ensureLocalRuntime = vi.fn()
+  const teardownPrimaryBackend = vi.fn(async () => {})
+  const cancelSshBootstrap = vi.fn(async () => {})
+  const teardownSsh = vi.fn(async () => {})
+  const clearLocalBootstrapFailure = vi.fn()
+  const notifyConnectionApplied = vi.fn()
+
+  const pendingConnection = runPrimaryBackendStartup({
+    connectRemote,
+    ensureLocalRuntime,
+    prepareLocalBackend: vi.fn(async () => bundledDamagedBackend),
+    resolveRemote,
+    waitForDecision: gate.wait,
+    waitForLocalStart: vi.fn(async () => {})
+  })
+
+  await vi.waitFor(() => assert.equal(gate.hasWaiter(), true))
+
+  // Remote is the escape hatch on a damaged bundle: persist + re-home, same
+  // production ordering as the bootstrap-needed path.
+  savedRemote = candidateRemote
+
+  await applyConnectionChange({
+    cancelAndWait: cancelSshBootstrap,
+    isPrimary: true,
+    rehomePrimary: () =>
+      rehomePrimaryConnection({
+        clearLocalBootstrapFailure,
+        mode: 'remote',
+        notifyConnectionApplied,
+        resumeFirstRunRemote: gate.abandonForRemoteApply,
+        teardownPrimaryBackend
+      }),
+    scope: '',
+    sendApplied: notifyConnectionApplied,
+    stopPool: vi.fn(),
+    teardownPrimary: teardownPrimaryBackend,
+    teardownSsh
+  })
+
+  assert.deepEqual(await pendingConnection, {
+    kind: 'remote',
+    connection: { ...candidateRemote, mode: 'remote' }
+  })
+  assert.deepEqual(resolveRemote.mock.calls, [[], []])
+  assert.deepEqual(connectRemote.mock.calls, [[candidateRemote]])
+  assert.equal(ensureLocalRuntime.mock.calls.length, 0)
+})

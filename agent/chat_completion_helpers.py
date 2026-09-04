@@ -700,7 +700,7 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
         from urllib.parse import urlparse
         from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
         from hermes_cli.local_runtime.supervisor import state_path
-        state = json.loads(state_path().read_text(encoding="utf-8"))
+        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
         if not managed or urlparse(base).netloc.lower() != managed:
             return None

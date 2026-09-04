@@ -326,7 +326,7 @@ WSL2 将虚拟机磁盘存储为 `%LOCALAPPDATA%\Packages\...` 下的稀疏 VHDX
 
 ## 下一步
 
-- **[安装说明](/getting-started/installation)** —— 实际安装步骤（Linux/WSL2/Termux 均使用同一安装程序）。
+- **[安装说明](/getting-started/installation)** —— 实际安装步骤（Linux/WSL2 使用同一安装程序）。
 - **[集成 → Providers → WSL2 网络配置](/integrations/providers#wsl2-networking-windows-users)** —— 本地模型服务器网络配置的权威深度说明。
 - **[MCP 指南 → WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** —— 从 WSL 中的 Hermes 控制你已登录的 Windows Chrome。
 - **[Tool Gateway](/user-guide/features/tool-gateway)** 和 **[Web Dashboard](/user-guide/features/web-dashboard)** —— 你最常需要从 WSL 暴露到网络其他部分的长期运行服务。

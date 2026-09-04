@@ -1,0 +1,155 @@
+#!/bin/bash
+# ============================================================================
+# venv-style activation for the Hermes dev environment (pm-managed tools).
+#
+#   source ./activate      (bash / zsh, repo root)
+#   .\activate.ps1         (PowerShell)
+#
+# Emits the composed pm env (PATH + tool vars) into the CURRENT shell, with
+# save/restore: `deactivate` undoes exactly what activation changed.
+#
+# Requires a completed `./setup-hermes.sh` — it never invokes uv. It runs
+# the pm store's pinned python (fallback: the repo venv) to emit the env
+# JSON, then exports it here.
+# ============================================================================
+# Guard against double-sourcing: venv activate precedent (re-activating is a
+# no-op re-save; we keep it idempotent by deactivating first).
+if [ -n "${__HERMES_ACTIVATED:-}" ]; then
+    deactivate
+fi
+
+_HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- target detection (same rules as pm.sh: msys on Windows must report the
+# machine's truth from the registry, not the emulated shell's) ---
+_hermes_os="$(uname -s)"
+case "$_hermes_os" in
+    Linux) _hermes_os=linux ;;
+    Darwin) _hermes_os=darwin ;;
+    MINGW*|MSYS*|CYGWIN*) _hermes_os=win32 ;;
+    *) echo "activate: unsupported OS $(uname -s)" >&2; return 1 2>/dev/null || exit 1 ;;
+esac
+if [ "$_hermes_os" = win32 ]; then
+    _hermes_winarch="$(reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' /v PROCESSOR_ARCHITECTURE 2>/dev/null | tr -d '
+' | awk '/PROCESSOR_ARCHITECTURE/ {print $NF}')"
+    # PROCESSOR_ARCHITECTURE reports the EMULATED arch inside an x64-on-
+    # arm64 shell, and uname -m does too. The registry is the machine's
+    # truth; when reg.exe is unreachable, uname -s's release token (e.g.
+    # MINGW64_NT-10.0-28000-ARM64) still names the real machine arch.
+    if [ -z "$_hermes_winarch" ]; then
+        case "$(uname -s)" in
+            *ARM64) _hermes_winarch=ARM64 ;;
+            *AMD64) _hermes_winarch=AMD64 ;;
+        esac
+    fi
+    case "${_hermes_winarch:-}" in
+        ARM64) _hermes_arch=arm64 ;;
+        AMD64) _hermes_arch=x64 ;;
+        *) : ;;  # probe unavailable — the store probe below decides
+    esac
+fi
+if [ -z "${_hermes_arch:-}" ] && [ "$_hermes_os" != win32 ]; then
+    case "$(uname -m)" in
+        arm64|aarch64) _hermes_arch=arm64 ;;
+        x86_64|amd64) _hermes_arch=x64 ;;
+        *) : ;;  # unknown — the store probe below decides
+    esac
+fi
+# Resolve the pm store root here so the arch probe below can consult it.
+_hermes_store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
+if [ -n "${_hermes_arch:-}" ]; then
+    _hermes_target="$_hermes_os-$_hermes_arch"
+else
+    # Registry + env both unavailable (blanked PATH): ask the store which
+    # target it actually holds instead of guessing an arch. First
+    # python-<ver>-<os>-<arch> entry wins.
+    _hermes_target=""
+    for _hermes_entry in "$_hermes_store"/python-*; do
+        [ -d "$_hermes_entry" ] || continue
+        case "${_hermes_entry##*/}" in
+            python-*-linux-*|python-*-darwin-*|python-*-win32-*)
+                _hermes_target="${_hermes_entry##*python-}"
+                _hermes_target="${_hermes_target#*-}"
+                break
+                ;;
+        esac
+    done
+    if [ -z "$_hermes_target" ]; then
+        echo "activate: cannot determine target arch and the store holds no python entry — run ./setup-hermes.sh first" >&2
+        unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+_hermes_py=""
+for _hermes_entry in "$_hermes_store"/python-*-"$_hermes_target"; do
+    if [ -x "$_hermes_entry/bin/python" ]; then
+        _hermes_py="$_hermes_entry/bin/python"
+    elif [ -x "$_hermes_entry/bin/python.exe" ]; then
+        _hermes_py="$_hermes_entry/bin/python.exe"
+    fi
+    [ -n "$_hermes_py" ] && break
+done
+if [ -z "$_hermes_py" ]; then
+    for _hermes_venvpy in "$_hermes_repo/venv/bin/python" "$_hermes_repo/venv/bin/python.exe" \
+                          "$_hermes_repo/venv/Scripts/python.exe"; do
+        [ -x "$_hermes_venvpy" ] && { _hermes_py="$_hermes_venvpy"; break; }
+    done
+fi
+if [ -z "$_hermes_py" ]; then
+    echo "activate: no pm python found — run ./setup-hermes.sh first" >&2
+    unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py
+    return 1 2>/dev/null || exit 1
+fi
+
+# --- emit export lines from `pm env` ---
+_hermes_json="$(PYTHONPATH="$_hermes_repo${PYTHONPATH:+:$PYTHONPATH}" "$_hermes_py" -m pm.cli env 2>/dev/null)"
+if [ -z "$_hermes_json" ] || [ "${_hermes_json#*{}" = "$_hermes_json" ]; then
+    echo "activate: could not read pm env (run ./setup-hermes.sh first)" >&2
+    unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py _hermes_json
+    return 1 2>/dev/null || exit 1
+fi
+
+_hermes_keys="$(printf '%s' "$_hermes_json" | "$_hermes_py" -c 'import json,sys; print(" ".join(json.load(sys.stdin)))' \
+    | tr ' ' '\n' | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | tr '\n' ' ')"
+[ -n "$_hermes_keys" ] || _hermes_keys="PATH"
+
+# --- snapshot what we are about to change (deactivate restores this) ---
+__HERMES_ACTIVATED=1
+__HERMES_SAVED_PATH="$PATH"
+for _hermes_k in $_hermes_keys; do
+    eval "__HERMES_SAVED_$_hermes_k=\"\${$_hermes_k+set}\""
+    eval "__HERMES_PRIOR_$_hermes_k=\${$_hermes_k-__HERMES_UNSET__}"
+done
+
+eval "$(printf '%s' "$_hermes_json" | "$_hermes_py" -c '
+import json, sys, shlex, re
+for k, v in json.load(sys.stdin).items():
+    # Windows carries names like ProgramFiles(ARM) that are not valid
+    # bash identifiers — skip them (they pass through untouched).
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+        continue
+    print("export %s=%s" % (k, shlex.quote(str(v))))')"
+
+deactivate() {
+    export PATH="$__HERMES_SAVED_PATH"
+    for _hermes_k in $__HERMES_KEY_LIST; do
+        eval "_hermes_was=\"\$__HERMES_SAVED_$_hermes_k\""
+        eval "_hermes_old=\"\$__HERMES_PRIOR_$_hermes_k\""
+        if [ "$_hermes_was" != "set" ]; then
+            unset "$_hermes_k"
+        else
+            export "$_hermes_k=$_hermes_old"
+        fi
+        unset "__HERMES_SAVED_$_hermes_k" "__HERMES_PRIOR_$_hermes_k"
+    done
+    unset __HERMES_SAVED_PATH __HERMES_KEY_LIST __HERMES_ACTIVATED
+    unset -f deactivate
+    unset _hermes_k _hermes_was _hermes_old
+}
+
+# remember the key list for deactivate (kept out of the loop vars above)
+__HERMES_KEY_LIST="$_hermes_keys"
+
+unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store \
+      _hermes_py _hermes_json _hermes_keys _hermes_k _hermes_entry _hermes_venvpy \
+      _hermes_winarch

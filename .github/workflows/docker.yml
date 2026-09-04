@@ -94,6 +94,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Write install stamp
+        run: python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -122,8 +124,6 @@ jobs:
           load: true
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ (github.event_name != 'pull_request') && matrix.cache-to || '' }}
 
@@ -175,10 +175,9 @@ jobs:
           NOUS_API_KEY: ""
         run: |
           # Each of these tests drives a container, so the docker daemon sets
-          # the limit and not the processor. This caps the workers. The
-          # default from run_tests.sh is cpu_count*2, which starts 64
-          # containers together on the 32-core amd64 runner.
-          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
+          # the limit and not the processor. This pins the runner's worker
+          # count to the core count.
+          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
 
   # ---------------------------------------------------------------------------
   # Rebuild and push each architecture only after the unprivileged build/test
@@ -209,6 +208,8 @@ jobs:
       - name: Checkout trusted source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Write install stamp
+        run: python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -240,8 +241,6 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ matrix.cache-to }}

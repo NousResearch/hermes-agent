@@ -77,7 +77,7 @@ def _stable_api_key() -> str:
     """
     key_path = runtimes_root() / ".api_key"
     with suppress(OSError):
-        existing = key_path.read_text(encoding="utf-8").strip()
+        existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
             return existing
     key = secrets.token_urlsafe(24)

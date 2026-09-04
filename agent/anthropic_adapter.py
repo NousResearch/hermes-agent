@@ -36,9 +36,14 @@ def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
     global _anthropic_sdk
     if _anthropic_sdk is ...:
-        with suppress(Exception):  # ImportError or FeatureUnavailable — fall through to the import below
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("provider.anthropic", prompt=False)
+        try:
+            from pm import ensure_import
+            ensure_import("anthropic")
+        except ImportError:
+            pass
+        except Exception:
+            # InstallError — fall through to ImportError handling below
+            pass
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk

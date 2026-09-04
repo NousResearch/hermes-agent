@@ -38,7 +38,7 @@ from pathlib import Path
 import pytest
 
 pytestmark = [
-    pytest.mark.windows_only,
+    pytest.mark.platforms("windows"),
     pytest.mark.skipif(sys.platform != "win32", reason="native Windows only"),
 ]
 

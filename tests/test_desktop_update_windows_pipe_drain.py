@@ -39,7 +39,7 @@ and finally paths can write the result, remove the marker, and relaunch Desktop.
 So the contract is: bounded when a descendant holds the pipe open, never slower
 than the step can write, and bounded when the step itself remains alive without
 observable progress. All arms live in the script's own
-``-SelfTestPipeDrain`` fixture, which is ``windows_only`` because Linux CI
+``-SelfTestPipeDrain`` fixture, which is ``platforms("windows")`` because Linux CI
 cannot execute the PowerShell hand-off.
 """
 
@@ -68,7 +68,7 @@ class TestIdleWatchdogCountsUpdateLogGrowth:
     exit 124.
 
     These are source-contract assertions (the executable proof is the
-    ``logstall`` arm of ``-SelfTestPipeDrain``, ``windows_only`` below):
+    ``logstall`` arm of ``-SelfTestPipeDrain``, ``platforms("windows")`` below):
     Linux CI cannot run the PowerShell hand-off, but it CAN pin that the
     drain loop consults update-log growth before terminating the tree.
     Sabotage-proof: removing the ``Get-StepProgressLogStamp`` consult from
@@ -124,7 +124,7 @@ class TestIdleWatchdogCountsUpdateLogGrowth:
         assert "silent but logging" in src
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     tmp_path: Path,
 ) -> None:

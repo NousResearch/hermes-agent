@@ -83,7 +83,7 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
 
 def _read_active_session_file(path: Path) -> Optional[str]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
     return str(data.get("session_id") or "").strip() or None

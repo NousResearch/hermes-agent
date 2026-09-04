@@ -54,19 +54,9 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 - [在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
 - [浏览器自动化](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
 
-### 支持 Android / Termux 吗？
+### 支持 Android 吗？
 
-支持 — Hermes 现已为 Android 手机提供经过测试的 Termux 安装路径。
-
-快速安装：
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
-
-完整的手动步骤、支持的扩展及当前限制，请参阅 [Termux 指南](../getting-started/termux.md)。
-
-重要说明：完整的 `.[all]` 扩展目前在 Android 上不可用，因为 `voice` 扩展依赖 `faster-whisper` → `ctranslate2`，而 `ctranslate2` 未发布 Android wheel 包。请改用经过测试的 `.[termux]` 扩展。
+不支持 — Hermes 已移除 Android 和 Termux 支持。请参阅[平台支持页面](../getting-started/platform-support.md)了解支持的平台。
 
 ### 我的数据会被发送到哪里？
 

@@ -83,11 +83,25 @@ def gui_install_summary(hermes_home: "Path | None" = None) -> dict:
     """JSON-serializable snapshot of what's installed, for the desktop UI to render via IPC."""
     home: Path = hermes_home if hermes_home is not None else get_hermes_home()
     userdata = desktop_userdata_dir()
-    return {"hermes_home": str(home), "agent_installed": agent_is_installed(home),
-            "gui_installed": gui_is_installed(home),
-            "source_built_artifacts": [str(p) for p in source_built_gui_artifacts(home) if p.exists()],
-            "packaged_app_paths": [str(p) for p in packaged_gui_app_paths() if p.exists()],
-            "userdata_dir": str(userdata), "userdata_exists": userdata.exists(), "platform": sys.platform}
+    # Steward facts, so the UI can gate its destructive options on the same
+    # ladder the CLI uninstaller uses: only a git checkout may have its code
+    # removed; sealed trees (nix / desktop-app / docker) get data-only.
+    from hermes_cli import steward as steward_mod
+
+    steward, code_removal_allowed = steward_mod.classify_install(_agent_root(home))
+
+    return {
+        "hermes_home": str(home),
+        "agent_installed": agent_is_installed(home),
+        "gui_installed": gui_is_installed(home),
+        "source_built_artifacts": [str(p) for p in source_built_gui_artifacts(home) if p.exists()],
+        "packaged_app_paths": [str(p) for p in packaged_gui_app_paths() if p.exists()],
+        "userdata_dir": str(userdata),
+        "userdata_exists": userdata.exists(),
+        "platform": sys.platform,
+        "steward": steward,
+        "code_removal_allowed": code_removal_allowed,
+    }
 
 
 def _remove_path(path: Path) -> bool:

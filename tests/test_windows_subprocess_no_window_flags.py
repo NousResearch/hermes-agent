@@ -68,12 +68,12 @@ def _make_fake_popen(spawns, *, stdout="ok\n", returncode=0):
     return _FakePopen
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     """The normal-path spawn contract survives the run()->Popen rewrite:
     PIPE/PIPE/DEVNULL, text + utf-8/replace, hidden-window flags on Windows.
 
-    ``windows_only``: the ``creationflags`` assertion is the point, and
+    ``platforms("windows")``: the ``creationflags`` assertion is the point, and
     ``bounded_git_probe`` only sets that key when ``IS_WINDOWS`` — which the
     helper caches from the real platform at import. ``windows_hide_flags`` is
     still stubbed so the expected value is a fixed constant rather than
@@ -156,9 +156,9 @@ def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_shell_hooks_hide_hook_command_windows(monkeypatch):
-    """``windows_only``: ``shell_hooks._spawn`` only adds ``creationflags``
+    """``platforms("windows")``: ``shell_hooks._spawn`` only adds ``creationflags``
     under its module-level ``IS_WINDOWS``, so on Linux the flag patch was
     what created the thing being asserted."""
     from agent import shell_hooks
@@ -338,7 +338,7 @@ def test_lsp_client_spawn_hides_console_window(monkeypatch):
 #
 # Windowless processes (pythonw gateway + kanban workers) flashed consoles
 # from three more spawn families: tools/env_probe._run's interpreter/pip
-# probes, tools/lazy_deps' uv→pip→ensurepip install ladder, and CPython
+# probes and CPython
 # 3.11/3.12's platform.win32_ver() which shells out `cmd /c ver` with
 # shell=True and no CREATE_NO_WINDOW. All are hide-only (creationflags);
 # win32_ver is neutralized by stubbing platform._syscmd_ver so the
@@ -371,43 +371,11 @@ def test_env_probe_run_hides_console_window(monkeypatch):
     assert kwargs["stdin"] == subprocess.DEVNULL
 
 
-def test_lazy_deps_uv_install_hides_console_window(monkeypatch):
-    from tools import lazy_deps
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="installed", returncode=0)
-
-    monkeypatch.delenv(lazy_deps._LAZY_TARGET_ENV, raising=False)
-    monkeypatch.setattr(lazy_deps, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(lazy_deps.subprocess, "run", fake_run)
-    monkeypatch.setattr(lazy_deps.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-
-    res = lazy_deps._venv_pip_install(("left-pad",))
-
-    assert res.success
-    spawns = _spawns(captured, "pip", "install", "left-pad")
-    assert len(spawns) == 1, captured
-    cmd, kwargs = spawns[0]
-    assert cmd[:3] == ["/usr/bin/uv", "pip", "install"]
-    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
-    assert kwargs["stdin"] == subprocess.DEVNULL
-
-
-
-
-
-
-
-
-@pytest.mark.windows_only
 def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
     """``_syscmd_ver`` is replaced by an in-process echo stub so win32_ver()
     takes its ValueError fallback instead of shelling out to `cmd /c ver`.
 
-    ``windows_only``: ``suppress_platform_ver_console()`` is a no-op unless
+    ``platforms("windows")``: ``suppress_platform_ver_console()`` is a no-op unless
     ``IS_WINDOWS``, and the console flash it prevents (``cmd /c ver``) only
     exists on Windows — the old flag patch installed the stub on a host where
     ``win32_ver`` is never consulted at all.

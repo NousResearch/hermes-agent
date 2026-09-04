@@ -14,31 +14,67 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  allowedUninstallModes,
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  installKindAllowsCodeRemoval,
   modeRemovesAgent,
   modeRemovesUserData,
+  nativeRemovalInstructions,
+  resolveInstallKind,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
-  UNINSTALL_MODES,
   uninstallArgsForMode
 } from './desktop-uninstall'
 
 // --- uninstallArgsForMode ---
-
-test('uninstallArgsForMode maps each mode to the module-runner argv', () => {
-  assert.deepEqual(uninstallArgsForMode('gui'), ['-m', 'hermes_cli.uninstall', '--mode', 'gui'])
-  assert.deepEqual(uninstallArgsForMode('lite'), ['-m', 'hermes_cli.uninstall', '--mode', 'lite'])
-  assert.deepEqual(uninstallArgsForMode('full'), ['-m', 'hermes_cli.uninstall', '--mode', 'full'])
-})
 
 test('uninstallArgsForMode throws on an unknown mode (no silent full wipe)', () => {
   assert.throws(() => uninstallArgsForMode('nuke'), /Unknown uninstall mode/)
   assert.throws(() => uninstallArgsForMode(''), /Unknown uninstall mode/)
 })
 
-test('UNINSTALL_MODES lists exactly the three supported modes', () => {
-  assert.deepEqual([...UNINSTALL_MODES].sort(), ['full', 'gui', 'lite'])
+// --- resolveInstallKind / allowedUninstallModes / nativeRemovalInstructions ---
+
+test('resolveInstallKind reads the stamp: distribution nix wins, payload kind means bundled', () => {
+  assert.equal(resolveInstallKind({ distribution: 'nix' }), 'nix')
+  assert.equal(resolveInstallKind({ source: 'nix' }), 'nix')
+  // distribution beats payload: a nix stamp never becomes 'bundled'.
+  assert.equal(resolveInstallKind({ distribution: 'nix', payload: 'bundled' }), 'nix')
+  assert.equal(resolveInstallKind({ distribution: 'desktop-app', payload: 'bundled' }), 'bundled')
+  assert.equal(resolveInstallKind({ payload: 'bundled' }), 'bundled')
+  // light artifacts have no agent code either — same managed flow.
+  assert.equal(resolveInstallKind({ payload: 'light' }), 'bundled')
+  // bootstrap / no stamp facts at all → the classic source/installer flow.
+  assert.equal(resolveInstallKind({ payload: 'bootstrap' }), 'standard')
+  assert.equal(resolveInstallKind({}), 'standard')
+  assert.equal(resolveInstallKind(), 'standard')
+})
+
+test('only standard installs may remove code; managed kinds get data-only', () => {
+  assert.equal(installKindAllowsCodeRemoval('standard'), true)
+  assert.equal(installKindAllowsCodeRemoval('nix'), false)
+  assert.equal(installKindAllowsCodeRemoval('bundled'), false)
+
+  assert.deepEqual(allowedUninstallModes('standard'), ['gui', 'lite', 'full'])
+  assert.deepEqual(allowedUninstallModes('nix'), ['data'])
+  assert.deepEqual(allowedUninstallModes('bundled'), ['data'])
+})
+
+test('nativeRemovalInstructions names the steward per kind and OS', () => {
+  assert.match(nativeRemovalInstructions('nix', 'linux'), /installed by Nix/)
+  assert.match(nativeRemovalInstructions('nix', 'darwin'), /flake or profile/)
+  assert.match(nativeRemovalInstructions('bundled', 'win32'), /Installed apps/)
+  assert.match(nativeRemovalInstructions('bundled', 'darwin'), /Trash/)
+  assert.match(
+    nativeRemovalInstructions('bundled', 'linux', '/home/x/Apps/Hermes.AppImage'),
+    /\/home\/x\/Apps\/Hermes\.AppImage/
+  )
+  assert.match(
+    nativeRemovalInstructions('bundled', 'linux', '/opt/hermes/linux-unpacked'),
+    /app directory at \/opt\/hermes\/linux-unpacked/
+  )
+  assert.match(nativeRemovalInstructions('bundled', 'linux'), /wherever you saved it/)
 })
 
 // --- modeRemovesAgent / modeRemovesUserData ---
@@ -47,10 +83,12 @@ test('mode predicates classify what each mode removes', () => {
   assert.equal(modeRemovesAgent('gui'), false)
   assert.equal(modeRemovesAgent('lite'), true)
   assert.equal(modeRemovesAgent('full'), true)
+  assert.equal(modeRemovesAgent('data'), false)
 
   assert.equal(modeRemovesUserData('gui'), false)
   assert.equal(modeRemovesUserData('lite'), false)
   assert.equal(modeRemovesUserData('full'), true)
+  assert.equal(modeRemovesUserData('data'), true)
 })
 
 // --- resolveRemovableAppPath ---

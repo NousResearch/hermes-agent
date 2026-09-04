@@ -159,6 +159,31 @@ def _video_url_from_result(result: Any) -> Tuple[Any, Optional[str]]:
 _fal_client: Any = None
 _fal_client_lock = threading.Lock()
 
+
+def _load_fal_client() -> Any:
+    """Lazy-load the ``fal_client`` SDK and cache it on this module.
+
+    Delegates the actual import to :func:`tools.fal_common.import_fal_client`
+    so the ``pm.ensure_import`` handling stays in one place.
+
+    Thread-safe via double-checked locking: concurrent first calls import
+    the SDK exactly once instead of each racing thread re-running the import.
+    """
+    global _fal_client
+    if _fal_client is not None:
+        return _fal_client
+    with _fal_client_lock:
+        if _fal_client is not None:  # re-check inside the lock
+            return _fal_client
+        from tools.fal_common import import_fal_client
+        _fal_client = import_fal_client()
+        return _fal_client
+
+
+# ---------------------------------------------------------------------------
+# Managed FAL gateway (Nous Subscription)
+# ---------------------------------------------------------------------------
+
 _managed_fal_video_client: Any = None
 _managed_fal_video_client_config: Any = None
 _managed_fal_video_client_lock = threading.Lock()

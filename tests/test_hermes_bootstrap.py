@@ -46,7 +46,7 @@ def _fresh_import():
 class TestWindowsBehavior:
     """Windows: the bootstrap does its job."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_env_vars_set_on_windows(self, monkeypatch):
         # Clear any pre-existing values and re-run bootstrap.
         monkeypatch.delenv("PYTHONUTF8", raising=False)
@@ -57,7 +57,7 @@ class TestWindowsBehavior:
         assert os.environ.get("PYTHONIOENCODING") == "utf-8"
         assert hb._bootstrap_applied is True
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_stdout_reconfigured_to_utf8_on_windows(self):
         # The live process's stdout should now be UTF-8 (the Hermes CLI
         # runs on Windows with a pytest console that's cp1252 by default).
@@ -77,7 +77,7 @@ class TestWindowsBehavior:
             "reconfigured it to UTF-8"
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_child_process_inherits_utf8_mode(self):
         """A subprocess spawned from this process should inherit
         PYTHONUTF8=1 and be able to print non-ASCII to stdout."""
@@ -110,7 +110,7 @@ class TestUserOptOut:
     """If the user has explicitly set PYTHONUTF8 / PYTHONIOENCODING in
     their environment, we respect that (setdefault, not overwrite)."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_user_pythonutf8_zero_preserved(self, monkeypatch):
         monkeypatch.setenv("PYTHONUTF8", "0")
         _fresh_import()
@@ -125,6 +125,7 @@ class TestPosixNoOp:
     stdio.  The goal is that Linux/macOS behave identically before and
     after this module is imported."""
 
+    @pytest.mark.platforms("linux")
     def test_noop_on_posix_host(self, monkeypatch):
         """Even when imported, the bootstrap function must return False
         and leave env untouched on a POSIX host (``_IS_WINDOWS`` is
@@ -163,12 +164,12 @@ class TestStdioReconfigureErrorHandling:
     don't support reconfigure (e.g. by a test harness), the bootstrap
     must degrade gracefully rather than crash."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_non_reconfigurable_stream_does_not_crash(self, monkeypatch):
         """Replace sys.stdout with a BytesIO (no reconfigure method),
         then run the bootstrap and make sure it doesn't raise.
 
-        ``windows_only``: forcing ``_IS_WINDOWS = True`` on Linux was the only
+        ``platforms("windows")``: forcing ``_IS_WINDOWS = True`` on Linux was the only
         thing that made the reconfigure block reachable — off Windows the
         bootstrap returns before touching stdio, so the test proved nothing
         about the guard it names.
@@ -336,6 +337,7 @@ class TestHardenImportPath:
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
+    @pytest.mark.platforms("linux")
     def test_noop_on_posix(self):
         import platform
         hb = _fresh_import()
@@ -343,7 +345,7 @@ class TestSuppressPlatformVerConsole:
         hb.suppress_platform_ver_console()
         assert getattr(platform, "_syscmd_ver", None) is original
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_stub_applied_when_windows(self):
         # Faking _IS_WINDOWS on Linux asserted only that the stub was
         # installed; the reason it exists — ``platform.win32_ver()`` shelling

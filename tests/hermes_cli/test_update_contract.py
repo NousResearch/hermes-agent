@@ -135,17 +135,16 @@ def test_admission_git_checkout_no_marker_is_admitted(tmp_path, monkeypatch):
     assert evaluate_update_admission(tmp_path) is None
 
 
-def test_admission_apt_and_nix_refuse(tmp_path, monkeypatch):
+def test_admission_nix_refuses(tmp_path, monkeypatch):
     import hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
-    for method, code in (("apt", "apt"), ("nix", "nix")):
-        def _detect(*a, _m=method, **k):
-            return _m
+    def _detect(*a, **k):
+        return "nix"
 
-        monkeypatch.setattr("hermes_cli.config.detect_install_method", _detect)
-        refusal = evaluate_update_admission(tmp_path)
-        assert refusal is not None and refusal.code == code
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", _detect)
+    refusal = evaluate_update_admission(tmp_path)
+    assert refusal is not None and refusal.code == "nix"
 
 
 # ---------------------------------------------------------------------------

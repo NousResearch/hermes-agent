@@ -33,10 +33,6 @@ def _clear_browser_caches():
 class TestSanePath:
     """Verify _SANE_PATH includes fallback directories used by browser_tool."""
 
-    def test_includes_termux_bin(self):
-        assert "/data/data/com.termux/files/usr/bin" in _SANE_PATH.split(os.pathsep)
-
-
     def test_includes_standard_dirs(self):
         path_parts = _SANE_PATH.split(os.pathsep)
         assert "/usr/local/bin" in path_parts
@@ -268,29 +264,6 @@ class TestBrowserRequirements:
 
         assert check_browser_requirements() is True
 
-    def test_termux_requires_real_agent_browser_install_not_npx_fallback(self, monkeypatch):
-        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
-        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
-        monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
-        monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
-        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda **_kw: "npx agent-browser")
-
-        assert check_browser_requirements() is False
-
-
-class TestRunBrowserCommandTermuxFallback:
-    def test_termux_local_mode_rejects_bare_npx_fallback(self, monkeypatch):
-        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
-        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
-        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda **_kw: "npx agent-browser")
-        monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
-
-        result = _run_browser_command("task-1", "navigate", ["https://example.com"])
-
-        assert result["success"] is False
-        assert "bare npx fallback" in result["error"]
-        assert "agent-browser install" in result["error"]
-
 
 class TestRunBrowserCommandPathConstruction:
     """Verify _run_browser_command() includes Homebrew node dirs in subprocess PATH."""
@@ -402,55 +375,6 @@ class TestRunBrowserCommandPathConstruction:
             AGENT_BROWSER_NPX_SPEC,
         ]
         assert captured_cmd[5:9] == ["--session", "test-session", "--json", "navigate"]
-
-    def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
-        """Termux fallback dirs should survive browser PATH rebuilding."""
-        captured_env = {}
-
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = 0
-
-        def capture_popen(cmd, **kwargs):
-            captured_env.update(kwargs.get("env", {}))
-            return mock_proc
-
-        fake_session = {
-            "session_name": "test-session",
-            "session_id": "test-id",
-            "cdp_url": None,
-        }
-
-        fake_json = json.dumps({"success": True})
-        real_isdir = os.path.isdir
-
-        def selective_isdir(path):
-            if path in {
-                "/data/data/com.termux/files/usr/bin",
-                "/data/data/com.termux/files/usr/sbin",
-            }:
-                return True
-            if path.startswith(str(tmp_path)):
-                return True
-            return real_isdir(path)
-
-        with patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
- patch("tools.browser_tool_install._chromium_installed", return_value=True), \
-             patch("tools.browser_tool_session._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool_install._discover_homebrew_node_dirs", return_value=[]), \
-             patch("os.path.isdir", side_effect=selective_isdir), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("os.open", return_value=99), \
-             patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
-            with patch("builtins.open", mock_open(read_data=fake_json)):
-                _run_browser_command("test-task", "navigate", ["https://example.com"])
-
-        result_path = captured_env.get("PATH", "")
-        assert "/data/data/com.termux/files/usr/bin" in result_path
-        assert "/data/data/com.termux/files/usr/sbin" in result_path
 
 
 class TestRunChromeFallbackCommandNpxResolution:

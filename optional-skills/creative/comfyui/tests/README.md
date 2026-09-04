@@ -45,7 +45,7 @@ When you change a script:
 
 The parent hermes-agent repo used to enable `pytest-xdist` by default
 (`-n auto`); the canonical runner has since moved to per-file subprocess
-isolation via `scripts/run_tests_parallel.py` and no longer uses xdist.
+pytest-xdist with `--dist loadfile` via `scripts/run_tests.sh`.
 This suite is small enough that parallelism isn't worth the complexity, and
 pytest-xdist isn't always installed in the user's environment. The
 `-c tests/pytest.ini -o addopts="-p no:xdist"` flags make the suite run

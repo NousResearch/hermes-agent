@@ -114,7 +114,7 @@ def run_tier1_scan(skill_dir: Path, timeout: int = SCAN_TIMEOUT_SECONDS) -> Tier
         if not (reports := sorted(Path(outdir).glob("skillevaluator-output-*.json"))):
             return unavailable("scanner produced no JSON report")
         try:
-            parsed = json.loads(reports[-1].read_text(encoding="utf-8"))
+            parsed = json.loads(reports[-1].read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError) as exc:
             return unavailable(f"unparseable report: {exc}")
         return _parse_report(parsed) if isinstance(parsed, dict) else unavailable("unexpected report shape")

@@ -10,13 +10,14 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 import json
 import logging
 import os
+import re
 import shlex
 import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, IO, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted, is_thread_interrupted
@@ -110,10 +111,12 @@ def get_sandbox_dir() -> Path:
 
 def _load_json_store(path: Path) -> dict:
     """Load a JSON file as a dict, returning ``{}`` on any error."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+    return {}
 
 
 def _save_json_store(path: Path, data: dict) -> None:
@@ -129,6 +132,191 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
         return (st.st_mtime, st.st_size)
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# ProcessHandle protocol
+# ---------------------------------------------------------------------------
+
+
+class ProcessHandle(Protocol):
+    """Duck type that every backend's _run_bash() must return.
+
+    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona)
+    return _ThreadedProcessHandle which adapts their blocking calls.
+    """
+
+    def poll(self) -> int | None: ...
+    def kill(self) -> None: ...
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    @property
+    def stdout(self) -> IO[str] | None: ...
+
+    @property
+    def returncode(self) -> int | None: ...
+
+
+class _ThreadedProcessHandle:
+    """Adapter for SDK backends (Modal, Daytona) that have no real subprocess.
+
+    Wraps a blocking ``exec_fn() -> (output_str, exit_code)`` in a background
+    thread and exposes a ProcessHandle-compatible interface.  An optional
+    ``cancel_fn`` is invoked on ``kill()`` for backend-specific cancellation
+    (e.g. Modal sandbox.terminate, Daytona sandbox.stop).
+    """
+
+    def __init__(
+        self,
+        exec_fn: Callable[[], tuple[str, int]],
+        cancel_fn: Callable[[], None] | None = None,
+    ):
+        self._cancel_fn = cancel_fn
+        self._done = threading.Event()
+        self._returncode: int | None = None
+        self._error: Exception | None = None
+
+        # Pipe for stdout — drain thread in _wait_for_process reads the read end.
+        read_fd, write_fd = os.pipe()
+        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")  # windows-footgun: ok (pipe is BOM-free)
+        self._write_fd = write_fd
+
+        def _worker():
+            try:
+                output, exit_code = exec_fn()
+                self._returncode = exit_code
+                # Write output into the pipe so drain thread picks it up.
+                try:
+                    os.write(self._write_fd, output.encode("utf-8", errors="replace"))
+                except OSError:
+                    pass
+            except Exception as exc:
+                self._error = exc
+                self._returncode = 1
+            finally:
+                try:
+                    os.close(self._write_fd)
+                except OSError:
+                    pass
+                self._done.set()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    @property
+    def stdout(self):
+        return self._stdout
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def poll(self) -> int | None:
+        return self._returncode if self._done.is_set() else None
+
+    def kill(self):
+        if self._cancel_fn:
+            try:
+                self._cancel_fn()
+            except Exception:
+                pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        self._done.wait(timeout=timeout)
+        return self._returncode
+
+
+# ---------------------------------------------------------------------------
+# CWD marker for remote backends
+# ---------------------------------------------------------------------------
+
+
+def _cwd_marker(session_id: str) -> str:
+    return f"__HERMES_CWD_{session_id}__"
+
+
+# Per-session variables that the gateway bridges freshly onto every command's
+# process environment (via tools/environments/local._inject_session_context_env,
+# reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
+# the shared bash session snapshot: a single long-lived backend serves many
+# concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
+# collapse the terminal to one "default" environment), so ``export -p`` dumping
+# the FIRST session's HERMES_SESSION_ID into the snapshot makes every LATER
+# session ``source`` that stale value and see a FOREIGN session's identity —
+# overriding the correct per-command Popen env (issue: cross-session
+# HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
+# snapshot is safe because they are re-injected on every command; a snapshot
+# should only carry the user's own shell state (PATH, functions, exports they
+# set), not Hermes' per-turn session identity.
+#
+# Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
+# with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
+# as the Python-side contract for the exclusion set; the dump path unsets by
+# name/prefix instead of grepping declare lines (see below / issue #71296).
+_SNAPSHOT_EXCLUDED_ENV_REGEX = (
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)"
+)
+_SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _export_dump_excluding_session_vars(
+    tmp_path: str,
+    excluded_names: Iterable[str] = (),
+) -> str:
+    """Return a shell snippet that dumps ``export -p`` to *tmp_path* minus the
+    per-session bridged vars (see ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and any
+    additional names supplied by the caller.
+
+    Unset the bridged vars in a subshell *before* ``export -p``. A line-based
+    ``grep -vE`` filter is unsafe: bash 3.2 prints a value containing a newline
+    as a multi-line ``declare -x NAME="…`` block, so only the opener matches the
+    regex and continuation lines (e.g. ``curl … | bash #`` smuggled into a
+    Matrix room/display name via ``HERMES_SESSION_CHAT_NAME``) land in the
+    snapshot and execute on the next ``source`` (issue #71296). Unsetting first
+    means ``export -p`` never emits those vars — including any continuation
+    lines. ``|| true`` keeps the success contract for callers that chain on it.
+
+    The dump MUST be wrapped in a brace group with the redirection applied to
+    the group. *tmp_path* is typically a shell-variable expansion (a
+    mktemp-allocated per-writer temp name); a redirection attached to a
+    pipeline segment would expand it inside that segment's subshell,
+    potentially inconsistently with the parent that expands the follow-up
+    ``mv``. The brace-group redirect is expanded in the current shell,
+    keeping both expansions consistent.
+    """
+    # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are fine
+    # because ``unset`` with only missing names is ignored under 2>/dev/null.
+    # Quote caller-provided names so malformed configuration can never become
+    # shell syntax. Valid environment names remain unquoted by shlex.quote().
+    safe_names = {
+        name for name in excluded_names
+        if isinstance(name, str) and name
+    }
+    extra_unset = " ".join(shlex.quote(name) for name in sorted(safe_names))
+    if extra_unset:
+        extra_unset = f" {extra_unset}"
+    return (
+        "{ ( "
+        "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
+        "${!HERMES_BROWSER_CONTROL_*} "
+        # AI_AGENT / HERMES_AGENT are per-command attribution markers
+        # (re-exported by every _wrap_command with outer-harness-preserving
+        # ${VAR:-default} semantics).  Persisting them into the snapshot
+        # would make the FIRST command's value override a later outer
+        # harness value arriving via the process env, exactly like the
+        # session-var leak this dump already guards against.
+        "AI_AGENT HERMES_AGENT "
+        f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        "export -p; "
+        ") || true; } "
+        f"> {tmp_path}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BaseEnvironment
+# ---------------------------------------------------------------------------
 
 
 class BaseEnvironment(ABC):
@@ -151,8 +339,12 @@ class BaseEnvironment(ABC):
     _profile_scoped_passthrough: bool = False
 
     def get_temp_dir(self) -> str:
-        """Backend temp directory for session artifacts (``/tmp`` in sandboxes;
-        LocalEnvironment overrides for Termux where only ``TMPDIR`` is writable)."""
+        """Return the backend temp directory used for session artifacts.
+
+        Most sandboxed backends use ``/tmp`` inside the target environment.
+        LocalEnvironment overrides this on hosts where ``/tmp`` may be missing
+        and ``TMPDIR`` is the portable writable location.
+        """
         return "/tmp"
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):

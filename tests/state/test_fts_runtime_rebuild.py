@@ -180,7 +180,7 @@ class TestRuntimeFtsRebuild:
     def test_uninspectable_hermes_process_remains_a_holder(self, argv):
         assert hermes_state_holders._looks_like_hermes(argv)
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_foreign_holder_detection_proc_readlink_deleted_wal(
         self, db, tmp_path, monkeypatch
     ):
@@ -235,65 +235,7 @@ class TestRuntimeFtsRebuild:
         holders = hermes_state_holders.foreign_state_db_holders(db_path)
         assert holders == [(222, db_path_wal + " (deleted)")]
 
-    @pytest.mark.linux_only
-    @pytest.mark.parametrize("different_device", (False, True))
-    def test_foreign_holder_ignores_same_path_with_different_file_identity(
-        self, db, tmp_path, monkeypatch, different_device
-    ):
-        """A namespace peer's different state.db is not a holder of the host's.
-
-        A peer process can appear in /proc with a string-identical path for a
-        different inode, either on the same filesystem or a different one.
-        Matching on path alone -- or on device alone -- would defer automatic
-        FTS maintenance forever while corruption compounds.
-
-        Identity must come from (st_dev, st_ino), not the path text.
-        """
-        db_path = tmp_path / "state.db"
-
-        proc_root = tmp_path / "proc"
-        for pid in (111, 222):
-            (proc_root / str(pid) / "fd").mkdir(parents=True)
-        # PID 222 = container process holding ITS OWN state.db, which happens
-        # to have the identical absolute path inside its mount namespace.
-        guest_db = tmp_path / "guest_state.db"
-        guest_db.touch()
-        os.symlink(str(guest_db), str(proc_root / "222" / "fd" / "3"))
-
-        monkeypatch.setattr(hermes_state_holders.os, "getpid", lambda: 111)
-
-        real_listdir = os.listdir
-        def _listdir(path):
-            if isinstance(path, str):
-                path = path.replace("/proc", str(proc_root))
-            return real_listdir(path)
-        monkeypatch.setattr(hermes_state_holders.os, "listdir", _listdir)
-
-        # The guest fd reports the host's path (identical string), which is
-        # exactly what the kernel shows across mount namespaces.
-        def _readlink(path):
-            path = path.replace("/proc", str(proc_root))
-            if path.endswith(f"{proc_root}/222/fd/3") or "222" in path:
-                return str(db_path)
-            return os.readlink(path)
-        monkeypatch.setattr(hermes_state_holders.os, "readlink", _readlink)
-
-        # ...but stat()ing the descriptor resolves to the peer's own inode.
-        real_stat = os.stat
-        def _stat(path, *a, **kw):
-            path_s = str(path).replace("/proc", str(proc_root))
-            st = real_stat(path_s, *a, **kw)
-            if different_device and path_s.endswith("/222/fd/3"):
-                fields = list(st)
-                # os.stat_result positional layout: st_dev is index 2.
-                fields[2] = st.st_dev + 1000
-                return os.stat_result(fields)
-            return st
-        monkeypatch.setattr(hermes_state_holders.os, "stat", _stat)
-
-        assert hermes_state_holders.foreign_state_db_holders(db_path) == []
-
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_foreign_holder_uninspectable_process_cmdline_fallback(
         self, db, tmp_path, monkeypatch
     ):

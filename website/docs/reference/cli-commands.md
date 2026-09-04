@@ -243,7 +243,7 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
+| `run` | Run the gateway in the foreground. Recommended for WSL and Docker. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |

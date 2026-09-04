@@ -70,7 +70,7 @@ class TestVerifyCoreDependencies:
         verification step would false-positive on every cross-platform
         exclusion and chase its tail installing something inapplicable here.
 
-        Deliberately host-invariant rather than ``windows_only``: the subject
+        Deliberately host-invariant rather than ``platforms("windows")``: the subject
         is ``packaging``'s marker *evaluation*, not any OS facility. The
         pyproject fixture declares one dep gated to non-Windows and one gated
         to Windows, so exactly one of the pair is filtered on any host — the

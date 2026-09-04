@@ -629,8 +629,8 @@ def matrix_deps_present() -> bool:
     and runs from ``create_adapter()`` when this returns False (#79812).
     """
     try:
-        from tools.lazy_deps import is_available
-        return is_available("platform.matrix")
+        from pm import available as is_available
+        return is_available("matrix")
     except Exception:  # pragma: no cover — defensive
         return False
 
@@ -654,16 +654,21 @@ def ensure_matrix_deps() -> bool:
     whole ``platform.matrix`` group when ANY declared package is missing — short-circuiting on
     ``import mautrix`` left asyncpg/aiosqlite uninstalled forever.
 
-    Lazy-installs the full ``platform.matrix`` feature group via ``tools.lazy_deps.ensure_and_bind``
-    whenever any of the declared packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is missing
-    — not just mautrix itself. Previously this short-circuited on ``import mautrix``, which left the other
-    four packages uninstalled forever and broke E2EE connect with ``No module named 'asyncpg'`` (#31116).
+    Lazy-installs the full ``platform.matrix`` feature group via
+    ``pm.extras.ensure_and_bind`` whenever any of the declared
+    packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
+    missing — not just mautrix itself.  Previously this short-circuited on
+    ``import mautrix``, which left the other four packages uninstalled
+    forever and broke E2EE connect with ``No module named 'asyncpg'``
+    (#31116).  Rebinds module-level type globals on success.
     """
+    # Check every anchor of the matrix extra (mautrix alone is not enough:
+    # a partial install left asyncpg missing forever, #31116).
     try:
-        from tools.lazy_deps import feature_missing, ensure_and_bind
-        missing = feature_missing("platform.matrix")
+        from pm.extras import missing as _extra_missing, ensure_and_bind
+        missing = _extra_missing("matrix")
     except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("Matrix: lazy_deps lookup failed: %s", exc)
+        logger.debug("Matrix: extras lookup failed: %s", exc)
         missing = ()
         ensure_and_bind = None  # type: ignore[assignment]
     if ensure_and_bind is None:
@@ -673,13 +678,27 @@ def ensure_matrix_deps() -> bool:
             from mautrix.types import (
                 ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
             return {
-                "ContentURI": ContentURI, "EventID": EventID, "EventType": EventType, "PresenceState": PresenceState,
-                "RoomCreatePreset": RoomCreatePreset, "RoomID": RoomID, "TrustState": TrustState, "UserID": UserID}
-        if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
+                "ContentURI": ContentURI,
+                "EventID": EventID,
+                "EventType": EventType,
+                "PaginationDirection": PaginationDirection,
+                "PresenceState": PresenceState,
+                "RoomCreatePreset": RoomCreatePreset,
+                "RoomID": RoomID,
+                "SyncToken": SyncToken,
+                "TrustState": TrustState,
+                "UserID": UserID,
+            }
+
+        if ensure_and_bind is None:
+            return False
+        if not ensure_and_bind("matrix", _import, globals()):
             logger.warning(
-                "Matrix: required packages not installed (%s). Run: pip install "
-                "'mautrix[encryption]' asyncpg aiosqlite Markdown aiohttp-socks",
-                ", ".join(missing) if missing else "platform.matrix")
+                "Matrix: required packages not installed (%s). "
+                "Run: pip install 'mautrix[encryption]' asyncpg aiosqlite "
+                "Markdown aiohttp-socks",
+                ", ".join(missing) if missing else "matrix",
+            )
             return False
     e2ee_mode = _resolve_e2ee_mode()
     if e2ee_mode == "required" and not _check_e2ee_deps():
@@ -2922,10 +2941,22 @@ def interactive_setup() -> None:
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
-        from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
-        _missing_before = feature_missing("platform.matrix")
-        if _missing_before:
-            print_info(f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)...")
+        try:
+            from pm import ensure_import as _lazy_ensure
+            from pm.extras import missing as _extra_missing
+            _missing_before = _extra_missing("matrix")
+            if _missing_before:
+                print_info(f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)...")
+                try:
+                    _lazy_ensure("matrix")
+                    print_success(f"{matrix_pkg} installed")
+                except Exception as exc:
+                    print_warning(
+                        "Install failed — run manually: pip install "
+                        "'mautrix[encryption]' asyncpg aiosqlite Markdown aiohttp-socks"
+                    )
+                    print_info(f"  Error: {exc}")
+        except ImportError:
             try:
                 _lazy_ensure("platform.matrix", prompt=False)
                 print_success(f"{matrix_pkg} installed")

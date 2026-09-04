@@ -797,6 +797,7 @@ class TestInlineShellExpansion:
 
 
 
+    @pytest.mark.platforms("linux")
     def test_inline_shell_runs_in_skill_directory(self, tmp_path):
         """Inline snippets get the skill dir as CWD so relative paths work."""
         with (

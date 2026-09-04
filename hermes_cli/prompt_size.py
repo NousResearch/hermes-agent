@@ -80,7 +80,9 @@ def _skill_md_paths_by_name() -> Dict[str, Path]:
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             dir_name = skill_file.parent.name
             try:
-                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+                frontmatter, _ = parse_frontmatter(
+                    skill_file.read_text(encoding="utf-8-sig")
+                )
                 frontmatter_name = str(frontmatter.get("name") or dir_name)
             except Exception:
                 frontmatter_name = dir_name

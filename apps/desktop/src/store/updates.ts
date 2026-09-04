@@ -211,14 +211,14 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  * showed the user a machine they weren't told about, with no way back.
  */
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
+  // Either signal means "update ready": behind > 0 (git checkout) or
+  // updateAvailable (app-installer, shallow clone).
   if (!status || status.supported === false || status.error || !status.targetSha) {
     return
   }
 
   const behind = typeof status.behind === 'number' ? status.behind : null
 
-  // behind === null means "update available, exact count unknown" (shallow
-  // clone). That still deserves the toast — just with count-free copy.
   if ((behind ?? 0) <= 0 && !status.updateAvailable) {
     return
   }
@@ -244,9 +244,11 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, t
     id: UPDATE_TOAST_ID,
     kind: 'info',
     message:
-      behind !== null && behind > 0
-        ? translateNow('notifications.updateReadyMessage', behind)
-        : translateNow('notifications.updateReadyMessageUnknown'),
+      status.mechanism === 'app-installer'
+        ? translateNow('notifications.updateReadyMessageAppInstaller')
+        : behind !== null && behind > 0
+          ? translateNow('notifications.updateReadyMessage', behind)
+          : translateNow('notifications.updateReadyMessageUnknown'),
     onDismiss: () => snoozeUpdateToast(),
     title: translateNow('notifications.updateReadyTitle')
   })

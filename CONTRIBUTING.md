@@ -201,8 +201,8 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ### Run tests
 
 ```bash
-# Preferred — matches CI (hermetic `env -i`, per-file subprocess isolation
-# via run_tests_parallel.py, worker count auto-scaled); see AGENTS.md
+# Preferred — matches CI (hermetic `env -i`; per-file subprocess
+# isolation on POSIX, pytest-xdist --dist loadfile on Windows); see AGENTS.md
 scripts/run_tests.sh
 
 # Alternative (activate the venv first). The wrapper is still recommended
@@ -845,9 +845,9 @@ that touches the OS, assume *any* platform can hit your code path.
 Tests that excercise behavior on specific platforms must run on their target platforms.
 
 ```python
-@pytest.mark.linux_only
-@pytest.mark.macos_only
-@pytest.mark.windows_only
+@pytest.mark.platforms("linux")
+@pytest.mark.platforms("macos")
+@pytest.mark.platforms("windows")
 ```
 Avoid monkeypatching `sys.platform` unless absolutely needed, but if you do, also patch `platform.system()` / `platform.release()` / `platform.mac_ver()`.
 Symlinks, 0o600 permissions, SIGALRM, os.setsid/fork are all unix-only.

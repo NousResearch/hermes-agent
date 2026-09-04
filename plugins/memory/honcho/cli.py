@@ -65,10 +65,13 @@ def _local_config_path() -> Path:
 
 
 def _read_config() -> dict:
-    try:
-        return json.loads(_config_path().read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    path = _config_path()
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+    return {}
 
 
 def _write_config(cfg: dict, path: Path | None = None) -> None:
@@ -465,6 +468,29 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
 
 # ── setup wizard ───────────────────────────────────────────────────────────
 
+def _honcho_pin() -> str:
+    """The pinned honcho-ai version from the pyproject extra — the single
+    authority (a hardcoded message string would drift on every bump)."""
+    try:
+        import tomllib
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[3]
+        with (repo / "pyproject.toml").open("rb") as f:
+            data = tomllib.load(f)
+        specs = (
+            data.get("project", {})
+            .get("optional-dependencies", {})
+            .get("honcho", [])
+        )
+        for spec in specs:
+            if isinstance(spec, str) and spec.startswith("honcho-ai=="):
+                return spec.split("==", 1)[1]
+    except Exception:
+        pass
+    return "latest"  # never block the prompt on metadata lookup
+
+
 def _ensure_sdk_installed() -> bool:
     """Check honcho-ai is importable; offer to install if not. Returns True if ready."""
     try:
@@ -472,19 +498,539 @@ def _ensure_sdk_installed() -> bool:
         return True
     except ImportError:
         pass
+
+    pin = _honcho_pin()
     print("  honcho-ai is not installed.")
-    if not _yes(_prompt("Install it now? (honcho-ai==2.2.0)", default="y")):
-        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
+    answer = _prompt(f"Install it now? (honcho-ai=={pin})", default="y")
+    if answer.lower() not in {"y", "yes"}:
+        print(f"  Skipping install. Run: pip install 'honcho-ai=={pin}'\n")
         return False
     print("  Installing honcho-ai...", flush=True)
-    from tools.lazy_deps import install_specs  # env-aware: sealed hosted venvs redirect to the data volume
-    result = install_specs(["honcho-ai==2.2.0"])
-    if result.ok:
+    import pm
+
+    try:
+        pm.sync_venv(["honcho"], explicit=True)
         print("  Installed.\n")
         return True
-    print(f"  Cannot install: {result.reason}\n" if result.blocked else
-          f"  Install failed:\n{(result.stderr or '').strip()}\n  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
-    return False
+    except Exception as exc:
+        print(f"  Install failed: {exc}")
+        print("  Run manually: hermes pm install\n")
+        return False
+
+
+def cmd_setup(args) -> None:
+    """Interactive Honcho setup wizard."""
+    cfg = _read_config()
+
+    write_path = _local_config_path()
+    read_path = _config_path()
+    print("\nHoncho memory setup\n" + "─" * 40)
+    print("  Honcho gives Hermes persistent cross-session memory.")
+    print(f"  Config: {write_path}")
+    if read_path != write_path and read_path.exists():
+        print(f"  (seeding from existing config at {read_path})")
+    print()
+
+    if not _ensure_sdk_installed():
+        return
+
+    hosts = cfg.setdefault("hosts", {})
+    hermes_host = hosts.setdefault(_host_key(), {})
+
+    # Canonicalize any legacy pinPeerName before detection/writes.
+    _migrate_pin_key(cfg)
+    _migrate_pin_key(hermes_host)
+
+    # --- 1. Cloud or local? ---
+    print("  Deployment:")
+    print("    cloud -- Honcho cloud (api.honcho.dev)")
+    print("    local -- self-hosted Honcho server")
+    current_deploy = "local" if any(
+        h in (cfg.get("baseUrl") or cfg.get("base_url") or "")
+        for h in ("localhost", "127.0.0.1", "::1")
+    ) else "cloud"
+    deploy = _prompt("Cloud or local?", default=current_deploy)
+    is_local = deploy.lower() in {"local", "l"}
+
+    # Clean up legacy snake_case key
+    cfg.pop("base_url", None)
+
+    if is_local:
+        # --- Local: ask for base URL, optionally accept a JWT for auth ---
+        current_url = cfg.get("baseUrl") or ""
+        new_url = _prompt("Base URL", default=current_url or "http://localhost:8000")
+        if new_url:
+            cfg["baseUrl"] = new_url
+
+        # Self-hosted Honcho can run with AUTH_USE_AUTH=true and an
+        # AUTH_JWT_SECRET on the server side. In that case clients must
+        # send a JWT signed with that secret as the bearer token (the
+        # Honcho SDK takes it via ``api_key=``). Cloud users got prompted
+        # for a key already; the local path historically skipped this and
+        # forced users to disable auth on the server. Offer the prompt
+        # here too. We store it under the host block (not the top-level
+        # apiKey) so ``get_honcho_client`` recognises it as an explicit
+        # local auth opt-in (see ``_host_has_key`` in client.py) and
+        # cloud/hybrid switching is unaffected.
+        current_host_key = hermes_host.get("apiKey", "")
+        masked = (
+            f"...{current_host_key[-8:]}"
+            if len(current_host_key) > 8
+            else ("set" if current_host_key else "not set")
+        )
+        print(
+            "\n  Local Honcho auth (JWT signed with the server's "
+            "AUTH_JWT_SECRET)."
+        )
+        print(
+            "  Leave blank if your server runs with AUTH_USE_AUTH=false. "
+            f"Current: {masked}"
+        )
+        new_local_key = _prompt(
+            "Local JWT / bearer token (blank to skip / keep current)",
+            secret=True,
+        )
+        if new_local_key:
+            hermes_host["apiKey"] = new_local_key
+        elif current_host_key:
+            print("  Keeping existing local JWT.")
+        else:
+            # Surface the top-level key situation for transparency.
+            top_key = cfg.get("apiKey", "")
+            if top_key:
+                print(
+                    "\n  Top-level API key present in config (kept for "
+                    "cloud/hybrid use)."
+                )
+                print(
+                    "  Local connections will skip auth automatically "
+                    "until a local JWT is set above."
+                )
+            else:
+                print("\n  No local JWT set. Local no-auth ready.")
+    use_oauth = False
+    if not is_local:
+        # --- Cloud: OAuth (browser), device code, or API key ---
+        cfg.pop("baseUrl", None)  # cloud uses SDK default
+
+        # Detect an existing OAuth grant so re-running setup reflects it instead
+        # of looking like a fresh connect.
+        from plugins.memory.honcho.oauth import OAuthCredential
+        existing_oauth = OAuthCredential.from_host_block(hermes_host)
+
+        device_available = _device_login_available()
+        is_remote, can_browse = _headless()
+
+        print("\n  Auth method:")
+        if existing_oauth is not None:
+            print(f"    (currently connected via OAuth — client {existing_oauth.client_id})")
+        print("    oauth  -- sign in via browser on this machine (recommended)")
+        if device_available:
+            print("    device -- device code: approve from a browser on another machine (SSH / headless)")
+        print("    apikey -- paste an API key from https://app.honcho.dev")
+
+        default_method = "oauth"
+        if is_remote or not can_browse:
+            if device_available:
+                print("  (no usable local browser detected — device code recommended)")
+                default_method = "device"
+            else:
+                print("  (no usable local browser detected — browser sign-in may need an SSH tunnel to 127.0.0.1:8765)")
+        prompt_label = "oauth, device, or apikey?" if device_available else "OAuth or API key?"
+        method = _prompt(prompt_label, default=default_method).strip().lower()
+        use_oauth = method in {"oauth", "o"}
+        use_device = device_available and method in {"device", "d"}
+
+        if use_device:
+            from plugins.memory.honcho.oauth_flow import (
+                AccessDenied,
+                AuthorizationTimeout,
+                DeviceCode,
+                DeviceCodeExpired,
+                DeviceFlowError,
+                authorize_via_device_code,
+            )
+
+            def _show(device: DeviceCode) -> None:
+                print("\n  To connect, on any device with a browser:")
+                print(f"\n    1. Open   {device.verification_uri}")
+                print(f"    2. Enter  {device.user_code}")
+                print(f"\n  Or open directly:\n\n    {device.verification_uri_complete}\n")
+                mins = max(1, device.expires_in // 60)
+                print(f"  Waiting for approval (expires in {mins} min, Ctrl-C to cancel) ", end="", flush=True)
+
+            def _open_local(url: str) -> None:
+                import webbrowser
+
+                webbrowser.open(url)
+
+            print("\n  Requesting device code…")
+            try:
+                cred = authorize_via_device_code(
+                    config_path=write_path,
+                    source="hermes-cli",
+                    apply_config=False,
+                    display=_show,
+                    open_url=_open_local if can_browse and not is_remote else None,
+                    on_poll=lambda: print(".", end="", flush=True),
+                )
+            except KeyboardInterrupt:
+                print("\n  Cancelled. Re-run 'hermes honcho setup' to try again.\n")
+                return
+            except (AuthorizationTimeout, DeviceCodeExpired):
+                print("\n  Device code expired before approval.")
+                print("  Re-run 'hermes honcho setup' to get a new code.\n")
+                return
+            except AccessDenied:
+                print("\n  Sign-in was denied on the approval page.")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            except DeviceFlowError as e:
+                if e.error == "http_429":
+                    print("\n  Too many device-code requests — wait a minute and re-run setup.\n")
+                else:
+                    print(f"\n  Device sign-in failed: {e}")
+                    print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            except Exception as e:
+                print(f"\n  Device sign-in failed: {e}")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            print(" approved")
+            _apply_grant_to_host(hermes_host, cred)
+            print("  Authorized — token saved. Let's finish configuring.\n")
+        elif use_oauth:
+            # Sign in now, up front — the browser link is the whole point, so
+            # don't bury it behind the identity prompts. The grant's tokens are
+            # merged into the in-memory cfg so the wizard's final save preserves
+            # them; settings stay wizard-owned (apply_config=False).
+            from plugins.memory.honcho.oauth_flow import authorize_via_loopback
+
+            def _open(url: str) -> None:
+                print(f"\n  Open this link to authorize (waiting up to 5 minutes):\n\n    {url}\n")
+                import webbrowser
+
+                webbrowser.open(url)
+
+            print("\n  Starting browser sign-in…")
+            try:
+                cred = authorize_via_loopback(
+                    config_path=write_path,
+                    source="hermes-cli",
+                    apply_config=False,
+                    open_url=_open,
+                )
+            except Exception as e:
+                print(f"  OAuth sign-in failed: {e}")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            _apply_grant_to_host(hermes_host, cred)
+            print("  Authorized — token saved. Let's finish configuring.\n")
+        else:
+            current_key = cfg.get("apiKey", "")
+            masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
+            print(f"\n  Current API key: {masked}")
+            new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
+            if new_key:
+                cfg["apiKey"] = new_key
+
+            if not cfg.get("apiKey"):
+                print("\n  No API key configured. Get yours at https://app.honcho.dev")
+                print("  Run 'hermes honcho setup' again once you have a key.\n")
+                return
+
+    # --- 3. Identity ---
+    current_peer = hermes_host.get("peerName") or cfg.get("peerName", "")
+    new_peer = _prompt("Your name (user peer)", default=current_peer or os.getenv("USER", "user"))
+    if new_peer:
+        hermes_host["peerName"] = new_peer
+
+    current_ai = hermes_host.get("aiPeer") or cfg.get("aiPeer", "hermes")
+    new_ai = _prompt("AI peer name", default=current_ai)
+    if new_ai:
+        hermes_host["aiPeer"] = new_ai
+
+    current_workspace = hermes_host.get("workspace") or cfg.get("workspace", "hermes")
+    new_workspace = _prompt("Workspace ID", default=current_workspace)
+    if new_workspace:
+        hermes_host["workspace"] = new_workspace
+
+    # --- 3b. Gateway identity mapping ---
+    # These keys only affect the Hermes GATEWAY (Telegram/Discord/Slack/...),
+    # the one entrypoint that supplies a runtime user ID.  CLI/TUI/desktop/ACP
+    # sessions have no runtime ID and fall through to peerName, so the step is
+    # moot off-gateway — gate it behind detection.
+    #
+    # Detection mirrors the gateway resolver: root-level config and the
+    # canonical ``pinUserPeer`` both affect routing, so host-only reads would
+    # mis-classify a profile that inherits its mapping from root.
+    (
+        current_pin,
+        current_aliases,
+        current_prefix,
+        aliases_from_root,
+        prefix_from_root,
+    ) = _resolve_effective_identity_mapping(cfg, hermes_host)
+
+    if current_pin:
+        current_shape = "single"
+    elif current_aliases:
+        current_shape = "hybrid"
+    else:
+        current_shape = "multi"
+
+    gw_platforms = _gateway_platforms()
+    if gw_platforms is None:
+        print("\n  Gateway identity mapping routes platform users to memory peers.")
+        run_mapping = _prompt(
+            "Running the Hermes gateway (Telegram/Discord/etc.)? (y/N)",
+            default="n",
+        ).strip().lower() in {"y", "yes"}
+    elif not gw_platforms:
+        print("\n  No gateway platforms connected — identity mapping only affects")
+        print("  gateway users, so this step doesn't apply here.")
+        run_mapping = _prompt(
+            "Configure gateway mapping anyway? (y/N)", default="n",
+        ).strip().lower() in {"y", "yes"}
+    else:
+        print(f"\n  Gateway platforms detected: {', '.join(gw_platforms)}")
+        run_mapping = True
+
+    if run_mapping:
+        peer_target = hermes_host.get("peerName") or current_peer or "user"
+        default_choice = {"single": "1", "hybrid": "2", "multi": "3"}.get(current_shape, "3")
+        print("\n  How should gateway users map to memory peers?")
+        print("    [1] just me — every non-agent user collapses to your peer")
+        print("    [2] me + other people — keep mine pooled, others separate")
+        print("    [3] only other people — everyone gets their own peer")
+        print("    [s] skip (leave untouched)   [e] edit raw keys")
+        choice = _prompt("Choice", default=default_choice).strip().lower()
+
+        if choice in {"2", "me+others", "both"}:
+            pooled = _prompt(
+                "  Keep my own memory pooled across platforms? (Y/n)", default="y",
+            ).strip().lower()
+            shape = "hybrid" if pooled in {"y", "yes", ""} else "multi"
+        elif choice in {"1", "me", "just-me"}:
+            shape = "single"
+        elif choice in {"3", "others"}:
+            shape = "multi"
+        elif choice in {"e", "edit", "raw"}:
+            shape = "raw"
+        else:
+            shape = "skip"
+
+        # Un-pinning a currently-pinned profile without aliasing strands the
+        # pooled peerName history; steer the operator toward pooling instead.
+        if current_pin and shape == "multi":
+            print(
+                f"\n  ⚠ Un-pinning will orphan memory accumulated under peer\n"
+                f"    '{peer_target}'.  Existing gateway users resolve to fresh,\n"
+                f"    empty peers."
+            )
+            confirm = _prompt(
+                "  Pool my own memory instead (alias my IDs to peerName)? (Y/n)",
+                default="y",
+            ).strip().lower()
+            if confirm in {"y", "yes", ""}:
+                shape = "hybrid"
+
+        # Each branch scrubs every peer-mapping key first so a stale alias,
+        # prefix, or pin from an earlier run starts clean.
+        if shape == "single":
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = True
+            print(f"  All non-agent gateway users route to '{peer_target}' (pin overrides aliases).")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "multi":
+            # Preserve operator-curated host-level aliases across multi → multi
+            # re-runs.  Root-sourced aliases cascade naturally and are NOT
+            # copied down — an empty host map would mask a root baseline.
+            prior_aliases = (
+                dict(current_aliases)
+                if isinstance(current_aliases, dict) and not aliases_from_root
+                else {}
+            )
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = False
+            if prior_aliases:
+                hermes_host["userPeerAliases"] = prior_aliases
+            _apply_runtime_prefix(
+                hermes_host, current_prefix, prefix_from_root,
+                "Runtime peer prefix (e.g. 'telegram_', blank for none)",
+            )
+            print("  Each gateway user → own peer.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "hybrid":
+            existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = False
+            merged = _collect_operator_aliases(existing_aliases, peer_target)
+            if merged:
+                hermes_host["userPeerAliases"] = merged
+            _apply_runtime_prefix(
+                hermes_host, current_prefix, prefix_from_root,
+                "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
+            )
+            print(f"  Your runtime IDs → '{peer_target}', others → own peer.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "raw":
+            _configure_raw_identity_mapping(
+                hermes_host, current_pin, current_aliases, current_prefix,
+                aliases_from_root, prefix_from_root,
+            )
+            _echo_identity_mapping(hermes_host)
+        else:  # skip
+            print("  Identity mapping left untouched.")
+
+    # --- 4. Observation mode ---
+    current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
+    print("\n  Observation mode:")
+    print("    directional  -- all observations on, each AI peer builds its own view (default)")
+    print("    unified      -- user observes self, AI observes others only")
+    new_obs = _prompt("Observation mode", default=current_obs)
+    if new_obs in {"unified", "directional"}:
+        hermes_host["observationMode"] = new_obs
+    else:
+        hermes_host["observationMode"] = "directional"
+
+    # --- 5. Write frequency ---
+    current_wf = str(hermes_host.get("writeFrequency") or cfg.get("writeFrequency", "async"))
+    print("\n  Write frequency:")
+    print("    async   -- background thread, no token cost (recommended)")
+    print("    turn    -- sync write after every turn")
+    print("    session -- batch write at session end only")
+    print("    N       -- write every N turns (e.g. 5)")
+    new_wf = _prompt("Write frequency", default=current_wf)
+    try:
+        hermes_host["writeFrequency"] = int(new_wf)
+    except (ValueError, TypeError):
+        hermes_host["writeFrequency"] = new_wf if new_wf in {"async", "turn", "session"} else "async"
+
+    # --- 6. Recall mode ---
+    _raw_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
+    current_recall = "hybrid" if _raw_recall not in {"hybrid", "context", "tools"} else _raw_recall
+    print("\n  Recall mode:")
+    print("    hybrid  -- auto-injected context + Honcho tools available (default)")
+    print("    context -- auto-injected context only, Honcho tools hidden")
+    print("    tools   -- Honcho tools only, no auto-injected context")
+    new_recall = _prompt("Recall mode", default=current_recall)
+    if new_recall in {"hybrid", "context", "tools"}:
+        hermes_host["recallMode"] = new_recall
+
+    # --- 7. Context token budget ---
+    current_ctx_tokens = hermes_host.get("contextTokens") or cfg.get("contextTokens")
+    current_display = str(current_ctx_tokens) if current_ctx_tokens else "uncapped"
+    print("\n  Context injection per turn (hybrid/context recall modes only):")
+    print("    uncapped -- no limit (default)")
+    print("    N        -- token limit per turn (e.g. 1200)")
+    new_ctx_tokens = _prompt("Context tokens", default=current_display)
+    if new_ctx_tokens.strip().lower() in {"none", "uncapped", "no limit"}:
+        hermes_host.pop("contextTokens", None)
+    elif new_ctx_tokens.strip() == "":
+        pass  # keep current
+    else:
+        try:
+            val = int(new_ctx_tokens)
+            if val >= 0:
+                hermes_host["contextTokens"] = val
+        except (ValueError, TypeError):
+            pass  # keep current
+
+    # --- 7b. Dialectic cadence ---
+    current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "2")
+    print("\n  Dialectic cadence:")
+    print("    How often Honcho rebuilds its user model (LLM call on Honcho backend).")
+    print("    1 = every turn, 2 = every other turn, 3+ = sparser.")
+    print("    Recommended: 1-5.")
+    new_dialectic = _prompt("Dialectic cadence", default=current_dialectic)
+    try:
+        val = int(new_dialectic)
+        if val >= 1:
+            hermes_host["dialecticCadence"] = val
+    except (ValueError, TypeError):
+        hermes_host["dialecticCadence"] = 2
+
+    # --- 7c. Dialectic reasoning level ---
+    current_reasoning = (
+        hermes_host.get("dialecticReasoningLevel")
+        or cfg.get("dialecticReasoningLevel")
+        or "low"
+    )
+    print("\n  Dialectic reasoning level:")
+    print("    Depth Honcho uses when synthesizing user context on auto-injected calls.")
+    print("    minimal  -- quick factual lookups")
+    print("    low      -- straightforward questions (default)")
+    print("    medium   -- multi-aspect synthesis")
+    print("    high     -- complex behavioral patterns")
+    print("    max      -- thorough audit-level analysis")
+    new_reasoning = _prompt("Reasoning level", default=current_reasoning)
+    if new_reasoning in {"minimal", "low", "medium", "high", "max"}:
+        hermes_host["dialecticReasoningLevel"] = new_reasoning
+    else:
+        hermes_host["dialecticReasoningLevel"] = "low"
+
+    # --- 8. Session strategy ---
+    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
+    print("\n  Session strategy:")
+    print("    per-session   -- each run starts clean, Honcho injects context automatically")
+    print("    per-directory -- reuses session per dir, prior context auto-injected each run")
+    print("    per-repo      -- one session per git repository")
+    print("    global        -- single session across all directories")
+    new_strat = _prompt("Session strategy", default=current_strat)
+    if new_strat in {"per-session", "per-repo", "per-directory", "global"}:
+        hermes_host["sessionStrategy"] = new_strat
+
+    hermes_host["enabled"] = True
+    hermes_host.setdefault("saveMessages", True)
+
+    _write_config(cfg)
+    print(f"\n  Config written to {write_path}")
+
+    # --- Auto-enable Honcho as memory provider in config.yaml ---
+    try:
+        from hermes_cli.config import load_config, save_config
+        hermes_config = load_config()
+        hermes_config.setdefault("memory", {})["provider"] = "honcho"
+        save_config(hermes_config)
+        print("  Memory provider set to 'honcho' in config.yaml")
+    except Exception as e:
+        print(f"  Could not auto-enable in config.yaml: {e}")
+        print("  Run: hermes config set memory.provider honcho")
+
+    # --- Test connection ---
+    print("  Testing connection... ", end="", flush=True)
+    try:
+        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
+        reset_honcho_client()
+        hcfg = HonchoClientConfig.from_global_config(host=_host_key())
+        get_honcho_client(hcfg)
+        print("OK")
+    except Exception as e:
+        print(f"FAILED\n  Error: {e}")
+        return
+
+    print("\n  Honcho is ready.")
+    print(f"  Session:   {hcfg.resolve_session_name()}")
+    print(f"  Workspace: {hcfg.workspace_id}")
+    print(f"  User:      {hcfg.peer_name}")
+    print(f"  AI peer:   {hcfg.ai_peer}")
+    print(f"  Observe:   {hcfg.observation_mode}")
+    print(f"  Frequency: {hcfg.write_frequency}")
+    print(f"  Recall:    {hcfg.recall_mode}")
+    print(f"  Sessions:  {hcfg.session_strategy}")
+    print("\n  Honcho tools available in chat:")
+    print("    honcho_context   -- session context: summary, representation, card, messages")
+    print("    honcho_search    -- semantic search over history")
+    print("    honcho_profile   -- peer card, key facts")
+    print("    honcho_reasoning -- ask Honcho a question, synthesized answer")
+    print("    honcho_conclude  -- persist a user fact to memory")
+    print("\n  Other commands:")
+    print("    hermes honcho status     -- show full config")
+    print("    hermes honcho mode       -- change recall/observation mode")
+    print("    hermes honcho tokens     -- tune context and dialectic budgets")
+    print("    hermes honcho peer       -- update peer names")
+    print("    hermes honcho map <name> -- map this directory to a session name\n")
 
 
 def _device_login_available() -> bool:
@@ -1100,8 +1646,10 @@ Honcho identity management
 
     p = Path(file_path).expanduser()
     if not p.exists():
-        return print(f"  File not found: {p}\n")
-    content = p.read_text(encoding="utf-8").strip()
+        print(f"  File not found: {p}\n")
+        return
+
+    content = p.read_text(encoding="utf-8-sig").strip()
     if not content:
         return print(f"  File is empty: {p}\n")
     if mgr.seed_ai_identity(session_key, content, source=p.name):
@@ -1128,7 +1676,7 @@ def _migrate_upload(mgr, session_key: str, user_files: list[Path]) -> None:
 
 def _migrate_seed(mgr, session_key: str, agent_files: list[Path]) -> None:
     for f in agent_files:
-        content = f.read_text(encoding="utf-8").strip()
+        content = f.read_text(encoding="utf-8-sig").strip()
         if content:
             ok = mgr.seed_ai_identity(session_key, content, source=f.name)
             print(f"    {f.name}: {'seeded' if ok else 'failed'}")
@@ -1229,7 +1777,30 @@ Step 4  Seed AI identity files → Honcho AI peer
         print(f"  Found: {', '.join(f.name for f in agent_files)}")
         print()
         if has_key:
-            _offer("  Seed AI identity from all detected files now?", _migrate_seed, agent_files)
+            answer = _prompt("  Seed AI identity from all detected files now?", default="y")
+            if answer.lower() in {"y", "yes"}:
+                try:
+                    from plugins.memory.honcho.client import (
+                        HonchoClientConfig,
+                        get_honcho_client,
+                        reset_honcho_client,
+                    )
+                    from plugins.memory.honcho.session import HonchoSessionManager
+
+                    reset_honcho_client()
+                    hcfg = HonchoClientConfig.from_global_config()
+                    client = get_honcho_client(hcfg)
+                    mgr = HonchoSessionManager(honcho=client, config=hcfg)
+                    session_key = hcfg.resolve_session_name()
+                    mgr.get_or_create(session_key)
+                    for f in agent_files:
+                        content = f.read_text(encoding="utf-8-sig").strip()
+                        if content:
+                            ok = mgr.seed_ai_identity(session_key, content, source=f.name)
+                            status = "seeded" if ok else "failed"
+                            print(f"    {f.name}: {status}")
+                except Exception as e:
+                    print(f"  Failed: {e}")
         else:
             print("  Run 'hermes honcho setup' first, then seed manually:")
             print("\n".join(f"    hermes honcho identity {f}" for f in agent_files))

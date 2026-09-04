@@ -39,12 +39,14 @@ def main():
 
     ref_audio = Path(args.ref_audio).expanduser()
     ref_text_path = Path(args.ref_text).expanduser()
-    for label, p in (("audio", ref_audio), ("text", ref_text_path)):
-        if not p.exists():
-            print(f"Error: reference {label} not found: {p}", file=sys.stderr)
-            sys.exit(1)
-    ref_text = ref_text_path.read_text(encoding="utf-8").strip()
+    if not ref_audio.exists():
+        print(f"Error: reference audio not found: {ref_audio}", file=sys.stderr)
+        sys.exit(1)
+    if not ref_text_path.exists():
+        print(f"Error: reference text not found: {ref_text_path}", file=sys.stderr)
+        sys.exit(1)
 
+    ref_text = ref_text_path.read_text(encoding="utf-8-sig").strip()
     try:
         from neutts import NeuTTS
     except ImportError:

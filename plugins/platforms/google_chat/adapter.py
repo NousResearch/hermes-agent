@@ -237,7 +237,7 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
             raise _SACredentialError("not_found")
         else:
             try:
-                with open(sa_value, "r", encoding="utf-8") as fh:
+                with open(sa_value, "r", encoding="utf-8-sig") as fh:
                     info = json.load(fh)
             except json.JSONDecodeError as exc:
                 raise _SACredentialError("file_invalid", exc) from exc
@@ -273,7 +273,7 @@ class _ThreadCountStore:
         if not self._path.exists():
             return
         try:
-            raw = self._path.read_text(encoding="utf-8")
+            raw = self._path.read_text(encoding="utf-8-sig")
             data = json.loads(raw) if raw.strip() else {}
         except (json.JSONDecodeError, OSError) as exc:
             fmt = ("[GoogleChat] thread-count store at %s is corrupt; starting fresh: %s" if isinstance(exc, ValueError)
@@ -497,7 +497,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     def _load_cached_bot_id(self) -> Optional[str]:
         try:
-            return json.loads(self._bot_id_cache_path().read_text(encoding="utf-8")).get("bot_user_id") or None
+            return json.loads(self._bot_id_cache_path().read_text(encoding="utf-8-sig")).get("bot_user_id") or None
         except (OSError, json.JSONDecodeError):
             return None
 

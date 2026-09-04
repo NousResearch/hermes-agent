@@ -125,7 +125,7 @@ def _load_disk() -> tuple[Optional[dict[str, list[str]]], float]:
     if path is None:
         return None, 0.0
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         efforts = data.get("efforts")
         if not isinstance(efforts, dict) or not efforts:
             return None, 0.0

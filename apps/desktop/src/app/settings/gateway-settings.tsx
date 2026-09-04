@@ -622,7 +622,9 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         notify({
           kind: 'warning',
           title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
+          message: result?.error
+            ? `${t.boot.failure.signInIncompleteMessage}: ${result.error}`
+            : t.boot.failure.signInIncompleteMessage
         })
       }
     } catch (err) {

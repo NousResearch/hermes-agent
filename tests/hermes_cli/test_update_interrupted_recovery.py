@@ -43,9 +43,7 @@ def _stub_install_env(monkeypatch, m, seen):
         returncode = 0
 
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
-    monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
-    monkeypatch.setattr(hermes_cli_main_install_repair, "_is_termux_env", lambda *a, **k: False)
-    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+    monkeypatch.setattr("pm.uv", lambda **kw: (None, {}))
     # The install executor moved to hermes_cli._install_repair (shared between
     # the pre-import early pass and this late recovery path) — stub WHERE it
     # is executed, not the legacy main.py wrapper it replaced.
@@ -59,10 +57,8 @@ def _stub_install_env(monkeypatch, m, seen):
 def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
     tmp_path, monkeypatch
 ):
-    # ``.update-incomplete`` is the generic core-install marker. Healthy
-    # lazy-refresh import probes alone must NOT clear it and skip full
-    # reinstall — a missing dep outside the 7-probe set would look healthy
-    # (#58004 review blocker).
+    # ``.update-incomplete`` is the generic core-install marker: recovery
+    # must run the full reinstall (#58004 review blocker).
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     m._write_update_incomplete_marker()

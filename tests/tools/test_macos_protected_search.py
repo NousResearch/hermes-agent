@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 import tools.file_operations as file_operations
-from tools.environments.local import LocalEnvironment
+from tools.environments.local import LocalEnvironment, _bash_safe_path
 from tools.file_operations import ShellFileOperations
 from tools.file_operations_search import _macos_protected_search_exclusions
 
@@ -141,7 +141,7 @@ def test_grep_fallback_prunes_by_path_not_basename(tmp_path, monkeypatch):
     for dirname in PROTECTED_NAMES:
         # Path-scoped pruning: full protected path present, no basename-wide
         # --exclude-dir for protected names.
-        assert ops._escape_shell_arg(str(home / dirname)) in pruned_command
+        assert _bash_safe_path(str(home / dirname)) in pruned_command
         assert f"--exclude-dir={dirname}" not in pruned_command
         assert f"--exclude-dir='{dirname}'" not in pruned_command
 
@@ -201,7 +201,7 @@ def test_find_fallback_prunes_protected_directories(tmp_path, monkeypatch):
     find_commands = _find_commands(env.commands)
     assert find_commands
     for command in find_commands:
-        assert ops._escape_shell_arg(str(home / "Downloads")) in command
+        assert _bash_safe_path(str(home / "Downloads")) in command
         assert "-prune" in command
 
 

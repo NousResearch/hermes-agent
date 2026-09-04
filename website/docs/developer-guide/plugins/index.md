@@ -778,11 +778,11 @@ Both formats can be mixed in the same list. Already-set variables are skipped si
 
 ### Lazy-install optional Python dependencies
 
-If your plugin wraps an SDK that not every user will have installed (a vendor SDK, a heavy ML lib, a platform-specific package), don't `import` it at the top of the module. Use the `tools.lazy_deps.ensure(...)` helper inside the tool handler — Hermes will install the package on first use, gated by the user's `security.allow_lazy_installs` config.
+If your plugin wraps an SDK that not every user will have installed (a vendor SDK, a heavy ML lib, a platform-specific package), don't `import` it at the top of the module. Use `pm.ensure_import(<extra>)` inside the tool handler — Hermes syncs the venv with that extra on first use, gated by the user's `security.allow_lazy_installs` config.
 
 ```python
 # tools.py
-from tools.lazy_deps import ensure, FeatureUnavailable
+from pm import ensure_import as ensure, InstallError as FeatureUnavailable
 
 def my_tool_handler(args, **kwargs):
     try:
@@ -794,14 +794,14 @@ def my_tool_handler(args, **kwargs):
     ...
 ```
 
-Two rules from the security model in `tools/lazy_deps.py`:
+Two rules from the security model in `pm`:
 
 | Rule | Why |
 |---|---|
 | Your feature key must appear in the in-tree `LAZY_DEPS` allowlist | Prevents a malicious config from coaxing Hermes into installing arbitrary packages — only specs Hermes itself ships are eligible |
 | Specs are PyPI-by-name only | No `--index-url`, `git+https://`, or file: paths. Pin versions with PEP 440 (`"my-sdk>=1.2,<2"`) inside the allowlist entry |
 
-For third-party plugins distributed via pip, declare the optional deps as `[project.optional-dependencies]` extras in your own `pyproject.toml` and tell users to `pip install your-plugin[backend]` — that path doesn't go through `lazy_deps`. The lazy-install dance is most useful for **bundled** plugins where shipping a hard dependency on every install would bloat the base Hermes footprint.
+For third-party plugins distributed via pip, declare the optional deps as `[project.optional-dependencies]` extras in your own `pyproject.toml` and tell users to `pip install your-plugin[backend]` — that path doesn't go through pm. The on-demand install is most useful for **bundled** plugins where shipping a hard dependency on every install would bloat the base Hermes footprint.
 
 When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `FeatureUnavailable` immediately with a remediation hint — your plugin should catch it and degrade gracefully (return an error result, not crash the tool loop).
 

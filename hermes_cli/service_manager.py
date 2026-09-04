@@ -55,8 +55,10 @@ class ServiceManager(Protocol):
 def detect_service_manager() -> ServiceManagerKind:
     """Return "s6" (s6-svscan is PID 1), "windows", "launchd", "systemd" (working bus) or "none".
 
-    Does NOT replace ``supports_systemd_services()`` for host call sites; it exists for
-    backend-agnostic code (profile hooks, the s6 dispatch in ``hermes gateway``).
+    This function does NOT replace ``supports_systemd_services()`` —
+    host call sites continue to use that. It exists for new backend-
+    agnostic code (profile create/delete hooks, the s6 dispatch path
+    in ``hermes gateway start/stop/restart``).
     """
     # Deferred so importing this module (Protocol type, validate_profile_name) doesn't drag in
     # the whole gateway dependency graph.
@@ -91,7 +93,7 @@ def _s6_running() -> bool:
     service-manager runtime-registration path inert in production (PR #30136 review).
     """
     try:
-        comm = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
+        comm = Path("/proc/1/comm").read_text(encoding="utf-8-sig").strip()
     except OSError:
         return False
     return comm == "s6-svscan" and Path("/run/s6/basedir").is_dir()
@@ -256,7 +258,7 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         if not profile_dir.exists():
             return
         try:
-            data = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+            data = json.loads(state_file.read_text(encoding="utf-8-sig")) if state_file.exists() else {}
             if not isinstance(data, dict):
                 data = {}
         except (OSError, json.JSONDecodeError):

@@ -22,17 +22,17 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# boto3 is not in the [all] extras; lazy_deps installs it on demand.
+# ---------------------------------------------------------------------------
+# Ensure boto3/botocore are installed before any code in this module runs.
+# Upstream removed boto3 from [all] extras (PRs #24220, #24515); pm
+# handles on-demand installation so the Bedrock provider still works in the
+# EKS deployment without baking boto3 into the base image.
+# ---------------------------------------------------------------------------
 try:
-    # --------------------------------------------------------------------------- Ensure boto3/botocore are
-    # installed before any code in this module runs. Upstream removed boto3 from [all] extras (PRs #24220,
-    # #24515); lazy_deps handles on-demand installation so the Bedrock provider still works in the EKS
-    # deployment without baking boto3 into the base image.
-    # ---------------------------------------------------------------------------
-    from tools.lazy_deps import ensure
-    ensure("provider.bedrock", prompt=False)
+    from pm import ensure_import
+    ensure_import("bedrock")
 except Exception:
-    pass  # let downstream imports surface the real error
+    pass  # pm unavailable or install failed — let downstream imports surface the real error
 
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}

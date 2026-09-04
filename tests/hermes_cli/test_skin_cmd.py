@@ -99,6 +99,7 @@ def test_set_persists_the_skin_durably():
     assert [p.name for p in _skins().iterdir() if p.name.endswith(".tmp")] == []
 
 
+@pytest.mark.require_symlinks
 def test_set_preserves_a_symlinked_skin_file():
     """Guard on the conversion, not a behavior change.
 

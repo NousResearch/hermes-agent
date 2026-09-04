@@ -357,20 +357,69 @@ is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tz
 is on another OS to pass, it belongs on that OS.** A test that walks several platforms in
 sequence is split — host-native arm on Linux, other arms as their own marked tests.
 
-**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py` finds files for
-the macOS/Windows lanes by grepping the marker *name*, then filters with `-m <marker>`. A
-`skipif(sys.platform != "win32")` test skips on Linux AND is never imported on Windows — it runs
-nowhere, silently. A file-local alias (`windows_only = pytest.mark.skipif(...)`) is listed but
-`-m windows_only` deselects everything: green over zero coverage. Don't `pytest.skip()` non-host
-rows of a platform `@parametrize` — split into one marked test per OS.
+```python
+@pytest.mark.platforms("linux")
+@pytest.mark.platforms("macos")
+@pytest.mark.platforms("windows")
+```
 
-**Live Windows process-topology E2E (`wine2e` lane):** `windows-venv-e2e.yml` runs
-`tests/hermes_cli/test_venv_holder_windows_live.py` on a real `windows-latest` runner (real
-processes, no mocked psutil) ONLY on pushes to `wine2e/**` branches. Workflow: write probes
-pinning CORRECT behavior, push to `wine2e/` to reproduce live on unfixed code, fix, iterate to
-green, then open the PR with the live receipt. Extend it when touching that subsystem; assert
-against the gateway ANCESTOR found by argv, not the direct parent (the venv shim makes every
-spawn a launcher/worker chain).
+The `platforms` marker takes any number of spec strings (any-of semantics)
+plus optional arch filters, so it can express more than the legacy trio:
+
+```python
+@pytest.mark.platforms("not macos")              # anywhere except macOS
+@pytest.mark.platforms("windows", arch="arm64")  # native Windows on arm64
+@pytest.mark.platforms("posix")                  # linux or macOS
+```
+
+Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
+The historic `linux_only` / `macos_only` / `windows_only` markers have been
+fully replaced — `platforms` is the only host-gating marker in the tree.
+
+Things that are host-independent can stay unmarked:
+
+- **Pure functions that take a platform as data** —
+  `hidden_windows_child_options(opts, is_windows=True)` is input→output, not a
+  fake host. (Contrast: setting a module-level `IS_WINDOWS` flag and then
+  calling `windows_detach_flags()` *is* a fake.)
+- **Declaration/packaging invariants** — "pyproject declares `tzdata` with a
+  `sys_platform == 'win32'` marker" asserts about a file, not about runtime.
+
+The line: **if the test needs the interpreter to believe it is on another OS
+in order to pass, it belongs on that OS.**
+When one test body walks several platforms in sequence, split it.
+Keep the host-native arm on the Linux lane and move the other arm into its own marked test.
+
+**Live Windows process-topology E2E: the `wine2e` lane.** For claims about
+real Windows process behavior that mocks cannot reproduce (venv-holder
+scans, process-tree parentage, launcher/worker chains, detach semantics),
+there is an on-demand workflow `windows-venv-e2e.yml` that runs
+`tests/hermes_cli/test_venv_holder_windows_live.py` on a real
+`windows-latest` runner — spawning actual processes and driving the real
+detection code, no mocked psutil. It fires ONLY on pushes to `wine2e/**`
+branches (inert on PRs and main; costs nothing on normal work). The proven
+workflow: write probes that pin CORRECT behavior, push to a `wine2e/`
+branch to reproduce the bugs live on unfixed code, build the fix, iterate
+until the lane is green, then open the PR — the live receipt on the exact
+head is the Windows proof reviewers ask for. Extend the live suite when
+touching that subsystem; assert against the gateway ANCESTOR found by
+argv, not the direct parent (the venv shim makes every spawn a
+launcher/worker chain).
+
+**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
+decides which files the macOS lane imports by grepping for the quoted spec
+inside `platforms(...)`, and the lane then selects with `-m platforms` while
+the conftest's per-test host skips do the actual gating. A test gated with
+`@pytest.mark.skipif(sys.platform != "win32")` therefore runs on no host at
+all, silently — it is never imported by the lane that would run it, and the
+full-suite lanes skip it. Don't stack a module-level `pytestmark =
+platforms(...)` on a file whose tests carry their own host marker — the
+conftest hard-rejects tests carrying two `platforms()` markers (a test
+skipped on every host, reported green everywhere).
+Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
+platforms — split it into one marked test per OS, or only the host's row ever
+executes.
+<!-- MERGE-CHECK: kept our expanded `platforms()` marker docs; upstream's side still described the legacy linux_only/macos_only/windows_only markers. -->
 
 ### Don't write change-detector tests
 

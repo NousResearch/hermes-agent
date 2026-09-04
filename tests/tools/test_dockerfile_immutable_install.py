@@ -62,37 +62,13 @@ def test_dockerfile_bakes_code_scoped_install_method_stamp() -> None:
     assert shim_block, "install-method stamp must be in the shim-wiring RUN block"
 
 
-def test_dockerfile_redirects_lazy_installs_to_durable_target() -> None:
-    """Immutable image seals the venv but redirects lazy installs to the
-    writable data volume, so opt-in backends still install at first use
-    without being able to break the sealed core.
-
-    Guards the contract between the Dockerfile env var, the stage2-hook
-    seeding, and tools/lazy_deps.py — these three must agree on the path.
+def test_dockerfile_disables_lazy_installs() -> None:
+    """The published image fully disables runtime lazy installs so nothing
+    can mutate the sealed venv (the old durable-target redirect machinery is
+    gone — no code reads HERMES_LAZY_INSTALL_TARGET anymore).
     """
-    text = _dockerfile_text()
-    target = "/opt/data/lazy-packages"
-
-    # The redirect target must be set AND must live under the data volume,
-    # never under the immutable /opt/hermes tree.
-    assert f"ENV HERMES_LAZY_INSTALL_TARGET={target}" in text
-    assert target.startswith("/opt/data/"), "target must be on the durable volume"
-    assert "ENV HERMES_LAZY_INSTALL_TARGET=/opt/hermes" not in text
-
-    # The seal flag must still be present — the redirect rides on top of it,
-    # it does not replace it.
-    assert "ENV HERMES_DISABLE_LAZY_INSTALLS=1" in text
-
-    # stage2-hook must seed + chown the target dir so first-use installs
-    # succeed as the unprivileged hermes runtime user.
-    stage2 = (REPO_ROOT / "docker" / "stage2-hook.sh").read_text()
-    assert '"$HERMES_HOME/lazy-packages"' in stage2, (
-        "stage2-hook.sh must create the lazy-packages dir on the data volume"
-    )
-    assert "lazy-packages" in stage2.split("for sub in", 1)[1].split(";", 1)[0], (
-        "lazy-packages must be in the per-boot chown subdir list so it stays "
-        "hermes-owned"
-    )
+    assert "ENV HERMES_DISABLE_LAZY_INSTALLS=1" in _dockerfile_text()
+    assert "HERMES_LAZY_INSTALL_TARGET" not in _dockerfile_text()
 
 
 def test_dockerfile_bakes_photon_sidecar_deps() -> None:

@@ -174,7 +174,7 @@ class TestCodeExecutionTZ:
     @pytest.fixture(autouse=True)
     def _import_execute_code(self, monkeypatch):
         """Lazy-import execute_code to avoid pulling in firecrawl at collection time."""
-        # Force local backend — other tests in the same xdist worker may leak
+        # Force local backend — other tests in the same process may leak
         # TERMINAL_ENV=modal/docker which causes modal.exception.AuthError.
         monkeypatch.setenv("TERMINAL_ENV", "local")
         try:

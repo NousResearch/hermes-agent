@@ -47,17 +47,20 @@ _SDK_SYMBOLS: Dict[str, str] = {name: module for module, names in _SDK_MODULES.i
 _SPAN_SDK = ("TracerProvider", "BatchSpanProcessor", "Resource", "OTLPSpanExporter", "SpanKind")
 
 
-def _require_sdk(names: Iterable[str] = _SPAN_SDK, *, auto_install: bool = True, prompt: bool = True) -> Dict[str, Any]:
+def _require_sdk(names: Iterable[str] = _SPAN_SDK, *, auto_install: bool = True) -> Dict[str, Any]:
     """Import the named OTel SDK symbols, lazily installing the extra on first use.
 
-    Routes through tools.lazy_deps (feature 'export.otlp') — gated by security.allow_lazy_installs
-    and TTY-prompted (``prompt=False`` from non-interactive contexts).  Any lazy-install failure
-    falls through to the import attempt, which raises OTLPUnavailable with a manual install hint.
+    Routes through pm.ensure_import('otlp') so a missing SDK triggers the
+    standard venv install flow — same as every other optional backend — gated by
+    security.allow_lazy_installs.  Any lazy-install failure falls through to the
+    import attempt, which raises OTLPUnavailable with a manual install hint.
     """
     if auto_install:
-        with suppress(Exception):
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("export.otlp", prompt=prompt)
+        try:
+            from pm import ensure_import as _lazy_ensure
+            _lazy_ensure("otlp")
+        except Exception:
+            pass
     try:
         return {name: getattr(importlib.import_module(_SDK_SYMBOLS[name]), name) for name in names}
     except Exception as e:  # ImportError or partial install
@@ -261,13 +264,13 @@ def start_streaming(
     """If OTLP is enabled, attach a streamer to the singleton emitter.
 
     ``event_filter`` scopes the exporter to its plane.  Startup is non-interactive: a
-    configured-but-missing SDK is lazily installed once (prompt=False, gated by
+    configured-but-missing SDK is lazily installed once (gated by
     security.allow_lazy_installs); if it still can't load, log and no-op — never raise into startup.
     """
     if not is_enabled(config):
         return None
     try:
-        _require_sdk(prompt=False)
+        _require_sdk()
     except OTLPUnavailable:
         logger.warning("monitoring.export.otlp.enabled but the OTel SDK could not "
                        "be installed/imported; install 'hermes-agent[otlp]'")

@@ -248,6 +248,7 @@ class TestCrashDurability:
         # ...and the aborted write must not leave a temp file behind.
         assert list(trap_config.parent.glob("*.tmp")) == []
 
+    @pytest.mark.require_symlinks
     def test_symlinked_config_is_replaced_in_place(self, tmp_path: Path):
         """A config.yaml symlinked into a dotfiles repo must stay a symlink."""
         real_dir = tmp_path / "dotfiles"

@@ -364,18 +364,17 @@ class TestRequireAzureIdentityMissing:
         monkeypatch.setattr("builtins.__import__", _fake_import)
 
         # Simulate lazy installs disabled.
-        from tools.lazy_deps import FeatureUnavailable
+        from pm import InstallError as FeatureUnavailable
 
         def _fake_ensure(*args, **kwargs):
             raise FeatureUnavailable(
-                "provider.azure_identity",
-                ("azure-identity==1.25.3",),
+                "azure-identity",
                 "lazy installs disabled (test simulation)",
             )
 
-        # The adapter calls ``ensure`` from ``tools.lazy_deps``; intercept
+        # The adapter calls ``ensure_import`` from ``pm``; intercept
         # it by patching the actual symbol path.
-        monkeypatch.setattr("tools.lazy_deps.ensure", _fake_ensure)
+        monkeypatch.setattr("pm.ensure_import", _fake_ensure)
 
         with pytest.raises(ImportError) as exc_info:
             _adapter._require_azure_identity()

@@ -28,7 +28,7 @@ class TestRecordNousRateLimit:
 
         path = _state_path()
         assert os.path.exists(path)
-        with open(path) as f:
+        with open(path, encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(1800, abs=2)
         assert state["reset_at"] > time.time()
@@ -45,7 +45,7 @@ class TestRecordNousRateLimit:
             error_context={"reset_at": future_reset},
         )
 
-        with open(_state_path()) as f:
+        with open(_state_path(), encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_at"] == pytest.approx(future_reset, abs=1)
 
@@ -55,7 +55,7 @@ class TestRecordNousRateLimit:
 
         record_nous_rate_limit(headers=None, default_cooldown=120.0)
 
-        with open(_state_path()) as f:
+        with open(_state_path(), encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(120, abs=2)
 
@@ -77,9 +77,10 @@ class TestNousRateLimitRemaining:
         from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
 
         # Write an already-expired state
-        state_dir = os.path.dirname(_state_path())
+        path = _state_path()
+        state_dir = os.path.dirname(path)
         os.makedirs(state_dir, exist_ok=True)
-        with open(_state_path(), "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump({"reset_at": time.time() - 10, "recorded_at": time.time() - 100}, f)
 
         assert nous_rate_limit_remaining() is None
@@ -272,7 +273,13 @@ class TestRateGuardStateEncoding:
                 is_target = str(file) == str(path)
             except Exception:
                 is_target = False
-            if is_target and "b" not in mode and kwargs.get("encoding") != "utf-8":
+            # The repo encoding policy makes reads BOM-tolerant, so both
+            # UTF-8 family codecs satisfy this regression guard.
+            if (
+                is_target
+                and "b" not in mode
+                and kwargs.get("encoding") not in ("utf-8", "utf-8-sig")
+            ):
                 raise UnicodeDecodeError(
                     "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
                 )

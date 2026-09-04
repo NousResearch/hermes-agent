@@ -236,48 +236,113 @@ def _managed_bin_dir() -> str:
     return str(Path(get_hermes_home()) / "bin")
 
 
+def _pinned_uvx() -> Optional[str]:
+    """The pinned uvx from pm's store, or None when pm can't provide it.
+
+    uvx ships inside uv's own store entry, beside the uv binary — the pin
+    that governs uv governs it. Resolved from pm's uv fact rather than by
+    probing directories: pm names the binary, so nobody goes fishing with
+    ``shutil.which`` on a dir (a PATH probe could resolve a system uvx of
+    unknown version). Pure lookup (``realize=False``) — this is a probe,
+    not the converging ``install_cli()`` path.
+    """
+    try:
+        import pm
+
+        uv_bin, _env = pm.uv(realize=False)
+        if not uv_bin:
+            return None
+        uvx = str(Path(uv_bin).with_name("uvx.exe" if os.name == "nt" else "uvx"))
+        if os.path.isfile(uvx) and os.access(uvx, os.X_OK):
+            return uvx
+        return None
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve pinned uvx: %s", e)
+        return None
+
+
 def _find_cli() -> Optional[List[str]]:
-    """Locate the browser-use CLI, or None when it can't be run. MANAGED-FIRST: Hermes' own ``$HERMES_HOME/bin``
-    copy always wins so every session drives one Hermes-controlled binary; PATH and the user-level tool dir
-    (~/.local/bin, or uv's %APPDATA%/uv/bin on Windows — Desktop/TUI workers may start with a minimal PATH
-    that omits it) are fallbacks; uvx zero-install (same probe order) is last."""
+    """Locate the browser-use CLI, or None when it can't be run.
+
+    MANAGED-FIRST resolution: Hermes' own ``$HERMES_HOME/bin`` copy — the
+    one every browser backend selection installs and updates via
+    ``install_cli()`` — always wins, so all sessions drive one canonical,
+    Hermes-controlled binary. PATH and the user-level tool dir
+    (~/.local/bin / %APPDATA%\\uv\\bin, where a manual ``uv tool install``
+    links binaries) are fallbacks for setups that never ran our install,
+    and cover Desktop/TUI workers that spawn with a minimal PATH. The uvx
+    zero-install path is the final fallback — the pinned uvx from pm's
+    store first, then the Hermes-owned bin dir and the user-level tool
+    dir. A bare PATH uvx probe is deliberately absent: pm names the
+    pinned binary, and a PATH uvx is an unknown version.
+    """
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         user_bin = str(Path(appdata) / "uv" / "bin") if appdata else None
     else:
         user_bin = str(Path(os.path.expanduser("~")) / ".local" / "bin")
-    probe_paths = [p for p in (_managed_bin_dir(), None, user_bin) if p is None or p]  # None = PATH
-    for name, argv in (("browser-use", lambda b: [b]), ("uvx", lambda b: [b, "browser-use"])):
-        for probe_path in probe_paths:
-            found = shutil.which(name, path=probe_path)
-            if found:
-                return argv(found)
+    probe_paths = (_managed_bin_dir(), None, user_bin)
+    for probe_path in probe_paths:
+        if probe_path is None or probe_path:
+            direct = shutil.which("browser-use", path=probe_path)
+            if direct:
+                return [direct]
+    uvx = _pinned_uvx()
+    if uvx is not None:
+        return [uvx, "browser-use"]
+    for probe_path in (_managed_bin_dir(), user_bin):
+        if probe_path:
+            uvx = shutil.which("uvx", path=probe_path)
+            if uvx:
+                return [uvx, "browser-use"]
     return None
 
 
 def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
-    """Install the browser-use CLI via ``uv tool install`` (managed uv via ``ensure_uv`` → uv on PATH), linking
-    the binary into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()`` resolves it for every profile.
-    Returns ``(ok, message)``; never raises. MANAGED-FIRST: only the managed copy short-circuits — a browser-use
-    on PATH is a user-level side install and must not block provisioning the canonical copy (version drift)."""
+    """Install the browser-use CLI persistently via ``uv tool install``.
+
+    Resolution order for uv: Hermes' managed uv (realized on demand via
+    ``pm.uv``) → uv on PATH. The binary is linked
+    into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()``
+    resolves it for every profile without touching the user's PATH.
+
+    Returns ``(ok, message)`` — never raises.
+    """
+    # MANAGED-FIRST: only the managed copy short-circuits the install. A
+    # browser-use found on PATH is a user-level side install — it must NOT
+    # prevent provisioning the canonical Hermes-managed copy, or resolution
+    # stays pinned to a binary we don't control (version drift, no updates
+    # through hermes tools).
     bin_dir = _managed_bin_dir()
     managed = shutil.which("browser-use", path=bin_dir)
     if managed:
         return True, f"browser-use CLI already installed ({managed})"
 
-    def _managed_uv() -> Optional[str]:
-        from hermes_cli.managed_uv import ensure_uv
-        return str(ensure_uv() or "") or None
-    uv_bin = _quiet(_managed_uv, None, "Managed uv bootstrap unavailable") or shutil.which("uv")
-    if not uv_bin:
-        return False, ("uv is not available and could not be bootstrapped. Install uv "
-                       "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`.")
-    env = {**os.environ, "UV_NO_CONFIG": "1"}
+    uv_bin: Optional[str] = None
+    env = dict(os.environ)
     try:
-        Path(bin_dir).mkdir(parents=True, exist_ok=True)
-        env["UV_TOOL_BIN_DIR"] = bin_dir
-    except OSError as e:
-        logger.debug("Could not prepare %s: %s", bin_dir, e)
+        import pm
+
+        uv_bin, pm_env = pm.uv()
+        if uv_bin:
+            env = pm_env
+    except Exception as e:
+        logger.debug("Managed uv unavailable: %s", e)
+    if not uv_bin:
+        uv_bin = shutil.which("uv")
+    if not uv_bin:
+        return False, (
+            "uv is not available and could not be bootstrapped. Install uv "
+            "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`."
+        )
+
+    env["UV_NO_CONFIG"] = "1"
+    if bin_dir:
+        try:
+            Path(bin_dir).mkdir(parents=True, exist_ok=True)
+            env["UV_TOOL_BIN_DIR"] = bin_dir
+        except OSError as e:
+            logger.debug("Could not prepare %s: %s", bin_dir, e)
 
     try:
         result = subprocess.run([uv_bin, "tool", "install", "browser-use"], capture_output=True, text=True, encoding="utf-8",

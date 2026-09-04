@@ -398,7 +398,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
     try:
-        lines = file_path.read_text(encoding='utf-8').split('\n')
+        lines = file_path.read_text(encoding='utf-8-sig').split('\n')
     except (UnicodeDecodeError, OSError):
         return []
     findings = []
@@ -473,7 +473,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
                 "source_url": source_url}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
-        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
     if isinstance(cached, dict) and all(cached.get(k) == v for k, v in expected.items()):
         result = ScanResult(skill_path.name, source, cached["trust_level"], cached["verdict"],
                             [Finding(**item) for item in cached.get("findings", [])], cached["scanned_at"],
@@ -580,7 +580,7 @@ def _load_skill_ignore(skill_dir: Path):
     for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
         with suppress(UnicodeDecodeError, OSError):
             if ig.is_file():
-                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8").splitlines())
+                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8-sig").splitlines())
                                 if s and not s.startswith("#"))
 
     def ignore(rel: str) -> bool:

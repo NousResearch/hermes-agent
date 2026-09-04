@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,8 @@ def _module_registers_tools(module_path: Path) -> bool:
     Only module-body statements count, so helpers registering inside a function are skipped;
     a text prefilter avoids ``ast.parse`` for files lacking both words."""
     try:
-        source = module_path.read_text(encoding="utf-8")
+        # MERGE-CHECK: our utf-8-sig read fix kept (BOM-tolerant; ours read tool modules this way)
+        source = module_path.read_text(encoding="utf-8-sig")
         if "registry" not in source or "register" not in source:
             return False
         tree = ast.parse(source, filename=str(module_path))
@@ -141,7 +142,7 @@ def _load_discovery_cache() -> Dict[str, list]:
     if path is None:
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
@@ -492,6 +493,7 @@ class ToolRegistry:
         self, module_namespace: str, *, scope: Optional[str] = None,
     ) -> Optional[_PluginOverridePolicy]:
         """Return one local authorization generation without fallback."""
+        scope = normalize_scope(scope)
         with self._lock:
             return self._plugin_override_policy.get((scope, module_namespace))
 
@@ -499,6 +501,7 @@ class ToolRegistry:
         self, module_namespace: str, current: _PluginOverridePolicy,
         previous: Optional[_PluginOverridePolicy], *, scope: Optional[str] = None) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             key = (scope, module_namespace)
             if self._plugin_override_policy.get(key) is not current:
@@ -607,6 +610,7 @@ class ToolRegistry:
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._slot(scope, create=True)
             existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)

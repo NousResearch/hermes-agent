@@ -149,6 +149,7 @@ class TestBlocksMutationsInSourceRepo:
 
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
+        monkeypatch.setenv("USERPROFILE", str(repo.parent))
         hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
         assert hit is True
 
@@ -374,8 +375,9 @@ class TestBlockMessageGuidance:
         assert "tmpfs" in msg
         assert "Delete the clone" in msg
 
-    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", "/custom/hermes-home")
+    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch, tmp_path):
+        home = tmp_path / "custom" / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
         hit, msg = _detect("git rebase origin/main", repo, repo)
         assert hit is True
-        assert "/custom/hermes-home/scratch" in msg
+        assert str(home / "scratch") in msg

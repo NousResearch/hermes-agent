@@ -121,6 +121,7 @@ def test_merges_extended_path_so_managed_only_npx_can_find_sibling_node():
     assert kwargs["env"]["PATH"] == "/opt/hermes/node/bin:/usr/bin"
 
 
+@pytest.mark.platforms("linux")
 def test_runs_in_its_own_process_group_on_posix(monkeypatch):
     monkeypatch.setattr("os.name", "posix")
     with patch("tools.browser_tool_install._resolve_npx_bin", return_value="/usr/bin/npx"), \
@@ -214,6 +215,7 @@ def test_returns_false_instead_of_raising_on_unexpected_communicate_exception():
     mock_kill.assert_called_once_with(proc)
 
 
+@pytest.mark.platforms("linux")
 class TestLegacyKillProcessTree:
     """Contract of the pre-#85125 local fallback (used when agent.deadline
     delegation fails); the delegating wrapper is covered in

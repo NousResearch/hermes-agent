@@ -1256,10 +1256,12 @@ class SessionDB(
         if self.get_meta(gate) == "1":
             return 0
         def _do(conn):
+            esc = _escape_like(prefix)
             cursor = conn.execute(
                 "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, _escape_like(prefix) + "/%"),
+                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\' "
+                "OR cwd LIKE ? ESCAPE '\\')",
+                (prefix, f"{esc}/%", f"{esc}\\\\%"),
             )
             # rowcount BEFORE set_meta reuses this cursor for its INSERT.
             retagged = cursor.rowcount or 0

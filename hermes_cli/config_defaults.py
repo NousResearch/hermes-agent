@@ -1862,6 +1862,14 @@ DEFAULT_CONFIG = {
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
         "multiplex_profile_allowlist": None,
+
+        # The MSIX HermesGateway Windows Service posture (windows MSIX
+        # installs only; see `hermes gateway service on|off|status`).
+        # False = the service exists but stays demand-start/stopped
+        # (config-only posture — settled 2026-09-03); True = automatic
+        # at logon, bots keep running without the desktop app.
+        "service": False,
+
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,

@@ -231,6 +231,7 @@ class TestTruncateSnapshot:
         content = Path(stored).read_text(encoding="utf-8")
         assert "STOREDSNAPSHOTSECRET" not in content
 
+    @pytest.mark.require_symlinks
     def test_stored_snapshot_refuses_planted_symlink(self, tmp_path, monkeypatch):
         """A pre-planted symlink at the content-hash path must not be
         followed to its target — only the link itself may be replaced.

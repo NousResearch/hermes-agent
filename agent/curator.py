@@ -45,7 +45,7 @@ def load_state() -> Dict[str, Any]:
     }
     path = _state_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
         return base

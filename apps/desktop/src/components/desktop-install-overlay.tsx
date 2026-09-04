@@ -15,10 +15,12 @@ import type {
   DesktopBootstrapState
 } from '@/global'
 import { useI18n } from '@/i18n'
+import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { AlertCircle, ChevronDown, ChevronRight, Globe, iconSize, Loader2, Monitor } from '@/lib/icons'
 import { capitalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 
+import { localCardPresentation } from './desktop-install-local-card'
 import { FirstRunRemoteForm } from './first-run-remote-form'
 
 /**
@@ -170,7 +172,8 @@ const EMPTY_STATE: DesktopBootstrapState = {
   startedAt: null,
   completedAt: null,
   setupChoice: null,
-  unsupportedPlatform: null
+  unsupportedPlatform: null,
+  bundled: false
 }
 
 function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): DesktopBootstrapState {
@@ -188,10 +191,13 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
       setupChoice: ev.active
         ? {
             platform: ev.platform || state.setupChoice?.platform || 'unknown',
-            activeRoot: ev.activeRoot || state.setupChoice?.activeRoot || ''
+            activeRoot: ev.activeRoot || state.setupChoice?.activeRoot || '',
+            local: ev.local || state.setupChoice?.local || 'none',
+            bundled: Boolean(ev.bundled)
           }
         : null,
-      unsupportedPlatform: null
+      unsupportedPlatform: null,
+      bundled: Boolean(ev.bundled)
     }
   }
 
@@ -397,6 +403,13 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   }
 
   if (state.setupChoice) {
+    // The local card's copy + behavior derive from what the backend found on
+    // this machine: 'none' is an install offer, the rest say "use what's
+    // already here" — and 'bundled-damaged' disables the card entirely
+    // (there is no install to fire; reinstall the app instead).
+    const localState = state.setupChoice.local
+    const localPres = localCardPresentation(localState)
+
     return (
       <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 p-4 backdrop-blur-md">
         <div className="w-full max-w-2xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
@@ -404,7 +417,9 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <BrandMark className="size-11 shrink-0" />
             <div className="min-w-0">
               <h2 className="text-xl font-semibold tracking-tight">{copy.setupChoiceTitle}</h2>
-              <p className="mt-1.5 text-sm text-muted-foreground">{copy.setupChoiceDesc}</p>
+              <p className="mt-1.5 text-sm text-muted-foreground">
+                {localState === 'none' ? copy.setupChoiceDesc : copy.setupChoiceDescLocal}
+              </p>
             </div>
           </div>
 
@@ -422,8 +437,9 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </button>
 
             <button
-              className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-wait disabled:opacity-60"
-              disabled={localStarting}
+              aria-disabled={localPres.disabled}
+              className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={localStarting || localPres.disabled}
               onClick={async () => {
                 setLocalStart({ root: activeRoot, starting: true, error: null })
 
@@ -447,11 +463,24 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 ) : (
                   <Monitor className="size-4 text-muted-foreground" />
                 )}
-                <span>{copy.installLocalTitle}</span>
+                <span>{copy[localPres.title]}</span>
               </div>
-              <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.installLocalDesc}</p>
+              <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy[localPres.desc]}</p>
             </button>
           </div>
+
+          {localPres.disabled ? (
+            <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+              <AlertCircle className="size-4 shrink-0" />
+              <button
+                className="text-(--ui-text-secondary) underline underline-offset-2 hover:text-foreground"
+                onClick={() => window.hermesDesktop?.openExternal?.(DESKTOP_DOCS_URL)}
+                type="button"
+              >
+                {copy.reinstallApp}
+              </button>
+            </div>
+          ) : null}
 
           {localStartError ? (
             <div className="mt-4 flex items-start gap-2 text-sm text-destructive">
@@ -460,10 +489,12 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </div>
           ) : null}
 
-          <div className="mt-6 text-xs text-muted-foreground">
-            {copy.installTo}{' '}
-            <code className="font-mono text-(--ui-text-secondary)">{state.setupChoice.activeRoot}</code>
-          </div>
+          {localPres.showInstallTo ? (
+            <div className="mt-6 text-xs text-muted-foreground">
+              {copy.installTo}{' '}
+              <code className="font-mono text-(--ui-text-secondary)">{state.setupChoice.activeRoot}</code>
+            </div>
+          ) : null}
         </div>
       </div>
     )

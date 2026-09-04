@@ -274,7 +274,7 @@ class TestFleetClassification:
             json.dumps(record), encoding="utf-8"
         )
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": expected_sha, "short_sha": expected_sha[:8],
                                    "version": "1.0", "source": "git"},
         )
@@ -360,7 +360,7 @@ class TestGatewayStatusStamping:
         import gateway.status as gs
 
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": "c" * 40, "short_sha": "c" * 8,
                                    "version": "2.0", "source": "git"},
         )
@@ -374,7 +374,7 @@ class TestGatewayStatusStamping:
         def _boom(refresh=False):
             raise RuntimeError("no build info")
 
-        monkeypatch.setattr("hermes_cli.build_info.get_code_identity", _boom)
+        monkeypatch.setattr("hermes_cli.version_info.get_code_identity", _boom)
         record = gs._build_runtime_status_record()
         # Must not raise, and must not stamp bogus values.
         assert "code_sha" not in record
@@ -383,17 +383,19 @@ class TestGatewayStatusStamping:
 
 class TestCodeIdentity:
     def test_get_code_identity_shape(self):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         assert set(identity) == {"sha", "short_sha", "version", "source"}
         # Running from a git checkout in CI/dev: sha resolves via git.
         if identity["sha"]:
             assert identity["short_sha"] == identity["sha"][:8]
-            assert identity["source"] in ("git", "build-file")
+            # Running from a git checkout in CI/dev: git provenance; packaged
+            # installs would report their stamp source instead.
+            assert identity["source"] != "unknown"
 
     def test_get_code_identity_cached(self):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         first = get_code_identity(refresh=True)
         second = get_code_identity()

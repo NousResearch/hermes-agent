@@ -44,7 +44,11 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
             return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
 
         if joined.endswith("rev-parse HEAD"):
-            if calls["n"] == 0:
+            # The update flow's own captures: pre-pull (first call) sees
+            # pre_sha, post-pull (second call) sees post_sha. get_version_info
+            # is mocked in _patch_update_deps so the startup banner makes no
+            # rev-parse calls of its own.
+            if calls["n"] < 1:
                 calls["n"] += 1
                 return SimpleNamespace(returncode=0, stdout=f"{pre_sha}\n", stderr="")
             return SimpleNamespace(returncode=0, stdout=f"{post_sha}\n", stderr="")
@@ -107,11 +111,40 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
+    # _install_hangup_protection wraps sys.stdout in a mirror stream that
+    # survives the test and breaks later capsys captures — no-op it.
+    monkeypatch.setattr(
+        hermes_main,
+        "_install_hangup_protection",
+        lambda gateway_mode=False: {
+            "prev_stdout": None, "prev_stderr": None,
+            "log_file": None, "installed": False,
+        },
+    )
+    monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda *a, **k: None)
+    # _check_and_apply_config_migration → _run_migrate_config_fresh →
+    # _reload_config_modules() force-reloads hermes_cli.config via
+    # importlib, replacing the module object pytest's capsys + the config
+    # tests' patches target. No-op the reload so the config module stays
+    # stable for later tests in the same process.
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._reload_config_modules",
+        lambda *a, **k: None,
+    )
+    # Upstream refactor: _clear_update_incomplete_marker now lives in
+    # main_install_repair; no-op it there too (kept from upstream side).
     monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
+    # Upstream refactor: _finish_dashboard_update_cleanup moved back under
+    # update_cmd (was reached via hermes_main on our branch).
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
     )
+    # The startup version-info probe runs git rev-parse HEAD (and the
+    # result is cached per-process, so whether it runs depends on test
+    # order). Mock it so the head-moved mock's call counting only sees the
+    # update flow's own pre/post captures.
     monkeypatch.setattr(
-        update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
+        "hermes_cli.version_info.get_version_info",
+        lambda *a, **k: SimpleNamespace(),
     )
     monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
     monkeypatch.setattr(main_web_build, "_build_web_ui", lambda *a, **k: None)
@@ -139,6 +172,17 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         "hermes_cli.update_inventory.collect_runtime_inventory",
         lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    # The restart phase imports discovery fns fresh after
+    # _purge_stale_hermes_modules (the update reloads code in-place), so
+    # module-attr mocks are lost; stub os.kill so the conftest live-system
+    # guard never fires on real pids. No gateways are expected, so the
+    # post-restart fleet matrix must not demand rows.
+    import os as _os_mod
+
+    monkeypatch.setattr(_os_mod, "kill", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **k: False
     )
 
 

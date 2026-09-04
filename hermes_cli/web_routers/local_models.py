@@ -34,6 +34,8 @@ from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
 )
+from pm.downloader import Download, DownloadPaused, Source
+
 from hermes_cli.local_runtime.endpoint import _state_endpoint
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,7 @@ router = APIRouter()
 
 _JOBS: Dict[str, Dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
+_RUNNING: Dict[str, Dict[str, Any]] = {}
 # One quickstart at a time: the job sequences installs, downloads, a server bounce and a config write — two
 # racing runs would interleave all four. Held for the job's lifetime, released in the worker.
 _QUICKSTART_LOCK = threading.Lock()
@@ -59,6 +62,10 @@ class RuntimeInstallBody(BaseModel):
 
 class ModelDownloadBody(BaseModel):
     model_id: str
+
+
+class JobIdBody(BaseModel):
+    job_id: str
 
 
 class QuickstartBody(BaseModel):
@@ -390,18 +397,51 @@ def _download_plan(entry, variant) -> list:
 
 
 def _run_download_plan(job: Dict[str, Any], plan: list, label: str) -> None:
-    """Download every missing file in ``plan``; already-present files count toward progress without a transfer."""
+    """Download every missing file in ``plan`` via pm.downloader (one resumable
+    Download per job); already-present files count toward progress without a
+    transfer. The live handle is kept OFF the job dict (which stays
+    JSON-serializable for the poll route) under _RUNNING."""
     _step(job, "downloading", f"{label} — {_human_gb(sum(p[2] for p in plan))}")
     done_before = 0
     for url, dest, size in plan:
         if not dest.exists():
-            download_file(url, dest, job, base_done=done_before, keep_totals=True)
+            _download_job(job, [(url, dest, size)])
             job["phase"] = "downloading"
         done_before += size
         job["done_bytes"] = done_before
+    _RUNNING.pop(job["job_id"], None)
+
+def _download_job(job: Dict[str, Any], plan) -> None:
+    """Run a plan of (url, dest, size) downloads as ONE resumable Download.
+
+    Completion and range progress feed the job dict (done_bytes /
+    total_bytes / ranges — the bar reads the aggregate, the detail view
+    reads the bitmap; both come from the same callback). Sources carry NO
+    hash by design: catalog sizes may lag an upstream re-upload, so
+    completeness is judged by the downloader against the server's declared
+    total, never the catalog. On pause the downloader raises
+    DownloadPaused; the job is marked 'paused' with its partials intact
+    for a later resume.
+    """
+    dl = Download([Source(url, dest) for url, dest, _ in plan])
+    _RUNNING.setdefault(job["job_id"], {})["dl"] = dl
+
+    def tick(done: int, total: int, ranges: dict) -> None:
+        job["done_bytes"] = done
+        job["total_bytes"] = total
+        job["ranges"] = ranges
+
+    try:
+        dl.run(progress=tick)
+    except DownloadPaused:
+        job["status"] = "paused"
+        # Do NOT re-raise: _spawn_job's except would mark the job 'error'.
+        # Paused is a terminal state the poll route reports as-is.
+    finally:
+        _RUNNING.get(job["job_id"], {}).pop("dl", None)
 
 
-# ── status: the one call the pane opens with ─────────────────
+
 def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, Any]]":
     """Resident models right now, plus how each is placed (granted window from the child, spill facts from
     the preset decision) — the difference between 'fast' and 'why is my CPU busy', so it must be inspectable.
@@ -690,9 +730,61 @@ async def local_models_download(body: ModelDownloadBody):
     plan = _download_plan(entry, variant)
     job = _job("model-download", f"{entry.display_name} ({variant.quant})", model_id=entry.id)
     job["total_bytes"] = sum(p[2] for p in plan)
-    _spawn_job(job, "lr-model-download", lambda: _run_download_plan(job, plan, entry.display_name),
-               fail_msg="model download failed: %s", download_label=entry.display_name)
+
+    def _run():
+        try:
+            job["phase"] = "downloading"
+            job["detail"] = f"{entry.display_name} — {_human_gb(job['total_bytes'])}"
+            _download_job(job, plan)
+            job["phase"] = "done"
+            job["status"] = "done"
+            job["detail"] = f"{entry.display_name} ready"
+            try:
+                from hermes_cli.local_runtime.bootstrap import refresh_local_runtime
+                refresh_local_runtime()
+            except Exception:  # noqa: BLE001
+                logger.debug("post-download runtime refresh skipped", exc_info=True)
+        except DownloadPaused:
+            pass  # status already "paused"; partials kept for resume
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("model download failed: %s", exc)
+            job["status"] = "error"
+            job["error"] = str(exc)
+        finally:
+            if job["status"] != "paused":
+                _RUNNING.pop(job["job_id"], None)
+
+    _RUNNING[job["job_id"]] = {"resume": _run, "dl": None}
+    threading.Thread(target=_run, daemon=True, name="lr-model-download").start()
     return {"job_id": job["job_id"], "model_id": variant.model_id}
+
+
+@router.post("/api/local-models/download/pause")
+async def local_models_download_pause(body: JobIdBody):
+    """Pause a running model download. The downloader's live handle is
+    checked off the job dict (which stays JSON-serializable for the poll
+    route); when none is active (already done/paused) this is a no-op."""
+    running = _RUNNING.get(body.job_id)
+    if running is None:
+        raise HTTPException(status_code=404, detail="unknown download job")
+    dl = running.get("dl")
+    if dl is None:
+        return {"ok": True, "paused": False}
+    dl.pause()
+    return {"ok": True, "paused": True}
+
+
+@router.post("/api/local-models/download/resume")
+async def local_models_download_resume(body: JobIdBody):
+    """Resume a paused model download."""
+    running = _RUNNING.get(body.job_id)
+    if running is None:
+        raise HTTPException(status_code=404, detail="unknown download job")
+    resume = running.get("resume")
+    if resume is None:
+        return {"ok": True, "resumed": False}
+    threading.Thread(target=resume, daemon=True, name="lr-model-download-resume").start()
+    return {"ok": True, "resumed": True}
 
 
 @router.delete("/api/local-models/models/{model_id}")
@@ -712,6 +804,8 @@ async def local_models_delete(model_id: str):
 
 
 # ── quickstart: one click from nothing to a working default ──
+
+
 def _quickstart_target(body: QuickstartBody, budget):
     """(entry, variant) to set up: explicit id, else this machine's recommendation, else the first servable entry."""
     if body.model_id:
@@ -772,7 +866,7 @@ def _terminate_state_pid() -> None:
     """Server owned by another process (or an orphan): terminate via the state file's pid, then clear the state."""
     import psutil  # type: ignore
 
-    state = json.loads(supervisor.state_path().read_text(encoding="utf-8"))
+    state = json.loads(supervisor.state_path().read_text(encoding="utf-8-sig"))
     pid = int(state.get("pid") or 0)
     if pid > 0 and psutil.pid_exists(pid):
         psutil.Process(pid).terminate()

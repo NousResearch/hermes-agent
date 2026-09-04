@@ -33,8 +33,23 @@ __all__ = [
     "run_bounded_async", "run_bounded_sync", "kill_process_tree",
 ]
 
-# One year: semantically "unbounded" yet far below any platform time_t limit (#83220).
-MAX_SAFE_TIMEOUT_S = 31_536_000.0
+# Upper bound for any timeout handed to platform wait primitives.
+#
+# CPython converts ``threading.Lock.acquire(timeout=...)`` /
+# ``Thread.join(timeout=...)`` deadlines to an absolute timestamp; very large
+# relative timeouts overflow ``time_t`` on macOS and raise
+# ``OverflowError: timestamp out of range for platform time_t`` (#83220).
+# On Windows the binding constraint is narrower: the underlying
+# ``WaitForSingleObject`` takes a DWORD *milliseconds* argument, so any
+# wait above ~49.7 days (0xFFFFFFFF ms) raises OverflowError rather than
+# waiting (verified live: 4294967.0s ok, 4294967.3s overflows). One year
+# is the semantic "unbounded" on platforms that can express it; Windows
+# takes the DWORD-ms cap, which is still semantically "unbounded" for
+# every wait in this codebase.
+_WINDOWS_MAX_WAIT_S = (0xFFFFFFFF - 1000) / 1000.0  # DWORD ms, minus a 1s rounding guard
+MAX_SAFE_TIMEOUT_S = (
+    _WINDOWS_MAX_WAIT_S if sys.platform == "win32" else 31_536_000.0
+)  # 365 days off-Windows
 
 # Grace after a deadline fires before concluding the loop thread is blocked and dumping stacks.
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0

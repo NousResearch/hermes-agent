@@ -626,7 +626,7 @@ def _ensure_fhs_path_guard() -> None:
         if not cfg.is_file():
             continue
         try:
-            existing = cfg.read_text(errors="replace", encoding="utf-8")
+            existing = cfg.read_text(errors="replace", encoding="utf-8-sig")
         except OSError:
             continue
         # Idempotency: any uncommented PATH line referencing /usr/local/bin (install.sh grep).

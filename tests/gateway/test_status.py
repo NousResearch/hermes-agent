@@ -390,7 +390,7 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the real
         # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
@@ -438,7 +438,7 @@ class TestTerminatePid:
 
 
 class TestScopedLocks:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
         # byte-range locking path at all: msvcrt does not exist off Windows,
@@ -1059,6 +1059,7 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
+    @pytest.mark.platforms("linux")
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
         monkeypatch.setattr(

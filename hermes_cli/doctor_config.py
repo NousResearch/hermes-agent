@@ -138,7 +138,7 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
         check_ok(f"{_DHH}/.env file exists")
         # UTF-8 first; latin-1 fallback for Windows Notepad/cp1252 files (matches env_loader._load_dotenv_with_fallback).
         try:
-            content = env_path.read_text(encoding="utf-8")
+            content = env_path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             content = env_path.read_text(encoding="latin-1")
         if not check_bool(_has_provider_env_config(content), "API key or custom endpoint configured", f"No API key found in {_DHH}/.env"):

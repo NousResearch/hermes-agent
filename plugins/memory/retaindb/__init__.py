@@ -341,7 +341,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
         self._queue = _WriteQueue(self._client, home / "retaindb_queue.db")
-        soul = (home / "SOUL.md").read_text(encoding="utf-8", errors="replace").strip() if (home / "SOUL.md").exists() else ""
+        soul = (home / "SOUL.md").read_text(encoding="utf-8-sig", errors="replace").strip() if (home / "SOUL.md").exists() else ""
         if soul:  # seed agent identity from SOUL.md in background
             seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")  # noqa: E731
             threading.Thread(target=_quiet, args=("soul seed", seed), name="retaindb-soul-seed", daemon=True).start()

@@ -168,7 +168,8 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
         return None
     try:
         import tomllib
-        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        import tomllib
+        payload = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     model = payload.get("model") if isinstance(payload, dict) else None
@@ -180,7 +181,7 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     if not cache_path.exists():
         return []
     try:
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = json.loads(cache_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return []
 

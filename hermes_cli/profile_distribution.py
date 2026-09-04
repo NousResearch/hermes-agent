@@ -32,6 +32,10 @@ DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "sk
 
 # Paths NEVER part of a distribution: user-owned, protected on update. Keep consistent with
 # ``profiles.py`` export exclusions plus the ``local/`` convention for user customizations.
+# MERGE-CHECK: upstream made this a self-contained frozenset superseding our
+# DEFAULT_EXPORT_EXCLUDE_ROOT import; its entries are a functional superset (includes
+# memories/sessions/plans/workspace/home), so we take theirs to avoid coupling to
+# profiles.py internals while preserving the same protections.
 USER_OWNED_EXCLUDE: frozenset = frozenset({
     # Credentials & runtime secrets
     "auth.json", ".env",
@@ -47,8 +51,6 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     "image_cache", "audio_cache", "document_cache",
     "browser_screenshots", "checkpoints", "sandboxes",
     "backups", "cache",
-    # Infrastructure
-    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
     # User customization namespace
     "local",
 })
@@ -148,7 +150,7 @@ def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
     if not mf_path.is_file():
         return None
     try:
-        data = yaml.safe_load(mf_path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(mf_path.read_text(encoding="utf-8-sig"))  # utf-8-sig: tolerate BOM (ours)
     except Exception as exc:
         raise DistributionError(f"Failed to parse {mf_path}: {exc}") from exc
     return DistributionManifest.from_dict(data or {})

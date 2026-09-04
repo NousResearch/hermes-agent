@@ -67,11 +67,11 @@ def test_loads_manifest_skill_and_stdio_server(tmp_path: Path) -> None:
     assert package.skills[0].root == skill_dir.resolve()
     server = package.mcp_servers["worker"]
     assert server["command"] == "python"
-    assert server["args"] == [str(root.resolve() / "server.py"), "${UNKNOWN}"]
+    assert server["args"] == [str(root.resolve()) + "/server.py", "${UNKNOWN}"]
     assert server["cwd"] == str(root.resolve())
     assert server["env"]["PLUGIN_ROOT"] == str(root.resolve())
     assert server["env"]["PLUGIN_DATA"] == str((tmp_path / "data").resolve())
-    assert server["env"]["CACHE"] == str((tmp_path / "data").resolve() / "cache")
+    assert server["env"]["CACHE"] == str((tmp_path / "data").resolve()) + "/cache"
     assert (tmp_path / "data").is_dir()
 
 
@@ -133,6 +133,7 @@ def test_rejects_invalid_optional_skill_fields(
     assert package.skills == ()
 
 
+@pytest.mark.require_symlinks
 def test_symlink_escape_is_isolated_to_component(tmp_path: Path) -> None:
     root = tmp_path / "plugin"
     root.mkdir()

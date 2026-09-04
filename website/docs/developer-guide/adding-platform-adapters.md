@@ -154,7 +154,7 @@ def register(ctx):
         # ACTIVE installer (optional) — only for platforms with a
         # lazy-installable SDK.  create_adapter() calls it when check_fn
         # returns False, right before the gateway connects the platform.
-        # Typically wraps tools.lazy_deps.ensure_and_bind(...).  Omit it
+        # Typically wraps pm.extras.ensure_and_bind(...).  Omit it
         # and a False check_fn is a hard block.
         # ensure_deps_fn=ensure_requirements,
         validate_config=validate_config,

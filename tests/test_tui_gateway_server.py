@@ -18070,8 +18070,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
     # Isolate the completion queue for the duration of this test. The poller
     # reads process_registry.completion_queue by attribute at runtime; the
     # event below carries no session_key, so any *other* poller (a leaked
-    # daemon thread from another test, or a concurrent one in the same xdist
-    # worker) is allowed to dequeue and dispatch it to its own session — whose
+    # daemon thread from another test, or a concurrent one in the same
+    # process) is allowed to dequeue and dispatch it to its own session — whose
     # agent may be a fixture double without run_conversation. A fresh Queue
     # here fully isolates this test; monkeypatch restores the original on
     # teardown. (Same pattern as test_notification_poller_requeues_when_busy.)
@@ -18136,7 +18136,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
     # Isolate the completion queue so a concurrent/leaked poller in the same
-    # xdist worker can't dequeue this session_key-less event before our poller
+    # process can't dequeue this session_key-less event before our poller
     # does. monkeypatch restores the shared singleton on teardown. (Same
     # pattern as test_notification_poller_requeues_when_busy.)
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
@@ -18178,8 +18178,8 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
 
     # Isolate the completion queue for the duration of this test. The poller
     # reads process_registry.completion_queue by attribute at runtime, so a
-    # fresh Queue here means no concurrently-running test in the same xdist
-    # worker can put/get on the shared singleton mid-run and drain the event
+    # fresh Queue means no concurrently-running test in the same
+    # process can put/get on the shared singleton mid-run and drain the event
     # we expect to be requeued. monkeypatch restores the original on teardown.
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)

@@ -21,10 +21,13 @@ STICKER_VISION_PROMPT = (
 
 
 def _load_cache() -> dict:
-    try:
-        return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
+    """Load the sticker cache from disk (utf-8-sig: BOM-tolerant read fix)."""
+    if CACHE_PATH.exists():
+        try:
+            return json.loads(CACHE_PATH.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError):  # OSError covers FileNotFoundError
+            return {}
+    return {}
 
 
 def _save_cache(cache: dict) -> None:

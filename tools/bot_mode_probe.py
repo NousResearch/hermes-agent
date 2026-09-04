@@ -72,7 +72,7 @@ def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
     def _load():
         if not path.is_file():
             return None
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
         if needle is not None and needle not in raw:
             return None
         import yaml
@@ -107,7 +107,7 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
 
 def _soul_has_protocol(profile_dir: Path) -> bool:
     soul = profile_dir / "SOUL.md"
-    return _swallow(lambda: soul.is_file() and _PROTOCOL_HEADING in soul.read_text(encoding="utf-8", errors="replace"), False)
+    return _swallow(lambda: soul.is_file() and _PROTOCOL_HEADING in soul.read_text(encoding="utf-8-sig", errors="replace"), False)
 
 
 def _role_line(*parts: str) -> str:

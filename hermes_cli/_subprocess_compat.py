@@ -19,6 +19,7 @@ __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
     "split_command_line",
+    "restore_ambient_pythonpath",
     "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
@@ -100,6 +101,34 @@ def split_command_line(line: str) -> list[str]:
             tok = tok[1:-1]
         out.append(tok)
     return out
+
+
+# -----------------------------------------------------------------------------
+# Node ecosystem launcher resolution
+# -----------------------------------------------------------------------------
+
+
+def restore_ambient_pythonpath(env: Mapping[str, str]) -> dict:
+    """Re-add the ambient ``PYTHONPATH`` to a child environment that a
+    ``build_subprocess_env``-style factory already built.
+
+    No-boot-through-venv: the boot interpreter is the pm STORE python, whose
+    imports arrive via ``PYTHONPATH=<repo>;<venv>/site-packages`` (it has no
+    editable install). The subprocess-env factories strip Hermes-owned
+    PYTHONPATH entries so agent-run children on DIFFERENT interpreter
+    versions never load the backend's C extensions — but a child that
+    re-execs THIS interpreter (``sys.executable -m hermes_cli.main``) runs
+    on the same version and needs those entries back. Prepending keeps the
+    launcher's repo-first ordering intact.
+    """
+    merged = dict(env)
+    ambient = os.environ.get("PYTHONPATH")
+    if ambient:
+        existing = merged.get("PYTHONPATH", "")
+        merged["PYTHONPATH"] = (
+            ambient + os.pathsep + existing if existing else ambient
+        )
+    return merged
 
 
 def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:

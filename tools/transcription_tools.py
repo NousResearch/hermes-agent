@@ -175,12 +175,45 @@ def _detect_local_backend() -> Optional[str]:
     return "local_command" if _has_local_command() else ("local" if _try_lazy_install_stt() else None)
 
 
+def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
+    """Return the transcript text from a command-provider invocation.
+
+    Resolution:
+      1. If ``output_path`` exists and is non-empty → read it (raw text).
+      2. Else if ``stdout`` is non-empty → use stdout (lets users write
+         curl-style one-liners that emit transcript to stdout instead of
+         writing a file).
+      3. Else → raise RuntimeError (no usable output produced).
+
+    For JSON format, we still return the raw bytes — extracting a
+    ``text`` field is out of scope; users either configure ``format: txt``
+    or post-process JSON downstream. (Same trade-off as TTS: the runner
+    doesn't try to be clever about output shape.)
+    """
+    if output_path.exists():
+        try:
+            content = output_path.read_text(encoding="utf-8-sig").strip()
+        except UnicodeDecodeError:
+            content = output_path.read_bytes().decode("utf-8", errors="replace").strip()
+        if content:
+            return content
+    if stdout and stdout.strip():
+        return stdout.strip()
+    raise RuntimeError(
+        f"Command STT provider wrote no output file at {output_path} "
+        f"and produced no stdout"
+    )
+
+
 def _resolve_explicit_local() -> str:
     backend = _detect_local_backend()
     if not backend:
         logger.warning("STT provider 'local' configured but unavailable "
                        "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)")
     return backend or "none"
+# MERGE-CHECK: kept our utf-8-sig _read_command_stt_output alongside upstream's refactored
+# _resolve_explicit_local; upstream moved the command-STT reader to tools/transcription_command.py
+# WITHOUT the utf-8-sig fix — parent may want to port it there and drop this copy.
 
 
 def _resolve_explicit_local_command() -> str:

@@ -76,7 +76,7 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
         if hit is not None and hit[:2] == key:
             return copy.deepcopy(hit[2])
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             parsed = parse(f)
     except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
         logger.warning(

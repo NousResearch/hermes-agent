@@ -125,7 +125,7 @@ scripts/run_tests.sh tests/path/to/test_file.py::test_name --trace
 scripts/run_tests.sh tests/path/to/test_file.py --showlocals --tb=long
 ```
 
-Note: `scripts/run_tests.sh` runs each test file in a captured subprocess via `run_tests_parallel.py` (no xdist), so interactive pdb does NOT work under the wrapper. Run pytest directly for `--pdb`:
+Note: `scripts/run_tests.sh` runs pytest under xdist workers, so interactive pdb does NOT work under the wrapper. Run pytest directly for `--pdb`:
 
 ```bash
 source .venv/bin/activate

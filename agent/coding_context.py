@@ -444,7 +444,7 @@ def _read_small(path: Path) -> str:
     try:
         if not path.is_file() or path.stat().st_size > _MAX_FACT_FILE_BYTES:
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return ""
 
@@ -580,6 +580,7 @@ _PROFILES: dict[str, ContextProfile] = {
     GENERAL_PROFILE.name: GENERAL_PROFILE,
     CODING_PROFILE.name: CODING_PROFILE,
 }
+
 
 def get_profile(name: str) -> ContextProfile:
     """Return a registered profile, falling back to ``general``."""

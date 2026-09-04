@@ -24,9 +24,9 @@ def test_matrix_extra_not_in_all():
 
     With matrix in [all], `uv sync --locked` on Windows tried to build
     python-olm from sdist and failed on `make`. As of 2026-05-12 the
-    [matrix] extra is excluded from [all] entirely and routed through
-    `tools/lazy_deps.py` (LAZY_DEPS["platform.matrix"]) — installs at
-    first use, where the user is expected to have a toolchain.
+    [matrix] extra is excluded from [all] entirely and installs on first
+    use (pm.ensure_import("matrix")), where the user is expected to have
+    a toolchain.
     """
     optional_dependencies = _load_optional_dependencies()
 
@@ -38,39 +38,37 @@ def test_matrix_extra_not_in_all():
         if "matrix" in dep
     ]
     assert not matrix_in_all, (
-        "matrix must not appear in [all] — it's lazy-installed via "
-        "tools/lazy_deps.py LAZY_DEPS['platform.matrix']. Found: "
-        f"{matrix_in_all}"
+        "matrix must not appear in [all] — it installs on first use via "
+        f"pm.ensure_import('matrix'). Found: {matrix_in_all}"
     )
 
 
 def test_lazy_installable_extras_excluded_from_all():
-    """Policy (2026-05-12): every extra that has a `LAZY_DEPS` entry
-    in `tools/lazy_deps.py` must be excluded from [all].
+    """Policy (2026-05-12): opt-in backends stay out of [all].
 
-    The lazy-install system exists so one quarantined PyPI release
+    On-demand install exists so one quarantined PyPI release
     (e.g. mistralai 2.4.6) can't break every fresh install. Putting a
-    backend in BOTH [all] and LAZY_DEPS defeats that — fresh installs
-    eager-install it and inherit whatever's broken upstream.
-
-    If you're tempted to add an opt-in backend to [all] for "convenience,"
-    add it to `LAZY_DEPS` instead so it installs at first use.
+    backend in [all] defeats that — fresh installs eager-install it and
+    inherit whatever's broken upstream. Opt-in backends are extras that
+    install at first use via pm.ensure_import(extra).
     """
     optional_dependencies = _load_optional_dependencies()
 
-    # Hard-coded mirror of the extras that are in LAZY_DEPS as of
-    # 2026-05-12. This list intentionally duplicates rather than
-    # imports tools/lazy_deps.py so the test stays a contract — if
-    # someone adds a new lazy-install backend, they have to update
-    # this list AND verify [all] doesn't contain it.
+    # The on-demand backends as of 2026-05-12. Deliberately a literal
+    # list so the test stays a contract — adding a new opt-in backend
+    # means updating this list AND verifying [all] doesn't contain it.
     lazy_covered_extras = {
         "anthropic", "bedrock",
         "exa", "firecrawl", "parallel-web",
         "fal",
         "edge-tts", "tts-premium",
-        "voice",  # faster-whisper / sounddevice / numpy
+        "voice",  # faster-whisper / sounddevice / numpy (composes stt-whisper + audio-io)
+        "stt-whisper",
         "modal", "daytona", "vercel",
         "messaging", "slack", "matrix", "dingtalk", "feishu",
+        "telegram", "discord",
+        "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "wake-tflite",
+        "google-chat",
         "honcho", "hindsight",
         "supermemory", "mem0",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
@@ -102,54 +100,31 @@ def _exact_pins(specs):
 
 
 
-def test_pyproject_pins_match_lazy_deps_pins():
-    """Generalize #31817 to the whole pin surface, not just aiohttp.
+def test_extras_pin_each_package_at_one_version():
+    """One package, one version, across every extra.
 
-    Any package that is exact-pinned in BOTH a pyproject extra and a
-    `tools/lazy_deps.py` LAZY_DEPS entry must use the SAME version in both
-    places. When they drift, `hermes update` resolves the pyproject extra
-    pin and downgrades the package to the older version, reopening whatever
-    the lazy pin fixed (the aiohttp #31817 case, and the anthropic
-    CVE-2026-34450/34452 case found alongside it) — only for the lazy
-    refresh to re-upgrade it on next feature use. The lazy pin is the
-    security-current source of truth; extras must track it.
+    tools/lazy_deps.py is gone — pyproject.toml is the single authority for
+    optional-dependency pins (pm syncs the venv from uv.lock, which resolves
+    from here). The drift class that killed us before (#31817: two documents
+    pinning the same package differently, update ping-ponging the version)
+    is now only possible BETWEEN extras — so pin consistency across extras
+    is the whole remaining contract.
     """
-    from tools.lazy_deps import LAZY_DEPS
-
     optional_dependencies = _load_optional_dependencies()
 
-    # package -> version, as pinned across all pyproject extras. If an
-    # extra pins a package at a different version than another extra, that
-    # is itself a bug (caught below); here we just collect the set.
-    pyproject_pins: dict[str, set[str]] = {}
-    for specs in optional_dependencies.values():
+    pins: dict[str, dict[str, set[str]]] = {}
+    for extra, specs in optional_dependencies.items():
         for package, version in _exact_pins(specs).items():
-            pyproject_pins.setdefault(package, set()).add(version)
-
-    # package -> version, as pinned across all LAZY_DEPS entries.
-    lazy_pins: dict[str, set[str]] = {}
-    for specs in LAZY_DEPS.values():
-        if isinstance(specs, str):
-            specs = (specs,)
-        for package, version in _exact_pins(specs).items():
-            lazy_pins.setdefault(package, set()).add(version)
-
-    shared = sorted(set(pyproject_pins) & set(lazy_pins))
-    assert shared, "expected at least one package pinned in both pyproject and LAZY_DEPS"
+            pins.setdefault(package, {}).setdefault(version, set()).add(extra)
 
     drift = {
-        package: {
-            "pyproject": sorted(pyproject_pins[package]),
-            "lazy_deps": sorted(lazy_pins[package]),
-        }
-        for package in shared
-        if pyproject_pins[package] != lazy_pins[package]
+        package: {v: sorted(extras) for v, extras in versions.items()}
+        for package, versions in pins.items()
+        if len(versions) > 1
     }
     assert not drift, (
-        "pyproject extras pins must match tools/lazy_deps.py LAZY_DEPS pins "
-        "for every shared package — otherwise `hermes update` downgrades the "
-        "package below the security-current lazy pin (see #31817). Drift: "
-        f"{drift}"
+        "extras pin the same package at different versions — uv sync would "
+        f"resolve whichever wins and silently downgrade the other: {drift}"
     )
 
 
@@ -191,101 +166,3 @@ def _uv_lock_versions(package: str) -> set[str]:
             lock,
         )
     }
-
-
-def test_every_lazy_deps_exact_pin_matches_uv_lock():
-    """Class invariant for #60783/#60685: one version per package, everywhere.
-
-    Any package that is BOTH exact-pinned in ``tools/lazy_deps.py`` AND
-    resolved in the committed uv.lock is a *shared* package: the core
-    install ships the locked version, and the ``hermes update`` lazy-refresh
-    pass re-asserts the LAZY_DEPS pin whenever the package is present
-    (``active_features()``). If the two disagree, every update churns the
-    package — and when the lazy pin is older, it force-DOWNGRADES a version
-    another consumer needs (huggingface-hub==1.2.3 vs transformers'
-    >=1.5.0 broke Hindsight local embeddings; stale aiohttp pins reopened
-    patched CVEs in #31817). Contract: for every such package, pin ==
-    locked version. When bumping a pin, regenerate the lock in the same
-    commit (`uv lock --upgrade-package <name>`), and vice versa.
-    """
-    from tools.lazy_deps import LAZY_DEPS
-
-    drift = {}
-    seen = set()
-    for feature, specs in LAZY_DEPS.items():
-        for package, pin in _exact_pins(specs).items():
-            if (package, pin) in seen:
-                continue
-            seen.add((package, pin))
-            locked = _uv_lock_versions(package)
-            if not locked:
-                # Lazy-only package never resolved by the core lock — no
-                # shared-version hazard.
-                continue
-            if pin not in locked:
-                drift.setdefault(package, {})[feature] = {
-                    "lazy_pin": pin,
-                    "uv_lock": sorted(locked),
-                }
-
-    assert not drift, (
-        "LAZY_DEPS exact pins must match the uv.lock resolved version for "
-        "every package the core lock also ships — otherwise `hermes update` "
-        "churns/downgrades the shared package out from under its other "
-        "consumers (#60783, #31817). Bump the pin AND run "
-        "`uv lock --upgrade-package <name>` in the same commit. Drift: "
-        f"{drift}"
-    )
-
-
-def test_huggingface_hub_lazy_pin_matches_uv_lock():
-    """The whole tree must converge on ONE huggingface-hub version (#60783).
-
-    huggingface-hub is a shared dependency: the core lock resolves it (via
-    faster-whisper/tokenizers, and transformers/sentence-transformers when
-    local Hindsight embeddings are installed), and LAZY_DEPS
-    ['tool.trace_upload'] exact-pins it. Because active_features() activates
-    a feature from mere package presence, the `hermes update` lazy-refresh
-    pass re-asserts the LAZY_DEPS pin on every install where hub is present.
-    If that pin drifts from the lock's resolved version, every update churns
-    the shared package — and a pin below transformers' floor (>=1.5.0)
-    force-downgrades it and breaks the Hindsight local daemon on startup.
-    """
-    from tools.lazy_deps import LAZY_DEPS
-
-    lazy_pin = _exact_pins(LAZY_DEPS["tool.trace_upload"]).get("huggingface-hub")
-    assert lazy_pin, "tool.trace_upload must exact-pin huggingface-hub"
-
-    locked = _uv_lock_version("huggingface-hub")
-    assert lazy_pin == locked, (
-        "LAZY_DEPS['tool.trace_upload'] pins huggingface-hub=="
-        f"{lazy_pin} but uv.lock resolves {locked}. These must move in "
-        "lockstep (bump the pin AND run `uv lock --upgrade-package "
-        "huggingface-hub`), or `hermes update` will churn/downgrade the "
-        "shared package and break Hindsight local embeddings (#60783)."
-    )
-
-
-def test_huggingface_hub_lazy_pin_inside_transformers_window():
-    """The hub pin must stay in transformers' accepted range (#60783).
-
-    transformers (pulled by sentence-transformers for Hindsight
-    local/local_embedded embeddings) requires huggingface-hub>=1.5.0,<2.
-    An exact pin outside that window makes the lazy-refresh downgrade the
-    shared package below what the embedding stack imports, and the
-    Hindsight daemon fails on startup. Contract, not a snapshot: any
-    future exact pin is fine as long as it stays inside the window.
-    """
-    from packaging.specifiers import SpecifierSet
-    from packaging.version import Version
-
-    from tools.lazy_deps import LAZY_DEPS
-
-    pin = _exact_pins(LAZY_DEPS["tool.trace_upload"]).get("huggingface-hub")
-    assert pin, "tool.trace_upload must exact-pin huggingface-hub"
-    transformers_window = SpecifierSet(">=1.5.0,<2")
-    assert Version(pin) in transformers_window, (
-        f"huggingface-hub=={pin} falls outside transformers' accepted "
-        "range (>=1.5.0,<2). The lazy refresh would downgrade the shared "
-        "package and break Hindsight local embeddings (#60783)."
-    )

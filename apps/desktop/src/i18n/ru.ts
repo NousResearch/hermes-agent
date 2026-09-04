@@ -307,7 +307,7 @@ export const ru = defineLocale({
       'view.nextTerminal': 'Следующий терминал',
       'view.prevTerminal': 'Предыдущий терминал',
       'view.closeTerminal': 'Закрыть терминал',
-      'view.terminalSelection': 'Отправить выделенное из терминала в композер',
+      'view.selectionToComposer': 'Отправить выделенное из терминала в композер',
       'view.terminalCopy': 'Копировать выделенное из терминала',
       'view.terminalPaste': 'Вставить в терминал',
       'view.closeTab': 'Закрыть вкладку',
@@ -1333,7 +1333,6 @@ export const ru = defineLocale({
       notInCatalog: 'нет в списке моделей этого провайдера — вызовы могут уходить на запасную.',
       tasks: {
         vision: { label: 'Зрение', hint: 'Анализ изображений' },
-        web_extract: { label: 'Веб-извлечение', hint: 'Суммаризация страниц' },
         compression: { label: 'Сжатие', hint: 'Компрессия контекста' },
         skills_hub: { label: 'Хаб навыков', hint: 'Поиск навыков' },
         approval: { label: 'Одобрение', hint: 'Умное авто-одобрение' },

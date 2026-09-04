@@ -23,7 +23,8 @@ def _dotenv_key_names() -> set[str]:
     from .env, invisible to the launchd backend).
     """
     try:
-        text = get_env_path().read_text(encoding="utf-8", errors="ignore")
+        env_path = get_env_path()
+        text = env_path.read_text(encoding="utf-8-sig", errors="ignore")
     except (OSError, UnicodeError):
         return set()
     names: set[str] = set()

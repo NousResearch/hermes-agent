@@ -86,7 +86,7 @@ run_conversation():
 
 Use the canonical runner — it enforces CI-parity (hermetic `env -i`, unset
 credentials, TZ=UTC, per-file subprocess isolation via
-`scripts/run_tests_parallel.py` — no xdist, worker count auto-scaled):
+`scripts/run_tests.sh` — pytest-xdist, `--dist loadfile`, worker count = CPU count):
 
 ```bash
 scripts/run_tests.sh                          # full suite

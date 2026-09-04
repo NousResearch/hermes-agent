@@ -182,7 +182,7 @@ def _cmd_test(args) -> None:
         payload["tool_name"] = for_tool
     if getattr(args, "payload_file", None):
         try:
-            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
+            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8-sig"))
             if isinstance(custom, dict):
                 payload.update(custom)
             else:

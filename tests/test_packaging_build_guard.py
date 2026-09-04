@@ -94,3 +94,25 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
 
     missing = sorted(expected - shipped)
     assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+
+
+def test_wheel_ships_pm_package_and_lock_json(tmp_path):
+    """The pm/ package manager must survive a sealed wheel build.
+
+    pm is a flat package listed in [tool.setuptools.packages.find] include,
+    and pm/lock.json is its runtime pin table (uv/python/tool versions +
+    sha256s) declared via [tool.setuptools.package-data]. If either drops
+    out of the wheel, installed Hermes has no package manager at all --
+    exercise the real PEP 517 build path rather than reading TOML source.
+    """
+    result = _build_artifact("wheel", tmp_path, nix_build=True)
+
+    assert result.returncode == 0, result.stderr
+    artifacts = list(tmp_path.glob("hermes_agent-*.whl"))
+    assert artifacts
+
+    with zipfile.ZipFile(artifacts[0]) as wheel:
+        shipped = set(wheel.namelist())
+
+    missing = sorted({"pm/__init__.py", "pm/lock.json"} - shipped)
+    assert not missing, f"wheel omits pm package files: {missing}"

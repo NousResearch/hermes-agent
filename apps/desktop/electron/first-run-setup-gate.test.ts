@@ -131,3 +131,44 @@ test('remote apply without a waiter has no first-run side effects', async () => 
   assert.equal(hidden, 0)
   assert.equal(gate.isLocalBootstrapConfirmed(), true)
 })
+
+const bundledDamagedBackend = {
+  activeRoot: '/tmp/hermes-home/hermes-agent',
+  kind: 'bundled-unusable',
+  platform: 'win32',
+  local: 'bundled-damaged'
+} as const
+
+test('the gate prompts on bundled-unusable (a damaged bundled payload)', async () => {
+  const prompts = []
+  const gate = createFirstRunSetupGate({ promptChoice: backend => prompts.push(backend), stuckAfterMs: 0 })
+
+  const pending = gate.wait(bundledDamagedBackend)
+
+  assert.equal(await settledState(pending), 'pending')
+  assert.equal(prompts.length, 1)
+  assert.equal(gate.hasWaiter(), true)
+})
+
+test('continueLocal settles bundled-unusable without any install side effect', async () => {
+  const gate = createFirstRunSetupGate({ stuckAfterMs: 0 })
+  const pending = gate.wait(bundledDamagedBackend)
+
+  gate.continueLocal()
+
+  assert.equal(await pending, 'continue-local')
+  assert.equal(gate.hasWaiter(), false)
+  assert.equal(gate.isLocalBootstrapConfirmed(), true)
+})
+
+test('remote apply on bundled-unusable settles for a remote re-resolution', async () => {
+  let hidden = 0
+  const gate = createFirstRunSetupGate({ hideChoice: () => hidden++, stuckAfterMs: 0 })
+  const pending = gate.wait(bundledDamagedBackend)
+
+  const resumedWaiter = gate.abandonForRemoteApply()
+
+  assert.equal(resumedWaiter, true)
+  assert.equal(hidden, 1)
+  assert.equal(await pending, 'remote-applied')
+})

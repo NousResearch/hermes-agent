@@ -262,7 +262,7 @@ def _jobs_lock():
         try:
             try:
                 ensure_dirs()
-                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
+                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8-sig")
                 lock_fd.seek(0)
                 if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
                     logger.error(
@@ -1148,7 +1148,7 @@ def record_ticker_heartbeat(success: bool = False) -> None:
 def _epoch_file_age(name: str) -> Optional[float]:
     """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable."""
     try:
-        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8").strip()
+        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").strip()
         return max(0.0, time.time() - float(raw))
     except Exception:
         return None
@@ -1179,7 +1179,7 @@ def get_catch_up_occurrence_count() -> int:
     """Return the profile-local stale-schedule catch-up count."""
     path = _current_cron_store().cron_dir / "catch_up_occurrences"
     try:
-        return max(0, int(path.read_text(encoding="utf-8").strip()))
+        return max(0, int(path.read_text(encoding="utf-8-sig").strip()))
     except (OSError, ValueError):
         return 0
 
@@ -1204,7 +1204,7 @@ def clear_ticker_error() -> None:
 def get_ticker_last_error() -> Optional[str]:
     """Return the most recent recorded tick error message, or None."""
     try:
-        raw = (_current_cron_store().cron_dir / "ticker_last_error").read_text(encoding="utf-8")
+        raw = (_current_cron_store().cron_dir / "ticker_last_error").read_text(encoding="utf-8-sig")
     except Exception:
         return None
     lines = raw.splitlines()

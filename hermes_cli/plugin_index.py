@@ -123,7 +123,7 @@ def _parse_entries(raw: Any) -> List[PluginIndexEntry]:
 
 def _load_seed_entries() -> List[PluginIndexEntry]:
     try:
-        return _parse_entries(json.loads(SEED_INDEX_PATH.read_text(encoding="utf-8")))
+        return _parse_entries(json.loads(SEED_INDEX_PATH.read_text(encoding="utf-8-sig")))
     except (OSError, ValueError) as exc:  # pragma: no cover - bundled file
         logger.warning("plugin index: bundled seed unreadable: %s", exc)
         return []
@@ -137,7 +137,7 @@ def _read_cache(*, max_age: Optional[float]) -> Optional[List[PluginIndexEntry]]
             return None
         if max_age is not None and time.time() - cache.stat().st_mtime > max_age:
             return None
-        return _parse_entries(json.loads(cache.read_text(encoding="utf-8")))
+        return _parse_entries(json.loads(cache.read_text(encoding="utf-8-sig")))
     except (OSError, ValueError) as exc:
         logger.debug("plugin index: cache read failed: %s", exc)
         return None

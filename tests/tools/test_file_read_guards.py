@@ -6,6 +6,7 @@ context compression.
 
 Run with:  python -m pytest tests/tools/test_file_read_guards.py -v
 """
+import pytest
 
 import json
 import os
@@ -68,6 +69,7 @@ def _make_safe_tempdir(prefix: str) -> str:
 class TestDevicePathBlocking(unittest.TestCase):
     """Paths like /dev/zero should be rejected before any I/O."""
 
+    @pytest.mark.platforms("linux")
     def test_blocked_device_detection(self):
         for dev in ("/dev/zero", "/dev/random", "/dev/urandom", "/dev/stdin",
                      "/dev/tty", "/dev/console", "/dev/stdout", "/dev/stderr",
@@ -78,6 +80,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertFalse(_is_blocked_device("/dev/null"))
         self.assertFalse(_is_blocked_device("/dev/sda1"))
 
+    @pytest.mark.platforms("linux")
     def test_proc_fd_blocked(self):
         self.assertTrue(_is_blocked_device("/proc/self/fd/0"))
         self.assertTrue(_is_blocked_device("/proc/12345/fd/2"))
@@ -94,6 +97,7 @@ class TestDevicePathBlocking(unittest.TestCase):
 
         self.assertFalse(_is_blocked_device_path("/proc/self/fd/3"))
 
+    @pytest.mark.platforms("linux")
     def test_proc_sensitive_pseudo_files_blocked(self):
         """environ/cmdline/maps (and maps variants) under /proc/<pid> must be blocked (issue #4427)."""
         for path in (
@@ -118,6 +122,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         ):
             self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
 
+    @pytest.mark.platforms("linux")
     def test_proc_task_thread_sensitive_files_blocked(self):
         """Per-thread /proc/<pid>/task/<tid>/<file> aliases leak the same data."""
         for path in (
@@ -134,6 +139,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
             self.assertFalse(_is_blocked_device(path), f"{path} should not be blocked")
 
+    @pytest.mark.platforms("linux")
     def test_normpath_alias_to_blocked_device_is_blocked(self):
         self.assertTrue(_is_blocked_device("/dev/../dev/zero"))
         self.assertTrue(_is_blocked_device("/dev/./urandom"))
@@ -164,6 +170,7 @@ class TestDevicePathBlocking(unittest.TestCase):
             self.assertFalse(_is_blocked_device(link_path))
 
 
+    @pytest.mark.platforms("linux")
     def test_read_file_tool_rejects_device(self):
         """read_file_tool returns an error without any file I/O."""
         result = json.loads(read_file_tool("/dev/zero", task_id="dev_test"))

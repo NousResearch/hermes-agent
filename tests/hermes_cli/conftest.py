@@ -42,7 +42,7 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     except Exception:
         return
     # raising=False: under pytest's per-test spawn isolation, a concurrent
-    # xdist worker importing a module that transitively touches hermes_cli.main
+    # process importing a module that transitively touches hermes_cli.main
     # can briefly expose a partially-initialized module object here — one where
     # _detect_concurrent_hermes_instances isn't defined yet. A bare setattr
     # would raise AttributeError and error the (unrelated) test. The attribute
@@ -54,3 +54,21 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
         lambda *_a, **_k: [],
         raising=False,
     )
+
+
+@pytest.fixture
+def patch_pm_uv_to_shutil_which():
+    """Make pm.uv follow shutil.which mocking; update-flow test modules that
+    stub uv availability via shutil.which patches apply this autouse=True."""
+    import os
+    import shutil
+    from unittest.mock import patch
+
+    def _fake_pm_uv(*, venv=None, realize=True):
+        env = dict(os.environ)
+        if venv is not None:
+            env["VIRTUAL_ENV"] = str(venv)
+        return shutil.which("uv"), env
+
+    with patch("pm.uv", side_effect=_fake_pm_uv):
+        yield

@@ -64,7 +64,7 @@ def _sweep_stale_bytecode_if_checkout_changed() -> None:
             return  # non-git install — the ZIP update path clears explicitly
         stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
         try:
-            recorded = stamp_path.read_text(encoding="utf-8").strip()
+            recorded = stamp_path.read_text(encoding="utf-8-sig").strip()
         except OSError:
             recorded = ""
         if recorded == fingerprint:
@@ -110,7 +110,7 @@ def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
 
     from pathspec import PathSpec
     gitignore = project_root / ".gitignore"
-    lines = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.is_file() else []
+    lines = gitignore.read_text(encoding="utf-8-sig").splitlines() if gitignore.is_file() else []
     spec = PathSpec.from_lines("gitignore", lines)
 
     def _ignored(path: Path) -> bool:
@@ -141,7 +141,7 @@ def _stamp_is_current(stamp_file: Path, current_hash: Callable[[], str], **expec
     if not stamp_file.is_file():
         return False
     try:
-        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
+        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return False
     if not isinstance(stamp_data, dict):
@@ -285,7 +285,7 @@ def _nixos_build_env() -> dict[str, str] | None:
     from hermes_cli.main import PROJECT_ROOT
     import re
     try:
-        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     if not re.search(r"^ID=nixos$", os_release, re.M) or shutil.which("python3"):

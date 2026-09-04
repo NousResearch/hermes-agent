@@ -43,7 +43,10 @@ def _probe_config(home: Path) -> dict[str, Any]:
     if not path.exists():
         return _check("ok", "using defaults")
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+        if raw is not None and not isinstance(raw, dict):
+            return _check("degraded", "top level is not a mapping")
+        return _check("ok")
     except Exception as exc:
         return _check("degraded", f"invalid config ({type(exc).__name__})")
     return _check("ok") if raw is None or isinstance(raw, dict) else _check("degraded", "top level is not a mapping")

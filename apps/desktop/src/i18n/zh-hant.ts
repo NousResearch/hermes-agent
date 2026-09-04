@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
+  },
   common: {
     apply: '套用',
     back: '返回',
@@ -1023,7 +1029,10 @@ export const zhHant = defineLocale({
       } as Record<string, string>,
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
-      downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadPausedLabel: '已暫停',
+      downloadPauseAction: '暫停',
+      downloadResumeAction: '繼續',
       downloadDoneToast: model => `${model} 已就緒。`,
       installDoneToast: '本地執行環境已安裝就緒。',
       useAction: '使用',

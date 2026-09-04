@@ -233,7 +233,7 @@ Errors surface as the tool result; the LLM decides how to explain them. If no pr
 
 ## Lazy-installing optional dependencies
 
-If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package), don't `import` it at module top level. Use `tools.lazy_deps.ensure(...)` inside `is_available()` or `search()` — Hermes will install the package on first use, gated by `security.allow_lazy_installs`. See [Build a Hermes Plugin → Lazy-install](/developer-guide/plugins#lazy-install-optional-python-dependencies) for the security model.
+If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package), don't `import` it at module top level. Use `pm.ensure_import(<extra>)` inside `is_available()` or `search()` — Hermes installs the extra on first use, gated by `security.allow_lazy_installs`. See [Build a Hermes Plugin → Lazy-install](/developer-guide/plugins#lazy-install-optional-python-dependencies) for the security model.
 
 ## Reference implementations
 

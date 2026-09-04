@@ -317,7 +317,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
 def _read_json(path: Path) -> Optional[dict]:
     """Parse ``path`` as a JSON object; None when missing, unreadable, or not a dict."""
-    blob = _quiet(lambda: json.loads(path.read_text(encoding="utf-8")))
+    blob = _quiet(lambda: json.loads(path.read_text(encoding="utf-8-sig")))
     return blob if isinstance(blob, dict) else None
 
 
@@ -340,10 +340,18 @@ def check_for_updates() -> Optional[int]:
         return None
     # Cache is invalidated when the embedded rev OR installed version changed since the last check.
     now = time.time()
-    cached = _read_json(cache_file)
-    if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
-        return cached.get("behind")
+    try:
+        if cache_file.exists():
+            cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
+            if (
+                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+                and cached.get("rev") == embedded_rev
+                and cached.get("ver") == VERSION
+            ):
+                return cached.get("behind")
+    except Exception:
+        pass
+
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
@@ -373,8 +381,21 @@ def _resolve_repo_dir() -> Optional[Path]:
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """Return upstream/local git hashes for the startup banner.
 
-    Cached per-process (default ``repo_dir`` only): 2-3 git subprocesses (~100ms) whose result
-    cannot change under a running CLI. The cache lets ``prefetch_banner_data()`` pay it off-thread.
+    For source installs and dev images this runs ``git rev-parse`` against
+    the active checkout.  When no checkout is available — the canonical case
+    is the published Docker image, which excludes ``.git`` from the build
+    context — we fall back to the install stamp's commit (see
+    ``hermes_cli/version_info.py``) and return it as a frozen
+    ``upstream == local`` state with ``ahead=0``.  A built image is by
+    definition pinned to one commit, so "ahead" is always zero and the
+    banner correctly shows ``· upstream <sha>`` with no carried-commits
+    annotation.
+
+    Cached per-process (default ``repo_dir`` only): the state costs 2-3 git
+    subprocesses (~100ms) and the checkout revision cannot change under a
+    running CLI in a way the banner needs to observe live. The cache also
+    lets ``prefetch_banner_data()`` pay this cost off-thread before the
+    banner renders.
     """
     if repo_dir is not None:
         return _compute_git_banner_state(repo_dir)
@@ -388,6 +409,25 @@ def _baked_banner_state() -> Optional[dict]:
         return get_build_sha(short=8)
     baked = _quiet(_baked)
     return {"upstream": baked, "local": baked, "ahead": 0} if baked else None
+
+
+def _stamped_sha8() -> Optional[str]:
+    """Return the install stamp's commit (8 chars), or None.
+
+    Packaged builds (Docker/Nix) carry no ``.git``; their provenance comes
+    from the build-time install stamp read by ``hermes_cli.version_info``.
+    A ``git``-sourced result means there is no stamp — return None so the
+    caller doesn't fabricate a frozen state for a live checkout.
+    """
+    try:
+        from hermes_cli.version_info import get_version_info
+
+        info = get_version_info()
+        if info.commit and info.source != "git":
+            return info.commit[:8]
+    except Exception:
+        pass
+    return None
 
 
 def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
@@ -571,8 +611,11 @@ def banner_snapshot_fingerprint() -> Optional[str]:
 
 def load_banner_snapshot(enabled_toolsets: List[str] = None) -> Optional[Dict[str, Any]]:
     """Return the stored banner snapshot when its fingerprint is current."""
-    blob = _read_json(_banner_snapshot_path())
-    if blob is None:
+    try:
+        blob = json.loads(_banner_snapshot_path().read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(blob, dict):
         return None
     fp = banner_snapshot_fingerprint()
     if (not fp or blob.get("fingerprint") != fp

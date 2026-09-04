@@ -142,7 +142,7 @@ def apply_migration(
 
     yaml = YAML(typ="rt")
     yaml.preserve_quotes = True
-    with config_path.open("r", encoding="utf-8") as fh:
+    with config_path.open("r", encoding="utf-8-sig") as fh:
         doc = yaml.load(fh)
     if doc is None:
         return unchanged

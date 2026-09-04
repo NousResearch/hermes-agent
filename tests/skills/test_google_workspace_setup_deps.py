@@ -3,12 +3,11 @@
 GHSA-j5g9-f88f-gfj3 (HIGH) — Decompression Bomb DoS via unbounded gzip/deflate
 response handling.  Fixed in httplib2 0.32.0.
 
-There are three install paths for google-workspace dependencies:
+There are two install paths for google-workspace dependencies:
   1. pyproject.toml [project.optional-dependencies].google
-  2. tools/lazy_deps.py LAZY_DEPS['skill.google_workspace']
-  3. skills/productivity/google-workspace/scripts/setup.py REQUIRED_PACKAGES
+  2. skills/productivity/google-workspace/scripts/setup.py REQUIRED_PACKAGES
 
-This test ensures path 3 stays pinned and consistent with the other two.
+This test ensures path 2 stays pinned and consistent with path 1.
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 # ---------------------------------------------------------------------------
 
 _GOOGLE_EXTRA_KEY = "google"
-_LAZY_DEPS_KEY = "skill.google_workspace"
 
 
 def _parse_setup_py_required_packages() -> list[str]:
@@ -50,13 +48,6 @@ def _parse_pyproject_google_extra() -> list[str]:
     data = tomllib.loads(PYPROJECT_TOML.read_text(encoding="utf-8"))
     optional_deps = data["project"]["optional-dependencies"]
     return list(optional_deps[_GOOGLE_EXTRA_KEY])
-
-
-def _parse_lazy_deps_google_workspace() -> list[str]:
-    """Return the real LAZY_DEPS entry for skill.google_workspace."""
-    from tools.lazy_deps import LAZY_DEPS
-
-    return list(LAZY_DEPS[_LAZY_DEPS_KEY])
 
 
 def _extract_pins(packages: list[str]) -> dict[str, str]:
@@ -123,45 +114,14 @@ class TestGoogleWorkspaceSetupDepsPins:
                 f"  pyproject.toml google: {pyproject_pins}"
             )
 
-    def test_setup_py_pins_match_lazy_deps(self):
-        """httplib2 pin in setup.py must match tools/lazy_deps.py skill.google_workspace."""
-        required_packages = _parse_setup_py_required_packages()
-        lazy_packages = _parse_lazy_deps_google_workspace()
-
-        required_pins = _extract_pins(required_packages)
-        lazy_pins = _extract_pins(lazy_packages)
-
-        for pkg in ("httplib2", "google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"):
-            setup_ver = required_pins.get(pkg)
-            lazy_ver = lazy_pins.get(pkg)
-            if setup_ver is None and lazy_ver is None:
-                continue
-            assert lazy_ver is not None, (
-                f"{pkg} is pinned in setup.py ({setup_ver}) but NOT in lazy_deps.py.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  lazy_deps.py: {lazy_pins}"
-            )
-            assert setup_ver is not None, (
-                f"{pkg} is pinned in lazy_deps.py ({lazy_ver}) but NOT in setup.py.\n"
-                f"  lazy_deps.py: {lazy_pins}\n"
-                f"  setup.py: {required_pins}"
-            )
-            assert setup_ver == lazy_ver, (
-                f"{pkg} pin mismatch: setup.py has {setup_ver}, lazy_deps.py has {lazy_ver}.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  lazy_deps.py: {lazy_pins}"
-            )
-
     def test_all_google_packages_are_pinned_in_all_paths(self):
-        """Every google workspace package that is version-pinned in any path must appear in all three."""
+        """Every google workspace package that is version-pinned in any path must appear in both."""
         pyproject_packages = _parse_pyproject_google_extra()
-        lazy_packages = _parse_lazy_deps_google_workspace()
         setup_packages = _parse_setup_py_required_packages()
 
         all_pins: dict[str, set[str]] = {}
         for label, pkgs in [
             ("pyproject.toml", pyproject_packages),
-            ("lazy_deps.py", lazy_packages),
             ("setup.py", setup_packages),
         ]:
             for pkg in pkgs:
@@ -175,7 +135,7 @@ class TestGoogleWorkspaceSetupDepsPins:
                 f"{pkg} has inconsistent pins across install paths:\n"
                 + "\n".join(f"  {e}" for e in sorted(entries))
             )
-            assert len(entries) == 3, (
-                f"{pkg} is not pinned in all three install paths.  Found {len(entries)}/3:\n"
+            assert len(entries) == 2, (
+                f"{pkg} is not pinned in all install paths.  Found {len(entries)}/2:\n"
                 + "\n".join(f"  {e}" for e in sorted(entries))
             )

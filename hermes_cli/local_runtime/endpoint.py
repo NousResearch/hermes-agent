@@ -38,7 +38,7 @@ def _state_endpoint() -> dict | None:
     if not path.exists():
         return None
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
+        state = json.loads(path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError):
         return None
     base_url = state.get("base_url", "")
@@ -149,5 +149,11 @@ def _boot_in_flight(config: dict | None) -> bool:
             return False
         from hermes_cli.local_runtime.binaries import manifest_verified, runtimes_root
 
-        return any(manifest_verified(m) for m in runtimes_root().glob("*/*/manifest.json"))
+        for manifest in runtimes_root().glob("*/*/manifest.json"):
+            try:
+                if _json.loads(manifest.read_text(encoding="utf-8-sig")).get("verified_version"):
+                    return True
+            except (ValueError, OSError):
+                continue
+        return False
     return False

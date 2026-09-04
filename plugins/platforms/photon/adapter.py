@@ -110,7 +110,7 @@ def _write_runtime_record(port: int, token: str, pid: int) -> None:
 
 def _read_runtime_record() -> Optional[Dict[str, Any]]:
     try:
-        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8"))
+        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return raw if isinstance(raw, dict) else None
@@ -206,27 +206,85 @@ def _is_timeout_error(exc: BaseException) -> bool:
     return "timeout" in type(exc).__name__.lower()
 
 
+def _node_command(command: str) -> Optional[str]:
+    """Resolve a Node toolchain binary (node/npm), pm store first.
+
+    Photon's sidecar is Node/TypeScript, so the gateway runs node/npm on
+    the host. Resolution goes through ``hermes_constants.find_node_executable``
+    — the pm store's pinned node/npm wins whenever it is installed, with
+    PATH (Windows shim ordering) as the fallback — never a bare PATH
+    probe, which would miss the managed install (or resolve a system copy
+    Hermes does not own). Returns None when the binary is nowhere.
+    """
+    try:
+        from hermes_constants import find_node_executable
+
+        resolved = find_node_executable(command)
+        if resolved:
+            return resolved
+    except Exception:  # pragma: no cover — hermes_constants is always present
+        pass
+    # pm.ensure wiring: the store's pinned node/npm is the first choice, but
+    # when it has never been installed, lazily provision it (respecting the
+    # lazy-install policy — InstallError is swallowed and PATH is tried) so
+    # the sidecar works on a fresh install without a manual `hermes pm
+    # install node`.
+    try:
+        import pm
+
+        pm.ensure("node")
+        from hermes_constants import find_node_executable as _fne
+
+        resolved = _fne(command)
+        if resolved:
+            return resolved
+    except Exception:
+        pass
+    return shutil.which(command)
+
+
 def check_requirements() -> bool:
     """Return True when both Python deps and the Node sidecar are available."""
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or "node"
-    if not shutil.which(node_bin):
-        logger.warning("photon: node binary '%s' not found on PATH", node_bin)
+    if not (_get_scoped_secret("PHOTON_NODE_BIN") or _node_command("node")):
+        logger.warning("photon: node binary not found on PATH, in the pm store, or via PHOTON_NODE_BIN")
         return False
     if not sidecar_deps_installed():
-        # Self-install is possible at connect time (npm on PATH + writable sidecar dir):
-        # report available so _start_sidecar cold-installs — hosted images have no CLI.
-        if bool(shutil.which("npm")) and _dir_writable(_sidecar_dir()):
+        # spectrum-ts not installed yet, or node_modules/ was partially created
+        # by an aborted npm install (ENOSPC, network timeout, EACCES).
+        # Checking spectrum-ts presence — not just node_modules/ existence —
+        # prevents a false positive where an empty/broken node_modules/ dir
+        # causes check_requirements() to return True while the sidecar crashes
+        # at runtime with an unrelated-looking missing-module error.
+        #
+        # NS-606: if we can self-install at connect time — npm on PATH and
+        # the (resolved, possibly mirrored) sidecar dir is writable — report
+        # available so the gateway creates the adapter and ``_start_sidecar``
+        # cold-installs from the committed lockfile (on hosted images the
+        # user has no CLI to run `hermes photon setup`, so the connect path
+        # must self-heal). Otherwise keep returning False so
+        # `hermes setup` / status surface the missing-deps state.
+        if bool(_node_command("npm")) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG, not WARNING: normal pre-setup state, and check_fn is polled from hot paths.
         npm_error = ""
         with contextlib.suppress(OSError):
             if _npm_error_log().exists():
-                npm_error = _npm_error_log().read_text(encoding="utf-8").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
-        hint = f" (last npm error: {npm_error})" if npm_error else ""
-        logger.debug("photon: spectrum-ts not installed at %s%s — run: hermes photon setup", _sidecar_dir(), hint)
+                npm_error = _npm_error_log().read_text(encoding="utf-8-sig").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
+        if npm_error:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s "
+                "(last npm error: %s) — run: hermes photon setup",
+                _sidecar_dir(),
+                npm_error,
+            )
+        else:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s — run: hermes photon setup",
+                _sidecar_dir(),
+            )
         return False
     return True
 
@@ -238,11 +296,17 @@ def _sidecar_deps_stale() -> bool:
 
 
 def _reinstall_sidecar_deps() -> None:
-    """``npm ci`` (fallback ``npm install``); blocking, best-effort — on failure the stale
-    deps stay and the readiness check reports the real error."""
-    npm = shutil.which("npm")
+    """Reinstall the sidecar's node_modules from the lockfile (blocking).
+
+    Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
+    reproducible install, falling back to ``npm install`` if the lockfile is
+    missing or drifted. Runs the postinstall patch as part of the install.
+    Best-effort — a failure here just leaves the (stale) deps in place and the
+    normal ``_start_sidecar`` readiness check reports the real error.
+    """
+    npm = _node_command("npm")
     if not npm:
-        logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
+        logger.warning("[photon] cannot reinstall stale sidecar deps: npm not available (pm store or PATH)")
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows
 
@@ -488,24 +552,54 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_port = _coerce_port(
             extra.get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"), _DEFAULT_SIDECAR_PORT)
         self._sidecar_bind = _DEFAULT_SIDECAR_BIND
-        self._sidecar_token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
-        autostart = str(_get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")).lower()
-        self._autostart_sidecar = autostart not in ("0", "false", "no")
-        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or shutil.which("node") or "node"
-        # Presence watchdog (second layer behind the sidecar's own zombie-stream detection):
-        # respawns only when the sidecar's HTTP loop hangs; 10-min interval because shared
-        # lines are quiet for hours. Config key wins, then env; None-aware so 0 disables it.
-        def _setting(key: str, env: str, default: Any, cast: Callable[[Any], Any]) -> Any:
-            value = extra.get(key)
-            if value is None:
-                value = _get_scoped_secret(env)
-            try:
-                return cast(value)
-            except (TypeError, ValueError):
-                return default
-        self._probe_interval = _setting("probe_interval_seconds", "PHOTON_PROBE_INTERVAL_SECONDS", 600.0, float)
-        self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
-        self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
+        self._sidecar_token = (
+            _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
+        )
+        self._autostart_sidecar = str(
+            _get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")
+        ).lower() not in ("0", "false", "no")
+        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or _node_command("node") or "node"
+
+        # Presence watchdog. spectrum-ts only reconnects when its inbound
+        # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
+        # iterator hang forever (no error, no end), so inbound silently dies
+        # until the sidecar is restarted. The sidecar owns primary zombie
+        # detection (stream-staleness + upstream probe -> degraded -> exit 75;
+        # surfaced here via /healthz in _monitor_sidecar_health). This adapter-
+        # side watchdog is a conservative second layer that only respawns the
+        # sidecar when the sidecar's own HTTP loop stops responding (probe
+        # HTTP call hangs) — an "inconclusive" probe (sidecar answered but
+        # could not prove upstream liveness) NEVER counts toward a respawn:
+        # the network may simply be down, and restarting cannot fix that.
+        # Thresholds are deliberately conservative (10 min interval) — shared
+        # lines can be legitimately quiet for hours, so we never restart on
+        # silence alone.
+        # Behavioural settings -> config.yaml (extra), bridged to env.
+        # Use _first_set (not ``or``) so an explicit 0 is honored — ``0 or X``
+        # would silently fall through to the default and you could never
+        # disable the watchdog with probe_interval_seconds: 0.
+        self._probe_interval = _coerce_float(
+            _first_set(
+                extra.get("probe_interval_seconds"),
+                _get_scoped_secret("PHOTON_PROBE_INTERVAL_SECONDS"),
+            ),
+            600.0,
+        )
+        self._probe_timeout = _coerce_float(
+            _first_set(
+                extra.get("probe_timeout_seconds"),
+                _get_scoped_secret("PHOTON_PROBE_TIMEOUT_SECONDS"),
+            ),
+            10.0,
+        )
+        self._probe_max_failures = _coerce_int(
+            _first_set(
+                extra.get("probe_max_failures"),
+                _get_scoped_secret("PHOTON_PROBE_MAX_FAILURES"),
+            ),
+            3,
+        )
+        # A non-positive interval disables the watchdog entirely (escape hatch).
         self._probe_enabled = self._probe_interval > 0
         self.supports_code_blocks = _markdown_enabled()  # markdown on => fences pass through
         self._sidecar_proc: Optional[subprocess.Popen] = None
@@ -944,11 +1038,21 @@ class PhotonAdapter(BasePlatformAdapter):
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 start_new_session=(sys.platform != "win32"),
-                creationflags=windows_hide_flags())  # CREATE_NO_WINDOW only (no DETACHED_PROCESS): pipes stay usable
-        except FileNotFoundError as exc:  # deterministic: retrying can never fix a missing binary
+                # Windows: run the persistent sidecar headless so it does not open
+                # (or leave) a visible console window. CREATE_NO_WINDOW only (no
+                # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
+                creationflags=windows_hide_flags(),
+            )
+        except FileNotFoundError as exc:
+            # Deterministic: node isn't resolvable (pm store or PATH).
+            # Retrying can never fix a missing binary (OOF-153).
             raise PhotonSidecarStartupError(
-                f"node binary not found ({self._node_bin!r}) — install Node.js or set PHOTON_NODE_BIN: {exc}",
-                code="SIDECAR_NODE_MISSING", retryable=False) from exc
+                f"node binary not found ({self._node_bin!r}) — install Node.js "
+                f"18+ or run `hermes pm install`: {exc}",
+                code="SIDECAR_NODE_MISSING",
+                retryable=False,
+            ) from exc
+        # Pump sidecar stderr/stdout into our logger so users see crashes.
         loop = asyncio.get_event_loop()
         self._sidecar_supervisor_task = loop.create_task(self._supervise_sidecar(self._sidecar_proc))
         deadline = time.time() + 15.0  # wait for /healthz — up to 15s on cold start

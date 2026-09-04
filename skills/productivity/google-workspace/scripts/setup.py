@@ -56,7 +56,7 @@ SCOPES = [
 ]
 
 # Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
-# and tools/lazy_deps.py LAZY_DEPS['skill.google_workspace'].
+# and the pyproject 'google' extra.
 # Pinning all protects against version drift and ensures the security floors
 # (httplib2 GHSA-j5g9-f88f-gfj3, stale pyasn1/google-auth) are honoured
 # regardless of install path.

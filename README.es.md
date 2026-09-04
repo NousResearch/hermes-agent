@@ -34,7 +34,7 @@ Usa cualquier modelo que quieras — [Nous Portal](https://portal.nousresearch.c
 
 ## Instalación rápida
 
-### Linux, macOS, WSL2, Termux
+### Linux, macOS, WSL2
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -54,7 +54,7 @@ El instalador se encarga de todo: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **y
 
 Si ya tienes Git instalado, el instalador lo detecta y lo usa en su lugar. De lo contrario, una descarga de ~45MB de MinGit es todo lo que necesitas — no tocará ni interferirá con ningún Git del sistema.
 
-> **Android / Termux:** La ruta manual probada está documentada en la [guía de Termux](https://hermes-agent.nousresearch.com/docs/getting-started/termux). En Termux, Hermes instala el extra `.[termux]` curado porque el extra completo `.[all]` actualmente incluye dependencias de voz incompatibles con Android.
+> **Android:** Hermes ya no es compatible con Android ni Termux. Consulta la [página de plataformas compatibles](https://hermes-agent.nousresearch.com/docs/getting-started/platform-support) para ver las plataformas admitidas.
 >
 > **Windows:** Windows nativo es totalmente compatible — el comando de PowerShell de arriba instala todo. Si prefieres usar WSL2, el comando de Linux también funciona allí. La instalación nativa de Windows se encuentra en `%LOCALAPPDATA%\hermes`; WSL2 instala en `~/.hermes` como en Linux.
 

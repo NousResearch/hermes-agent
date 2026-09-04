@@ -569,8 +569,9 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
 
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)
-        # Unchanged → skip the rewrite so a launch doesn't churn the menu caches.
-        if entry_path.is_file() and entry_path.read_text(encoding="utf-8") == contents:
+        # When nothing changed, skip the rewrite. Then a launch does not
+        # churn the menu caches.
+        if entry_path.is_file() and entry_path.read_text(encoding="utf-8-sig") == contents:
             return entry_path
         # Atomic replace: an interrupted plain write leaves a zero-byte entry, which permanently
         # breaks the taskbar pin (nothing later rewrites a file that exists at the right path).

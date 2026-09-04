@@ -985,7 +985,7 @@ class GatewayBusySessionMixin:
                     self._booted_from_restart = False
                     return True
                 return False
-            data = json.loads(marker_path.read_text(encoding="utf-8"))
+            data = json.loads(marker_path.read_text(encoding="utf-8-sig"))
         except Exception:
             return False
 

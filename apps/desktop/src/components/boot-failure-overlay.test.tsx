@@ -29,7 +29,23 @@ function stubDesktop(config: Record<string, unknown>, overrides: Record<string, 
   const original = window.hermesDesktop
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getRecentLogs: async () => ({ lines: [] }), getConnectionConfig: async () => config, ...overrides }
+    value: {
+      getRecentLogs: async () => ({ lines: [] }),
+      getConnectionConfig: async () => config,
+      getBootstrapState: async () => ({
+        active: false,
+        manifest: null,
+        stages: {},
+        error: null,
+        log: [],
+        startedAt: null,
+        completedAt: null,
+        setupChoice: null,
+        unsupportedPlatform: null,
+        bundled: false
+      }),
+      ...overrides
+    }
   })
 
   return () => Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
@@ -223,6 +239,44 @@ describe('BootFailureOverlay', () => {
       // The electron-built error message (portal / local mode / Discord) is
       // still surfaced in the error box.
       expect(screen.getByText(/ares-3009\.agents\.nousresearch\.com/i)).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
+
+  it('swaps Repair for "Reinstall the app" on a bundled install', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+
+    const restore = stubDesktop(
+      { mode: 'local' },
+      {
+        getBootstrapState: async () => ({
+          active: false,
+          manifest: null,
+          stages: {},
+          error: null,
+          log: [],
+          startedAt: null,
+          completedAt: null,
+          setupChoice: null,
+          unsupportedPlatform: null,
+          bundled: true
+        }),
+        openExternal
+      }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+
+      // The bundled artifact has no installer to repair with — the action is
+      // a docs link, and the hint says reinstall instead of re-run installer.
+      expect(await screen.findByRole('button', { name: /reinstall the app/i })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull()
+      expect(screen.getByText(/reinstall the app to restore/i)).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /reinstall the app/i }))
+      await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/user-guide/desktop'))
     } finally {
       restore()
     }

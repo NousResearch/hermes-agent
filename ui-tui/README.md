@@ -401,7 +401,7 @@ ui-tui/
       todoPanel.tsx              todo list panel
 
     config/
-      env.ts                     environment variable resolution and Termux/mouse defaults
+      env.ts                     environment variable resolution and mouse defaults
       limits.ts                  paste size, live-render and history limits
       timing.ts                  streaming batch and debounce timing constants
 
@@ -456,7 +456,7 @@ ui-tui/
       perfPane.tsx               FPS / render perf overlay pane
       platform.ts                platform-aware keybinding and SSH detection helpers
       precisionWheel.ts          high-precision scroll wheel with sticky-frame budget
-      prompt.ts                  composer prompt text helpers (Termux-safe)
+      prompt.ts                  composer prompt text helpers
       reasoning.ts               reasoning tag detection and split helpers
       rpc.ts                     JSON-RPC result and command dispatch helpers
       subagentTree.ts            subagent tree flattening and aggregate helpers
@@ -464,7 +464,6 @@ ui-tui/
       terminalModes.ts           terminal mode reset sequences (kitty, mouse, etc.)
       terminalParity.ts          VSCode-like terminal detection and hint helpers
       terminalSetup.ts           IDE keybinding config file install helpers
-      termux.ts                  Termux platform detection helpers
       text.ts                    text helpers, ANSI detection, tool trail builders
       todo.ts                    todo item tone and display helpers
       viewportStore.ts           viewport height nanostore via ScrollBoxHandle

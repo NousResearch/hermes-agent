@@ -25,6 +25,8 @@ Lanes:
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``installer``   — PowerShell installer tests (Windows runner).
+* ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
+  pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
   tests that drive the REAL ``windows.ps1`` (``-SelfTestUi`` / pipe drain /
   retry policy). These are integration tests of a PowerShell process on a
@@ -116,6 +118,12 @@ _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 _INSTALLER_PATHS = ("scripts/tests/",)
 _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
 
+# Bootstrap installer: the POSIX shell installer, the dev-checkout wrapper
+# that carries the same pin fragment, and the Tauri app's non-Rust sources
+# (the .rs/Cargo files are the ``rust`` lane's job). Changes here get the
+# bootstrap-installer.yml lane — a real sandboxed install + stamp check.
+_BOOTSTRAP_PATHS = ("apps/bootstrap-installer/",)
+_BOOTSTRAP_FILES = {"scripts/install.sh", "setup-hermes.sh"}
 # Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
 # Electron side that launches it) and the pytest files that spawn it.
 _DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/",)
@@ -161,7 +169,7 @@ def _py_test_only(p: str) -> bool:
 
     Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
     run installed code — nothing under ``tests/`` is packaged or importable
-    there. scripts/run_tests.sh and run_tests_parallel.py are deliberately
+    there. scripts/run_tests.sh and scripts/run_tests_parallel.py are deliberately
     NOT test-only: they are runner infrastructure, and a bad edit there can
     mask real failures, so they stay conservative (python_prod=true).
     """
@@ -231,6 +239,9 @@ def classify(files: list[str]) -> dict[str, bool]:
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
+        "bootstrap": any(
+            f.startswith(_BOOTSTRAP_PATHS) or f in _BOOTSTRAP_FILES for f in files
+        ),
         "desktop_updater": any(_is_desktop_updater(f) for f in files),
         "rust": any(_is_rust(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
@@ -249,6 +260,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["uv_lock"] = True
         ret["npm_lock"] = True
         ret["installer"] = True
+        ret["bootstrap"] = True
         ret["desktop_updater"] = True
         ret["rust"] = True
         ret["nix"] = True
@@ -264,7 +276,7 @@ def _pull_request_number() -> str | None:
     if not event_path:
         return None
     try:
-        with open(event_path, encoding="utf-8") as fh:
+        with open(event_path, encoding="utf-8-sig") as fh:
             payload = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return None

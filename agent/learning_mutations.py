@@ -56,6 +56,116 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
+# MERGE-CHECK: upstream removed this section in #102117 refactor; kept our node detail/delete/edit API
+# ── Inspect (edit prefill) ──────────────────────────────────────────────────
+
+
+def node_detail(node_id: str) -> dict[str, Any]:
+    """Current content for an edit prefill. ``content`` is the full SKILL.md
+    (skills) or the raw memory chunk (memories)."""
+    try:
+        return _node_detail(node_id)
+    except (ValueError, IndexError) as exc:
+        return {"ok": False, "message": str(exc)}
+
+
+def _node_detail(node_id: str) -> dict[str, Any]:
+    if parse_node_kind(node_id) == "memory":
+        source, gidx = _parse_memory_id(node_id)
+        _, chunks, local = _locate_memory(source, gidx)
+        body = chunks[local].strip()
+
+        return {"ok": True, "kind": "memory", "id": node_id, "label": body.splitlines()[0][:80], "content": body}
+
+    from tools.skill_manager_tool import _find_skill
+
+    found = _find_skill(node_id)
+    if not found:
+        return {"ok": False, "message": f"skill '{node_id}' not found"}
+    skill_md = Path(found["path"]) / "SKILL.md"
+    if not skill_md.exists():
+        return {"ok": False, "message": f"SKILL.md missing for '{node_id}'"}
+
+    return {
+        "ok": True,
+        "kind": "skill",
+        "id": node_id,
+        "label": node_id,
+        "content": skill_md.read_text(encoding="utf-8-sig"),
+    }
+
+
+# ── Delete ──────────────────────────────────────────────────────────────────
+
+
+def delete_node(node_id: str) -> dict[str, Any]:
+    try:
+        return _delete_memory(node_id) if parse_node_kind(node_id) == "memory" else _delete_skill(node_id)
+    except (ValueError, IndexError) as exc:
+        return {"ok": False, "message": str(exc)}
+
+
+def _delete_skill(name: str) -> dict[str, Any]:
+    from tools import skill_usage
+
+    if skill_usage.get_record(name).get("pinned"):
+        return {"ok": False, "message": f"'{name}' is pinned — unpin it first (hermes curator unpin {name})"}
+
+    ok, message = skill_usage.archive_skill(name)
+    if ok:
+        _clear_skill_cache()
+
+    return {"ok": ok, "message": f"archived '{name}' — restore with: hermes curator restore {name}" if ok else message}
+
+
+def _delete_memory(node_id: str) -> dict[str, Any]:
+    source, gidx = _parse_memory_id(node_id)
+    path, chunks, local = _locate_memory(source, gidx)
+
+    del chunks[local]
+    _write_memory(path, chunks)
+
+    return {"ok": True, "message": f"deleted memory from {path.name}"}
+
+
+# ── Edit ────────────────────────────────────────────────────────────────────
+
+
+def edit_node(node_id: str, content: str) -> dict[str, Any]:
+    try:
+        return _edit_memory(node_id, content) if parse_node_kind(node_id) == "memory" else _edit_skill(node_id, content)
+    except (ValueError, IndexError) as exc:
+        return {"ok": False, "message": str(exc)}
+
+
+def _edit_skill(name: str, content: str) -> dict[str, Any]:
+    from tools.skill_manager_tool import _edit_skill as _do_edit
+
+    result = _do_edit(name, content)
+    if result.get("success"):
+        _clear_skill_cache()
+
+        return {"ok": True, "message": f"updated '{name}'"}
+
+    return {"ok": False, "message": result.get("error", "edit failed")}
+
+
+def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
+    source, gidx = _parse_memory_id(node_id)
+    body = content.strip()
+    if not body:
+        return {"ok": False, "message": "empty memory — use delete to remove it"}
+    path, chunks, local = _locate_memory(source, gidx)
+
+    chunks[local] = body
+    _write_memory(path, chunks)
+
+    return {"ok": True, "message": f"updated memory in {path.name}"}
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
 def _write_memory(path: Path, chunks: list[str]) -> None:
     """Atomic temp-file + rename via the memory tool, so a concurrent reader
     never sees a half-written file (and the §-join stays single-sourced)."""
@@ -100,7 +210,7 @@ def _skill_detail(node_id: str) -> dict[str, Any]:
     skill_md = Path(found["path"]) / "SKILL.md"
     if not skill_md.exists():
         return {"ok": False, "message": f"SKILL.md missing for '{node_id}'"}
-    return {"ok": True, "kind": "skill", "id": node_id, "label": node_id, "content": skill_md.read_text(encoding="utf-8")}
+    return {"ok": True, "kind": "skill", "id": node_id, "label": node_id, "content": skill_md.read_text(encoding="utf-8-sig")}
 
 
 # ── Delete ──────────────────────────────────────────────────────────────────

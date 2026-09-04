@@ -209,7 +209,7 @@ hermes gateway <subcommand>
 
 | 子命令 | 说明 |
 |------------|-------------|
-| `run` | 在前台运行 gateway。推荐用于 WSL、Docker 和 Termux。 |
+| `run` | 在前台运行 gateway。推荐用于 WSL 和 Docker。 |
 | `start` | 启动已安装的 systemd/launchd 后台服务。 |
 | `stop` | 停止服务（或前台进程）。 |
 | `restart` | 重启服务。 |

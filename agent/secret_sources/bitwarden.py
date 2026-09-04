@@ -192,7 +192,7 @@ def _http_download(url: str, dest: Path) -> None:
 
 def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
     """Parse standard ``sha256sum`` output (``<hex>  <filename>`` per line)."""
-    for line in checksum_file.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in checksum_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         parts = line.strip().split()
         if len(parts) >= 2 and parts[-1] == asset_name:
             return parts[0]
@@ -282,7 +282,7 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-        payload = json.loads(_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8"))
+        payload = json.loads(_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8-sig"))
         serialized_key = _cache_key_str(cache_key)
         if (not isinstance(payload, dict)
                 or payload.get("version") != _ENCRYPTED_CACHE_VERSION

@@ -114,6 +114,7 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
 
+    @pytest.mark.platforms("linux")
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
         writes are profile-scoped from day one instead of falling through
@@ -264,6 +265,7 @@ class TestBackfillProfileEnvs:
     gives pre-#44792 profiles (created before .env seeding) their own
     .env, copied from the default install so credentials don't break."""
 
+    @pytest.mark.platforms("linux")
     def test_copies_default_env_into_envless_profiles(self, profile_env):
         import stat
         tmp_path = profile_env
@@ -588,7 +590,7 @@ class TestAliasCollision:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_checks_bat_extension(self, profile_env):
         wrapper_dir = profile_env / ".local" / "bin"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -617,6 +619,7 @@ class TestAliasCollision:
 class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
+    @pytest.mark.platforms("linux")
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
@@ -628,7 +631,7 @@ class TestWrapperScript:
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_remove_finds_bat_on_windows(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
         wrapper = create_wrapper_script("mybot")
@@ -691,6 +694,7 @@ class TestFindAliasForProfile:
         assert find_alias_for_profile("steve") is None
 
 
+    @pytest.mark.platforms("linux")
     def test_list_profiles_surfaces_custom_alias(self, profile_env):
         from hermes_cli.profiles import (
             create_profile,
@@ -795,6 +799,7 @@ class TestExportImport:
         assert "default/memories/MEMORY.md" in names
 
 
+    @pytest.mark.require_symlinks
     def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
         """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
 
@@ -972,6 +977,7 @@ class TestWriteProfileMetaDurability:
         assert "🧙" in raw
         assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
 
+    @pytest.mark.require_symlinks
     def test_symlinked_profile_yaml_survives_the_write(self, tmp_path):
         """Guard on the conversion, not a behavior change.
 

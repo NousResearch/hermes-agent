@@ -139,13 +139,13 @@ def _fake_windll(
     return _windll
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_machine_reports_os_arch_not_process_arch():
     """The #69179 WoA regression: x64 Python under ARM64 emulation must report
     ARM64 (the OS), not AMD64 (the process) — otherwise the integrity gate
     rejects the correct ARM64 rebuild.
 
-    ``windows_only``: the probe under test is a ``ctypes.WinDLL("kernel32")``
+    ``platforms("windows")``: the probe under test is a ``ctypes.WinDLL("kernel32")``
     call to ``IsWow64Process2``. A patched ``sys.platform`` only got the branch
     entered — there is no kernel32 to bind on Linux, so nothing below the
     branch (the HANDLE typing that #71218 was about) was ever executed.
@@ -158,13 +158,13 @@ def test_native_machine_reports_os_arch_not_process_arch():
         assert main_desktop._windows_native_machine() == "ARM64"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch):
     """GetMachineTypeAttributes answers "can this host load PE machine X?"
     directly, so a WoA host that reports AMD64 everywhere else still accepts an
     ARM64 exe.
 
-    ``windows_only``: ``GetMachineTypeAttributes`` is a real kernel32 export
+    ``platforms("windows")``: ``GetMachineTypeAttributes`` is a real kernel32 export
     the fake host could not provide.
     """
     import ctypes
@@ -236,9 +236,9 @@ def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_gate_fails_clearly_without_backup(tmp_path, capsys):
-    """``windows_only``: ``_ensure_desktop_exe_launchable`` is a documented
+    """``platforms("windows")``: ``_ensure_desktop_exe_launchable`` is a documented
     no-op off Windows, so the fake was the only reason the gate ran at all.
     """
     desktop_dir, exe = _win_tree(tmp_path)
@@ -275,7 +275,7 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, capsys):
     """The updater chain's contract: a rebuild whose Hermes.exe cannot launch
     must exit nonzero (so hermes-setup's retry-once kicks in) and must leave
@@ -285,7 +285,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     gate runs on the STAGED exe and a failure discards staging without ever
     touching the live ``win-unpacked`` tree.
 
-    ``windows_only``: the whole chain is Windows-gated — ``win-unpacked``
+    ``platforms("windows")``: the whole chain is Windows-gated — ``win-unpacked``
     candidate discovery in ``_desktop_packaged_executable`` and the integrity
     gate itself both short-circuit off Windows.
     """

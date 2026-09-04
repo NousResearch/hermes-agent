@@ -66,7 +66,7 @@ def _fsync_directory(path: Path) -> None:
 def _read_existing(path: Path) -> tuple[Optional[str], bool]:
     """``(valid id or None, mint?)`` — mint on a missing or malformed file, never on a read failure."""
     try:
-        existing = path.read_text(encoding="utf-8").strip().lower()
+        existing = path.read_text(encoding="utf-8-sig").strip().lower()
     except FileNotFoundError:
         return None, True
     except (OSError, UnicodeDecodeError):
@@ -104,7 +104,8 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp_name)
                 raise
-            committed = path.read_text(encoding="utf-8").strip().lower()
+
+            committed = path.read_text(encoding="utf-8-sig").strip().lower()
             return committed if _INSTALL_ID_RE.fullmatch(committed) else None
     except OSError:
         return None

@@ -144,7 +144,7 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
     entries = []
     for path in candidates:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         if (payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
@@ -214,8 +214,11 @@ def recover_pending_to_db(session_db=None) -> int:
     recovered = 0
     try:
         for path in flush_files:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            # Agent-history snapshots are for manual operator recovery, not automatic DB insertion.
+            # utf-8-sig: our BOM-tolerant read fix for flush files.
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            # Agent-history snapshots use a different schema (reason +
+            # messages list) and are meant for manual operator recovery,
+            # not automatic DB insertion. Skip them silently.
             if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
                 continue
             if _recover_one_payload(session_db, path, payload):

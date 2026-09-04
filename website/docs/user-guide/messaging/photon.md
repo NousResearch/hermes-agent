@@ -241,7 +241,6 @@ Common issues:
 | `PHOTON_PROJECT_SECRET`   | from `.env`        | Project secret; set by setup               |
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
-| `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |

@@ -164,7 +164,36 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     return _make_spec(root, ctx, "pyright", [bin_path, "--stdio"], {"python": {"pythonPath": py}} if py else {})
 
 
+def _pm_store_python() -> Optional[str]:
+    """The pm-provisioned interpreter (facts + store layout), or None.
+
+    Under no-boot-through-venv the running process is the store python and
+    ``VIRTUAL_ENV`` is unset, so the old ambient-env probe had nothing to
+    offer; pm's ``python`` fact names the store entry that owns the
+    runtime. It takes the precedence the ambient ``VIRTUAL_ENV`` probe used
+    to have; project-local candidates follow."""
+    try:
+        from pm import paths
+        from pm.lock import Facts
+    except Exception:
+        return None
+    try:
+        fact = Facts(paths.facts_path()).get("python")
+        if not fact or "entry" not in fact:
+            return None
+        entry = paths.store_root() / fact["entry"]
+        exe = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+        return str(exe) if exe.exists() else None
+    except Exception:
+        return None
+
+
 def _detect_python(root: str) -> Optional[str]:
+    # pm's store interpreter resolves to a full exe path (its layout is not
+    # a venv), so it is checked directly rather than through the v/sub probe.
+    pm_python = _pm_store_python()
+    if pm_python:
+        return pm_python
     venvs = [v for v in (os.environ.get("VIRTUAL_ENV"), os.path.join(root, ".venv"), os.path.join(root, "venv")) if v]
     paths = (os.path.join(v, sub) for v in venvs for sub in ("bin/python", "bin/python3", "Scripts/python.exe"))
     return next((p for p in paths if os.path.exists(p)), None)

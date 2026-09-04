@@ -151,13 +151,6 @@ def test_venv_helpers_are_platform_consistent():
     assert (bin_name, exe_name) in {("Scripts", "python.exe"), ("bin", "python")}
 
 
-def test_managed_uv_helper_delegates_to_the_shared_one():
-    from hermes_cli.managed_uv import _venv_python
-
-    v = Path("/opt/proj/venv")
-    assert _venv_python(v) == venv_python_path(v)
-
-
 def test_no_open_coded_venv_layout_remains_in_hermes_cli():
     """Fails if a new call site hand-rolls Scripts/bin again (#76105).
 

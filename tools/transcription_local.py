@@ -248,7 +248,7 @@ def _transcribe_local_command(
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
                 return _error_result("Local STT command completed but did not produce a .txt transcript")
-            transcript_text = txt_files[0].read_text(encoding="utf-8").strip()
+            transcript_text = txt_files[0].read_text(encoding="utf-8-sig").strip()
             logger.info("Transcribed %s via local STT command (%s, %d chars)",
                         Path(file_path).name, normalized_model, len(transcript_text))
             return _ok_result(transcript_text, "local_command")

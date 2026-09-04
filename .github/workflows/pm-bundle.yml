@@ -1,0 +1,138 @@
+name: PM Bundle
+
+# Stages the self-contained agent payload for each (os, arch) target with
+# `hermes pm bundle`: repo snapshot + tool store + facts + a relocatable
+# venv built on the staged python-build-standalone interpreter. Each
+# payload is smoke-tested on its native runner — the staged interpreter
+# boots hermes_cli out of the payload with no network and no PYTHONPATH —
+# as a pre-merge check for the pm tooling itself.
+#
+# Staging is native per target (no cross-target wheel tables anywhere):
+# the runner IS the target. pm's arch guard fails the job if any staged
+# mismatches, before anything ships.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to bundle (default: the triggering ref)'
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - 'pm/**'
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/pm-bundle.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pm-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: bundle ${{ matrix.target.label }}
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-x64
+            runner: ubuntu-24.04
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+          - label: darwin-arm64
+            runner: macos-15
+          - label: darwin-x64
+            runner: macos-15-intel
+          - label: win32-x64
+            runner: windows-2025
+          - label: win32-arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-tags: true
+
+      # The host uv only bootstraps a python to run pm itself; every
+      # payload tool (uv included) is staged by pm from pm/lock.json.
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # 9.0.0
+        with:
+          enable-cache: false
+
+      # One cache for the pm store: keyed on the lockfile, so a pin bump
+      # rotates it. pm verifies every restored entry against the lock
+      # (hash-named fetches, verify() on entries) — the cache is an
+      # optimization, never a proof.
+      - name: Cache pm store
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/agent-payload/tools
+          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+
+      # win32-arm64 builds cryptography from sdist (no win_arm64 wheel);
+      # its Rust core links OpenSSL statically from vcpkg.
+      - name: Cache vcpkg OpenSSL (arm64)
+        if: matrix.target.label == 'win32-arm64'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: C:\vcpkg\installed\arm64-windows-static-md
+          key: vcpkg-openssl-arm64-windows-static-md-${{ runner.os }}
+
+      - name: Install OpenSSL (arm64)
+        if: matrix.target.label == 'win32-arm64'
+        shell: bash
+        run: |
+          if [ ! -f "/c/vcpkg/installed/arm64-windows-static-md/lib/libcrypto.lib" ]; then
+            "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:arm64-windows-static-md
+          fi
+          {
+            printf 'OPENSSL_DIR=C:\\vcpkg\\installed\\arm64-windows-static-md\n'
+            printf 'OPENSSL_STATIC=1\n'
+          } >> "$GITHUB_ENV"
+
+      - name: Pin CMake < 4 for sdist builds
+        # python-olm (matrix extra) builds libolm from sdist on non-Linux
+        # targets, and its libolm/CMakeLists.txt requires CMake < 3.5
+        # compat (removed in CMake 4, which the darwin + win32 runners
+        # ship). Pin a CMake 3.x first on PATH for those legs so the sdist
+        # build configures. Linux uses the manylinux wheel — no build, no
+        # cmake needed. The pip cmake package ships a binary wheel for
+        # every non-Linux target (macos universal2, win_amd64, win_arm64).
+        if: startsWith(matrix.target.label, 'darwin-') || startsWith(matrix.target.label, 'win32-')
+        shell: bash
+        run: |
+          uv tool install cmake==3.31.6
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+
+      - name: Stage the payload
+        shell: bash
+        env:
+          # Windows runners default to cp1252; pm prints UTF-8 (✓/✗).
+          PYTHONUTF8: '1'
+          # ring/obstore's C sources need clang, not MSVC, on windows-arm64.
+          # Scoped to the cargo target triple so every other sdist keeps MSVC.
+          CC_aarch64_pc_windows_msvc: ${{ matrix.target.label == 'win32-arm64' && 'clang' || '' }}
+        run: |
+          # The bootstrap interpreter tracks the payload interpreter's
+          # minor version — one authority (pm/lock.json), no drift.
+          PYVER=$(python3 -c "import json; v=json.load(open('pm/lock.json'))['packages']['python']['version']; print('.'.join(v.split('+')[0].split('.')[:2]))" 2>/dev/null || python -c "import json; v=json.load(open('pm/lock.json'))['packages']['python']['version']; print('.'.join(v.split('+')[0].split('.')[:2]))")
+          # Archive what actions/checkout actually checked out. On
+          # pull_request events github.sha names a merge commit that a
+          # force-push invalidates mid-run ("not a tree object").
+          uv run --no-project --python "$PYVER" python -m pm.cli bundle \
+            --out build/agent-payload \
+            --ref HEAD
+
+      # The payload must boot with nothing from this checkout: the staged
+      # venv's interpreter, cwd at the staged REPO (the desktop spawn
+      # convention — sys.path[0] from cwd survives relocation where the
+      # editable install's absolute path would not), no PYTHONPATH.
+      - name: Smoke test the payload
+        shell: bash
+        run: bash scripts/smoke-payload.sh build/agent-payload

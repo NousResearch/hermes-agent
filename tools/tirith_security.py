@@ -132,7 +132,7 @@ def _read_failure_reason() -> str | None:
         p = _failure_marker_path()
         if (time.time() - os.path.getmtime(p)) >= _MARKER_TTL:
             return None
-        with open(p, "r", encoding="utf-8") as f:
+        with open(p, "r", encoding="utf-8-sig") as f:
             return f.read().strip()
     except OSError:
         return None
@@ -254,7 +254,7 @@ def _verify_release_provenance(base_url: str, tmpdir: str, checksums_path: str, 
 
 def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) -> bool:
     """Verify SHA-256 of the archive against checksums.txt ("<hash>  <filename>" lines)."""
-    with open(checksums_path, encoding="utf-8") as f:
+    with open(checksums_path, encoding="utf-8-sig") as f:
         parsed = (line.strip().split("  ", 1) for line in f)
         expected = next((h for h, *n in parsed if n == [archive_name]), None)
     if not expected:

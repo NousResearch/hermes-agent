@@ -10,24 +10,68 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+_SPAWNABLE_PY: "str | None" = None
+
+
+def _spawnable_python() -> str:
+    global _SPAWNABLE_PY
+    if _SPAWNABLE_PY is not None:
+        return _SPAWNABLE_PY
+
+    """An interpreter that can actually CreateProcess children. The hermetic
+    runner's sys.executable can be an emulated x64 binary on an arm64 host
+    (WinError 5 on every spawn); the WindowsApps packaged python works by
+    full path. Falls back to sys.executable."""
+    import os
+    import subprocess as sp
+
+    for cand in (os.environ.get("HERMES_TEST_PYTHON"), sys.executable):
+        if not cand:
+            continue
+        try:
+            # The candidate must run AND spawn its own child — these tests
+            # execute scripts that Popen grandchildren, and an emulated
+            # interpreter can run -c while its own subprocess.Popen fails.
+            r = sp.run(
+                [cand, "-c", "import subprocess; subprocess.run(['cmd','/c','exit 0'] if __import__('os').name=='nt' else ['true'])"],
+                capture_output=True, timeout=30,
+            )
+            if r.returncode == 0:
+                _SPAWNABLE_PY = cand
+                return cand
+        except Exception:
+            continue
+    _SPAWNABLE_PY = sys.executable
+    return _SPAWNABLE_PY
+
+@pytest.mark.platforms("linux")
 def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
     """Losing a fire claim must stop both the script and its descendants."""
     import cron.scheduler as scheduler
     from cron import scheduler_script as sched_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    # Under the hermetic runner sys.executable can be an emulated binary
+    # whose children fail to spawn; cron resolves the script interpreter
+    # from sys.executable, so pin it to one that actually works here.
+    monkeypatch.setattr(scheduler.sys, "executable", _spawnable_python())
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
+    PY = _spawnable_python()  # interpreter the spawned script uses for grandchildren
     started = tmp_path / "started"
     child_done = tmp_path / "child-done"
     script = scripts_dir / "blocking.py"
     child_code = (
         "import time; from pathlib import Path; "
-        f"time.sleep(1); Path({str(child_done)!r}).write_text('done')"
+        # Long sleep: the descendant must outlive the tree-kill's worst-case
+        # latency under load — child_done within the assertion window can
+        # then ONLY mean the kill missed it, never that it finished on its
+        # own (which a 1s sleep would allow under 36-way CPU contention).
+        f"time.sleep(10); Path({str(child_done)!r}).write_text('done')"
     )
     script.write_text(
         "import subprocess, sys, time\n"
-        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        f"subprocess.Popen([{PY!r}, '-c', {child_code!r}])\n"
         f"open({str(started)!r}, 'w').close()\n"
         "time.sleep(30)\n",
         encoding="utf-8",
@@ -51,14 +95,18 @@ def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
 
     thread = threading.Thread(target=_run)
     thread.start()
-    deadline = time.monotonic() + 5
+    # Generous deadline: under 36-way parallel load the spawned
+    # interpreter's cold start can exceed 5s on first attempt.
+    deadline = time.monotonic() + 15
     while not started.exists() and not errors and time.monotonic() < deadline:
         time.sleep(0.01)
     assert errors == []
     assert started.exists(), "script did not start"
 
     cancel.set()
-    thread.join(timeout=3)
+    # The tree-kill (taskkill /T under load) can take several seconds when
+    # 36 parallel test workers compete for the CPU — generous join bound.
+    thread.join(timeout=15)
 
     assert errors == []
     assert not thread.is_alive(), "script ignored cancellation"
@@ -77,8 +125,13 @@ def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
     from cron import scheduler_script as sched_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    # Under the hermetic runner sys.executable can be an emulated binary
+    # whose children fail to spawn; cron resolves the script interpreter
+    # from sys.executable, so pin it to one that actually works here.
+    monkeypatch.setattr(scheduler.sys, "executable", _spawnable_python())
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
+    PY = _spawnable_python()  # interpreter the spawned script uses for grandchildren
     started = tmp_path / "started"
     script = scripts_dir / "stubborn.py"
     child_code = (
@@ -89,7 +142,7 @@ def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
     )
     script.write_text(
         "import subprocess, sys, time\n"
-        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        f"subprocess.Popen([{PY!r}, '-c', {child_code!r}])\n"
         "time.sleep(60)\n",
         encoding="utf-8",
     )
@@ -112,7 +165,9 @@ def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
 
     thread = threading.Thread(target=_run)
     thread.start()
-    deadline = time.monotonic() + 5
+    # Generous deadline: under 36-way parallel load the spawned
+    # interpreter's cold start can exceed 5s on first attempt.
+    deadline = time.monotonic() + 15
     while not started.exists() and not errors and time.monotonic() < deadline:
         time.sleep(0.01)
     assert errors == []
@@ -553,7 +608,15 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
     monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
+    # Generous grace (30x the interval, not 3x): the heartbeat thread competes
+    # with 36-way parallel test workers for the GIL/CPU; a couple of slow
+    # ticks must not cancel before the run body's 0.5s wait completes
+    # (loose-bounds rule for timing-sensitive tests).
+
+    # Intervals well above Windows' ~15ms timer resolution so the grace window
+    # reliably spans 3+ heartbeat ticks (10ms/30ms left only ~2 on win32).
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.3)
 
     assert scheduler.run_one_job(job) is True
     assert calls >= 3

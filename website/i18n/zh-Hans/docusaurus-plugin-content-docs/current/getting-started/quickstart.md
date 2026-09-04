@@ -57,15 +57,11 @@ description: "与 Hermes Agent 的第一次对话——从安装到开始聊天�
 仅安装命令行版本（跟踪 main 分支）：
 
 ```bash
-# Linux / macOS / WSL2 / Android (Termux)
+# Linux / macOS / WSL2
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 安装脚本会在 `~/.hermes/hermes-agent` 创建一个受管理的隔离环境（独立的 uv 托管解释器和 venv），这是唯一受支持的安装方式 —— 包括开发用途。请勿使用 `pip install hermes-agent`。
-
-:::tip Android / Termux
-如果你在手机上安装，请参阅专门的 [Termux 指南](./termux.md)，其中包含经过测试的手动安装步骤、支持的扩展功能以及当前 Android 特有的限制。
-:::
 
 :::tip Windows 用户
 请先安装 [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)，然后在 WSL2 终端中运行上述命令。

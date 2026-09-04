@@ -234,7 +234,7 @@ def _parse_install(path: Path, install_raw: Any) -> Optional[InstallSpec]:
 def _parse_manifest(path: Path) -> CatalogEntry:
     """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f) or {}
     except Exception as exc:
         raise CatalogError(f"failed to read {path}: {exc}") from exc

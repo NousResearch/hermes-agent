@@ -1,11 +1,21 @@
-"""Tests for file permissions hardening on sensitive files."""
+"""Tests for file permissions hardening on sensitive files.
+
+POSIX permission bits (0700/0600) are only meaningful on POSIX filesystems;
+native Windows does not implement them, so these tests are host-gated (the
+repo's host-native rule: never fake the platform).
+"""
 
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+
+pytestmark = pytest.mark.platforms("linux")
 
 
 class TestCronFilePermissions(unittest.TestCase):

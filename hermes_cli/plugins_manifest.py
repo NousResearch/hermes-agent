@@ -263,7 +263,7 @@ def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
             origin = importlib.util.source_from_cache(origin)
         if not origin or not origin.endswith(".py"):
             return ""
-        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]
+        return Path(origin).read_text(encoding="utf-8-sig", errors="replace")[:limit]
     except Exception:
         return ""
 
@@ -392,7 +392,7 @@ def _manifest_kind(data: Mapping, key: str, plugin_dir: Path) -> str:
     init_file = plugin_dir / "__init__.py"
     if kind == "standalone" and "kind" not in data and init_file.exists():
         with suppress(Exception):
-            source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+            source_text = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
             detected = _detect_kind_from_source(source_text)
             if detected:
                 kind = detected
@@ -408,7 +408,7 @@ def parse_manifest_file(
         if yaml is None:
             logger.warning("PyYAML not installed – cannot load %s", manifest_file)
             return None
-        data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
         name = data.get("name", plugin_dir.name)
         key = f"{prefix}/{plugin_dir.name}" if prefix else name
         kind = _manifest_kind(data, key, plugin_dir)

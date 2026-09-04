@@ -89,13 +89,13 @@ if ($manifest) {
 
     # Specific stage names that the GUI driver will rely on
     $names = $manifest.stages | ForEach-Object { $_.name }
-    foreach ($expected in @("uv", "python", "git", "venv", "dependencies", "configure", "gateway")) {
+    foreach ($expected in @("prerequisites", "repository", "venv", "python-deps", "path", "config", "setup", "gateway", "complete")) {
         Assert-True ($names -contains $expected) -Label "manifest contains stage '$expected'"
     }
 
     # The two known-interactive stages must declare needs_user_input
     $interactive = $manifest.stages | Where-Object { $_.needs_user_input } | ForEach-Object { $_.name }
-    Assert-True ($interactive -contains "configure") -Label "'configure' stage flagged needs_user_input"
+    Assert-True ($interactive -contains "setup") -Label "'setup' stage flagged needs_user_input"
     Assert-True ($interactive -contains "gateway") -Label "'gateway' stage flagged needs_user_input"
 }
 

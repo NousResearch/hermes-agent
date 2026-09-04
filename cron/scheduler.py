@@ -1127,6 +1127,10 @@ _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
+# MERGE-CHECK: our pm-aware cron-script helpers (_pm_runtime_venv_dir, _pm_store_python_exe, the
+# pm-aware _windows_cron_python_invocation/_windows_cron_bootstrap_argv) lived in this upstream-deleted
+# block. Upstream moved the script helpers to cron/scheduler_script.py WITHOUT pm awareness (pyvenv.cfg
+# probing instead); that file is outside this merge's file list, so porting the pm logic is left to the parent.
 def _cron_cleanup_timeout_seconds() -> float:
     """Return the wall-clock bound for cron post-run cleanup."""
     default = 10.0
@@ -1427,7 +1431,7 @@ def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
     if not pfpath.exists():
         return None
     try:
-        with open(pfpath, "r", encoding="utf-8") as _pf:
+        with open(pfpath, "r", encoding="utf-8-sig") as _pf:
             prefill_messages = json.load(_pf)
         return prefill_messages if isinstance(prefill_messages, list) else None
     except Exception as e:
@@ -3199,7 +3203,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     while time.monotonic() < deadline:
         if ack_path.exists():
             try:
-                acknowledgement = json.loads(ack_path.read_text(encoding="utf-8"))
+                acknowledgement = json.loads(ack_path.read_text(encoding="utf-8-sig"))
             except Exception:
                 logger.exception(
                     "Cron external worker %s published an unreadable acknowledgement; "
@@ -3277,7 +3281,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     unless that durable ownership transfer succeeds.
     """
     try:
-        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+        payload = json.loads(payload_path.read_text(encoding="utf-8-sig"))
         job = payload["job"]
         profile_home = Path(payload["profile_home"]).resolve()
         execution_id = str(job["execution_id"])

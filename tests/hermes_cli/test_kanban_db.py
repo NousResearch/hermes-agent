@@ -53,7 +53,7 @@ def _init_git_repo(repo: Path) -> None:
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypatch):
     """Windows must use a real (non-blocking) process lock, not a no-op open.
 
@@ -61,7 +61,7 @@ def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypa
     wedged holder can never block connect() forever; a clean acquire takes the
     lock once and releases it once.
 
-    ``windows_only``: ``msvcrt`` does not exist off Windows, so faking
+    ``platforms("windows")``: ``msvcrt`` does not exist off Windows, so faking
     ``_IS_WINDOWS`` on Linux meant injecting a fake ``msvcrt`` module too —
     the test then asserted against its own stub rather than the byte-range
     locking API. Here the platform is real; only ``msvcrt.locking`` is
@@ -268,6 +268,7 @@ def _exited_status(code: int) -> int:
 
 
 
+@pytest.mark.platforms("linux")
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):
@@ -571,7 +572,7 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    assert f"worktree {target.as_posix()}" in listed
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1197,6 +1198,10 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    # On Windows _resolve_hermes_argv() uses _safe_which_no_cwd() instead of
+    # shutil.which — mock that too so the "no shim" path is the one tested.
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: None)
+    argv = kb._resolve_hermes_argv()
     argv = kbd._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 

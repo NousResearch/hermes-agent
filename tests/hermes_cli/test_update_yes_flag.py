@@ -12,7 +12,19 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+
+@pytest.fixture(autouse=True)
+def _isolate_venv_holders(monkeypatch):
+    """The update flow's venv-holder guard sees the live gateway processes on
+    a dev machine and aborts with SystemExit 2 before reaching the branch
+    logic under test.  Isolate it so the test exercises the intended path."""
+    import hermes_cli.main as cli_main
+
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
 
 
 def _make_run_side_effect(
@@ -119,7 +131,7 @@ class TestUpdateYesConfigMigration:
 
         # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
         # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
-        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``
+        # a MagicMock. The MagicMock approach was flaky under parallel test runs
         # — a sibling test that imported ``hermes_cli.main`` first could leave
         # a different ``sys`` reference resolved inside the function and the
         # mock would never be consulted, with CI then taking the

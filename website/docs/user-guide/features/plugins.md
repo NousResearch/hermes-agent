@@ -350,7 +350,36 @@ hermes plugins remove my-plugin              # uninstall
 hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
+hermes plugins check-updates                 # read-only: is any installed plugin outdated?
+hermes plugins adopt my-plugin               # track a self-cloned plugin dir (read its git origin)
+hermes plugins trust-update-url my-plugin    # confirm a changed update_url after review
 ```
+
+### Update checks and provenance
+
+Hermes records where every `hermes plugins install` came from (the git
+source and exact revision, in `.install-metadata.json`), and
+`hermes plugins check-updates` uses that provenance to answer "is it
+outdated?" without touching your working tree: git-installed plugins are
+compared against their remote's HEAD via `git ls-remote`, and plugins
+whose manifest declares an `update_url` (a small update-feed file) are
+checked against that feed — the standard way for non-github-hosted
+plugins to be update-checkable. Plugins you cloned yourself (no install
+record) are offered `hermes plugins adopt` to become tracked installs.
+
+The check is read-only; applying updates stays explicit via
+`hermes plugins update`, which re-runs the security scan on the pulled
+code. A background check runs at most once a day (config key
+`plugins.auto_update_check_hours`, default 24, `0` disables) and writes
+its results where the desktop and `hermes pm status` read them; set
+`plugins.auto_apply: true` to also apply git-plugin updates
+unattended — the security scan still gates every apply.
+
+If a plugin's manifest changes its `update_url` after install (visible
+as a *needs fixing* warning in check-updates and `hermes doctor`),
+Hermes refuses to fetch from the new address until you confirm it with
+`hermes plugins trust-update-url` — an update can never silently
+redirect where its code comes from.
 
 ### One-click install links (Desktop)
 

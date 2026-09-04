@@ -207,11 +207,14 @@ def test_scan_dashboard_processes_includes_ledger_only_serves(monkeypatch):
     fake_pi = SimpleNamespace(ledger_entries=lambda **k: [profiled])
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
 
-    # Force the ps/wmic scan itself to find nothing.
+    # Force the ps/wmic scan itself to find nothing.  The Windows scan runs
+    # through ``bounded_probe_run`` (a subprocess.run wrapper), not
+    # ``subprocess.run`` directly, so patch both.
     fake_run = SimpleNamespace(returncode=0, stdout="")
-    monkeypatch.setattr(
-        dp.subprocess, "run", lambda *a, **k: fake_run
-    )
+    monkeypatch.setattr(dp.subprocess, "run", lambda *a, **k: fake_run)
+    import hermes_cli._subprocess_compat as _sc
+
+    monkeypatch.setattr(_sc, "bounded_probe_run", lambda *a, **k: fake_run)
     result = dp._scan_dashboard_processes()
     assert (8123, profiled["argv"]) in result
 
@@ -224,6 +227,9 @@ def test_scan_dashboard_processes_ledger_respects_exclusions(monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
     fake_run = SimpleNamespace(returncode=0, stdout="")
     monkeypatch.setattr(dp.subprocess, "run", lambda *a, **k: fake_run)
+    import hermes_cli._subprocess_compat as _sc
+
+    monkeypatch.setattr(_sc, "bounded_probe_run", lambda *a, **k: fake_run)
 
     assert dp._scan_dashboard_processes(exclude_pids={8124}) == []
 

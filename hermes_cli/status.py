@@ -19,7 +19,6 @@ from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
-from hermes_constants import is_termux as _is_termux
 
 
 def check_mark(ok: bool) -> str:
@@ -227,13 +226,10 @@ def _render_gateway(ctx):
             _kv("PID(s):", _format_gateway_pids(snapshot.gateway_pids))
         if snapshot.has_process_service_mismatch:
             _kv("Service:", "installed but not managing the current running gateway")
-        elif _is_termux() and not snapshot.gateway_pids:
-            _kv("Start with:", "hermes gateway")
-            _kv("Note:", "Android may stop background jobs when Termux is suspended")
         elif snapshot.service_installed and not snapshot.service_running:
             _kv("Service:", "installed but stopped")
     except Exception:
-        platform = "termux" if _is_termux() else "linux" if sys.platform.startswith("linux") else sys.platform
+        platform = "linux" if sys.platform.startswith("linux") else sys.platform
         status_text, manager = _GATEWAY_FALLBACK.get(platform, ("N/A", "(not supported on this platform)"))
         _kv("Status:", color(status_text, Colors.DIM))
         _kv("Manager:", manager)
@@ -283,7 +279,7 @@ def _render_sessions(ctx):
         _kv("Active:", 0)
     else:
         try:
-            data = _load_json(sessions_file)
+            data = _load_json(sessions_file, encoding="utf-8-sig")
             entries = [k for k in data if not str(k).startswith("_")] if isinstance(data, dict) else []
             _kv("Active:", f"{len(entries)} session(s)")
         except Exception:

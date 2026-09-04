@@ -13,10 +13,8 @@ const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const RELEASE_ROOT = path.join(DESKTOP_ROOT, 'release')
 const PLATFORM = process.platform
 
-// Platform-specific packaged-app layout. The thin installer ships an Electron
-// app shell plus extraResources (install-stamp.json + native-deps/) -- it
-// no longer bundles the Hermes Agent Python payload (that's fetched at first
-// launch via install.ps1 / install.sh, per the Phase 1 thin-installer flow).
+// Platform-specific packaged-app layout. The bundled app ships an Electron
+// shell and the PM payload under resources/agent-payload.
 const APP = (() => {
   if (PLATFORM === 'darwin') {
     const appPath = path.join(RELEASE_ROOT, `mac-${ARCH}`, 'Hermes.app')
@@ -49,17 +47,6 @@ const APP = (() => {
   }
 })()
 
-// Default HERMES_HOME for non-sandboxed runs -- matches main.ts's
-// resolveHermesHome(). On Windows it's %LOCALAPPDATA%\hermes; elsewhere
-// it's ~/.hermes. The fresh-install sandbox launchFresh() sets its own
-// HERMES_HOME and never touches this.
-const DEFAULT_HERMES_HOME = (() => {
-  if (PLATFORM === 'win32' && process.env.LOCALAPPDATA) {
-    return path.join(process.env.LOCALAPPDATA, 'hermes')
-  }
-  return path.join(os.homedir(), '.hermes')
-})()
-const VENV_ROOT = path.join(DEFAULT_HERMES_HOME, 'hermes-agent', 'venv')
 const FRESH_SANDBOX_ROOT = path.join(os.tmpdir(), 'hermes-desktop-fresh-install')
 
 function die(message) {
@@ -144,12 +131,11 @@ function resolveDmgPath() {
     : path.join(RELEASE_ROOT, `Hermes-${PACKAGE_JSON.version}-${ARCH}.dmg`)
 }
 
-function resolveNsisPath() {
-  // electron-builder NSIS artifactName template is 'Hermes-${version}-${os}-${arch}.${ext}'
+function resolveMsixPath() {
   if (!exists(RELEASE_ROOT)) return null
   const candidates = fs
     .readdirSync(RELEASE_ROOT)
-    .filter(name => /\.exe$/i.test(name) && /win/i.test(name))
+    .filter(name => /\.msix$/i.test(name) && /win/i.test(name))
     .sort((a, b) => {
       const aMtime = fs.statSync(path.join(RELEASE_ROOT, a)).mtimeMs
       const bMtime = fs.statSync(path.join(RELEASE_ROOT, b)).mtimeMs
@@ -160,7 +146,7 @@ function resolveNsisPath() {
 
 function ensureDmg() {
   if (PLATFORM !== 'darwin') {
-    die('DMG mode is macOS-only; on Windows use the `nsis` mode instead.')
+    die('DMG mode is macOS-only; on Windows use the `msix` mode instead.')
   }
   if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && exists(resolveDmgPath())) {
     return
@@ -168,14 +154,14 @@ function ensureDmg() {
   run('npm', ['run', 'dist:mac:dmg'])
 }
 
-function ensureNsis() {
+function ensureMsix() {
   if (PLATFORM !== 'win32') {
-    die('NSIS mode is win32-only; on macOS use the `dmg` mode instead.')
+    die('MSIX mode is win32-only; on macOS use the `dmg` mode instead.')
   }
-  if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && resolveNsisPath()) {
+  if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && resolveMsixPath()) {
     return
   }
-  run('npm', ['run', 'dist:win:nsis'])
+  run('npm', ['run', 'dist:win:msix'])
 }
 
 function openApp() {
@@ -278,49 +264,50 @@ function launchFresh() {
   console.log(`  HERMES_HOME: ${hermesHome}`)
   console.log(`  cwd: ${cwd}`)
 
-  return { runtimeRoot: path.join(hermesHome, 'hermes-agent', 'venv') }
 }
 
-// Validate the packaged bundle matches the thin-installer architecture:
-//   - The Hermes Agent Python payload is NOT shipped (it's fetched at first
-//     launch via install.ps1's stage protocol).
-//   - install-stamp.json IS shipped in resources/ with a valid commit + branch.
-//   - node-pty IS shipped inside app.asar.unpacked/dist/node_modules/node-pty
-//     with package.json + lib/ + at least one .node binary (the renderer's
-//     integrated terminal needs this; see Phase 1F.6).
-//   - The renderer's dist/index.html is reachable (either unpacked or
-//     inside app.asar).
+// The packaged app must contain the PM payload, node-pty, and renderer assets.
 function validateBundle() {
   if (!exists(APP.binary)) {
     die(`Missing packaged app binary: ${APP.binary}`)
   }
 
-  // Negative assertion: the OLD fat-installer factory payload must NOT be
-  // present anymore. If a stray ship of hermes_cli sneaks back in we want
-  // to fail loudly rather than re-introduce the 400MB delta we just removed.
-  const staleFactoryMarker = path.join(APP.resourcesPath, 'hermes-agent', 'hermes_cli', 'main.py')
-  if (exists(staleFactoryMarker)) {
-    die(
-      `Thin-installer regression: factory-payload file should NOT be in the package: ${staleFactoryMarker}`
+  // The payload may be the real pm bundle (staged by build-bundled-desktop /
+  // `hermes pm bundle --out build/agent-payload`) or the external stub
+  // (plain `npm run pack` in the PR/JS lane — the app fetches the runtime at
+  // first launch via the stage protocol). Validate the payload only when a
+  // real one is present; the stub is the thin-installer contract.
+  const payloadRoot = path.join(APP.resourcesPath, 'agent-payload')
+  const payloadManifestPath = path.join(payloadRoot, 'manifest.json')
+  let payloadManifest = null
+  if (exists(payloadManifestPath)) {
+    try {
+      payloadManifest = JSON.parse(fs.readFileSync(payloadManifestPath, 'utf8'))
+    } catch (err) {
+      die(`Bundled payload manifest is not valid JSON: ${err.message}`)
+    }
+  }
+  if (payloadManifest != null && payloadManifest.external !== true) {
+    for (const key of ['repo', 'store', 'venv']) {
+      if (typeof payloadManifest[key] !== 'string') {
+        die(`Bundled payload manifest is missing ${key}: ${JSON.stringify(payloadManifest)}`)
+      }
+    }
+    const payloadPython = path.join(
+      payloadRoot,
+      payloadManifest.venv,
+      PLATFORM === 'win32' ? 'Scripts' : 'bin',
+      PLATFORM === 'win32' ? 'python.exe' : 'python'
     )
-  }
-
-  // Positive assertion: install-stamp.json carries a sane commit + branch
-  const stampPath = path.join(APP.resourcesPath, 'install-stamp.json')
-  if (!exists(stampPath)) {
-    die(`Missing install-stamp.json (required for first-launch bootstrap pinning): ${stampPath}`)
-  }
-  let stamp
-  try {
-    stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'))
-  } catch (err) {
-    die(`install-stamp.json is not valid JSON: ${err.message}`)
-  }
-  if (!stamp.commit || typeof stamp.commit !== 'string' || stamp.commit.length < 7) {
-    die(`install-stamp.json is missing a usable commit field: ${JSON.stringify(stamp)}`)
-  }
-  if (!stamp.branch || typeof stamp.branch !== 'string') {
-    die(`install-stamp.json is missing the branch field: ${JSON.stringify(stamp)}`)
+    if (!exists(payloadPython)) {
+      die(`Missing bundled payload Python: ${payloadPython}`)
+    }
+    if (PLATFORM === 'win32') {
+      const payloadShim = path.join(payloadRoot, payloadManifest.venv, 'Scripts', 'hermes.exe')
+      if (!exists(payloadShim)) {
+        die(`Missing bundled payload shim: ${payloadShim}`)
+      }
+    }
   }
 
   // Positive assertion: node-pty native deps shipped
@@ -360,7 +347,7 @@ function validateBundle() {
 
   // Renderer payload check (either unpacked or in the asar)
   if (exists(APP.unpackedDistIndex)) {
-    return { stamp, nodeBinaries }
+    return { payloadManifest, nodeBinaries }
   }
   if (!exists(APP.asarPath)) {
     die(`Missing renderer payload: neither ${APP.unpackedDistIndex} nor ${APP.asarPath} exists`)
@@ -373,24 +360,22 @@ function validateBundle() {
   if (!normalized.includes('dist/index.html')) {
     die(`Missing renderer payload file in app.asar: ${APP.asarPath} (expected dist/index.html)`)
   }
-  return { stamp, nodeBinaries }
+  return { payloadManifest, nodeBinaries }
 }
 
 function printArtifacts(options = {}) {
-  const runtimeRoot = options.runtimeRoot || VENV_ROOT
-  const stamp = options.stamp
+  const payloadManifest = options.payloadManifest
 
   console.log('\nDesktop artifacts:')
   console.log(`  app: ${APP.appPath}`)
   if (PLATFORM === 'darwin') {
     console.log(`  dmg: ${resolveDmgPath()}`)
   } else if (PLATFORM === 'win32') {
-    const exe = resolveNsisPath()
-    if (exe) console.log(`  installer: ${exe}`)
+    const msix = resolveMsixPath()
+    if (msix) console.log(`  package: ${msix}`)
   }
-  console.log(`  runtime: ${runtimeRoot}`)
-  if (stamp) {
-    console.log(`  install-stamp: ${stamp.commit.slice(0, 12)} on ${stamp.branch}`)
+  if (payloadManifest) {
+    console.log(`  payload: ${payloadManifest.repo} + ${payloadManifest.venv}`)
   }
   if (options.nodeBinaries && options.nodeBinaries.length > 0) {
     console.log(`  node-pty binaries: ${options.nodeBinaries.join(', ')}`)
@@ -402,8 +387,8 @@ function help() {
   npm run test:desktop:existing  # build packaged app, launch with normal PATH/existing Hermes
   npm run test:desktop:fresh     # build packaged app, launch with temp userData + HERMES_HOME
   npm run test:desktop:dmg       # (macOS only) build DMG and open it
-  npm run test:desktop:nsis      # (win32 only) build NSIS installer
-  npm run test:desktop:all       # build installer, validate app payload, print paths
+  npm run test:desktop:msix      # (win32 only) build MSIX package
+  npm run test:desktop:all       # build the platform package and validate the payload
 
 Fast rerun (skip rebuild if the packaged app already exists):
   HERMES_DESKTOP_SKIP_BUILD=1 npm run test:desktop:fresh
@@ -425,14 +410,14 @@ if (MODE === 'existing') {
   ensureDmg()
   openDmg()
   printArtifacts()
-} else if (MODE === 'nsis') {
-  ensureNsis()
+} else if (MODE === 'msix') {
+  ensureMsix()
   printArtifacts(validateBundle())
 } else if (MODE === 'all') {
   if (PLATFORM === 'darwin') {
     ensureDmg()
   } else if (PLATFORM === 'win32') {
-    ensureNsis()
+    ensureMsix()
   } else {
     ensurePackagedApp()
   }

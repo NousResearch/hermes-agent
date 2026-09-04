@@ -186,12 +186,18 @@ def _has_agent_browser() -> bool:
 
     from hermes_constants import agent_browser_runnable
 
-    # agent-browser resolves lazily via npx for most installs, which a bare PATH + node_modules
-    # probe can't see. Mirror the local-CLI tail of tools.browser_tool_install.check_browser_requirements
-    # (same cascade, same Termux carve-out) so setup/status can't diverge from runtime;
-    # validate=False keeps this a cheap existence check with no subprocess spawn.
+    # agent-browser is no longer a root package.json dependency (#43564) — it
+    # resolves lazily via npx for most installs, which a bare PATH +
+    # node_modules probe can't see. Mirror the local-CLI tail of
+    # :func:`tools.browser_tool.check_browser_requirements` (same cascade) so
+    # the setup/status surfaces can't diverge from what browser tools actually
+    # find at runtime; validate=False keeps this a cheap existence check with
+    # no subprocess spawn.
+    # MERGE-CHECK: upstream moved the cascade to tools.browser_tool_install and added a
+    # Termux carve-out (_requires_real_termux_browser_install) — termux symbols are
+    # deliberately removed on this branch, so we keep our tools.browser_tool probe.
     try:
-        from tools.browser_tool_install import _find_agent_browser, _requires_real_termux_browser_install
+        from tools.browser_tool import _find_agent_browser
     except Exception:
         # Runtime probe unavailable: fall back to binary presence rather than crashing. Rungs: PATH;
         # Hermes-managed Node dirs ($HERMES_HOME/node, prepended to PATH at runtime but usually absent
@@ -209,11 +215,10 @@ def _has_agent_browser() -> bool:
         )
 
     try:
-        browser_cmd = _find_agent_browser(validate=False)
+        _find_agent_browser(validate=False)
     except FileNotFoundError:
         return False
-    # On Termux, the bare npx fallback is too fragile to advertise as ready.
-    return not _requires_real_termux_browser_install(browser_cmd)
+    return True
 
 
 def _local_browser_runnable() -> bool:

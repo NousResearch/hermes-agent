@@ -130,7 +130,7 @@ def load_evidence(evidence_dir: Path) -> tuple[list[EvidenceFile], dict[str, byt
     if not manifest_path.is_file() or manifest_path.is_symlink():
         raise ValueError("E2E evidence manifest is missing")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise ValueError("E2E evidence manifest is not JSON") from exc
     if not isinstance(manifest, dict):

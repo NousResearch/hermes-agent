@@ -356,7 +356,7 @@ def _last_used_profile(src: str) -> str:
     """Profile dir Chrome last used (``Local State`` → profile.last_used), else ``Default``. The
     signed-in session usually lives in the profile actually browsed (``Profile 6``), not Default."""
     try:
-        with open(os.path.join(src, "Local State"), encoding="utf-8", errors="replace") as fh:
+        with open(os.path.join(src, "Local State"), encoding="utf-8-sig", errors="replace") as fh:
             state = json.load(fh)
         last = ((state.get("profile") or {}).get("last_used")) or "Default"
     except (OSError, ValueError, AttributeError):
@@ -569,7 +569,7 @@ def _sync_local_state(src: str, dst: str, source_profile: str) -> None:
         except OSError as e:
             logger.debug("real-profile snapshot: skipped Local State: %s", e)
     try:
-        with open(ls_dst, encoding="utf-8") as fh:
+        with open(ls_dst, encoding="utf-8-sig") as fh:
             state = json.load(fh)
         prof = state.get("profile")
         if isinstance(prof, dict):

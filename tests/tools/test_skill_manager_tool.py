@@ -981,6 +981,7 @@ class TestDeleteSkillRmtreeGuard:
         assert result["success"] is True, result
         assert not (tmp_path / "good-skill").exists()
 
+    @pytest.mark.require_symlinks
     def test_symlinked_skill_dir_refused(self, tmp_path):
         """A skill dir that is a symlink must not be rmtree'd — rmtree would
         otherwise follow it and delete the link target's contents."""

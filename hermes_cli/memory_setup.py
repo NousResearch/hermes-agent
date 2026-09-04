@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 import shlex
+from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -20,28 +20,35 @@ _IMPORT_NAMES = {
     "hindsight-all": "hindsight"}
 
 
-def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
-    """Return the pip deps a provider actually needs on THIS install.
+def _provider_extras(provider_name: str, manifest: dict, plugin_dir=None) -> list[str]:
+    """The pyproject extras a provider needs on THIS install.
 
-    ``plugin.yaml`` declares the baseline bridge packages; some providers add mode-dependent extras
-    at setup time that the manifest can't express.
+    ``plugin.yaml``'s ``extra:`` names the baseline. Hindsight's
+    ``local_embedded`` mode needs the daemon+embedder wheel on top
+    (hindsight-local, #70636) — mode lives in its config file, which the
+    manifest can't express.
 
-    Hindsight's ``local_embedded`` mode installs ``hindsight-all`` (daemon + embedder + client) during
-    ``hermes memory setup`` — if the update-time refresh only reinstalled the declared ``hindsight-client``,
-    the embedded daemon would stay broken after a venv rebuild stripped ``hindsight-embed`` (#70636).
-    """
-    deps = list(declared or [])
-    if provider_name == "hindsight":
+    A provider manifest with legacy ``pip_dependencies`` (no ``extra:``,
+    no pyproject of its own — the third-party plugin shape, e.g. a
+    directory-installed external provider) is bridged: pm materializes
+    the specs into a generated pyproject.toml, and the provider becomes
+    a workspace member installed by the venv sync. Returns [] either
+    way — no EXTRA to sync, the union carries the deps."""
+    extras = []
+    declared = manifest.get("extra")
+    if isinstance(declared, str) and declared:
+        extras.append(declared)
+    elif plugin_dir is not None and manifest.get("pip_dependencies"):
         try:
-            import json
-            cfg_path = get_hermes_home() / "hindsight" / "config.json"
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
-            # "local" is a legacy alias for "local_embedded"
-            if cfg.get("mode", "") in {"local", "local_embedded"}:
-                deps.append("hindsight-all")
+            from pm.workspace import materialize_legacy_pyproject
+
+            materialize_legacy_pyproject(Path(plugin_dir))
         except Exception:
             pass
-    return deps
+    # hindsight local_embedded needs hindsight-all, whose protobuf floor
+    # conflicts with mem0/modal — it cannot be a venv extra. It stays a
+    # provider-owned install until plugin side-venvs land (plan step 5).
+    return extras
 
 
 def _curses_select(
@@ -104,52 +111,28 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
         return
     try:
         import yaml
-        with open(yaml_path, encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8-sig") as f:
             meta = yaml.safe_load(f) or {}
     except Exception:
         return
 
-    pip_deps = _provider_pip_dependencies(provider_name, meta.get("pip_dependencies", []))
-    if not pip_deps:
+    extras = _provider_extras(provider_name, meta, plugin_dir=plugin_dir)
+    if not extras:
         return
 
-    missing = []
-    for dep in pip_deps:
-        if force:
-            missing.append(dep)
-            continue
-        dep_name = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*", dep)
-        base = dep_name.group(0) if dep_name else dep
-        import_name = _IMPORT_NAMES.get(base, base.replace("-", "_").split("[")[0])
-        try:
-            __import__(import_name)
-        except ImportError:
-            missing.append(dep)
+    import pm
+
+    missing = [e for e in extras if force or not pm.available(e)]
     if not missing:
         return
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
-
-    # install_specs routes to the durable target on sealed hosted images (HERMES_LAZY_INSTALL_TARGET)
-    # and is venv-scoped on normal installs.
-    from tools.lazy_deps import install_specs
-
-    manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        outcome = install_specs(missing, timeout=120)
-        if outcome.ok:
-            print(f"  ✓ Installed {', '.join(missing)}")
-        elif outcome.blocked:
-            print(f"  ⚠ Cannot install {', '.join(missing)}: {outcome.reason}")
-        else:
-            print(f"  ⚠ Failed to install {', '.join(missing)}")
-            stderr = (outcome.stderr or "")[:200]
-            if stderr:
-                print(f"    {stderr}")
-            print(f"  Run manually: {manual_cmd}")
+        pm.sync_venv(missing, explicit=True)
+        print(f"  ✓ Installed {', '.join(missing)}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: {manual_cmd}")
+        print("  Run manually: hermes pm install")
 
     # Also show external (non-pip) dependencies that are missing.
     for dep in meta.get("external_dependencies", []):
@@ -333,6 +316,7 @@ def cmd_setup(args) -> None:
     if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):
         return
 
+    # Write activation key to config.yaml
     config["memory"]["provider"] = name
     save_config(config)
 
@@ -357,10 +341,26 @@ def _write_env_vars(
     env_writes: dict, hermes_home: str | os.PathLike[str] | None = None) -> None:
     """Persist memory-provider env vars through the canonical ``.env`` writer.
 
-    ``save_env_value`` applies the shared gate (name regex, ``LD_PRELOAD``/``PYTHONPATH``/``HERMES_HOME``
-    denylist, CR/LF stripping, atomic 0o600 writes). ``ValueError`` is reported and skipped so one
-    bad key doesn't sink the batch; filesystem errors propagate. ``hermes_home`` is applied via the
-    context-local override, not ``os.environ``.
+    Delegates to ``hermes_cli.config.save_env_value`` so every key flows
+    through the same input-validation gate as every other ``.env`` writer:
+    the ``_ENV_VAR_NAME_RE`` regex (no malformed identifiers), the
+    ``_ENV_VAR_NAME_DENYLIST`` (no ``LD_PRELOAD`` / ``PYTHONPATH`` /
+    ``HERMES_HOME`` / etc.), CR/LF stripping on the value, and the atomic
+    0o600-from-creation write (no TOCTOU permission window).
+
+    Validation failures (``ValueError`` from ``save_env_value`` — a
+    denylisted name or an identifier rejected by ``_ENV_VAR_NAME_RE``) are
+    surfaced and skipped rather than aborting the wizard, so a single bad
+    key from one schema field doesn't take down the rest of the batch.
+    Non-validation errors (filesystem failures, permission errors) are
+    intentionally NOT caught — those indicate the wizard cannot safely
+    persist any subsequent key either and should propagate.
+
+    ``hermes_home`` may be supplied by plugin ``post_setup`` hooks that
+    already received an explicit home directory (e.g. a non-default
+    profile). It is applied through the context-local Hermes home override
+    so ``save_env_value`` still owns the validation, sanitization, and
+    atomic-write path without mutating global ``os.environ``.
     """
     from hermes_cli.config import save_env_value
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

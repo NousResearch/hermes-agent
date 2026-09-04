@@ -1144,9 +1144,10 @@ class TestProfileRestoration:
         from hermes_cli.backup import run_import
         run_import(args)
 
-        # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
-        assert not (wrapper_dir / "empty").exists()
+        # Only valid profile should get a wrapper (Windows uses a .bat shim).
+        suffix = ".bat" if os.name == "nt" else ""
+        assert (wrapper_dir / f"valid{suffix}").exists()
+        assert not (wrapper_dir / f"empty{suffix}").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1606,7 +1607,7 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        assert any(s.endswith(os.path.join("boards", "work", "kanban.db")) for s in called["db"]), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -2091,6 +2092,7 @@ class TestMemoryProviderExternalPaths:
         (outside / "leak.json").unlink()
         outside.rmdir()
 
+    @pytest.mark.platforms("linux")
     def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
         """_external/ members restore to ~/<relpath>, not under HERMES_HOME,
         and credential-shaped files get 0600."""

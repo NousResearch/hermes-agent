@@ -166,7 +166,7 @@ class TestGenerate:
             result = KreaImageGenProvider().generate(prompt="A cinematic lamp", upscale=False)
 
         assert result["success"] is True
-        assert result["image"] == "/tmp/krea_krea-2-medium_test.png"
+        assert result["image"] == str(Path("/tmp/krea_krea-2-medium_test.png"))
         assert result["provider"] == "krea"
         assert result["model"] == "krea-2-medium"
         assert result["aspect_ratio"] == "landscape"

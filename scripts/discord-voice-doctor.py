@@ -242,7 +242,7 @@ def check_config(groq_key, eleven_key):
     if config_path.exists():
         try:
             import yaml
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 cfg = yaml.safe_load(f) or {}
 
             stt_provider = cfg.get("stt", {}).get("provider", "local")
@@ -268,7 +268,7 @@ def check_config(groq_key, eleven_key):
     if voice_mode_path.exists():
         try:
             import json
-            modes = json.loads(voice_mode_path.read_text(encoding="utf-8"))
+            modes = json.loads(voice_mode_path.read_text(encoding="utf-8-sig"))
             off_count = sum(1 for v in modes.values() if v == "off")
             all_count = sum(1 for v in modes.values() if v == "all")
             check("Voice mode state", True, f"{all_count} on, {off_count} off, {len(modes)} total")

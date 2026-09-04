@@ -667,6 +667,7 @@ class TestPathCanonicalization:
             "Absolute and relative paths pointing to the same file must overlap"
         )
 
+    @pytest.mark.require_symlinks
     def test_symlink_aliases_are_not_parallelized(self, tmp_path):
         """A symlink alias and the real path must be detected as overlapping
         so they are never placed in the same parallel segment."""
@@ -724,10 +725,10 @@ class TestPathCanonicalization:
         )
 
 
-    # ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
+    # ``platforms("windows")`` rather than ``skipif(sys.platform != "win32")``: the
     # Windows CI job greps for the marker to decide which files to import, so
     # a bare skipif leaves this running on no host at all.
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_case_insensitive_paths_overlap_windows(self, tmp_path):
         """On Windows, FILE.txt and file.txt are the same file — they must
         be detected as overlapping after normcase() canonicalisation."""

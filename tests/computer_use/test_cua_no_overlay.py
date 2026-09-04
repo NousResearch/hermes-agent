@@ -31,7 +31,7 @@ class TestNoOverlayFlag:
             assert cua_backend._cua_no_overlay() is True
 
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_config_load_failure_falls_through_to_auto_detect_macos(self):
         """Unreadable config => auto-detect (macOS defaults to overlay off).
 
@@ -42,7 +42,7 @@ class TestNoOverlayFlag:
                    side_effect=RuntimeError("boom")):
             assert cua_backend._cua_no_overlay() is True
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_config_load_failure_falls_through_to_auto_detect_linux(self, monkeypatch):
         """Unreadable config must not raise; headless Linux auto-detects off.
 
@@ -54,7 +54,7 @@ class TestNoOverlayFlag:
                    side_effect=RuntimeError("boom")):
             assert cua_backend._cua_no_overlay() is True
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_linux_x11_auto_detects_off(self, monkeypatch):
         """X11 desktop (DISPLAY set, no Wayland) defaults the overlay off.
 
@@ -69,7 +69,7 @@ class TestNoOverlayFlag:
         with patch("hermes_cli.config.load_config", return_value={}):
             assert cua_backend._cua_no_overlay() is True
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_linux_x11_explicit_session_type_also_off(self, monkeypatch):
         """XDG_SESSION_TYPE=x11 without Wayland env is still X11."""
         monkeypatch.setenv("DISPLAY", ":0")
@@ -78,7 +78,7 @@ class TestNoOverlayFlag:
         with patch("hermes_cli.config.load_config", return_value={}):
             assert cua_backend._cua_no_overlay() is True
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_linux_wayland_keeps_overlay(self, monkeypatch):
         """Wayland desktop keeps the overlay: the compositor owns the
         overlay surface lifecycle, so it cannot get stuck above every
@@ -89,7 +89,7 @@ class TestNoOverlayFlag:
         with patch("hermes_cli.config.load_config", return_value={}):
             assert cua_backend._cua_no_overlay() is False
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_linux_x11_explicit_false_overrides_auto_detect(self, monkeypatch):
         """An explicit ``no_overlay: false`` must restore the cursor even on
         X11 — auto-detection is the default, never a hard lock."""

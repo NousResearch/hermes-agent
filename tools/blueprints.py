@@ -106,7 +106,7 @@ def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
     # Skills live at skills/<category>/<name>/SKILL.md or skills/<name>/SKILL.md.
     for path in Path(SKILLS_DIR).glob(f"**/{skill_name}/SKILL.md"):
         try:
-            spec = parse_blueprint(path.read_text(encoding="utf-8"))
+            spec = parse_blueprint(path.read_text(encoding="utf-8-sig"))
         except OSError:
             continue
         if spec is not None:

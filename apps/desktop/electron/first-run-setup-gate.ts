@@ -2,6 +2,8 @@ interface FirstRunSetupBackend {
   activeRoot?: string
   kind?: string
   platform?: string
+  /** What the local setup card represents: 'none' = installer offer, the rest = use existing. */
+  local?: 'none' | 'installed' | 'bundled' | 'bundled-damaged'
 }
 
 interface FirstRunSetupGateOptions {
@@ -57,8 +59,15 @@ export function createFirstRunSetupGate({
     }
   }
 
+  // Both sentinels need a user decision: 'bootstrap-needed' offers install-or-
+  // connect; 'bundled-unusable' (a bundled install whose payload is damaged)
+  // offers connect-or-reinstall — never install.
   const shouldGate = (backend?: FirstRunSetupBackend | null) =>
-    Boolean(backend && backend.kind === 'bootstrap-needed' && !localBootstrapConfirmed)
+    Boolean(
+      backend &&
+        (backend.kind === 'bootstrap-needed' || backend.kind === 'bundled-unusable') &&
+        !localBootstrapConfirmed
+    )
 
   const wait = async (backend?: FirstRunSetupBackend | null) => {
     if (!shouldGate(backend)) {

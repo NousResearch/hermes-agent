@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import hermes_cli.web_server as web_server
 import hermes_cli.web_server_gateway as _web_server_gateway
 
@@ -69,6 +71,7 @@ class TestDashboardSpawnExecutable:
         ):
             assert _web_server_gateway._dashboard_spawn_executable() == str(base_interp)
 
+    @pytest.mark.require_symlinks
     def test_venv_symlink_to_base_is_still_preferred_unresolved(self, tmp_path):
         """The Linux-standard layout: venv/bin/python is a SYMLINK to the
         base interpreter. The chooser must return the UNRESOLVED venv path —

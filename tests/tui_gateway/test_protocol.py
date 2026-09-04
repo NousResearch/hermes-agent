@@ -1321,7 +1321,7 @@ def test_voice_and_wake_handlers_are_pool_routed(voice_or_wake_method, server):
 
     wake.start and wake.status share the same STT lazy-install path via
     check_wake_word_requirements() → _stt_ready() → _get_provider(), and
-    wake.start additionally calls lazy_deps.ensure() for wake-word engine deps.
+    wake.start additionally calls pm.ensure_import() for wake-word engine deps.
     The desktop polls wake.status on every gateway-ready.
     """
     assert voice_or_wake_method in server._LONG_HANDLERS

@@ -32,7 +32,7 @@
 let
   repoRoot = ./..;
 
-  npm12 = callPackage ./npm-12-0-2.nix { };
+  npm12 = callPackage ./npm-pinned.nix { };
   node_gyp_11_4_0 = callPackage ./node-gyp-11-4-0.nix { };
   nodejs_26_npm_12 = symlinkJoin {
     name = "nodejs-26-npm-12";

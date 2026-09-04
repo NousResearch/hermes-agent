@@ -88,6 +88,7 @@ class TestCrashDurability:
         # The aborted write must not leave a temp file behind in $HOME.
         assert list(fake_home.glob("*.tmp")) == []
 
+    @pytest.mark.require_symlinks
     def test_symlinked_shell_config_stays_a_symlink(self, fake_home: Path):
         """A dotfiles-repo ``~/.zshrc`` is a symlink; replacing it with a
         regular file silently detaches the user's dotfiles."""

@@ -89,7 +89,7 @@ def resolve_active_host() -> str:
 
 def _read_config(path: Path) -> dict:
     """Parse a honcho.json; {} when absent (parse/OS errors propagate)."""
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
 
 
 def resolve_global_config_path() -> Path:
@@ -538,14 +538,14 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                          "then run 'hermes honcho setup' or set HONCHO_API_KEY. "
                          "For local instances, set HONCHO_BASE_URL instead.")
 
+    # Build inside the singleton factory so racing callers share one client.
     return slot.get(lambda: _build_client(config))
-
 
 def _build_client(config: HonchoClientConfig) -> "Honcho":
     """Construct the SDK client (runs inside the slot factory so racing callers share one)."""
     with contextlib.suppress(Exception):  # lazy-dep failures fall through to the canonical import error below
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.honcho", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("honcho")
     try:
         from honcho import Honcho
     except ImportError:

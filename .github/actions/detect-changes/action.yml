@@ -48,6 +48,9 @@ outputs:
   installer:
     description: Run the PowerShell installer tests on a Windows runner.
     value: ${{ steps.classify.outputs.installer }}
+  bootstrap:
+    description: Run the bootstrap installer lane (install.sh sandbox + stamp verification).
+    value: ${{ steps.classify.outputs.bootstrap }}
   desktop_updater:
     description: Run the Windows desktop-update hand-off (windows.ps1) integration tests.
     value: ${{ steps.classify.outputs.desktop_updater }}

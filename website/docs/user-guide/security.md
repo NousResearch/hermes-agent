@@ -789,7 +789,7 @@ The check itself is stdlib-only and runs from one `importlib.metadata.version()`
 
 ### Lazy install of optional dependencies
 
-Many features (Mistral TTS, ElevenLabs, Honcho memory, Bedrock, Slack, Matrix, …) depend on Python packages that not every user needs. Hermes installs these **lazily** on first use rather than eagerly under `hermes-agent[all]`. The implementation lives in `tools/lazy_deps.py`.
+Many features (Mistral TTS, ElevenLabs, Honcho memory, Bedrock, Slack, Matrix, …) depend on Python packages that not every user needs. Hermes installs these **on demand** at first use rather than eagerly under `hermes-agent[all]`. The implementation is the pm package system: each feature is a pyproject extra, and enabling one syncs the venv against the committed `uv.lock`.
 
 The trade-off this fixes:
 
@@ -802,7 +802,7 @@ How it works:
 2. If the deps are missing, `ensure` checks `security.allow_lazy_installs` in `config.yaml` (default `true`) and runs a venv-scoped `pip install` for the allowlisted specs.
 3. If the install fails or the user has disabled lazy installs, the call raises `FeatureUnavailable` with the actual pip stderr and a pointer at `hermes tools`.
 
-Security guarantees enforced by `tools/lazy_deps.py`:
+Security guarantees enforced by pm:
 
 | Guarantee | What it means |
 |---|---|

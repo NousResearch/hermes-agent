@@ -1112,9 +1112,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
-        # Home is captured immutably: unload may run from another profile context, but every
-        # inverse must target the registration's original scope.
-        self.scope_key = scope_key or hermes_home_key()
+        # Capture the home immutably. Unload can run from a different ambient
+        # profile context, but every inverse must target the registration's
+        # original scope.  Normalize through hermes_home_key so the scope
+        # matches the key the registries store under (normcase on Windows).
+        self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
@@ -1628,7 +1630,7 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[st
         return live(manager)
     if in_flight:
         with suppress(Exception):
-            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8"))
+            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8-sig"))
             values = blob.get(cache_field) if isinstance(blob, dict) else None
             if isinstance(values, list) and all(isinstance(v, str) for v in values):
                 return set(values)

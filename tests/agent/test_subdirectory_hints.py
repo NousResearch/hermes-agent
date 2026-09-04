@@ -234,6 +234,7 @@ class TestContentDeduplication:
     """The same context content must never be injected twice (ref: symlinked
     shared workspaces, hardlinks, and copied backups all alias one file)."""
 
+    @pytest.mark.require_symlinks
     def test_symlinked_duplicate_not_reinjected(self, tmp_path):
         """Two directories whose AGENTS.md is the same file yield one injection."""
         real = tmp_path / "real"

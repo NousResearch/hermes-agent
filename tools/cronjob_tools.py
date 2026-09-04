@@ -340,8 +340,12 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
     block (parent sees what the job produced). Never raises."""
     try:
         from cron.jobs import get_cron_output_dir
-        files = sorted((get_cron_output_dir() / job_id).glob("*.md"))
-        text = files[-1].read_text(encoding="utf-8", errors="replace").strip() if files else ""
+
+        out_dir = get_cron_output_dir() / job_id
+        files = sorted(out_dir.glob("*.md"))
+        if not files:
+            return None
+        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip()
         if not text:
             return None
         if len(text) > max_chars:

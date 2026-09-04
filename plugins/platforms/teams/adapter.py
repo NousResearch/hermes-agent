@@ -278,9 +278,16 @@ def _suppress_third_party_dotenv() -> Iterator[None]:
 
 
 def check_teams_requirements() -> bool:
-    """ACTIVE lazy-installer (registry ``ensure_deps_fn``): install the SDK on first use and rebind
-    the module-level SDK globals. Gate on ``App is not None`` — ``TEAMS_SDK_AVAILABLE`` is only a
-    find_spec probe and can be True before any import ran."""
+    """Ensure the Teams SDK is importable, lazy-installing it on first use.
+
+    Lazy-installs ``microsoft-teams-apps`` via
+    ``pm.ensure_import("teams")`` if not present, then rebinds
+    all module-level SDK globals on success. Returns True once the SDK (and
+    aiohttp) are importable, False if they couldn't be installed/imported.
+
+    ``App is not None`` means symbols are already bound — ``TEAMS_SDK_AVAILABLE``
+    alone can be True from ``find_spec`` without an import having run yet.
+    """
     if App is not None and AIOHTTP_AVAILABLE:
         return True
 
@@ -298,8 +305,9 @@ def check_teams_requirements() -> bool:
         bindings["TEAMS_SDK_AVAILABLE"] = True
         return bindings
 
-    from tools.lazy_deps import ensure_and_bind
-    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
+    from pm.extras import ensure_and_bind
+
+    return ensure_and_bind("teams", _import, globals())
 
 
 _CHAT_TYPES = {"personal": "dm", "groupChat": "group", "channel": "channel"}
@@ -770,11 +778,14 @@ def interactive_setup() -> None:
 
 
 def _install_hint() -> str:
-    """Install hint derived from the LAZY_DEPS pins (aiohttp is CVE-pinned, so bumps happen);
-    ``venv_pip=True`` targets the real Hermes venv, sidestepping PEP 668 on Ubuntu 24.04."""
+    """Build the Teams install hint string.
+
+    Prefers ``uv sync --frozen --extra teams`` (respects pyproject pinning);
+    falls back to a plain pip install of the two packages if that is
+    unavailable. Restarting the gateway also auto-installs via pm.
+    """
     try:
-        from tools.lazy_deps import feature_install_command
-        cmd = feature_install_command("platform.teams", venv_pip=True)
+        cmd = "uv sync --frozen --extra teams"
     except Exception:  # pragma: no cover — defensive
         cmd = None
     if not cmd:

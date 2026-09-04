@@ -130,6 +130,7 @@ class TestUpdateCommandGatewayFlag:
     """Verify the gateway spawns hermes update --gateway."""
 
     @pytest.mark.asyncio
+    @pytest.mark.platforms("linux")
     async def test_spawns_with_gateway_flag(self, tmp_path):
         """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
         runner = _make_runner()

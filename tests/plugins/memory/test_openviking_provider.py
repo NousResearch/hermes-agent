@@ -1892,7 +1892,7 @@ class TestOpenVikingEnvWriter:
 
         _write_env_vars(env, {"OPENAI_API_KEY": "new"})
 
-        assert env.read_bytes() == b"NAME=caf\xe9\nOPENAI_API_KEY=new\n"
+        assert env.read_bytes() == f"NAME=caf\xe9{os.linesep}OPENAI_API_KEY=new{os.linesep}".encode("latin-1")
 
     def test_plain_env_is_unchanged_apart_from_the_write(self, tmp_path):
         from plugins.memory.openviking import _write_env_vars

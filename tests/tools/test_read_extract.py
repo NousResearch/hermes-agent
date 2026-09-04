@@ -239,7 +239,7 @@ class TestAnydocInitLifecycle(unittest.TestCase):
         self._saved_retry = read_extract.ANYDOC_RETRY_SECONDS
         read_extract._anydoc_module = read_extract._ANYDOC_UNSET
         read_extract._anydoc_failed_at = None
-        self._ensure = mock.patch("tools.lazy_deps.ensure", return_value=None)
+        self._ensure = mock.patch("pm.ensure_import", return_value=None)
         self._ensure.start()
 
     def tearDown(self):
@@ -263,7 +263,7 @@ class TestAnydocInitLifecycle(unittest.TestCase):
 
     def test_failed_reconciliation_does_not_import_unverified_binding(self):
         with mock.patch(
-            "tools.lazy_deps.ensure", side_effect=RuntimeError("wrong version")
+            "pm.ensure_import", side_effect=RuntimeError("wrong version")
         ), mock.patch("importlib.import_module") as import_module:
             self.assertIsNone(self.rex._anydoc())
         import_module.assert_not_called()

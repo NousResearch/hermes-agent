@@ -478,7 +478,7 @@ def _resolve_credentials_data(extra: Optional[dict] = None) -> dict:
     """Load the first credential record containing a private key."""
     for path in _credentials_candidates(extra):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict) and _credentials_key(data):
@@ -1342,7 +1342,7 @@ class BuzzAdapter(BasePlatformAdapter):
         try:
             if not (path := self._cursor_path()).exists():
                 return
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             logger.debug("Buzz: could not read channel cursors", exc_info=True)
             return

@@ -193,8 +193,24 @@ export function notify(input: NotificationInput): string {
   return id
 }
 
+// The toast only ever shows the summarized copy (possibly a fallback at 180
+// chars). desktop.log gets the FULL error — message and stack — so a bug
+// report carries the actual failure, not the summary. Fire-and-forget: the
+// toast must never depend on this round-trip.
+function logErrorToDesktopLog(error: unknown, fallback: string) {
+  try {
+    const label = new URLSearchParams(window.location.search).get('win') ?? 'main'
+    const raw = error instanceof Error ? (error.stack ?? error.message) : typeof error === 'string' ? error : fallback
+
+    window.hermesDesktop?.logLine?.(`[renderer error:${label}] ${fallback}: ${raw}`)
+  } catch {
+    // Logging must never break the toast.
+  }
+}
+
 export function notifyError(error: unknown, fallback: string): string {
   const readable = readableError(error, fallback)
+  logErrorToDesktopLog(error, fallback)
 
   return notify({
     kind: 'error',

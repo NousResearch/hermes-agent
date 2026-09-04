@@ -11,12 +11,22 @@ and fails loudly when the update was a no-op.
 
 from types import SimpleNamespace
 
+import os
+
 import pytest
 
 from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+
+
+@pytest.fixture(autouse=True)
+def _isolate_venv_holders(monkeypatch):
+    """The update flow's venv-holder guard sees the live gateway processes on
+    a dev machine and aborts with SystemExit 2 before reaching the HEAD-move
+    gate under test.  Isolate it so the test exercises the intended path."""
+    monkeypatch.setattr(hermes_main, "_detect_venv_python_processes", lambda: [])
 
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
@@ -34,10 +44,12 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
         if "rev-list" in joined:
             return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
 
-        # git rev-parse HEAD  — first call (pre-pull) returns pre_sha,
-        # subsequent calls (post-pull) return post_sha.
+        # git rev-parse HEAD  — pre-pull capture (first call) sees pre_sha;
+        # post-pull capture (second call) sees post_sha. get_version_info
+        # is mocked in _patch_update_deps so the startup banner makes no
+        # rev-parse calls of its own.
         if joined.endswith("rev-parse HEAD"):
-            if calls["n"] == 0:
+            if calls["n"] < 1:
                 calls["n"] += 1
                 return SimpleNamespace(returncode=0, stdout=f"{pre_sha}\n", stderr="")
             return SimpleNamespace(returncode=0, stdout=f"{post_sha}\n", stderr="")
@@ -110,6 +122,35 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(
+        hermes_main,
+        "_install_hangup_protection",
+        lambda gateway_mode=False: {
+            "prev_stdout": None, "prev_stderr": None,
+            "log_file": None, "installed": False,
+        },
+    )
+    monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda *a, **k: None)
+    # _check_and_apply_config_migration → _run_migrate_config_fresh →
+    # _reload_config_modules() force-reloads hermes_cli.config via
+    # importlib, replacing the module object pytest's capsys + the config
+    # tests' patches target. No-op the reload so the config module stays
+    # stable for later tests in the same process.
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._reload_config_modules",
+        lambda *a, **k: None,
+    )
+    # The startup version-info probe runs git rev-parse HEAD (and the
+    # result is cached per-process, so whether it runs depends on test
+    # order). Mock it so the head-moved mock's call counting only sees the
+    # update flow's own pre/post captures.
+    monkeypatch.setattr(
+        "hermes_cli.version_info.get_version_info",
+        lambda *a, **k: SimpleNamespace(),
+    )
+    # Upstream refactor moved _clear_update_incomplete_marker into
+    # main_install_repair; no-op it there too so the marker machinery
+    # stays inert on both import paths.
     monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
     # Gateway restart path (called after a successful update).
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
@@ -119,7 +160,45 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     import hermes_cli.gateway as hermes_gateway
 
     monkeypatch.setattr(
-        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
+        hermes_gateway,
+        "find_gateway_pids",
+        lambda *a, **k: [],
+    )
+    # The gateway restart phase also probes per-profile processes; return
+    # nothing so no real pid reaches the drain/kill loop (the conftest
+    # live-system guard would block the os.kill).
+    monkeypatch.setattr(
+        hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
+    # pm-era update flow: the venv re-sync after a pull runs
+    # `pm.ensure.sync_venv`, which needs a real uv/venv. The test env has
+    # neither, so short-circuit it — the head-moved gate is what's under
+    # test, not dependency sync. (pm.ensure the package attribute is the
+    # `ensure` function; the module is reached via importlib.)
+    import importlib
+
+    _pm_ensure_mod = importlib.import_module("pm.ensure")
+
+    monkeypatch.setattr(_pm_ensure_mod, "sync_venv", lambda *a, **k: None)
+    # Fleet-restart verification (#93406): no gateways are expected (the
+    # pid probe above returns nothing), so the post-restart version matrix
+    # must not demand rows or fail the update.
+    monkeypatch.setattr(
+        hermes_main,
+        "_fleet_probe_expected_runtimes",
+        lambda *a, **k: False,
+    )
+    # The gateway restart phase imports discovery functions fresh AFTER
+    # _purge_stale_hermes_modules drops every cached module (the update
+    # reloads code in-place), so monkeypatching hermes_cli.gateway
+    # attributes is lost. The phase may still attempt os.kill on real
+    # pids; stub os.kill so the conftest live-system guard never fires —
+    # this test asserts the head-moved gate, not process teardown.
+    import os as _os_mod
+
+    monkeypatch.setattr(_os_mod, "kill", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hermes_gateway, "kill_gateway_processes", lambda *a, **k: []
     )
     monkeypatch.setattr(
         hermes_gateway, "supports_systemd_services", lambda: False
@@ -127,6 +206,14 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
+    # _restart_gateways_after_update purges and re-imports hermes_cli.gateway,
+    # which undoes the discovery mocks above (the fresh import finds the live
+    # gateways on this dev machine).  Neutralize the kill itself so the phase
+    # is a no-op regardless of what the re-imported discovery returns.
+    monkeypatch.setattr(os, "kill", lambda *a, **k: None)
+    # ...and stop the purge from evicting the mocked module in the first place,
+    # so find_gateway_pids stays [] and the fleet-restart phase is a clean no-op.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
 
 def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):

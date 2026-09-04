@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
 from tools.environments.local import LocalEnvironment
@@ -91,6 +93,7 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     assert "abc123def456" not in result["output"]  # secret body is gone
 
 
+@pytest.mark.platforms("linux")
 def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
     monkeypatch, tmp_path
 ):

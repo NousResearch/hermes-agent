@@ -2,13 +2,16 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 import hermes_cli.gateway as gateway
+
+pytestmark = pytest.mark.platforms("linux")
 
 
 class TestEnsureLingerEnabled:
     def test_linger_already_enabled_via_file(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: True))
 
@@ -24,7 +27,6 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_success_enables_linger(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
@@ -48,7 +50,6 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_failure_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))

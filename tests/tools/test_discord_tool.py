@@ -514,10 +514,10 @@ class TestConfigAllowlist:
 
         ``AIAgent(quiet_mode=True)`` globally sets ``tools`` and
         ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
-        block).  xdist workers are persistent, so a streaming test on the
-        same worker will silence WARNING-level logs from
+        block).  A persistent test process keeps that setting, so a
+        streaming test will silence WARNING-level logs from
         ``tools.discord_tool`` for every test that follows.  Reset here so
-        ``caplog`` can capture warnings regardless of worker history.
+        ``caplog`` can capture warnings regardless of earlier tests.
         """
         import logging as _logging
         _prev_tools = _logging.getLogger("tools").level

@@ -231,7 +231,8 @@ class _SlashWorker:
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
         argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
         self._closed = False
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_cli._subprocess_compat import (
+            restore_ambient_pythonpath, windows_hide_flags)
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
@@ -245,6 +246,10 @@ class _SlashWorker:
         env = _prepend_tool_paths(build_subprocess_env(
             hermes_subprocess_env(inherit_credentials=True), scrub_secrets=False,
             inherit_profile_home=False, extra={"HERMES_HOME": str(profile_home)} if profile_home else None))
+        # Same-interpreter re-exec (sys.executable -m tui_gateway...): the ambient PYTHONPATH
+        # must survive the env factory's Hermes-owned strip — under no-boot-through-venv the
+        # child's imports arrive through it (no editable install on the store python).
+        env = restore_ambient_pythonpath(env)
         # start_new_session: otherwise the worker inherits the gateway's pgid and mcp_tool's orphan
         # sweep, racing the spawn, killpg()s the TUI parent itself. errors="replace": bytes invalid
         # in the system locale (GBK Windows) must not raise UnicodeDecodeError in the drain threads.

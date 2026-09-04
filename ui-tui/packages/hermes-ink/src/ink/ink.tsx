@@ -1073,7 +1073,7 @@ export default class Ink {
 
       optimized.push(this.altScreenParkPatch)
     } else if (this.needsEraseBeforePaint) {
-      // Main screen (INLINE_MODE / Termux). Same atomicity contract as the
+      // Main screen (INLINE_MODE). Same atomicity contract as the
       // alt-screen branch above: fold the clear into this frame's patch list
       // so clear+paint land in one write instead of a bare
       // stdout.write(ERASE_SCREEN) followed by the frame. No cursor park —

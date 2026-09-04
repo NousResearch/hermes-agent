@@ -66,7 +66,7 @@ def _load_raw() -> Dict[str, Any]:
     if not suggestions_file.exists():
         return {"suggestions": []}
     try:
-        with open(suggestions_file, "r", encoding="utf-8") as f:
+        with open(suggestions_file, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("suggestions.json unreadable (%s); starting empty", e)

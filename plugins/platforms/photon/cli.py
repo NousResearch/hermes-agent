@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
-import shutil
 import subprocess
 import sys
 from typing import Optional
@@ -16,7 +15,7 @@ from typing import Optional
 from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
-from .adapter import sidecar_deps_installed
+from .adapter import _node_command, sidecar_deps_installed
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _npm_error_log, _sidecar_dir
 import contextlib
 
@@ -255,7 +254,8 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # auth.print_credential_summary's emit callback is the only sink that sees
     # credential-derived strings (keeps cli.py taint-free for CodeQL).
     photon_auth.print_credential_summary(print)
-    node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
+    node_bin = _node_command("node")
+    sidecar_installed = sidecar_deps_installed()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_deps_installed() else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
@@ -290,9 +290,13 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 
 
 def _install_sidecar() -> int:
-    npm = shutil.which("npm") or "npm"
-    if not shutil.which(npm):
-        print("npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) and re-run.", file=sys.stderr)
+    npm = _node_command("npm")
+    if not npm:
+        print(
+            "npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) "
+            "and re-run.",
+            file=sys.stderr,
+        )
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —
     # never `@latest` (see README "Upgrading spectrum-ts"). `npm ci` installs the lockfile

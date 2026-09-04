@@ -50,7 +50,7 @@ def main() -> int:
     import yaml
 
     resolved = resolve_send_config(
-        yaml.safe_load((scratch / "config.yaml").read_text(encoding="utf-8"))
+        yaml.safe_load((scratch / "config.yaml").read_text(encoding="utf-8-sig"))
     )
     if not resolved.send or resolved.endpoint != STAGING:
         print(f"FAIL: config did not resolve to staging: {resolved}")

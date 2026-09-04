@@ -109,17 +109,32 @@ def _worker_memory_max_bytes() -> int:
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
-    with suppress(OSError, ValueError):
-        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
-        v2 = next((ln for ln in lines if ln.startswith("0::")), None)
-        if v2 is not None:
-            relative = v2.partition("::")[2].lstrip("/")
-            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
-            if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
-                candidates.append(int(raw_limit))
-    with suppress(OSError, ValueError, TypeError):
-        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
-        candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8-sig").splitlines():
+            if line.startswith("0::"):
+                relative = line.partition("::")[2].lstrip("/")
+                raw_limit = (
+                    Path("/sys/fs/cgroup") / relative / "memory.max"
+                ).read_text(encoding="utf-8-sig").strip()
+                if raw_limit.isdigit():
+                    cgroup_limit = int(raw_limit)
+                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                        candidates.append(cgroup_limit)
+                break
+    except (OSError, ValueError):
+        pass
+
+    try:
+        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
+            os.sysconf("SC_PAGE_SIZE")
+        )
+        physical_bound = min(
+            _WORKER_MEMORY_MAX_CAP_BYTES,
+            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
+        )
+        candidates.append(physical_bound)
+    except (OSError, ValueError, TypeError):
+        pass
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
@@ -1909,7 +1924,7 @@ class ProcessRegistry:
         if not CHECKPOINT_PATH.exists():
             return 0
         try:
-            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8-sig"))
         except Exception:
             return 0
         recovered = 0

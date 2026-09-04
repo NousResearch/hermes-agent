@@ -163,7 +163,7 @@ class TestPromptThreading:
         audio = _make_audio(tmp_path)
         monkeypatch.setenv("MISTRAL_API_KEY", "mk-test")
         # Never attempt a lazy install in tests.
-        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **kw: None)
+        monkeypatch.setattr("pm.ensure_import", lambda *a, **kw: None)
 
         mistral_cls = MagicMock()
         mock_client = mistral_cls.return_value.__enter__.return_value

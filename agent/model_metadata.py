@@ -47,25 +47,30 @@ def __getattr__(name: str):
 
 
 def _resolve_requests_verify(base_url: str = "") -> bool | str:
-    """SSL ``verify`` for ``requests`` probes; mirrors ``agent.ssl_verify.resolve_httpx_verify``.
-    Priority: per-provider ``ssl_verify: false`` -> per-provider ``ssl_ca_cert`` (else probes log
-    spurious CERTIFICATE_VERIFY_FAILED while the httpx chat path succeeds) -> CA env vars -> certifi."""
+    """SSL verify for the ``requests``-based ``/models`` probes.
+
+    Per-provider config only (``ssl_verify: false``, then ``ssl_ca_cert``);
+    otherwise the OS trust store. Same authority as the httpx chat client,
+    so a probe and a completion never disagree about a chain.
+    """
+    from agent.ssl_verify import resolve_requests_verify
+
+    ssl_verify = None
+    ca_cert = None
     if base_url:
         try:
             from hermes_cli.config import get_custom_provider_tls_settings
             tls = get_custom_provider_tls_settings(base_url)
             if tls.get("ssl_verify") is False:
-                return False
+                ssl_verify = False
             ca = tls.get("ssl_ca_cert")
-            if isinstance(ca, str) and ca and os.path.isfile(ca):
-                return ca
+            if isinstance(ca, str) and ca:
+                ca_cert = ca
         except Exception:
-            pass  # fall through to env vars — never break a probe on config lookup
-    for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
-        val = os.getenv(env_var)
-        if val and os.path.isfile(val):
-            return val
-    return True
+            pass  # never break a probe on a config lookup
+    return resolve_requests_verify(
+        ca_bundle=ca_cert, ssl_verify=ssl_verify, base_url=base_url
+    )
 
 
 # Snapshot for callers inspecting this constant; prefix routing queries the registry live.
@@ -196,7 +201,7 @@ def _cache_file(name: str) -> Path:
 def _load_json_dict(path: Path) -> Dict[str, Any]:
     """JSON object at ``path``, or {} when missing/invalid."""
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -258,7 +263,7 @@ def _model_metadata_disk_cache_age_seconds() -> Optional[float]:
 def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
     """Processed OpenRouter metadata cache from disk ({} on any failure)."""
     try:
-        with _get_model_metadata_cache_path().open("r", encoding="utf-8") as f:
+        with _get_model_metadata_cache_path().open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return {str(key): value for key, value in data.items() if isinstance(value, dict)} if isinstance(data, dict) else {}
     except Exception as e:
@@ -986,8 +991,9 @@ def _load_context_cache() -> Dict[str, int]:
     if not path.exists():
         return {}
     try:
-        with open(path, encoding="utf-8") as f:
-            return (yaml.safe_load(f) or {}).get("context_lengths") or {}
+        with open(path, encoding="utf-8-sig") as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("context_lengths") or {}
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}

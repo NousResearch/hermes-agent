@@ -6,7 +6,7 @@ bricked real Macs two ways: dynamically-linked builds died in dyld because
 and alias symlinks to the copied interpreter lost the venv prefix (#95541).
 
 Linux tests use fake checkout/uv-store layouts with ``platform.system``
-monkeypatched.  The real-interpreter E2E is ``macos_only`` so it runs on
+monkeypatched.  The real-interpreter E2E is ``platforms("macos")`` so it runs on
 the existing macOS CI job, not against one-byte fixtures.
 """
 
@@ -128,6 +128,7 @@ class TestUvStoreDetection:
         assert not tcc._is_uv_macos_store(path)
 
 
+@pytest.mark.platforms("linux")
 class TestEnsureTccAnchor:
     def test_noop_on_non_macos(self, tmp_path, monkeypatch):
         _linux(monkeypatch)
@@ -140,10 +141,10 @@ class TestEnsureTccAnchor:
     def test_install_signs_the_anchor_copy(self, tmp_path, monkeypatch):
         _darwin(monkeypatch)
         signed = []
-        import hermes_cli.managed_uv as managed_uv
+        import hermes_cli.runtime_repair as runtime_repair
 
         monkeypatch.setattr(
-            managed_uv, "_macos_sign_managed_python", lambda p: signed.append(Path(p)) or True
+            runtime_repair, "_macos_sign_managed_python", lambda p: signed.append(Path(p)) or True
         )
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
@@ -360,14 +361,15 @@ class TestEnsureTccAnchor:
         assert marker.read_text(encoding="utf-8") == tcc._marker_value(source)
         assert not list(venv_bin.glob(".tcc-anchor-source.*"))
 
-    def test_store_root_marker_tracks_managed_uv_constant(self):
+    def test_store_root_marker_tracks_runtime_repair_constant(self):
         # The repair-generation store marker must stay derived from
-        # managed_uv's directory constant, not drift as a hardcoded string.
-        from hermes_cli.managed_uv import _RUNTIME_DIR_NAME
+        # runtime_repair's directory constant, not drift as a hardcoded string.
+        from hermes_cli.runtime_repair import _RUNTIME_DIR_NAME
 
         assert f"/{_RUNTIME_DIR_NAME}/python/" in tcc._STORE_ROOT_MARKERS
 
 
+@pytest.mark.platforms("linux")
 class TestBootGate:
     """Direct branch coverage for _passes_boot_gate.
 
@@ -454,6 +456,7 @@ class TestBootGate:
         assert tcc._passes_boot_gate(tmp_path / "staged", venv)
 
 
+@pytest.mark.platforms("linux")
 class TestTccAnchorState:
     def test_state_active_through_unpatched_home_symlink(self, tmp_path, monkeypatch):
         # The managed-runtime layout symlinks cpython-3.11-macos-* →
@@ -524,6 +527,7 @@ class TestTccAnchorState:
         assert status == "active"
 
 
+@pytest.mark.platforms("linux")
 class TestDoctorCheck:
     def test_missing_warns_without_fix(self, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -569,13 +573,13 @@ class TestDoctorCheck:
         assert "macOS TCC anchor check failed" in out
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestAnchoredAliasesBootE2E:
     """Real-interpreter proof that the re-land stays bootable (#95596).
 
     Copies the running interpreter's real base binary into a fake uv-store
     layout (stdlib via a ``lib`` symlink) and actually executes every
-    entry point after anchoring.  ``macos_only`` so Linux CI cannot
+    entry point after anchoring.  ``platforms("macos")`` so Linux CI cannot
     greenwash this with a fixture.
     """
 

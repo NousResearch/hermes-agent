@@ -28,7 +28,7 @@ from rich import box as rich_box
 from rich.markup import escape as _escape
 from rich.panel import Panel
 
-from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from hermes_constants import display_hermes_home
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
@@ -975,13 +975,13 @@ class CLICommandsMixin:
             _cp(f"  /journey failed: {exc}")
 
     def _handle_paste_command(self):
-        """Handle /paste — explicitly check the clipboard for an image; the reliable fallback where
-        BracketedPaste doesn't fire for image-only clipboards (VSCode terminal, Windows Terminal/WSL2)."""
-        from cli import _termux_example_image_path
-        if _is_termux_environment():
-            return _cp(_dim_line(
-                       "Clipboard image paste is not available on Termux — use /image <path> or "
-                       f"paste a local image path like {_termux_example_image_path()}"))
+        """Handle /paste — explicitly check clipboard for an image.
+
+        This is the reliable fallback for terminals where BracketedPaste
+        doesn't fire for image-only clipboard content (e.g., VSCode terminal,
+        Windows Terminal with WSL2).
+        """
+        from cli import _DIM, _RST, _cprint
         from hermes_cli.clipboard import has_clipboard_image
         if not has_clipboard_image():
             _cp(_dim_line('(._.) No image found in clipboard'))
@@ -1027,12 +1027,13 @@ class CLICommandsMixin:
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
-        from cli import (
-            _IMAGE_EXTENSIONS, _resolve_attachment_path, _split_path_input, _termux_example_image_path)
+        from cli import _IMAGE_EXTENSIONS, _resolve_attachment_path, _split_path_input
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
         if not raw_args:
-            hint = _termux_example_image_path() if _is_termux_environment() else "/path/to/image.png"
-            return _cp(_dim_line(f'Usage: /image <path>  e.g. /image {hint}'))
+            hint = "/path/to/image.png"
+            _cprint(f"  {_DIM}Usage: /image <path>  e.g. /image {hint}{_RST}")
+            return
+
         path_token, _remainder = _split_path_input(raw_args)
         image_path = _resolve_attachment_path(path_token)
         if image_path is None:
@@ -1042,11 +1043,7 @@ class CLICommandsMixin:
         self._attached_images.append(image_path)
         _cp(f"  📎 Attached image: {image_path.name}")
         if _remainder:
-            _cp(_dim_line(f'Now type your prompt (or use --image in single-query mode): {_remainder}'))
-        elif _is_termux_environment():
-            example = _termux_example_image_path(image_path.name)
-            tip = f'Tip: type your next message, or run hermes chat -q --image {example} "What do you see?"'
-            _cp(_dim_line(tip))
+            _cprint(f"  {_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}")
 
     # ---- /tools, /profile -----------------------------------------------------------------
     def _handle_tools_command(self, cmd: str):
@@ -2448,7 +2445,7 @@ class CLICommandsMixin:
             except Exception:
                 # Fall back to a bare invocation (editor value may not be argv-splittable everywhere).
                 subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8-sig") as fh:
                 raw = fh.read()
         finally:
             with suppress(OSError):

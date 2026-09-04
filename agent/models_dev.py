@@ -181,7 +181,7 @@ def _quietly(what: str, fn, default=None):
 
 def _load_etag() -> str:
     """Last-known ETag from disk, or "" if missing."""
-    return _quietly("load models.dev ETag", lambda: _get_etag_path().read_text(encoding="utf-8").strip() if _get_etag_path().exists() else "", "")
+    return _quietly("load models.dev ETag", lambda: _get_etag_path().read_text(encoding="utf-8-sig").strip() if _get_etag_path().exists() else "", "")
 
 
 def _save_etag(etag: str) -> None:
@@ -216,7 +216,7 @@ def _load_disk_cache() -> Dict[str, Any]:
     try:
         cache_path = _get_cache_path()
         if cache_path.exists():
-            with open(cache_path, encoding="utf-8") as f:
+            with open(cache_path, encoding="utf-8-sig") as f:
                 data = json.load(f)
             if _validate_registry(data):
                 return data

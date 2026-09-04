@@ -212,7 +212,7 @@ def _banner_cache_path() -> Optional[Path]:
 def _read_banner_cache() -> dict[str, float]:
     p = _banner_cache_path()
     try:
-        lines = p.read_text(encoding="utf-8").splitlines() if p is not None and p.exists() else []
+        lines = p.read_text(encoding="utf-8-sig").splitlines() if p is not None and p.exists() else []
     except Exception:
         return {}
     out: dict[str, float] = {}

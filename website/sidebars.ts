@@ -11,7 +11,6 @@ const sidebars: SidebarsConfig = {
         'getting-started/quickstart',
         'getting-started/installation',
         'getting-started/platform-support',
-        'getting-started/termux',
         'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
@@ -28,6 +27,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/bot-mode',
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
+        'user-guide/switching-to-source',
         'user-guide/configuration',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'user-guide/features/overview',
         'user-guide/features/tool-gateway',
+        'user-guide/features/gateway-service',
         {
           type: 'category',
           label: 'Core',

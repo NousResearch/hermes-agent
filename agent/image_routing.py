@@ -31,11 +31,16 @@ _VALID_MODES = frozenset({"auto", "native", "text"})
 # the gateway routes them via send_document and a PDF must never become a vision part.
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic")
 _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
-# Local path: same shape as gateway extract_local_files() — anchored to ``~/`` or
-# ``/``, lookbehind skips matches inside URLs. URL: strict ``http(s)://`` so
-# ``file://`` and other schemes are not grabbed; optional query string.
+
+# Absolute / home-relative local image path. Matches the same shape gateway's
+# extract_local_files() uses: anchors to ``~/``, ``/``, or a Windows drive
+# (``C:\``), ignores matches inside URLs (the ``(?<![/:\w.])`` lookbehind), and
+# case-insensitive on the extension.
 _LOCAL_IMAGE_PATH_RE = re.compile(
-    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b", re.IGNORECASE,
+    r"(?<![/:\w.])(?:~/|/|[A-Za-z]:[\\/])(?:[\w.\-]+[\\/])*[\w.\-]+\.(?:"
+    + _IMAGE_EXT_PATTERN
+    + r")\b",
+    re.IGNORECASE,
 )
 _IMAGE_URL_RE = re.compile(
     r"https?://[^\s<>\"']+?\.(?:" + _IMAGE_EXT_PATTERN + r")(?:\?[^\s<>\"']*)?", re.IGNORECASE,

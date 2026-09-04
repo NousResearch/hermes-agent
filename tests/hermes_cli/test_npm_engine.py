@@ -1,12 +1,12 @@
 """Tests for npm ``EBADENGINE`` recovery (``hermes_cli/npm_engine.py``).
 
 The behaviour under test is a contract about *reacting* to npm's own engine
-check: npm states the range it wants in the failure, Hermes upgrades only an
-npm it owns, and every other case leaves the original failure alone.
+check: npm states the range it wants in the failure, Hermes provisions its
+pm-pinned npm instead of touching a foreign one, and every other case leaves
+the original failure alone.
 """
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,7 +15,6 @@ import hermes_cli.npm_engine as npm_engine
 from hermes_cli.npm_engine import (
     actual_npm_version,
     is_ebadengine,
-    managed_npm_prefix,
     maybe_repair_npm_engine,
     required_npm_range,
 )
@@ -39,7 +38,7 @@ npm ERR! notsup Actual:   {"npm":"9.6.7","node":"v20.1.0"}
 """
 
 # A lockfile mismatch — the other common `npm ci` failure. Must NOT be treated
-# as an engine problem, or every out-of-sync lockfile would trigger an upgrade.
+# as an engine problem, or every out-of-sync lockfile would trigger a repair.
 ELOCK_OUTPUT = """
 npm error code EUSAGE
 npm error `npm ci` can only install packages when your package.json and
@@ -85,286 +84,83 @@ class TestDetection:
         assert required_npm_range(broken) is None
 
 
-class TestManagedDetection:
-    """The upgrade must fire for every spelling of the managed npm, and for
-    no other npm — this is the boundary between "Hermes fixes it" and "the
-    user's own toolchain is left alone"."""
-
-    @pytest.fixture
-    def managed_tree(self, tmp_path, monkeypatch):
-        home = tmp_path / ".hermes"
-        node = home / "node"
-        (node / "bin").mkdir(parents=True)
-        (node / "lib" / "node_modules" / "npm" / "bin").mkdir(parents=True)
-        cli = node / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
-        cli.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-        (node / "bin" / "npm").symlink_to(cli)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        return home
-
-    def test_direct_managed_bin_is_managed(self, managed_tree):
-        npm = managed_tree / "node" / "bin" / "npm"
-        assert managed_npm_prefix(npm) == managed_tree / "node"
-
-    def test_symlink_from_local_bin_resolves_to_managed(self, managed_tree, tmp_path):
-        """An install links ~/.local/bin/npm at the managed tree; that link is
-        the npm a user's PATH actually resolves, so it must count as managed."""
-        local_bin = tmp_path / "local-bin"
-        local_bin.mkdir()
-        link = local_bin / "npm"
-        link.symlink_to(managed_tree / "node" / "bin" / "npm")
-        assert managed_npm_prefix(link) == managed_tree / "node"
-
-    def test_system_npm_is_not_managed(self, managed_tree, tmp_path):
-        system_npm = tmp_path / "usr" / "bin" / "npm"
-        system_npm.parent.mkdir(parents=True)
-        system_npm.write_text("#!/bin/sh\n", encoding="utf-8")
-        assert managed_npm_prefix(system_npm) is None
-
-    def test_no_npm_is_not_managed(self, managed_tree):
-        assert managed_npm_prefix(None) is None
-        assert managed_npm_prefix("") is None
-
-
-class TestInUseDeferral:
-    """The managed tree cannot be written while a running app executes from
-    it (WinError 5 on npm.cmd, #80926) — the npm upgrade defers instead."""
-
-    @pytest.fixture
-    def managed_npm(self, tmp_path, monkeypatch):
-        home = tmp_path / ".hermes"
-        bin_dir = home / "node" / "bin"
-        bin_dir.mkdir(parents=True)
-        npm = bin_dir / "npm"
-        npm.write_text("#!/bin/sh\n", encoding="utf-8")
-        npm.chmod(0o755)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        return npm
-
-    def test_in_use_managed_tree_defers_upgrade_without_running_npm(
-        self, managed_npm, monkeypatch
-    ):
-        monkeypatch.setattr(npm_engine, "managed_node_tree_in_use", lambda: True)
-
-        def forbidden_run(cmd, **kwargs):
-            raise AssertionError(f"npm must not run while the tree is in use: {cmd}")
-
-        monkeypatch.setattr(subprocess, "run", forbidden_run)
-
-        result = npm_engine.upgrade_managed_npm(
-            str(managed_npm),
-            ">=11.0.0",
-            prefix=managed_npm.parent,
-            quiet=True,
-        )
-        assert result is False
-
-    def test_in_use_deferral_blocks_repair_retry(self, managed_npm, monkeypatch):
-        """End-to-end: an in-use tree means no npm subprocess runs and no
-        retry is offered — the original EBADENGINE failure stands with the
-        deferral notice."""
-        monkeypatch.setattr(npm_engine, "managed_node_tree_in_use", lambda: True)
-
-        def forbidden_run(cmd, **kwargs):
-            raise AssertionError(f"npm must not run while the tree is in use: {cmd}")
-
-        monkeypatch.setattr(subprocess, "run", forbidden_run)
-
-        assert (
-            maybe_repair_npm_engine(str(managed_npm), EBADENGINE_OUTPUT, quiet=True)
-            is None
-        )
-
-
 class TestRepairDecision:
     """`maybe_repair_npm_engine` returns the npm to retry with (truthy) only
     when a repair actually happened, because its return value is what gates
     the caller's single retry."""
 
-    @pytest.fixture
-    def managed_npm(self, tmp_path, monkeypatch):
-        home = tmp_path / ".hermes"
-        bin_dir = home / "node" / "bin"
-        bin_dir.mkdir(parents=True)
-        npm = bin_dir / "npm"
-        npm.write_text("#!/bin/sh\n", encoding="utf-8")
-        npm.chmod(0o755)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        return npm
-
-    def test_upgrades_managed_npm_with_the_range_npm_asked_for(
-        self, managed_npm, monkeypatch
-    ):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append((cmd, kwargs))
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        repaired = maybe_repair_npm_engine(
-            str(managed_npm), EBADENGINE_OUTPUT, quiet=True
-        )
-        assert repaired == str(managed_npm)
-
-        upgrade_cmd = calls[0][0]
-        assert upgrade_cmd[1:3] == ["install", "--global"]
-        # The range must come from npm's error, and target the managed prefix
-        # explicitly (the managed etc/npmrc points `prefix` elsewhere).
-        assert "npm@<11.10.0 || >=12.0.0" in upgrade_cmd
-        prefix_index = upgrade_cmd.index("--prefix")
-        assert Path(upgrade_cmd[prefix_index + 1]) == managed_npm.parent.parent
-
-    def test_upgrade_runs_outside_the_checkout(self, managed_npm, monkeypatch):
-        """The repo .npmrc sets min-release-age, which would gate the very npm
-        release we need; the upgrade must not run under it."""
-        seen = {}
-
-        def fake_run(cmd, **kwargs):
-            seen.update(kwargs)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        maybe_repair_npm_engine(str(managed_npm), EBADENGINE_OUTPUT, quiet=True)
-
-        cwd = Path(seen["cwd"])
-        assert not (cwd / ".npmrc").exists()
-        assert seen["env"]["npm_config_min_release_age"] == "0"
-
-    def test_failed_upgrade_reports_no_retry(self, managed_npm, monkeypatch):
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "boom"),
-        )
-        assert not maybe_repair_npm_engine(
-            str(managed_npm), EBADENGINE_OUTPUT, quiet=True
-        )
-
-    def test_foreign_npm_provisions_managed_runtime_instead(
-        self, tmp_path, monkeypatch
-    ):
-        """A system/nvm/brew/Nix npm is never modified — Hermes provisions its
-        own managed tree, upgrades THAT npm into range, and returns it."""
-        home = tmp_path / ".hermes"
-        monkeypatch.setenv("HERMES_HOME", str(home))
+    def test_foreign_npm_provisions_pm_npm_instead(self, tmp_path, monkeypatch):
+        """A system/nvm/brew/Nix npm is never modified — Hermes ensures its
+        own pm-pinned npm and returns it."""
         system_npm = tmp_path / "usr-bin-npm"
         system_npm.write_text("#!/bin/sh\n", encoding="utf-8")
+        managed = tmp_path / "store" / "npm-x" / "npm"
+        managed.parent.mkdir(parents=True)
+        managed.write_text("#!/bin/sh\n", encoding="utf-8")
 
-        managed = home / "node" / "bin" / "npm"
-
-        import hermes_cli.npm_engine as npm_engine
-
-        def fake_bootstrap():
-            managed.parent.mkdir(parents=True, exist_ok=True)
-            managed.write_text("#!/bin/sh\n", encoding="utf-8")
-            managed.chmod(0o755)
-            return str(managed)
-
-        upgrades = []
         monkeypatch.setattr(
-            npm_engine, "bootstrap_hermes_managed_node", fake_bootstrap
+            npm_engine, "_pm_npm", lambda quiet=False: str(managed)
         )
-        monkeypatch.setattr(
-            npm_engine,
-            "upgrade_managed_npm",
-            lambda npm, rng, *, prefix, quiet=False: upgrades.append((npm, rng))
-            or True,
-        )
-
         repaired = maybe_repair_npm_engine(
             str(system_npm), EBADENGINE_OUTPUT, quiet=True
         )
         assert repaired == str(managed)
-        # The upgrade targeted the MANAGED npm with npm's own stated range —
-        # the system npm was never the target of anything.
-        assert upgrades == [(str(managed), "<11.10.0 || >=12.0.0")]
 
-    def test_foreign_npm_failed_bootstrap_prints_manual_fix(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        home = tmp_path / ".hermes"
-        monkeypatch.setenv("HERMES_HOME", str(home))
+    def test_failing_pm_npm_reports_no_retry(self, tmp_path, monkeypatch, capsys):
+        """When the failing npm already IS pm's npm, a re-ensure cannot change
+        anything — no retry, manual guidance instead."""
+        managed = tmp_path / "store" / "npm-x" / "npm"
+        managed.parent.mkdir(parents=True)
+        managed.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            npm_engine, "_pm_npm", lambda quiet=False: str(managed)
+        )
+        assert maybe_repair_npm_engine(str(managed), EBADENGINE_OUTPUT) is None
+        err = capsys.readouterr().err
+        assert 'npm install -g npm@"<11.10.0 || >=12.0.0"' in err
+
+    def test_failed_provisioning_prints_manual_fix(self, tmp_path, monkeypatch, capsys):
         system_npm = tmp_path / "usr-bin-npm"
         system_npm.write_text("#!/bin/sh\n", encoding="utf-8")
 
-        import hermes_cli.npm_engine as npm_engine
-
-        monkeypatch.setattr(
-            npm_engine, "bootstrap_hermes_managed_node", lambda: None
-        )
+        monkeypatch.setattr(npm_engine, "_pm_npm", lambda quiet=False: None)
         assert not maybe_repair_npm_engine(str(system_npm), EBADENGINE_OUTPUT)
 
         # The user gets the exact command to run, since we refuse to run it.
         err = capsys.readouterr().err
         assert 'npm install -g npm@"<11.10.0 || >=12.0.0"' in err
 
-    def test_non_engine_failure_never_repairs(self, managed_npm, monkeypatch):
-        def explode(cmd, **kwargs):  # pragma: no cover - must not be reached
+    def test_non_engine_failure_never_repairs(self, tmp_path, monkeypatch):
+        def explode(quiet=False):  # pragma: no cover - must not be reached
             raise AssertionError("a lockfile mismatch must not trigger a repair")
 
-        monkeypatch.setattr(subprocess, "run", explode)
-        assert not maybe_repair_npm_engine(str(managed_npm), ELOCK_OUTPUT, quiet=True)
+        monkeypatch.setattr(npm_engine, "_pm_npm", explode)
+        npm = tmp_path / "npm"
+        npm.write_text("#!/bin/sh\n", encoding="utf-8")
+        assert not maybe_repair_npm_engine(str(npm), ELOCK_OUTPUT, quiet=True)
 
     def test_node_only_mismatch_on_foreign_npm_still_provisions(
         self, tmp_path, monkeypatch
     ):
         """A too-old system NODE can't be fixed by any npm upgrade, but the
-        managed tree ships a supported Node — provisioning covers it. The
-        managed npm is still upgraded to the repo's own engines.npm range."""
-        home = tmp_path / ".hermes"
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        pm store ships a supported Node — provisioning covers it."""
         system_npm = tmp_path / "usr-bin-npm"
         system_npm.write_text("#!/bin/sh\n", encoding="utf-8")
-
         node_only = (
             "npm error code EBADENGINE\n"
             'npm error notsup Required: {"node":">=20.0.0"}\n'
             'npm error notsup Actual:   {"npm":"10.9.8","node":"v18.0.0"}\n'
         )
+        managed = tmp_path / "store" / "npm-x" / "npm"
+        managed.parent.mkdir(parents=True)
+        managed.write_text("#!/bin/sh\n", encoding="utf-8")
 
-        managed = home / "node" / "bin" / "npm"
-
-        import hermes_cli.npm_engine as npm_engine
-
-        def fake_bootstrap():
-            managed.parent.mkdir(parents=True, exist_ok=True)
-            managed.write_text("#!/bin/sh\n", encoding="utf-8")
-            managed.chmod(0o755)
-            return str(managed)
-
-        upgrades = []
         monkeypatch.setattr(
-            npm_engine, "bootstrap_hermes_managed_node", fake_bootstrap
+            npm_engine, "_pm_npm", lambda quiet=False: str(managed)
         )
-        monkeypatch.setattr(
-            npm_engine,
-            "upgrade_managed_npm",
-            lambda npm, rng, *, prefix, quiet=False: upgrades.append(rng) or True,
-        )
-
         repaired = maybe_repair_npm_engine(str(system_npm), node_only, quiet=True)
         assert repaired == str(managed)
-        # No range in npm's error → fall back to the repo's own engines.npm
-        # so the fresh tree's bundled npm doesn't fail the retry identically.
-        repo_range = npm_engine._repo_npm_range()
-        assert upgrades == ([repo_range] if repo_range else [])
-
-    def test_node_only_mismatch_on_managed_npm_does_not_upgrade(
-        self, managed_npm, monkeypatch
-    ):
-        """Upgrading a managed npm cannot fix a managed-Node mismatch."""
-        node_only = (
-            "npm error code EBADENGINE\n"
-            'npm error notsup Required: {"node":">=20.0.0"}\n'
-            'npm error notsup Actual:   {"npm":"10.9.8","node":"v18.0.0"}\n'
-        )
-
-        def explode(cmd, **kwargs):  # pragma: no cover - must not be reached
-            raise AssertionError("npm upgrade cannot fix a Node mismatch")
-
-        monkeypatch.setattr(subprocess, "run", explode)
-        assert not maybe_repair_npm_engine(str(managed_npm), node_only, quiet=True)
 
 
 class TestRepoRangeIsSatisfiable:

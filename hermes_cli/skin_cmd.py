@@ -43,7 +43,7 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
     path = _skins_dir() / f"{name}.yaml"
 
     if path.exists():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
         target = name
     else:
         # Built-in (or missing): fork into an editable copy that keeps its full palette, under a

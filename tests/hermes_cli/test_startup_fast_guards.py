@@ -9,11 +9,11 @@ Two invariants, each of which has been broken before:
    still works, just 40x slower).
 
 2. OUTPUT PARITY / LIVENESS: the fast path must actually produce version
-   output and exit 0 in a real subprocess, on and off Termux. This is the
-   test that would have caught eb4040242, which changed the canonical
-   version output to reference the PROJECT_ROOT module constant inside the
-   fast function — a name that doesn't exist yet at the fast exit point —
-   NameError-ing the Termux fast path in production for weeks.
+   output and exit 0 in a real subprocess. This is the test that would have
+   caught eb4040242, which changed the canonical version output to reference
+   the PROJECT_ROOT module constant inside the fast function — a name that
+   doesn't exist yet at the fast exit point — NameError-ing the fast path in
+   production for weeks.
 """
 
 import json
@@ -75,25 +75,14 @@ def _run_version(env_overrides: dict) -> subprocess.CompletedProcess:
     )
 
 
-def test_fast_version_parity_off_termux(tmp_path):
+def test_fast_version_parity(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
-    result = _run_version({"HERMES_HOME": str(home), "TERMUX_VERSION": ""})
+    result = _run_version({"HERMES_HOME": str(home)})
     assert result.returncode == 0, result.stderr
     out = result.stdout
     for field in ("Hermes Agent v", "Install directory:", "Python:", "OpenAI SDK:"):
         assert field in out, f"fast --version output missing {field!r}:\n{out}"
-
-
-def test_fast_version_parity_on_termux(tmp_path):
-    """The historical Termux path — the one eb4040242 broke."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    result = _run_version(
-        {"HERMES_HOME": str(home), "TERMUX_VERSION": "0.118"}
-    )
-    assert result.returncode == 0, result.stderr
-    assert "Hermes Agent v" in result.stdout
     assert "Traceback" not in result.stderr
 
 
@@ -101,6 +90,6 @@ def test_fast_version_reports_install_method_stamp(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / ".install_method").write_text("git\n", encoding="utf-8")
-    result = _run_version({"HERMES_HOME": str(home), "TERMUX_VERSION": ""})
+    result = _run_version({"HERMES_HOME": str(home)})
     assert result.returncode == 0, result.stderr
     assert "Install method: git" in result.stdout

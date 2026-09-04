@@ -130,22 +130,3 @@ class TestDoctorCommandInstallation:
         assert "Command Installation" in out
         assert "Venv entry point not found" in out
 
-
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
-    def test_termux_uses_prefix_bin(self, monkeypatch, tmp_path):
-        """On Termux, the command link dir is $PREFIX/bin."""
-        prefix_dir = tmp_path / "termux_prefix"
-        prefix_bin = prefix_dir / "bin"
-        prefix_bin.mkdir(parents=True)
-
-        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
-
-        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
-        monkeypatch.setenv("PREFIX", str(prefix_dir))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        out = _run_doctor(fix=False)
-        assert "Command Installation" in out
-        assert "$PREFIX/bin" in out
-

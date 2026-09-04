@@ -558,8 +558,8 @@ def _resolved_path(path: str) -> Path:
 def _snapshot_text(path: Path) -> str | None:
     """Return UTF-8 file content, or None for missing/unreadable files."""
     try:
-        return path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):  # FileNotFoundError/IsADirectoryError are OSErrors
+        return path.read_text(encoding="utf-8-sig")
+    except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError, OSError):
         return None
 
 

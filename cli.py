@@ -4035,6 +4035,47 @@ def _interrupt_agent_for_signal(agent, signum) -> None:
         pass  # never block signal handling
 
 
+# Classified failure reasons that mean "the provider walled us off", not "the
+# task is broken". Kept as the tuple the ``-Q`` worker path has always used;
+# ``upstream_rate_limit`` is deliberately NOT here — a per-model 429 from an
+# aggregator can be durable for that model, and requeueing on it would spin.
+_QUOTA_WALL_FAILURE_REASONS = ("rate_limit", "billing")
+
+
+def _kanban_quota_wall_exit_code(result):
+    """Exit status for a kanban worker that died on a provider quota wall.
+
+    Returns ``KANBAN_RATE_LIMIT_EXIT_CODE`` (EX_TEMPFAIL) for that case and
+    ``None`` for every other, which leaves the caller's own 0/1 contract alone.
+
+    A worker's exit status is the ONLY thing the dispatcher's reap classifier
+    can read — it holds a pid, not a transcript — so the quota wall has to be
+    spelled in that one byte. The classifier maps the sentinel to a
+    ``rate_limited`` exit and releases the task back to ``ready`` WITHOUT
+    incrementing the failure counter, so a long quota window cannot trip the
+    circuit breaker. Exit 0 instead and the dispatcher sees a clean exit while
+    the task is still ``running`` — a PROTOCOL VIOLATION — and counts a failure
+    against a worker that did nothing wrong.
+
+    Only kanban workers get this: ``HERMES_KANBAN_TASK`` is the dispatcher's own
+    marker, and other one-shot runs keep the plain contract automation wrappers
+    expect.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return None
+    if not isinstance(result, dict) or not result.get("failed"):
+        return None
+    if result.get("failure_reason") not in _QUOTA_WALL_FAILURE_REASONS:
+        return None
+    try:
+        from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+    except Exception:
+        # Never let a missing import turn a throttle into a crash; the generic
+        # code still beats no exit at all.
+        return None
+    return KANBAN_RATE_LIMIT_EXIT_CODE
+
+
 def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     """Drive a kanban goal_mode worker through ``goals.run_kanban_goal_loop`` after its first turn.
 
@@ -4128,13 +4169,8 @@ def _run_quiet_single_query(cli, effective_query):
     # the task without counting a failure (a quota window must not trip the breaker).
     _exit_code = 0
     if isinstance(result, dict) and result.get("failed"):
-        _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
-            try:
-                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
-                _exit_code = _RL_CODE
-            except Exception:
-                _exit_code = 1
+        _quota_wall = _kanban_quota_wall_exit_code(result)
+        _exit_code = 1 if _quota_wall is None else _quota_wall
     sys.exit(_exit_code)
 
 
@@ -4453,6 +4489,15 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
+        # The same worker contract as the ``-Q`` branch above, on THIS path too.
+        # Workers are only spawned with ``-Q`` in goal mode, so an ordinary card
+        # runs right here — and exiting 0 made the dispatcher read a protocol
+        # violation and count a failure against a card whose provider had
+        # merely throttled it. ``chat()`` returns response text, so the turn's
+        # structured verdict is parked on the CLI (see the mixin's store).
+        _quota_wall = _kanban_quota_wall_exit_code(getattr(cli, "_last_turn_result", None))
+        if _quota_wall is not None:
+            sys.exit(_quota_wall)
     finally:
         _finalize_single_query(cli)
 

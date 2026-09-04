@@ -444,6 +444,12 @@ class CLIChatTurnMixin:
         time.sleep(0.15)
         if turn.result:
             self.conversation_history = turn.result.get("messages", self.conversation_history)
+            # Keep the turn's structured verdict reachable after ``chat()``
+            # returns: it yields the response TEXT, and the one-shot caller in
+            # ``main()`` needs ``failure_reason`` to spell a kanban worker's
+            # quota wall in the process exit status. This is the only scope
+            # where the agent thread's result dict is in hand.
+            self._last_turn_result = turn.result
         # Mid-turn auto-compression continues in a child session: sync so /status, /resume,
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)

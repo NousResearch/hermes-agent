@@ -30,9 +30,11 @@ function request(url: string, headers: Record<string, string> = {}, method = 'GE
 }
 
 describe('media protocol helpers', () => {
-  it('recognises only supported audio/video extensions case-insensitively', () => {
+  it('recognises raster images and audio/video extensions case-insensitively', () => {
     expect(isStreamableMediaPath('/tmp/render.MP4')).toBe(true)
     expect(isStreamableMediaPath('/tmp/voice.flac')).toBe(true)
+    expect(isStreamableMediaPath('/tmp/chart.PNG')).toBe(true)
+    expect(isStreamableMediaPath('/tmp/active.svg')).toBe(false)
     expect(isStreamableMediaPath('/tmp/secrets.txt')).toBe(false)
   })
 
@@ -59,6 +61,29 @@ describe('media protocol helpers', () => {
 })
 
 describe('createMediaProtocolHandler', () => {
+  it.each(['token', 'oauth'] as const)('streams remote raster bytes with %s authentication', async authMode => {
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+    const response = () => Promise.resolve(new Response(png, { headers: { 'content-type': 'image/png' } }))
+
+    const deps = dependencies({
+      fetchRemote: vi.fn(response),
+      fetchRemoteWithCookies: vi.fn(response),
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode,
+        baseUrl: 'https://gateway.test',
+        mode: 'remote' as const,
+        token: 'secret'
+      }))
+    })
+
+    const result = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Fsrv%2Fchart.PNG'))
+
+    expect(result.status).toBe(200)
+    expect(new Uint8Array(await result.arrayBuffer())).toEqual(png)
+    expect(result.headers.get('content-type')).toBe('image/png')
+    expect(authMode === 'token' ? deps.fetchRemote : deps.fetchRemoteWithCookies).toHaveBeenCalledOnce()
+  })
+
   it('streams local media through the resolved local-file dependency', async () => {
     const deps = dependencies()
 

@@ -1,3 +1,4 @@
+import type { HermesConnection } from '@/global'
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
@@ -83,7 +84,23 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+    // Keep the established preview path (including older gateways). Only a
+    // confirmed size rejection uses the bounded, authenticated file stream.
+    // Capture its owner before the read: the user may switch gateways while
+    // that request is in flight.
+    const connection = $connection.get()
+
+    try {
+      return await gatewayMediaDataUrl(path)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
+      if (/\b413\s*:/.test(message) && /\.(?:bmp|gif|jpe?g|png|webp)$/i.test(filePathFromMediaPath(path))) {
+        return mediaGatewayStreamUrl(path, connection)
+      }
+
+      throw error
+    }
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -130,14 +147,12 @@ export function mediaExternalUrl(path: string): string {
   return /^file:/i.test(path) ? path : `file://${path}`
 }
 
-// Remote gateway audio/video is proxied by the Electron main process. OAuth
+// Remote gateway media is proxied by the Electron main process. OAuth
 // connections intentionally expose no static token to the renderer, so a bare
 // HTTPS source cannot authenticate reliably. The custom protocol keeps secrets
 // out of renderer URLs while forwarding Range requests to /api/files/stream.
-export function mediaGatewayStreamUrl(path: string): string {
-  const conn = $connection.get()
-
-  if (isRemoteGateway()) {
+export function mediaGatewayStreamUrl(path: string, conn: HermesConnection | null = $connection.get()): string {
+  if (conn?.mode === 'remote') {
     const file = encodeURIComponent(filePathFromMediaPath(path))
 
     const scope = [
@@ -151,6 +166,33 @@ export function mediaGatewayStreamUrl(path: string): string {
   }
 
   return mediaExternalUrl(path)
+}
+
+/** Recover the native download request from a stream URL without consulting
+ * the foreground connection. A displayed image can outlive a profile switch. */
+export function gatewayMediaDownloadRequest(src: string) {
+  try {
+    const url = new URL(src)
+
+    if (url.protocol !== 'hermes-media:' || url.hostname !== 'remote') {
+      return null
+    }
+
+    const path = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+
+    if (!path || url.username || url.password) {
+      return null
+    }
+
+    return {
+      connectionId: url.searchParams.get('connectionId') || undefined,
+      path,
+      profile: url.searchParams.get('profile') || undefined,
+      suggestedName: path.split(/[\\/]/).filter(Boolean).pop() || 'image'
+    }
+  } catch {
+    return null
+  }
 }
 
 // Custom Electron scheme (registered in electron/main.ts) that streams a local
@@ -213,12 +255,14 @@ export async function downloadGatewayMediaFile(
     throw new Error('Desktop file download bridge is unavailable')
   }
 
-  return window.hermesDesktop.saveGatewayFile({
-    connectionId: conn?.connectionId,
-    path: file,
-    profile: conn?.profile,
-    suggestedName: mediaName(file)
-  })
+  return window.hermesDesktop.saveGatewayFile(
+    gatewayMediaDownloadRequest(path) ?? {
+      connectionId: conn?.connectionId,
+      path: file,
+      profile: conn?.profile,
+      suggestedName: mediaName(file)
+    }
+  )
 }
 
 export function mediaDisplayLabel(path: string): string {

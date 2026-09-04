@@ -16,6 +16,7 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useImageDownload } from '@/hooks/use-image-download'
 import { type Translations, useI18n } from '@/i18n'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -88,6 +89,12 @@ function Item({
       {shortcut ? <DropdownMenuShortcut>{shortcut}</DropdownMenuShortcut> : null}
     </DropdownMenuItem>
   )
+}
+
+function SaveImageItem({ label, src }: { label: string; src: string }) {
+  const { download, saving } = useImageDownload(src)
+
+  return <Item disabled={saving} icon="save" label={label} onSelect={() => void download()} />
 }
 
 type ShellVerbs = {
@@ -270,14 +277,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             onSelect={() => void writeClipboardText(target.imageUrl)}
           />
         ) : null,
-        target.imageUrl ? (
-          <Item
-            icon="save"
-            key="image-save"
-            label={copy.image.saveImageAs}
-            onSelect={() => void window.hermesDesktop?.saveImageFromUrl?.(target.imageUrl)}
-          />
-        ) : null
+        target.imageUrl ? <SaveImageItem key="image-save" label={copy.image.saveImageAs} src={target.imageUrl} /> : null
       ].filter(Boolean)
     )
   }
@@ -446,14 +446,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
             onSelect={() => void writeClipboardText(imageUrl)}
           />
         ) : null,
-        imageUrl ? (
-          <Item
-            icon="save"
-            key="guest-image-save"
-            label={copy.image.saveImageAs}
-            onSelect={() => void window.hermesDesktop?.saveImageFromUrl?.(imageUrl)}
-          />
-        ) : null
+        imageUrl ? <SaveImageItem key="guest-image-save" label={copy.image.saveImageAs} src={imageUrl} /> : null
       ].filter(Boolean)
     )
   }

@@ -1,6 +1,10 @@
 const STREAMABLE_MEDIA_EXTENSIONS = [
   '.avi',
+  '.bmp',
   '.flac',
+  '.gif',
+  '.jpeg',
+  '.jpg',
   '.m4a',
   '.mkv',
   '.mov',
@@ -8,8 +12,10 @@ const STREAMABLE_MEDIA_EXTENSIONS = [
   '.mp4',
   '.ogg',
   '.opus',
+  '.png',
   '.wav',
-  '.webm'
+  '.webm',
+  '.webp'
 ] as const
 
 const FORWARDED_MEDIA_REQUEST_HEADERS = ['accept', 'if-modified-since', 'if-none-match', 'if-range', 'range'] as const

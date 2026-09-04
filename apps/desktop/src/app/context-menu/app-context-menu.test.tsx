@@ -159,7 +159,9 @@ describe('AppContextMenu', () => {
   })
 
   it('opens the image menu with copy, address, and save', async () => {
-    installBridge()
+    const saveImageFromUrl = vi.fn().mockResolvedValue(true)
+    const saveGatewayFile = vi.fn()
+    installBridge({ saveGatewayFile, saveImageFromUrl })
     mountMenu()
     const host = attach('<img src="https://example.com/pic.png" alt="pic">')
 
@@ -168,6 +170,34 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Copy image')).toBeTruthy()
     expect(screen.getByText('Copy image address')).toBeTruthy()
     expect(screen.getByText('Save image as…')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Save image as…'))
+
+    await waitFor(() => expect(saveImageFromUrl).toHaveBeenCalledWith('https://example.com/pic.png'))
+    expect(saveGatewayFile).not.toHaveBeenCalled()
+  })
+
+  it('saves a streamed image using its originating connection and profile', async () => {
+    const saveGatewayFile = vi.fn().mockResolvedValue({ saved: true })
+    const saveImageFromUrl = vi.fn()
+    installBridge({ saveGatewayFile, saveImageFromUrl })
+    $connection.set({ mode: 'local', connectionId: 'local' } as never)
+    mountMenu()
+    const src = `hermes-media://remote/${encodeURIComponent('/srv/art/図 full.png')}?connectionId=studio&profile=artist`
+    const host = attach(`<img src="${src}" alt="remote image">`)
+
+    fireEvent.contextMenu(host.querySelector('img')!)
+    fireEvent.click(await screen.findByText('Save image as…'))
+
+    await waitFor(() =>
+      expect(saveGatewayFile).toHaveBeenCalledWith({
+        connectionId: 'studio',
+        path: '/srv/art/図 full.png',
+        profile: 'artist',
+        suggestedName: '図 full.png'
+      })
+    )
+    expect(saveImageFromUrl).not.toHaveBeenCalled()
   })
 
   it('opens the edit menu in an editable and augments it with spellcheck', async () => {
@@ -604,7 +634,9 @@ describe('AppContextMenu guest (in-app browser)', () => {
   })
 
   it('adds an image section with copy and save for guest images', async () => {
-    installBridge()
+    const saveImageFromUrl = vi.fn().mockResolvedValue(true)
+    const saveGatewayFile = vi.fn()
+    installBridge({ saveGatewayFile, saveImageFromUrl })
     mountMenu()
 
     openGuestContextMenu(
@@ -616,6 +648,40 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(await screen.findByText('Copy image')).toBeTruthy()
     expect(screen.getByText('Save image as…')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Save image as…'))
+
+    await waitFor(() => expect(saveImageFromUrl).toHaveBeenCalledWith('https://example.com/pic.png'))
+    expect(saveGatewayFile).not.toHaveBeenCalled()
+  })
+
+  it('saves a streamed guest image through its originating gateway', async () => {
+    const saveGatewayFile = vi.fn().mockResolvedValue({ saved: true })
+    const saveImageFromUrl = vi.fn()
+    installBridge({ saveGatewayFile, saveImageFromUrl })
+    $connection.set({ mode: 'local', connectionId: 'local' } as never)
+    mountMenu()
+
+    openGuestContextMenu(
+      10,
+      10,
+      guestParams({
+        hasImageContents: true,
+        srcURL: `hermes-media://remote/${encodeURIComponent('/srv/art/図 full.png')}?connectionId=studio&profile=artist`
+      }),
+      guestHandle()
+    )
+    fireEvent.click(await screen.findByText('Save image as…'))
+
+    await waitFor(() =>
+      expect(saveGatewayFile).toHaveBeenCalledWith({
+        connectionId: 'studio',
+        path: '/srv/art/図 full.png',
+        profile: 'artist',
+        suggestedName: '図 full.png'
+      })
+    )
+    expect(saveImageFromUrl).not.toHaveBeenCalled()
   })
 
   it('shows spell suggestions immediately for guest editables', async () => {

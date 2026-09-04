@@ -184,6 +184,58 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         assert response.json()["detail"] == "Unsupported media type"
 
 
+def test_large_remote_image_stream_and_download(forced_files_client):
+    client, root = forced_files_client
+    image = root / "exports" / "写真 full size.png"
+    image.parent.mkdir(parents=True)
+    # A real file beyond the preview cap, read by the real route handlers.
+    # Image decoding itself is covered by the Electron end-to-end test.
+    content = b"\x89PNG\r\n\x1a\n" + b"x" * web_server._FS_DATA_URL_MAX_BYTES
+    image.write_bytes(content)
+    params = {"path": str(image)}
+
+    assert client.get("/api/fs/read-data-url", params=params).status_code == 413
+    response = client.get("/api/files/stream", params=params)
+    assert response.status_code == 200
+    assert response.content == content
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    partial = client.get("/api/files/stream", params=params, headers={"Range": "bytes=0-7"})
+    assert partial.status_code == 206
+    assert partial.content == content[:8]
+    assert client.head("/api/files/stream", params=params).headers["content-length"] == str(len(content))
+
+    download = client.get("/api/files/download", params=params)
+    assert download.content == content
+    assert download.headers["content-disposition"].startswith("attachment;")
+
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    assert client.get("/api/files/stream", params=params).status_code == 401
+
+
+@pytest.mark.parametrize("name", ["chart.BMP", "chart.gif", "chart.jpeg", "chart.jpg", "chart.webp"])
+def test_stream_accepts_raster_image_types(forced_files_client, name):
+    client, root = forced_files_client
+    path = _seed_file(client, root, name=name)
+    response = client.get("/api/files/stream", params={"path": str(path)})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/")
+
+
+def test_image_stream_keeps_managed_root_and_size_limits(forced_files_client):
+    client, root = forced_files_client
+    outside = root.parent / "outside.png"
+    outside.write_bytes(b"private")
+    assert client.get("/api/files/stream", params={"path": str(outside)}).status_code == 403
+
+    root.mkdir(exist_ok=True)
+    oversized = root / "oversized.png"
+    with oversized.open("wb") as out:
+        out.truncate(web_server._MANAGED_FILE_MAX_BYTES + 1)
+    assert client.get("/api/files/stream", params={"path": str(oversized)}).status_code == 413
+
+
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root)

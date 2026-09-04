@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import pytest
+from hermes_cli import main_install_repair
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32", reason="live Windows shim-lock E2E"
@@ -74,6 +75,7 @@ def test_locked_shim_really_cannot_be_renamed(held_shim):
 
 def test_strict_quarantine_refuses_against_real_lock(held_shim, monkeypatch):
     import hermes_cli.main as cli_main
+    import hermes_cli.main_install_repair as hermes_cli_main_install_repair
 
     scripts, _shim = held_shim
     install_ran: list = []
@@ -82,9 +84,14 @@ def test_strict_quarantine_refuses_against_real_lock(held_shim, monkeypatch):
         "_run_install_with_heartbeat",
         lambda cmd, env=None: install_ran.append(cmd),
     )
+    monkeypatch.setattr(
+        hermes_cli_main_install_repair,
+        "_run_install_with_heartbeat",
+        lambda cmd, env=None: install_ran.append(cmd),
+    )
 
-    with pytest.raises(cli_main.ShimQuarantineError) as exc_info:
-        cli_main._run_quarantined_install(
+    with pytest.raises(main_install_repair.ShimQuarantineError) as exc_info:
+        main_install_repair._run_quarantined_install(
             ["would-be", "uv", "pip", "install"],
             scripts_dir=scripts,
             strict_quarantine=True,
@@ -113,6 +120,7 @@ def test_recovery_installer_refuses_against_real_lock(held_shim, monkeypatch):
 def test_release_then_strict_quarantine_succeeds(tmp_path, monkeypatch):
     """After the holder exits, the same strict path proceeds normally."""
     import hermes_cli.main as cli_main
+    import hermes_cli.main_install_repair as hermes_cli_main_install_repair
 
     scripts = tmp_path / "venv" / "Scripts"
     scripts.mkdir(parents=True)
@@ -134,7 +142,12 @@ def test_release_then_strict_quarantine_succeeds(tmp_path, monkeypatch):
         "_run_install_with_heartbeat",
         lambda cmd, env=None: install_ran.append(cmd),
     )
-    cli_main._run_quarantined_install(
+    monkeypatch.setattr(
+        hermes_cli_main_install_repair,
+        "_run_install_with_heartbeat",
+        lambda cmd, env=None: install_ran.append(cmd),
+    )
+    main_install_repair._run_quarantined_install(
         ["fake"], scripts_dir=scripts, strict_quarantine=True
     )
     assert install_ran == [["fake"]]

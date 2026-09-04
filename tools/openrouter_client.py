@@ -1,15 +1,29 @@
-"""Shared OpenRouter API client for Hermes tools.
-
-Provides a single lazy-initialized AsyncOpenAI client that all tool modules
-can share.  Routes through the centralized provider router in
-agent/auxiliary_client.py so auth, headers, and API format are handled
-consistently.
-"""
+"""OpenRouter API key probe shared by Hermes tools."""
 
 import os
 
-_client = None
 
+def check_api_key() -> bool:
+    """Return True if OPENROUTER_API_KEY is present.
+
+    Scope-aware: an installed profile secret scope is authoritative under
+    multiplex; unscoped CLI probes fall back to the plain env read.
+    """
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        try:
+            return bool(get_secret("OPENROUTER_API_KEY"))
+        except UnscopedSecretError:
+            pass
+    except Exception:
+        pass
+    return bool(os.getenv("OPENROUTER_API_KEY"))
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
 
 def get_async_client():
     """Return a shared async OpenAI-compatible client for OpenRouter.
@@ -26,22 +40,4 @@ def get_async_client():
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
         _client = client
     return _client
-
-
-def check_api_key() -> bool:
-    """Check whether the OpenRouter API key is present.
-
-    Scope-aware (Slack pattern): tool paths run inside an installed profile
-    secret scope, whose verdict is authoritative under multiplex; unscoped
-    CLI probes keep the legacy env read.
-    """
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-
-        try:
-            return bool(get_secret("OPENROUTER_API_KEY"))
-        except UnscopedSecretError:
-            pass
-    except Exception:
-        pass
-    return bool(os.getenv("OPENROUTER_API_KEY"))
+# ---- END PLUGIN-COMPAT ----

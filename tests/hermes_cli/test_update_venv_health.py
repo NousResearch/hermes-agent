@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import main as cli_main
+from hermes_cli import update_cmd
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +201,7 @@ def _run_update_until_guard(args):
         cli_main, "PROJECT_ROOT", _RootSentinel()
     ):
         try:
-            cli_main._cmd_update_impl(args, gateway_mode=False)
+            update_cmd._cmd_update_impl(args, gateway_mode=False)
         except _PastGuard:
             return "past_guard"
         except SystemExit as exc:

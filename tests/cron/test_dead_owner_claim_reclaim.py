@@ -75,7 +75,7 @@ def _orphan_claimed_row(executions, job_id: str) -> str:
 def _run_tick():
     with (
         patch.object(scheduler_mod, "get_due_jobs", return_value=[]),
-        patch("tools.mcp_tool._kill_orphaned_mcp_children", lambda: None),
+        patch("tools.mcp_tool_lifecycle._kill_orphaned_mcp_children", lambda: None),
     ):
         return scheduler_mod.tick(verbose=False)
 

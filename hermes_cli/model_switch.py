@@ -4316,20 +4316,42 @@ def list_authenticated_providers(
     # provider's row (matched by slug) so it is selectable and shown. Done as a
     # post-pass so it covers every provider section uniformly, regardless of
     # which branch emitted the row.
-    if current_model:
-        for _row in results:
-            if not _row.get("is_current") or _row.get("native_catalog_empty"):
-                continue
-            _models = _row.get("models") or []
-            if current_model not in _models:
-                _row["models"] = [current_model, *_models]
-                _row["total_models"] = _row.get("total_models", len(_models)) + 1
-            break
+    _inject_current_model_row(results, current_model)
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
+
+
+def _inject_current_model_row(results: List[dict], current_model: str) -> None:
+    """Prepend the active model to its provider row when the row lacks it.
+
+    Membership is alias-aware: the picker dedup folds bare live wire ids into
+    their curated public slug (Kimi Coding's ``k3`` → ``kimi-k3``), so an
+    exact-string check would re-inject the bare id and render the SAME model
+    as two rows ("K3" + "Kimi K3"). Fold both sides through the same
+    canonicalisation the merge uses before deciding to inject.
+
+    Rows flagged ``native_catalog_empty`` are skipped: a row that deliberately
+    reports an empty live catalog must not have an uncurated model injected
+    into it (native-discovery selector parity, see #81e81350).
+    """
+    if not current_model:
+        return
+    try:
+        from hermes_cli.model_search import model_alias_canonical as _canon
+    except Exception:
+        _canon = lambda m: str(m).strip().lower()  # noqa: E731
+    current_key = _canon(current_model)
+    for _row in results:
+        if not _row.get("is_current") or _row.get("native_catalog_empty"):
+            continue
+        _models = _row.get("models") or []
+        if current_key not in {_canon(m) for m in _models}:
+            _row["models"] = [current_model, *_models]
+            _row["total_models"] = _row.get("total_models", len(_models)) + 1
+        break
 
 
 def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:

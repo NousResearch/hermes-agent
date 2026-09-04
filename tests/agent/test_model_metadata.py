@@ -1929,3 +1929,162 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+class TestOpenRouterPresetContextLength:
+    """@preset/ aliases must resolve to the designated model's window, not 256K."""
+
+    def setup_method(self):
+        from agent import model_metadata as mm
+        mm._openrouter_preset_model_cache.clear()
+
+    def test_parse_bare_and_combined_refs(self):
+        from agent.model_metadata import _parse_openrouter_preset_ref
+        assert _parse_openrouter_preset_ref("@preset/hermes-primary") == (
+            "hermes-primary", None,
+        )
+        assert _parse_openrouter_preset_ref(
+            "deepseek/deepseek-v4-pro@preset/hermes-primary"
+        ) == ("hermes-primary", "deepseek/deepseek-v4-pro")
+        assert _parse_openrouter_preset_ref("deepseek/deepseek-v4-pro") == (None, None)
+
+    def test_extract_designated_model_and_models_list(self):
+        from agent.model_metadata import _extract_openrouter_preset_designated_model
+        payload = {
+            "data": {
+                "slug": "hermes-primary",
+                "designated_version": {
+                    "config": {"model": "deepseek/deepseek-v4-pro"},
+                },
+            }
+        }
+        assert _extract_openrouter_preset_designated_model(payload) == (
+            "deepseek/deepseek-v4-pro"
+        )
+        listed = {
+            "designated_version": {
+                "config": {"models": ["openai/gpt-oss-120b", "openai/gpt-5.4"]},
+            }
+        }
+        assert _extract_openrouter_preset_designated_model(listed) == (
+            "openai/gpt-oss-120b"
+        )
+        nested_alias = {
+            "designated_version": {"config": {"model": "@preset/other"}},
+        }
+        assert _extract_openrouter_preset_designated_model(nested_alias) == ""
+
+    def test_bare_preset_resolves_to_designated_context(self):
+        with patch(
+            "agent.model_metadata._resolve_openrouter_preset_model",
+            return_value="deepseek/deepseek-v4-pro",
+        ):
+            preset_ctx = get_model_context_length(
+                "@preset/hermes-primary",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+            )
+        concrete_ctx = get_model_context_length(
+            "deepseek/deepseek-v4-pro",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+        )
+        assert preset_ctx == concrete_ctx
+        assert preset_ctx != DEFAULT_FALLBACK_CONTEXT
+        assert preset_ctx >= 1_000_000
+
+    def test_small_context_designated_model_does_not_overreport(self):
+        with patch(
+            "agent.model_metadata._resolve_openrouter_preset_model",
+            return_value="openai/gpt-oss-120b",
+        ):
+            preset_ctx = get_model_context_length(
+                "@preset/hermes-hindsight",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+            )
+        concrete_ctx = get_model_context_length(
+            "openai/gpt-oss-120b",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+        )
+        assert preset_ctx == concrete_ctx
+        assert preset_ctx == 131_072
+
+    def test_combined_ref_skips_preset_fetch(self):
+        fetch = MagicMock()
+        with patch(
+            "agent.model_metadata._fetch_openrouter_preset_payload",
+            fetch,
+        ):
+            combined = get_model_context_length(
+                "openai/gpt-oss-120b@preset/hermes-hindsight",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+            )
+        fetch.assert_not_called()
+        assert combined == get_model_context_length(
+            "openai/gpt-oss-120b",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+        )
+
+    def test_unknown_preset_falls_back_to_256k(self):
+        with patch(
+            "agent.model_metadata._resolve_openrouter_preset_model",
+            return_value="",
+        ):
+            ctx = get_model_context_length(
+                "@preset/does-not-exist-xyz",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+            )
+        assert ctx == DEFAULT_FALLBACK_CONTEXT
+
+    def test_model_overrides_on_alias_still_win(self):
+        with patch(
+            "agent.models_dev._override_context_window",
+            return_value=1_048_576,
+        ), patch(
+            "agent.model_metadata._resolve_openrouter_preset_model",
+        ) as resolve:
+            ctx = get_model_context_length(
+                "@preset/hermes-primary",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+            )
+        resolve.assert_not_called()
+        assert ctx == 1_048_576
+
+    def test_presets_api_payload_is_used(self):
+        payload = {
+            "data": {
+                "slug": "hermes-primary",
+                "designated_version": {
+                    "config": {"model": "deepseek/deepseek-v4-pro"},
+                },
+            }
+        }
+        with patch(
+            "agent.model_metadata._fetch_openrouter_preset_payload",
+            return_value=payload,
+        ) as fetch:
+            ctx = get_model_context_length(
+                "@preset/hermes-primary",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="sk-or-test",
+                provider="openrouter",
+            )
+            ctx_again = get_model_context_length(
+                "@preset/hermes-primary",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="sk-or-test",
+                provider="openrouter",
+            )
+        fetch.assert_called_once()
+        assert ctx == ctx_again
+        assert ctx == get_model_context_length(
+            "deepseek/deepseek-v4-pro",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+        )

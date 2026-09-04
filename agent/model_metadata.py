@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, OPENROUTER_PRESETS_URL
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -3060,6 +3060,139 @@ def _resolve_nous_context_length(
     return None, ""
 
 
+# --------------------------------------------------------------------------------------
+# OpenRouter @preset/ Alias Resolution
+# --------------------------------------------------------------------------------------
+
+_OPENROUTER_PRESET_MARKER = "@preset/"
+_OPENROUTER_PRESET_CACHE_TTL = 300.0
+# slug -> (resolved_model, monotonic_ts)
+_openrouter_preset_model_cache: Dict[str, tuple[str, float]] = {}
+
+
+def _parse_openrouter_preset_ref(model: str) -> tuple[Optional[str], Optional[str]]:
+    """Parse an OpenRouter preset reference.
+
+    ``@preset/hermes-primary`` → ``("hermes-primary", None)``
+    ``deepseek/deepseek-v4-pro@preset/hermes-primary`` →
+        ``("hermes-primary", "deepseek/deepseek-v4-pro")``
+    Ordinary model ids → ``(None, None)``.
+    """
+    raw = str(model or "").strip()
+    marker = _OPENROUTER_PRESET_MARKER
+    if marker not in raw:
+        return None, None
+    if raw.startswith(marker):
+        slug = raw[len(marker):].strip()
+        return (slug or None), None
+    base, _, rest = raw.partition(marker)
+    slug = rest.strip()
+    explicit = base.strip()
+    return (slug or None), (explicit or None)
+
+
+def _extract_openrouter_preset_designated_model(payload: Any) -> str:
+    """Pull the designated version's concrete model from a presets API payload."""
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data", payload)
+    if not isinstance(data, dict):
+        return ""
+    dv = data.get("designated_version")
+    cfg: Any = {}
+    if isinstance(dv, dict):
+        cfg = dv.get("config") or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    if not cfg:
+        maybe = data.get("config")
+        if isinstance(maybe, dict):
+            cfg = maybe
+
+    def _usable(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        text = value.strip()
+        if not text or _OPENROUTER_PRESET_MARKER in text:
+            return ""
+        return text
+
+    found = _usable(cfg.get("model"))
+    if found:
+        return found
+    models = cfg.get("models")
+    if isinstance(models, list):
+        for item in models:
+            found = _usable(item)
+            if found:
+                return found
+    return ""
+
+
+def _fetch_openrouter_preset_payload(slug: str, api_key: str) -> Optional[dict]:
+    """GET ``/api/v1/presets/{slug}`` (auth required). Returns JSON or None."""
+    if not slug or not api_key:
+        return None
+    try:
+        _ensure_requests()
+        response = requests.get(
+            f"{OPENROUTER_PRESETS_URL}/{slug}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=(5, 10),
+            verify=_resolve_requests_verify(),
+        )
+        if response.status_code != 200:
+            logger.debug(
+                "OpenRouter preset %r lookup returned HTTP %s",
+                slug, response.status_code,
+            )
+            return None
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        logger.debug("OpenRouter preset %r lookup failed", slug, exc_info=True)
+        return None
+
+
+def _resolve_openrouter_preset_model(model: str, api_key: str = "") -> str:
+    """Resolve ``@preset/<slug>`` to the designated version's concrete model id.
+
+    Combined refs (``model@preset/slug``) use the explicit base model and
+    skip the network. Bare aliases hit the OpenRouter presets API. Failures
+    return ``""`` so the caller can fall through to the 256K default.
+    """
+    slug, explicit = _parse_openrouter_preset_ref(model)
+    if not slug:
+        return ""
+    if explicit:
+        return explicit
+    cached = _openrouter_preset_model_cache.get(slug)
+    if cached and (time.monotonic() - cached[1]) < _OPENROUTER_PRESET_CACHE_TTL:
+        return cached[0]
+    key = (api_key or os.getenv("OPENROUTER_API_KEY") or "").strip()
+    if not key:
+        return ""
+    payload = _fetch_openrouter_preset_payload(slug, key)
+    if not payload:
+        return ""
+    resolved = _extract_openrouter_preset_designated_model(payload)
+    if resolved:
+        _openrouter_preset_model_cache[slug] = (resolved, time.monotonic())
+    return resolved
+
+
+def _looks_like_openrouter_preset_context(
+    model: str, provider: str, base_url: str,
+) -> bool:
+    if _OPENROUTER_PRESET_MARKER not in str(model or ""):
+        return False
+    prov = (provider or "").strip().lower()
+    if prov in ("", "openrouter"):
+        return True
+    host = base_url_hostname(base_url) if base_url else ""
+    return bool(host and "openrouter.ai" in host)
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",
@@ -3072,7 +3205,9 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0a. MoA preset name → aggregator model (provider==moa)
     0b. model_overrides config (per-provider+model context_window override)
+    0b-or. OpenRouter ``@preset/`` alias → designated version's concrete model
     0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs,
        LM Studio, and Codex OAuth bypass the cache here so their provider
@@ -3149,6 +3284,22 @@ def get_model_context_length(
                 return mo_ctx
         except Exception:
             pass  # fall through to other resolution paths
+
+    # 0b-or. OpenRouter @preset/ aliases are not catalog slugs. The same
+    # failure mode as MoA step 0a: matching falls through to 256K. After
+    # honoring model_overrides on the alias itself (the documented
+    # workaround), resolve slug → designated_version.config.model via the
+    # presets API and continue the normal chain on that concrete id.
+    if _looks_like_openrouter_preset_context(model, provider, base_url):
+        resolved = _resolve_openrouter_preset_model(model, api_key=api_key)
+        if resolved and resolved != model:
+            return get_model_context_length(
+                resolved,
+                base_url=base_url or "https://openrouter.ai/api/v1",
+                api_key=api_key,
+                provider=provider or "openrouter",
+                custom_providers=custom_providers,
+            )
 
     # 0c. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall

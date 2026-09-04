@@ -642,7 +642,20 @@ function ClarifyToolSinglePending({
 
       if (
         active &&
-        (active.isContentEditable || active.matches('a[href], button, input, select, textarea, [role="button"]'))
+        active.isContentEditable &&
+        !active.closest('[data-clarify-choices]')
+      ) {
+        return
+      }
+
+      if (
+        active &&
+        !active.isContentEditable &&
+        active.matches('a[href], button, input, select, textarea, [role="button"]') &&
+        // A choice row is the answer itself: Enter on it must confirm the
+        // picked answer rather than fall through to the button's select
+        // handler. Everything else focused stays hands-off.
+        !active.matches('button[data-choice]')
       ) {
         return
       }

@@ -354,6 +354,68 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _resolve_with_oneshot_fallback(
+    resolve_fn,
+    get_chain_fn,
+    cfg: dict,
+    **resolve_kwargs,
+) -> dict:
+    """Resolve the primary provider, consulting the fallback chain on AuthError.
+
+    The gateway has a dedicated resolution-time fallback path
+    (``_try_resolve_fallback_provider``); oneshot/CLI previously called
+    ``resolve_runtime_provider`` bare, so a quota-exhausted (429) or
+    auth-failed primary killed ``hermes -z`` for the entire quota window even
+    when a healthy ``fallback_providers`` chain was configured (#81209).
+
+    On success, returns the resolved runtime dict. If the primary raised
+    ``AuthError`` and a fallback entry resolves, returns that entry's runtime
+    with its ``model`` key set to the fallback entry's model so the caller
+    constructs ``AIAgent`` against the correct model name. If no fallback
+    resolves, the original ``AuthError`` propagates. Non-``AuthError``
+    exceptions propagate unchanged.
+    """
+    from hermes_cli.auth import AuthError
+    from hermes_cli.fallback_config import resolve_entry_api_key
+
+    try:
+        return resolve_fn(**resolve_kwargs)
+    except AuthError as auth_exc:
+        fb_list = get_chain_fn(cfg)
+        if not fb_list:
+            raise
+        logging.warning(
+            "Oneshot: primary provider failed (%s) — trying fallback chain",
+            auth_exc,
+        )
+        for entry in fb_list:
+            try:
+                fb_runtime = resolve_fn(
+                    requested=entry.get("provider"),
+                    explicit_base_url=entry.get("base_url"),
+                    explicit_api_key=resolve_entry_api_key(entry),
+                )
+                logging.info(
+                    "Oneshot: fallback provider resolved: %s model=%s",
+                    entry.get("provider") or fb_runtime.get("provider"),
+                    entry.get("model"),
+                )
+                # Inject the fallback entry's model so the caller uses it
+                # for AIAgent construction — mirrors the gateway's
+                # _try_resolve_fallback_provider which returns model from
+                # the entry, not the resolved runtime.
+                fb_runtime["model"] = entry.get("model")
+                return fb_runtime
+            except Exception as fb_exc:
+                logging.debug(
+                    "Oneshot: fallback entry %s failed: %s",
+                    entry.get("provider"), fb_exc,
+                )
+                continue
+        # All fallback entries failed — re-raise the original AuthError.
+        raise
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -447,12 +509,18 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
+    runtime = _resolve_with_oneshot_fallback(
+        resolve_runtime_provider,
+        get_fallback_chain,
+        cfg,
         requested=effective_provider,
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
         explicit_api_key=explicit_api_key_from_alias,
     )
+    # If a fallback entry resolved, its model was injected into runtime so
+    # AIAgent runs with the correct model name.
+    effective_model = runtime.get("model") or effective_model
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived

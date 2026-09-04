@@ -454,6 +454,21 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
+    auto_approve_requests = False
+    try:
+        from tools.approval import is_approval_bypass_active
+        auto_approve_requests = is_approval_bypass_active()
+    except Exception:
+        logger.debug(
+            "codex app-server: approval-bypass lookup failed; keeping fail-closed default",
+            exc_info=True,
+        )
+
+    if getattr(agent, "_codex_session", None) is not None:
+        agent._codex_session.update_approval_routing(
+            auto_approve_requests=auto_approve_requests,
+        )
+
     _ensure_codex_session(agent)
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)

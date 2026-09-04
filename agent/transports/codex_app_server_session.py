@@ -175,6 +175,15 @@ class CodexAppServerSession:
         self._pending_file_changes: dict[str, str] = {}
         self._closed = False
 
+    def update_approval_routing(
+        self,
+        *,
+        auto_approve_requests: bool,
+    ) -> None:
+        """Update protocol-level approval defaults for subsequent requests."""
+        self._routing.auto_approve_exec = auto_approve_requests
+        self._routing.auto_approve_apply_patch = auto_approve_requests
+
     def ensure_started(self) -> str:
         """Spawn, handshake, and ``thread/start``; idempotent, returns the codex thread id."""
         if self._thread_id is not None:

@@ -7,7 +7,7 @@ Covers the normalized-envelope pattern that replaces raw-SDK handler args:
   performs the authoritative post-auth check before invoking plugins
 * ``TelegramAdapter._normalize_platform_event`` maps an inbound PTB update to a
   stable ``{platform, event_type, payload}`` envelope (no raw SDK objects),
-  including custom-emoji reactions
+  including update/actor identity and old/new custom-emoji reaction sets
 * ``_on_platform_update`` fires ``gateway_platform_event`` with that envelope,
   gated on the same authorization decision as inbound gateway traffic
   (unauthorized reactions never fire), and swallows errors so the observer
@@ -19,6 +19,7 @@ Covers the normalized-envelope pattern that replaces raw-SDK handler args:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import sys
 from contextlib import nullcontext
@@ -81,13 +82,30 @@ def _reaction(*, emoji=None, custom_emoji_id=None):
     return r
 
 
-def _reaction_update(reactions, chat_id: object = 123, message_id: object = 456):
+def _reaction_update(
+    reactions,
+    chat_id: object = 123,
+    message_id: object = 456,
+    *,
+    old_reactions=(),
+    update_id: object = 789,
+    actor_id: object = 777,
+    actor_name: object = "Alice",
+    occurred_at: object = datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc),
+):
     """A PTB Update stand-in carrying a message_reaction with ``reactions``."""
     update = MagicMock()
+    update.update_id = update_id
     update.message_reaction = MagicMock()
     update.message_reaction.chat.id = chat_id
     update.message_reaction.message_id = message_id
+    update.message_reaction.old_reaction = list(old_reactions)
     update.message_reaction.new_reaction = list(reactions)
+    update.message_reaction.user.id = actor_id
+    update.message_reaction.user.username = actor_name
+    update.message_reaction.user.full_name = actor_name
+    update.message_reaction.actor_chat = None
+    update.message_reaction.date = occurred_at
     return update
 
 
@@ -209,6 +227,12 @@ class TestNormalizePlatformEvent:
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
+                "update_id": "789",
+                "actor_id": "777",
+                "actor_name": "Alice",
+                "occurred_at": "2026-08-11T18:00:00+00:00",
+                "old_emojis": [],
+                "old_custom_emoji_ids": [],
                 "emojis": ["\U0001F44E"],
                 "custom_emoji_ids": [],
                 "chat_id": "123",
@@ -240,6 +264,53 @@ class TestNormalizePlatformEvent:
         assert event["payload"]["emojis"] == ["\U0001F44D", "\U0001F525"]
         assert event["payload"]["custom_emoji_ids"] == ["555"]
 
+    def test_old_and_new_reaction_sets_are_both_preserved(self):
+        a = _adapter()
+        update = _reaction_update(
+            [_reaction(emoji="\U0001F525")],
+            old_reactions=[
+                _reaction(emoji="\U0001F44D"),
+                _reaction(custom_emoji_id="old-custom"),
+            ],
+        )
+
+        event = a._normalize_platform_event(update)
+        assert event is not None
+        payload = event["payload"]
+
+        assert payload["old_emojis"] == ["\U0001F44D"]
+        assert payload["old_custom_emoji_ids"] == ["old-custom"]
+        assert payload["emojis"] == ["\U0001F525"]
+
+    def test_actor_chat_identity_is_preserved_for_anonymous_admin(self):
+        a = _adapter()
+        update = _reaction_update([_reaction(emoji="\U0001F44D")])
+        update.message_reaction.user = None
+        update.message_reaction.actor_chat = SimpleNamespace(
+            id=888,
+            username=None,
+            full_name=None,
+            title="Moderators",
+        )
+
+        event = a._normalize_platform_event(update)
+
+        assert event is not None
+        assert event["payload"]["actor_id"] == "888"
+        assert event["payload"]["actor_name"] == "Moderators"
+
+    def test_naive_reaction_timestamp_is_assumed_utc(self):
+        a = _adapter()
+        update = _reaction_update(
+            [_reaction(emoji="\U0001F44D")],
+            occurred_at=datetime(2026, 8, 11, 18, 0),
+        )
+
+        event = a._normalize_platform_event(update)
+
+        assert event is not None
+        assert event["payload"]["occurred_at"] == "2026-08-11T18:00:00+00:00"
+
     def test_malformed_values_never_escape_as_live_objects(self):
         a = _adapter()
         update = _reaction_update(
@@ -259,6 +330,13 @@ class TestNormalizePlatformEvent:
             [_reaction(emoji="x" * 100, custom_emoji_id="9" * 200) for _ in range(100)],
             chat_id="c" * 200,
             message_id="m" * 200,
+            old_reactions=[
+                _reaction(emoji="y" * 100, custom_emoji_id="8" * 200)
+                for _ in range(100)
+            ],
+            update_id="u" * 200,
+            actor_id="a" * 200,
+            actor_name="n" * 400,
         )
 
         event = a._normalize_platform_event(update)
@@ -267,10 +345,29 @@ class TestNormalizePlatformEvent:
         payload = event["payload"]
         assert len(payload["emojis"]) == 64
         assert len(payload["custom_emoji_ids"]) == 64
+        assert len(payload["old_emojis"]) == 64
+        assert len(payload["old_custom_emoji_ids"]) == 64
         assert all(len(value) == 64 for value in payload["emojis"])
         assert all(len(value) == 128 for value in payload["custom_emoji_ids"])
+        assert all(len(value) == 64 for value in payload["old_emojis"])
+        assert all(len(value) == 128 for value in payload["old_custom_emoji_ids"])
+        assert len(payload["update_id"]) == 128
+        assert len(payload["actor_id"]) == 128
+        assert len(payload["actor_name"]) == 256
         assert len(payload["chat_id"]) == 128
         assert len(payload["message_id"]) == 128
+
+    def test_malformed_reaction_identity_or_state_returns_none(self):
+        a = _adapter()
+        assert a._normalize_platform_event(
+            _reaction_update([_reaction(emoji="x")], update_id=True)
+        ) is None
+        assert a._normalize_platform_event(
+            _reaction_update([_reaction(emoji="x")], actor_id=object())
+        ) is None
+        update = _reaction_update([_reaction(emoji="x")])
+        update.message_reaction.old_reaction = object()
+        assert a._normalize_platform_event(update) is None
 
     def test_non_reaction_update_returns_none(self):
         """Unsupported update types return None until a concrete contract exists."""
@@ -630,6 +727,12 @@ class TestFixturePluginObservationPath:
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
+                "update_id": "789",
+                "actor_id": "777",
+                "actor_name": "Alice",
+                "occurred_at": "2026-08-11T18:00:00+00:00",
+                "old_emojis": [],
+                "old_custom_emoji_ids": [],
                 "emojis": ["\U0001F44D"],
                 "custom_emoji_ids": [],
                 "chat_id": "123",

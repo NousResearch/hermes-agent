@@ -657,19 +657,21 @@ def get_anthropic_key() -> str:
 # api.moonshot.ai/v1 (the old default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.
 #
-# Note: the base URL intentionally has NO /v1 suffix.  The /coding endpoint
-# speaks the Anthropic Messages protocol, and the anthropic SDK appends
-# "/v1/messages" internally — so "/coding" + SDK suffix → "/coding/v1/messages"
-# (the correct target). Using "/coding/v1" here would produce
-# "/coding/v1/v1/messages" (a 404).
-KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
+# Kimi Code has two wire protocols on the same hostname:
+#   - Anthropic Messages:  https://api.kimi.com/coding      (SDK appends /v1/messages)
+#   - Chat Completions:    https://api.kimi.com/coding/v1   (OpenAI-compatible /chat/completions)
+# The kimi-coding provider profile covers the chat_completions path, so we
+# return the /v1 base.  Callers using the Anthropic Messages wire should
+# override via KIMI_BASE_URL env var.
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
     """Return the correct Kimi base URL based on the API key prefix.
 
     If the user has explicitly set KIMI_BASE_URL, that always wins.
-    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
+    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1
+    for the OpenAI-compatible chat-completions transport.
     """
     if env_override:
         return env_override

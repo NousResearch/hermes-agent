@@ -70,7 +70,12 @@ class TestGuidanceConstants:
         assert "declarative facts" in MEMORY_GUIDANCE
         assert "imperative phrasing" in MEMORY_GUIDANCE
         assert "stale within a week" in MEMORY_GUIDANCE
-        assert "Save proactively" in MEMORY_GUIDANCE  # positive posture leads
+        # Skills are the default home for task-learned knowledge (incl. the
+        # user's preferences/corrections for that work); memory is the narrow
+        # every-session exception. The routing rule must LEAD, not trail.
+        assert MEMORY_GUIDANCE.index("Skills come first") < MEMORY_GUIDANCE.index("Memory is the narrow exception")
+        assert "preferences and corrections" in MEMORY_GUIDANCE
+        assert "Save proactively" not in MEMORY_GUIDANCE
         assert "workflows belong" in MEMORY_GUIDANCE
         # The category/SKIP curricula must NOT be re-taught here.
         assert "PR numbers" not in MEMORY_GUIDANCE

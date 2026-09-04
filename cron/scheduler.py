@@ -829,6 +829,10 @@ _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 # every fire) must not inherit the stale flag. Legacy dispatch paths without
 # a registered fire owner fall back to storing the bare job ID.
 _interrupted_job_ids: set = set()
+# Executions observed during shutdown but whose owner-fenced terminal write has
+# not yet succeeded.  Pending tokens suppress normal-result delivery, but do
+# not authorize the worker to skip its own terminal write.
+_interrupting_job_ids: set = set()
 
 
 class _CancelEventLike(Protocol):
@@ -1277,10 +1281,13 @@ def mark_running_jobs_interrupted(
     same process and may go on to produce a plausible-looking final
     response from the now-truncated tool output.
 
-    Records the job IDs in ``_interrupted_job_ids`` BEFORE writing
-    ``last_status`` so ``run_one_job``'s own eventual completion for the
-    same job (racing in its own thread) sees the flag and skips its normal
-    write instead of clobbering this one — see the check near the end of
+    Records execution tokens in ``_interrupting_job_ids`` BEFORE writing
+    ``last_status`` so ``run_one_job`` suppresses a plausible normal result
+    while shutdown races its thread.  A successful terminal write promotes
+    the token to ``_interrupted_job_ids``; only that confirmed state lets the
+    worker skip its own terminal write.  If the write is unavailable, the
+    pending token still suppresses delivery but leaves the worker responsible
+    for eventually persisting terminal state.  See the checks near the end of
     ``run_one_job``. This does not attempt to correlate the killed
     subprocess PID to a specific job ID (the process registry tracks PIDs,
     not cron job IDs); any job still dispatched at the moment of a forced
@@ -1319,35 +1326,47 @@ def mark_running_jobs_interrupted(
                     _running_job_ids - registered_ids - restart_safe_waiters
                 )
             )
-        _interrupted_job_ids.update(
+        _interrupting_job_ids.update(
             token if token is not None else job_id
             for token, job_id, _owner, _profile_home in active_fires
         )
     marked = []
-    for _token, job_id, fire_owner, profile_home in active_fires:
+    for token, job_id, fire_owner, profile_home in active_fires:
+        interrupt_key = token if token is not None else job_id
         if not fire_owner:
             logger.warning(
                 "Job '%s' interrupted before its durable fire owner was registered; "
                 "leaving persisted state untouched",
                 job_id,
             )
-            # Still report the interruption to the caller: the gateway
-            # shutdown path uses the returned IDs to send the
-            # interrupted-cron notice while adapters are still connected
-            # (#82232). The in-memory interrupt flag WAS recorded above —
-            # only the persisted last_status write is skipped here.
+            # Report the interruption to the caller, but leave the token
+            # pending rather than confirmed: the worker must still perform
+            # its own terminal write because shutdown did not persist one.
             marked.append(job_id)
             continue
         try:
             with use_cron_store(profile_home):
-                if mark_job_run(
+                persisted = mark_job_run(
                     job_id,
                     False,
                     reason,
                     expected_fire_owner=fire_owner,
-                ):
-                    marked.append(job_id)
+                )
+            with _running_lock:
+                if persisted is True:
+                    _interrupting_job_ids.discard(interrupt_key)
+                    _interrupted_job_ids.add(interrupt_key)
+                elif persisted is False:
+                    # Authoritative owner loss: no write by this worker is
+                    # allowed or needed.  A pending worker-side write is still
+                    # fenced by its stale expected owner.
+                    _interrupting_job_ids.discard(interrupt_key)
+            if persisted is True:
+                marked.append(job_id)
         except Exception as e:
+            # Keep the token pending.  This continues to suppress delivery,
+            # while _consume_interrupted_flag returns False so the worker
+            # retries the terminal write rather than assuming this one landed.
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
     return marked
 
@@ -1369,9 +1388,14 @@ def _is_interrupted(job_id: str, token: Optional[object] = None) -> bool:
     for legacy dispatch paths with no registered fire owner.
     """
     with _running_lock:
-        if token is not None and token in _interrupted_job_ids:
+        if token is not None and (
+            token in _interrupted_job_ids or token in _interrupting_job_ids
+        ):
             return True
-        return job_id in _interrupted_job_ids
+        return (
+            job_id in _interrupted_job_ids
+            or job_id in _interrupting_job_ids
+        )
 
 
 def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bool:
@@ -1379,18 +1403,23 @@ def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bo
     THIS execution interrupted (see ``mark_running_jobs_interrupted``).
 
     Called by ``run_one_job`` right before it would otherwise write its own
-    ``last_status``. Consuming (discarding) rather than just checking keeps
-    the flag from leaking across a later, unrelated run of the same job ID
-    (recurring jobs reuse their ID every fire)."""
+    ``last_status``.  Return True only for a confirmed flag whose shutdown
+    terminal write succeeded.  A pending flag still gets cleared, but returns
+    False so the worker remains responsible for durable terminal state.
+    Consuming rather than just checking keeps either flag from leaking across
+    a later, unrelated run of the same recurring job ID."""
     with _running_lock:
-        hit = False
-        if token is not None and token in _interrupted_job_ids:
-            _interrupted_job_ids.discard(token)
-            hit = True
+        confirmed = False
+        if token is not None:
+            if token in _interrupted_job_ids:
+                _interrupted_job_ids.discard(token)
+                confirmed = True
+            _interrupting_job_ids.discard(token)
         if job_id in _interrupted_job_ids:
             _interrupted_job_ids.discard(job_id)
-            hit = True
-        return hit
+            confirmed = True
+        _interrupting_job_ids.discard(job_id)
+        return confirmed
 
 
 def _inactivity_watchdog_loop(
@@ -7321,8 +7350,12 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
             )
 
     try:
+        # Tri-state (c-027): True=renewed/owned; False=confirmed loss;
+        # None=unconfirmed (fence contended). Initial validation stays
+        # fail-closed: the run may only start on exactly True.
         owns_fire_claim = heartbeat_fire_claim(job_id, expected_owner=owner)
     except Exception:
+        owns_fire_claim = None
         logger.warning(
             "Job '%s': initial fire_claim validation failed",
             job_id,
@@ -7333,36 +7366,52 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         )
         return True
 
-    if owns_fire_claim is False:
-        logger.warning(
-            "Job '%s': fire claim ownership was already lost before execution",
-            job_id,
-        )
-        _finish_unstarted("Fire claim ownership lost before execution started.")
+    if owns_fire_claim is not True:
+        # Fail closed (c-027): only an exactly-True renewal lets the run
+        # start. An explicit False is a confirmed loss; None (or an
+        # unexpected value) is unconfirmed ownership — the run must not
+        # begin without a validated claim.
+        if owns_fire_claim is False:
+            logger.warning(
+                "Job '%s': fire claim ownership was already lost before execution",
+                job_id,
+            )
+            _finish_unstarted("Fire claim ownership lost before execution started.")
+        else:
+            logger.warning(
+                "Job '%s': fire claim ownership could not be confirmed before "
+                "execution; refusing to start",
+                job_id,
+            )
+            _finish_unstarted(
+                "Fire claim ownership could not be validated before execution started."
+            )
         return True
 
     def _heartbeat_loop() -> None:
-        last_confirmed = time.monotonic()
+        backend_error_since = None
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire claim ownership lost; interrupting stale run",
-                        job_id,
-                    )
-                    return
-                last_confirmed = time.monotonic()
+                # Tri-state (c-027): only an explicit False is an
+                # authoritative ownership loss. None means the fire fence
+                # was busy (e.g. our own delivery holds it). Every takeover
+                # also needs that fence, so contention itself excludes a
+                # replacement owner and must not consume store-error grace.
+                renewed = heartbeat_fire_claim(job_id, expected_owner=owner)
             except Exception:
+                # Genuine store/I/O uncertainty is different from a returned
+                # None (known fence contention). Bound consecutive backend
+                # failures by their own grace clock; a prior owned side effect
+                # must not pre-spend that budget.
+                now = time.monotonic()
+                if backend_error_since is None:
+                    backend_error_since = now
                 logger.debug(
                     "Job '%s': fire_claim heartbeat failed",
                     job_id,
                     exc_info=True,
                 )
-                if (
-                    time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
-                ):
+                if now - backend_error_since >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS:
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire_claim could not be renewed within %.1fs; "
@@ -7371,6 +7420,25 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                         _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
                     )
                     return
+                continue
+            if renewed is False:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire claim ownership lost; interrupting stale run",
+                    job_id,
+                )
+                return
+            if renewed is True:
+                backend_error_since = None
+                continue
+            # A returned None specifically means an acquired lock could not be
+            # obtained because another holder owns the fence. That holder also
+            # excludes takeover, so it resets (rather than spends) I/O grace.
+            backend_error_since = None
+            logger.debug(
+                "Job '%s': fire_claim heartbeat skipped; fire fence busy",
+                job_id,
+            )
 
     heartbeat_thread = threading.Thread(
         target=heartbeat_context.run,
@@ -7525,7 +7593,15 @@ def _run_one_job_body(
         if fire_owner is None:
             return False
         try:
-            if heartbeat_fire_claim(job["id"], expected_owner=fire_owner):
+            # Tri-state (c-027): True = still owned; False = authoritative
+            # loss; None = fence contended (likely our own side effect
+            # holds it) — NOT a loss. None keeps the caller in
+            # unknown-but-not-lost territory; the fence acquisition below
+            # re-validates ownership before the terminal write.
+            renewed = heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
+            if renewed is True:
+                return False
+            if renewed is None:
                 return False
         except Exception:
             logger.debug(
@@ -7658,9 +7734,15 @@ def _run_one_job_body(
             # would leave fire_claim lingering until TTL and last_status
             # stale. Probe ownership once; if still ours, record the
             # interruption through the owner-fenced terminal write.
-            if fire_owner is not None and heartbeat_fire_claim(
-                job["id"], expected_owner=fire_owner,
-            ):
+            # Tri-state (c-027): a None probe is unconfirmed — never
+            # adjudicate "ownership lost" on it; the None arm falls through
+            # to the uncertain-store recording path below.
+            probe = (
+                heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
+                if fire_owner is not None
+                else False
+            )
+            if probe is True:
                 mark_job_run(
                     job["id"],
                     False,
@@ -7676,7 +7758,14 @@ def _run_one_job_body(
                 finish_execution(
                     execution_id,
                     success=False,
-                    error="Fire claim ownership lost; stale result was discarded.",
+                    error=(
+                        "Fire claim ownership lost; stale result was discarded."
+                        if probe is False
+                        else (
+                            "Fire claim could not be re-validated after "
+                            "interruption; outcome uncertain."
+                        )
+                    ),
                 )
             return True
 
@@ -7811,26 +7900,54 @@ def _run_one_job_body(
                 )
 
             if should_deliver:
-                unresolved_origin = (
-                    _normalize_deliver_value(_delivery_lane_value(job, for_failure=not success))
-                    == "origin"
-                    and not _resolve_delivery_targets(job, for_failure=not success)
-                )
                 try:
                     with _side_effect_fence() as owns_delivery:
                         if not owns_delivery:
                             raise _FireClaimLostDuringSideEffect
-                        delivery_attempted = True
-                        delivery_error = _deliver_result(
-                            job,
-                            deliver_content,
-                            adapters=adapters,
-                            loop=loop,
-                            # Failure summaries (and drift/blocked-config alerts
-                            # composed into deliver_content on the failure path)
-                            # honor the job's failure_deliver override (NS-788).
-                            for_failure=not success,
-                        )
+                        # Shutdown publishes the pending interrupt token before
+                        # contending for this same fence.  Recheck while fenced
+                        # to close the window after the earlier delivery-gate
+                        # check: a plausible response must not escape merely
+                        # because shutdown began while we were waiting here.
+                        if success and _is_interrupted(job["id"], execution_token):
+                            success = False
+                            error = (
+                                "Interrupted by gateway shutdown before the run "
+                                "finished (tool subprocess was killed mid-flight)."
+                            )
+                            incident_acked, failure_incident_id = (
+                                _upsert_incident_for_failure(
+                                    job, error, output_file=output_file
+                                )
+                            )
+                            deliver_content = (
+                                ""
+                                if incident_acked
+                                else _summarize_cron_failure_for_delivery(job, error)
+                                + _failure_streak_nudge(job)
+                            )
+                            should_deliver = bool(deliver_content.strip())
+                        if should_deliver:
+                            unresolved_origin = (
+                                _normalize_deliver_value(
+                                    _delivery_lane_value(job, for_failure=not success)
+                                )
+                                == "origin"
+                                and not _resolve_delivery_targets(
+                                    job, for_failure=not success
+                                )
+                            )
+                            delivery_attempted = True
+                            delivery_error = _deliver_result(
+                                job,
+                                deliver_content,
+                                adapters=adapters,
+                                loop=loop,
+                                # Failure summaries (and drift/blocked-config alerts
+                                # composed into deliver_content on the failure path)
+                                # honor the job's failure_deliver override (NS-788).
+                                for_failure=not success,
+                            )
                 except Exception as de:
                     if isinstance(de, _FireClaimLostDuringSideEffect):
                         raise
@@ -7849,9 +7966,14 @@ def _run_one_job_body(
             # Same transport-cancel distinction as the pre-side-effect path:
             # if WE still own the claim, record the interruption instead of
             # discarding silently (lingering claim + stale last_status).
-            if fire_owner is not None and heartbeat_fire_claim(
-                job["id"], expected_owner=fire_owner,
-            ):
+            # Tri-state (c-027): a None probe is unconfirmed — never
+            # adjudicate "ownership lost" on it.
+            probe = (
+                heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
+                if fire_owner is not None
+                else False
+            )
+            if probe is True:
                 mark_job_run(
                     job["id"],
                     False,
@@ -7867,7 +7989,14 @@ def _run_one_job_body(
                 finish_execution(
                     execution_id,
                     success=False,
-                    error="Fire claim ownership lost; stale result was discarded.",
+                    error=(
+                        "Fire claim ownership lost; stale result was discarded."
+                        if probe is False
+                        else (
+                            "Fire claim could not be re-validated after "
+                            "interruption; outcome uncertain."
+                        )
+                    ),
                 )
             return True
 
@@ -7925,11 +8054,25 @@ def _run_one_job_body(
         if blocked_config:
             mark_kwargs["status"] = "blocked_config"
         marked = mark_job_run(job["id"], success, error, **mark_kwargs)
-        if fire_owner is not None and not marked:
+        # Tri-state (c-027): only an explicit False is an authoritative
+        # owner-CAS rejection. None means the fire fence was unavailable —
+        # the CAS never ran, so ownership was NOT confirmed lost; record
+        # the unconfirmed-terminal outcome instead of a confirmed loss.
+        if fire_owner is not None and marked is False:
             finish_execution(
                 execution_id,
                 success=False,
                 error="Fire claim ownership lost before terminal completion.",
+            )
+            return True
+        if fire_owner is not None and marked is None:
+            finish_execution(
+                execution_id,
+                success=False,
+                error=(
+                    "Fire claim fence unavailable before terminal completion; "
+                    "outcome uncertain."
+                ),
             )
             return True
         normalized_deliver = _normalize_deliver_value(
@@ -8004,38 +8147,51 @@ def _run_one_job_body(
                 delivery_outcome = "suppressed_acked"
             else:
                 try:
-                    delivery_attempted = True
-                    delivery_error = _deliver_result(
-                        job,
-                        # Composed exactly like the normal failure delivery above.
-                        # mark_job_run below records THIS run in failure_streak
-                        # whichever layer failed, so a job that fails before the
-                        # run body every tick builds a streak nobody is ever told
-                        # about: its alerts only ever leave through here, and the
-                        # nudge only ever left through there (#88655).
-                        _summarize_cron_failure_for_delivery(job, _err_text)
-                        + _failure_streak_nudge(job),
-                        adapters=adapters,
-                        loop=loop,
-                        for_failure=True,
-                    )
+                    # The ownership probe above is tri-state: None only means
+                    # unconfirmed, never permission to emit.  The side-effect
+                    # fence is the exactly-once authority for delivery on this
+                    # exception path, just as it is on the normal path.
+                    with _side_effect_fence() as owns_delivery:
+                        if owns_delivery:
+                            delivery_attempted = True
+                            delivery_error = _deliver_result(
+                                job,
+                                # Composed exactly like the normal failure delivery above.
+                                # mark_job_run below records THIS run in failure_streak
+                                # whichever layer failed, so a job that fails before the
+                                # run body every tick builds a streak nobody is ever told
+                                # about: its alerts only ever leave through here, and the
+                                # nudge only ever left through there (#88655).
+                                _summarize_cron_failure_for_delivery(job, _err_text)
+                                + _failure_streak_nudge(job),
+                                adapters=adapters,
+                                loop=loop,
+                                for_failure=True,
+                            )
+                        else:
+                            logger.warning(
+                                "Job '%s': skipping exception delivery because "
+                                "fire-claim ownership could not be fenced",
+                                job["id"],
+                            )
                 except Exception as delivery_exc:
                     delivery_error = str(delivery_exc)
                     logger.error(
                         "Delivery failed for job %s: %s", job["id"], delivery_exc
                     )
-                if not delivery_error and normalized_deliver == "origin":
-                    unresolved_origin = not _resolve_delivery_targets(
-                        job, for_failure=True
-                    )
-                if delivery_error:
-                    delivery_outcome = "failed"
-                elif unresolved_origin:
-                    delivery_outcome = "not_configured"
-                elif normalized_deliver != "local":
-                    delivery_outcome = "delivered"
-                if delivery_outcome in ("delivered", "not_configured"):
-                    _mark_incident_alerted(failure_incident_id)
+                if delivery_attempted:
+                    if not delivery_error and normalized_deliver == "origin":
+                        unresolved_origin = not _resolve_delivery_targets(
+                            job, for_failure=True
+                        )
+                    if delivery_error:
+                        delivery_outcome = "failed"
+                    elif unresolved_origin:
+                        delivery_outcome = "not_configured"
+                    elif normalized_deliver != "local":
+                        delivery_outcome = "delivered"
+                    if delivery_outcome in ("delivered", "not_configured"):
+                        _mark_incident_alerted(failure_incident_id)
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
                 mark_kwargs = {}

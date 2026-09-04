@@ -9,6 +9,7 @@ import contextlib
 import copy
 from contextvars import ContextVar
 from dataclasses import dataclass
+import errno
 import json
 import logging
 import shutil
@@ -375,13 +376,20 @@ def _jobs_lock():
             _jobs_lock_state.load_stamp = None
 
 
+def _is_fire_fence_contention(exc: OSError) -> bool:
+    """Return whether a nonblocking platform lock reports an active holder."""
+    return exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+
+
 @contextlib.contextmanager
-def _fire_job_lock(job_id: str):
+def _fire_job_lock(job_id: str, *, raise_unavailable: bool = False):
     """Serialize one job's owner mutations and external side effects.
 
     Unlike the global jobs lock, this lock may be held across network delivery.
     It is scoped to one profile + job, so unrelated cron jobs keep progressing.
-    Fencing fails closed when cross-process locking is unavailable.
+    Fencing fails closed when cross-process locking is unavailable. Heartbeat
+    callers can request an exception for backend I/O failure so it remains
+    distinct from ordinary contention with an active fence holder.
     """
     cron_dir = _current_cron_store().cron_dir
     lock_key = f"{cron_dir.resolve()}::{job_id}"
@@ -410,6 +418,7 @@ def _fire_job_lock(job_id: str):
         lock_path = cron_dir / f".fire-{lock_name}.lock"
         lock_fd = None
         acquired = False
+        unavailable_error = None
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
@@ -420,23 +429,55 @@ def _fire_job_lock(job_id: str):
                         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                         acquired = True
                         break
-                    except (OSError, IOError):
-                        if time.monotonic() >= deadline:
-                            logger.error(
-                                "Timed out waiting for fire fence %s; failing closed",
-                                lock_path,
-                            )
-                            break
-                        time.sleep(0.1)
+                    except OSError as exc:
+                        if _is_fire_fence_contention(exc):
+                            if time.monotonic() >= deadline:
+                                logger.error(
+                                    "Timed out waiting for fire fence %s; failing closed",
+                                    lock_path,
+                                )
+                                break
+                            time.sleep(0.1)
+                            continue
+                        unavailable_error = exc
+                        logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
+                        break
             elif msvcrt is not None:
-                getattr(msvcrt, "locking")(
-                    lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1
-                )
-                acquired = True
+                deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                        )
+                        acquired = True
+                        break
+                    except OSError as exc:
+                        if _is_fire_fence_contention(exc):
+                            if time.monotonic() >= deadline:
+                                logger.error(
+                                    "Timed out waiting for fire fence %s; failing closed",
+                                    lock_path,
+                                )
+                                break
+                            time.sleep(0.1)
+                            continue
+                        unavailable_error = exc
+                        logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
+                        break
             else:  # pragma: no cover - supported platforms provide one backend
+                unavailable_error = RuntimeError(
+                    "No cross-process lock backend for cron fire fence"
+                )
                 logger.error("No cross-process lock backend for cron fire fence")
         except (OSError, IOError) as exc:
+            unavailable_error = exc
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
+
+        if unavailable_error is not None and raise_unavailable:
+            if lock_fd is not None:
+                lock_fd.close()
+                lock_fd = None
+            raise unavailable_error
 
         held_locks[lock_key] = acquired
         try:
@@ -3041,10 +3082,24 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     provider_backoff: Optional[Dict[str, Any]] = None,
-) -> bool:
+) -> Optional[bool]:
+    """Tri-state terminal write (c-027).
+
+    Returns:
+        ``True``  — recorded; when ``expected_fire_owner`` is set, the
+                    owner CAS matched and the completion is authoritative.
+        ``False`` — authoritatively rejected: the fire fence was acquired
+                    and the owner CAS (when supplied) found a replacement
+                    owner, so the stale completion was discarded.
+        ``None``  — unconfirmed: the fire fence could not be acquired, so
+                    the write (and the CAS) never happened. Callers must
+                    not treat this as ownership loss — a worker's own
+                    fenced side effect may be the reason the fence was
+                    busy.
+    """
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            return False
+            return None
         return _mark_job_run_locked(
             job_id,
             success,
@@ -3809,17 +3864,36 @@ def _sweep_completed_oneshots(
     return removed
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    with _fire_job_lock(job_id) as acquired:
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
+    """Tri-state fire-claim heartbeat (correction c-027).
+
+    Returns:
+        ``True``  — renewed/confirmed: we hold the fire fence and the
+                    persisted claim still names ``expected_owner``.
+        ``False`` — authoritatively inspected: the fence was acquired and
+                    the claim is absent or owned by someone else.
+        ``None``  — unconfirmed: the fire fence could not be acquired (its
+                    process-local RLock is contended, e.g. held across a
+                    slow side-effect delivery) so ownership was never
+                    actually inspected.
+
+    Collapsing ``None`` into ``False`` made a worker's own heartbeat thread
+    report authoritative ownership loss during fenced delivery and cancel a
+    successfully completing run. Callers must treat the three outcomes
+    differently: only an explicit ``False`` is an ownership loss.
+    """
+    with _fire_job_lock(job_id, raise_unavailable=True) as acquired:
         if not acquired:
-            return False
+            return None
         return _heartbeat_fire_claim_locked(
             job_id,
             expected_owner=expected_owner,
         )
 
 
-def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:
+def _heartbeat_fire_claim_locked(
+    job_id: str, *, expected_owner: str
+) -> Optional[bool]:
     """Refresh an active ``fire_claim`` without extending another owner's lease.
 
     A cron execution can legitimately outlive the fire-claim TTL.  The shared

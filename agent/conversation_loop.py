@@ -5648,6 +5648,37 @@ def run_conversation(
                     )
                     continue
 
+                # ── Reasoning-mandatory route rejected a disable ──────
+                # The route (Nous Portal / OpenRouter, e.g. GLM-5.3) answers
+                # ``reasoning: {enabled: false}`` with HTTP 400.  The catalog
+                # guard in the provider profile normally swallows the
+                # disable, but a process that warmed its capability cache
+                # before the route flipped to mandatory keeps sending it.
+                # One-shot: never send a disable again this session (the
+                # wire builder omits it → upstream default thinking), queue
+                # a catalog refresh so the guard is right next time, retry.
+                if (
+                    classified.reason == FailoverReason.reasoning_mandatory
+                    and not _retry.reasoning_mandatory_retry_attempted
+                ):
+                    _retry.reasoning_mandatory_retry_attempted = True
+                    agent._reasoning_disable_rejected = True
+                    try:
+                        from hermes_cli.models import refresh_reasoning_caps_async
+                        refresh_reasoning_caps_async(agent.provider)
+                    except Exception:
+                        pass
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  {agent.model} requires reasoning — "
+                        f"thinking stays on for this session, retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sReasoning-mandatory recovery: dropping reasoning disable for %s",
+                        agent.log_prefix, agent.model,
+                    )
+                    continue
+
                 # ── Native compaction rejection recovery ──────────────
                 # Provider explicitly rejected the ``context_management``
                 # field (structured 400 naming the param). One-shot: turn

@@ -68,6 +68,22 @@ class TestReasoningOffOneShotOverride:
         cfg = _reasoning_config_for_wire(agent)
         assert cfg == {"enabled": False, "effort": "none"}
 
+    def test_rejected_disable_resends_users_config_verbatim(self):
+        """After a 'reasoning is mandatory' 400 the retry must land on the
+        SAME provider cache key as every prior request: the ephemeral
+        continuation override is discarded and the user's own config goes
+        out unchanged. A config that is itself a disable is omitted."""
+        from agent.chat_completion_helpers import _reasoning_config_for_wire
+
+        agent = _AgentStandIn({"enabled": True, "effort": "high"})
+        agent._reasoning_disable_rejected = True
+        agent._ephemeral_reasoning_off = True
+        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "high"}
+        assert agent._ephemeral_reasoning_off is False
+
+        agent.reasoning_config = {"enabled": False}
+        assert _reasoning_config_for_wire(agent) is None
+
 
 @pytest.fixture()
 def loop_agent():

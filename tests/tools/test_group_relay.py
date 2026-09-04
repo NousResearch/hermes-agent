@@ -133,3 +133,30 @@ def test_gateway_root_resolves_profile_home_to_machine_root(tmp_path, monkeypatc
     assert gr.gateway_root() == tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     assert gr.gateway_root() == tmp_path / ".hermes"
+
+
+def test_event_key_is_idempotent_and_conflict_checked(root):
+    kw = dict(room_id="r", room_name="n", text="once", from_profile="p", label="l", event_key="k1")
+    first = gr.enqueue(root, **kw)
+    assert first["id"] == gr.envelope_id_for_key("k1") and first["event_key"] == "k1"
+    assert gr.enqueue(root, **kw) == first
+    assert gr.pending_count(root) == 1  # no duplicate envelope
+    with pytest.raises(gr.GroupRelayConflictError, match="different content"):
+        gr.enqueue(root, **{**kw, "text": "twice"})
+    with pytest.raises(gr.GroupRelayConflictError):
+        gr.enqueue(root, **{**kw, "thread": "other"})
+    # Same key after the Desktop claimed it: still the same envelope, nothing re-queued.
+    assert [e["id"] for e in gr.claim_pending(root)] == [first["id"]]
+    assert gr.enqueue(root, **kw)["id"] == first["id"]
+    assert gr.pending_count(root) == 0
+    # Same key after claimed/ was swept but the reply file exists: still no re-queue.
+    (gr.relay_root(root) / gr.CLAIMED_DIR / f"{first['id']}.json").unlink()
+    gr.append_reply_line(root, first["id"], {"kind": "done", "status": "settled", "replies": 0})
+    assert gr.enqueue(root, **kw)["id"] == first["id"]
+    assert gr.pending_count(root) == 0
+
+
+def test_no_event_key_means_fresh_envelope_each_time(root):
+    kw = dict(room_id="r", room_name="n", text="x", from_profile="p", label="l")
+    a, b = gr.enqueue(root, **kw), gr.enqueue(root, **kw)
+    assert a["id"] != b["id"] and "event_key" not in a and gr.pending_count(root) == 2

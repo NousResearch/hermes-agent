@@ -14,7 +14,15 @@ import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { $backdrop, setBackdrop } from '@/store/backdrop'
+import {
+  $backdrop,
+  $backdropOpacity,
+  BACKDROP_OPACITY_MAX,
+  BACKDROP_OPACITY_MIN,
+  BACKDROP_OPACITY_STEP,
+  setBackdrop,
+  setBackdropOpacity
+} from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
@@ -408,6 +416,7 @@ export function AppearanceSettings() {
   const retiredTips = useStore($retiredTips)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
+  const backdropOpacity = useStore($backdropOpacity)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
@@ -756,6 +765,32 @@ export function AppearanceSettings() {
                 ]}
                 value={backdrop ? 'on' : 'off'}
               />
+            }
+            below={
+              backdrop ? (
+                <div className="mt-3 flex items-center gap-3">
+                  <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {a.backdropOpacityTitle}
+                  </span>
+                  <input
+                    aria-label={a.backdropOpacityTitle}
+                    className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+                    max={BACKDROP_OPACITY_MAX}
+                    min={BACKDROP_OPACITY_MIN}
+                    onChange={event => {
+                      triggerHaptic('selection')
+                      setBackdropOpacity(Number(event.target.value))
+                    }}
+                    step={BACKDROP_OPACITY_STEP}
+                    style={{ accentColor: 'var(--dt-primary)' }}
+                    type="range"
+                    value={backdropOpacity}
+                  />
+                  <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                    {backdropOpacity}%
+                  </span>
+                </div>
+              ) : undefined
             }
             description={a.backdropDesc}
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.backdrop)}

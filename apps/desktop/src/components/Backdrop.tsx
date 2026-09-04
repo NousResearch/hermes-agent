@@ -1,18 +1,23 @@
 import { useStore } from '@nanostores/react'
 
-import { $backdrop } from '@/store/backdrop'
+import { $backdrop, $backdropOpacity } from '@/store/backdrop'
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
 export function Backdrop() {
   const on = useStore($backdrop)
+  const opacity = useStore($backdropOpacity)
 
-  if (!on) {
+  if (!on || opacity <= 0) {
     return null
   }
 
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 z-2 opacity-[0.025] mix-blend-difference">
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-0 z-2 mix-blend-difference"
+      style={{ opacity: opacity / 100 }}
+    >
       <img
         alt=""
         className="h-[160dvh] w-auto min-w-dvw object-cover object-left-top [filter:invert(var(--backdrop-invert-mul,1))]"

@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import get_desktop_ssh_runtime_root
+
 
 def _m():
     """Lazy ``hermes_cli.main`` reference (call-time; keeps patches working)."""
@@ -827,17 +829,8 @@ def _exclude_pids_from_env() -> set[int]:
 # mismatched-schema record is simply ignored (never used to kill).
 _LOCKFILE_SCHEMA_VERSION = 2
 _PROTOCOL_VERSION = 1
-_REMOTE_LOCK_SUBDIR = "desktop-ssh"
 _HEX32 = set("0123456789abcdef")
 _HEX16 = _HEX32
-
-
-def _hermes_home_dir() -> Path:
-    """Resolved Hermes home (HERMES_HOME override or ~/.hermes)."""
-    override = os.environ.get("HERMES_HOME", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".hermes"
 
 
 def _valid_lockfile_payload(parsed: object, ownership_id: str) -> bool:
@@ -888,19 +881,17 @@ def _valid_lockfile_payload(parsed: object, ownership_id: str) -> bool:
 def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
     """PIDs claimed as owners by valid ``backend.lock.json`` records on this host.
 
-    Scans ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` (the
-    same directory the Desktop SSH runtime writes to). Any PID a valid lock
-    names is a legitimately-owned backend — including backends another client
-    or machine started over SSH — and must be spared by the orphan reap.
+    Scans the machine-scoped Desktop SSH runtime root, independent of the
+    active profile's ``HERMES_HOME``. Any PID a valid lock names is a
+    legitimately-owned backend — including backends another client or machine
+    started over SSH — and must be spared by the orphan reap.
 
     Best-effort: any read/parse/IO error for a single record is swallowed and
     that record contributes no PID. Never raises.
     """
     import json
 
-    root = base_dir if base_dir is not None else (
-        _hermes_home_dir() / _REMOTE_LOCK_SUBDIR
-    )
+    root = base_dir if base_dir is not None else get_desktop_ssh_runtime_root()
     owned: set[int] = set()
     if not root.is_dir():
         return owned

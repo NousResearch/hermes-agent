@@ -59,6 +59,17 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def get_desktop_ssh_runtime_root() -> Path:
+    """Return the machine-scoped runtime root used by POSIX Desktop SSH.
+
+    The POSIX Desktop writer expands the literal ``~/.hermes/desktop-ssh`` on
+    the target host.  This path must never follow ``HERMES_HOME`` or a
+    context-local profile override: ownership records coordinate every profile
+    on a machine.  Native Windows SSH uses its separate platform runtime root.
+    """
+    return Path.home() / ".hermes" / "desktop-ssh"
+
+
 def _hermes_home_from_env() -> Path:
     """Resolve HERMES_HOME from the process environment only.
 

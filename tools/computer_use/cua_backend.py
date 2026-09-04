@@ -19,7 +19,7 @@ rather than failing silently.
 
 Install:
   - **macOS**:
-      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"
+      bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"
   - **Windows** (PowerShell):
       irm https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1 | iex
 
@@ -1405,7 +1405,7 @@ def cua_driver_install_hint() -> str:
         )
     else:
         installer = (
-            '  /bin/bash -c "$(curl -fsSL '
+            '  bash -c "$(curl -fsSL '
             'https://raw.githubusercontent.com/trycua/cua/main/'
             'libs/cua-driver/scripts/install.sh)"'
         )

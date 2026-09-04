@@ -2918,8 +2918,9 @@ install_computer_use_driver() {
     # _CUA_INSTALLER_TIMEOUT (660s).
     local cua_log
     cua_log="$(mktemp)"
-    if run_with_timeout 660 /bin/bash -c \
-        'curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | /bin/bash' \
+    # bash is resolved from PATH: /bin/bash does not exist on NixOS/musl.
+    if run_with_timeout 660 bash -c \
+        'curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | bash' \
         >"$cua_log" 2>&1; then
         log_success "Computer Use driver installed (enable via 'hermes tools' → Computer Use)"
     else

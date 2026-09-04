@@ -5690,7 +5690,7 @@ def refresh_launchd_plist_if_needed() -> bool:
                     "-o", str(reload_log_path),
                     "-e", str(reload_log_path),
                     "--",
-                    "/bin/bash", "-c", reload_script,
+                    shutil.which("bash") or "/bin/bash", "-c", reload_script,
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

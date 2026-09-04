@@ -457,9 +457,11 @@ class TestLaunchdServiceRecovery:
         assert kwargs.get("start_new_session") is not True
         assert "-o" in cmd
         assert "-e" in cmd
-        # The script is passed via -- /bin/bash -c ...
+        # The script is passed via -- <resolved-bash> -c ...
+        import shutil as _shutil
+        expected_bash = _shutil.which("bash") or "/bin/bash"
         bash_idx = cmd.index("--") + 1
-        assert cmd[bash_idx] == "/bin/bash"
+        assert cmd[bash_idx] == expected_bash
         assert cmd[bash_idx + 1] == "-c"
         script = cmd[bash_idx + 2]
         assert "bootout" in script and "bootstrap" in script

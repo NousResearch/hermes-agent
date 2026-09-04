@@ -32,7 +32,7 @@ class TestInstallSh:
         window; a ceiling below that reintroduces the self-perpetuating
         wedge (#58762). Must stay >= 660."""
         text = INSTALL_SH.read_text()
-        assert "run_with_timeout 660 /bin/bash -c" in text
+        assert "run_with_timeout 660 bash -c" in text
 
     def test_install_is_best_effort(self) -> None:
         text = INSTALL_SH.read_text()

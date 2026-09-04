@@ -24,8 +24,12 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
+import shutil as _shutil_mod
 from unittest.mock import patch
+
+_REAL_WHICH = _shutil_mod.which
 
 import pytest
 
@@ -1308,6 +1312,13 @@ class TestInstallerNoShell:
     asserting a branch the host had already selected.
     """
 
+    def test_posix_manual_hint_uses_portable_bash(self):
+        from hermes_cli import tools_config
+
+        source = Path(tools_config.__file__).read_text(encoding="utf-8")
+        assert "manual_hint = f'bash -c" in source
+        assert "manual_hint = f'/bin/bash -c" not in source
+
     def _run(self, download_rc=0):
         from unittest.mock import MagicMock
         from hermes_cli import tools_config
@@ -1331,7 +1342,7 @@ class TestInstallerNoShell:
 
         with patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
-             patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
+             patch.object(tools_config.shutil, "which", side_effect=lambda name, *a, **k: _REAL_WHICH(name) if name == "bash" else "/usr/local/bin/cua-driver"), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \
@@ -1348,9 +1359,12 @@ class TestInstallerNoShell:
         # Download: plain argv curl, no shell.
         dl_cmd = run_calls[0][1]
         assert isinstance(dl_cmd, list) and dl_cmd[0] == "curl"
-        # Exec: argv list ["/bin/bash", <mkstemp path>], shell=False.
+        # Exec: argv list [<resolved bash>, <mkstemp path>], shell=False.
+        # tools_config resolves bash via shutil.which("bash") before exec.
+        import shutil as _shutil
+        expected_bash = _shutil.which("bash") or "/bin/bash"
         exec_cmd, exec_kw = popen_calls[0][1], popen_calls[0][2]
-        assert isinstance(exec_cmd, list) and exec_cmd[0] == "/bin/bash"
+        assert isinstance(exec_cmd, list) and exec_cmd[0] == expected_bash
         assert "cua-driver-install-" in exec_cmd[1]
         assert exec_kw.get("shell") is False
 
@@ -1380,7 +1394,7 @@ class TestInstallerNoShell:
 
         with patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
-             patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
+             patch.object(tools_config.shutil, "which", side_effect=lambda name, *a, **k: _REAL_WHICH(name) if name == "bash" else "/usr/local/bin/cua-driver"), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \

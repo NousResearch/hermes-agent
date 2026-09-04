@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
+import { resolveBashExecutable } from './bash-resolver'
 import { profileSshOverride } from './connection-config'
 import {
   assertRemoteInstallUpdateClear,
@@ -44,6 +45,35 @@ import {
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
 const exec = promisify(execCallback)
+
+async function resolveHostPython(): Promise<string> {
+  try {
+    const direct = (
+      await exec(
+        'if command -v python3 >/dev/null 2>&1; then command -v python3; ' +
+          'elif command -v python >/dev/null 2>&1; then command -v python; fi'
+      )
+    ).stdout.trim()
+
+    if (direct) {
+      return direct
+    }
+  } catch {
+    // Try the uv-managed interpreter below.
+  }
+
+  try {
+    const discovered = (await exec('uv python find')).stdout.trim()
+
+    if (discovered) {
+      return discovered
+    }
+  } catch {
+    // Report the missing interpreter with a stable error below.
+  }
+
+  throw new Error('no python3, python, or uv-managed interpreter available on PATH')
+}
 
 test('SSH reuse proof rejects a backend whose runtime was replaced', () => {
   assert.equal(
@@ -580,13 +610,13 @@ test.skipIf(process.platform === 'win32')(
     const pythonLink = path.join(venvBin, 'python')
     const entrypoint = path.join(installDir, 'hermes')
     const launcher = path.join(temp, 'hermes launcher')
-    const python = (await exec('command -v python3')).stdout.trim()
+    const python = await resolveHostPython()
     const tokenPath = path.join(os.homedir(), spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
 
     await mkdir(venvBin, { recursive: true })
     await symlink(python, pythonLink)
     await writeFile(entrypoint, 'import time\ntime.sleep(30)\n', 'utf8')
-    await writeFile(launcher, `#!/bin/bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
+    await writeFile(launcher, `#!/usr/bin/env bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
     await chmod(launcher, 0o755)
 
     const backendFlags = [
@@ -613,7 +643,7 @@ test.skipIf(process.platform === 'win32')(
     const child = spawnInstaller(['--profile', 'ops', 'serve', '--isolated', ...backendFlags])
 
     const ssh = {
-      exec: async (command: string) => (await exec(command, { shell: '/bin/bash' })).stdout
+      exec: async (command: string) => (await exec(command, { shell: resolveBashExecutable() ?? 'bash' })).stdout
     }
 
     const waitForEntrypoint = async (process: ReturnType<typeof spawn>) => {

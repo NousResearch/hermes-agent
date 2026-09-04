@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # posix.sh -- repo-owned macOS/Linux Desktop update hand-off.
 #
 # The whole job: wait for the Desktop to exit, run `hermes update`, tell the
@@ -400,7 +400,24 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # immediate exec failure (ENOENT, ELF mismatch, dead sandbox) dies
     # within the window and downgrades to manual instead of lying.
     (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
-     setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
+     RELAUNCH_SETSID="$(command -v setsid 2>/dev/null || true)"
+     if [ -n "$RELAUNCH_SETSID" ]; then
+       "$RELAUNCH_SETSID" "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
+     else
+       RELAUNCH_NOHUP="$(command -v nohup 2>/dev/null || true)"
+       RELAUNCH_PYTHON="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+       if [ -z "$RELAUNCH_NOHUP" ] || [ -z "$RELAUNCH_PYTHON" ]; then
+         log "WARNING: relaunch requires setsid or nohup plus python3 (or python) on PATH"
+         exit 127
+       fi
+       "$RELAUNCH_NOHUP" "$RELAUNCH_PYTHON" -c '
+import os, sys
+
+target = sys.argv[1]
+os.setsid()
+os.execve(target, [target, *sys.argv[2:]], os.environ.copy())
+' "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
+     fi
      echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }
     local lp
     lp="$(cat "$STATUS.launchpid" 2>/dev/null)"; rm -f "$STATUS.launchpid" 2>/dev/null
@@ -656,12 +673,28 @@ if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
   # as a flag. Appending here previously left HANDOFF_DAEMONIZED unset on
   # every re-exec, causing this block to re-fire forever (self-exec loop,
   # unbounded argv growth) whenever relaunch args were present.
-  /usr/bin/nohup /usr/bin/python3 -c '
+  BASH_BIN="$(command -v bash 2>/dev/null || true)"
+  SETSID_BIN="$(command -v setsid 2>/dev/null || true)"
+  NOHUP_BIN="$(command -v nohup 2>/dev/null || true)"
+  PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+  if [ -z "$BASH_BIN" ] || {
+    [ -z "$SETSID_BIN" ] && { [ -z "$NOHUP_BIN" ] || [ -z "$PYTHON_BIN" ]; }
+  }; then
+    echo "update hand-off requires bash and either setsid or nohup plus python3 (or python) on PATH" >&2
+    exit 127
+  fi
+  if [ -n "$SETSID_BIN" ]; then
+    "$SETSID_BIN" "$BASH_BIN" "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
+  else
+    "$NOHUP_BIN" "$PYTHON_BIN" -c '
 import os, sys
+
 env = os.environ.copy()
 os.setsid()
-os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
-' "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
+bash = sys.argv[1]
+os.execve(bash, [bash, sys.argv[2], *sys.argv[3:]], env)
+' "$BASH_BIN" "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
+  fi
   exit 0
 fi
 

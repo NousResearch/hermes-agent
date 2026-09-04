@@ -58,7 +58,32 @@ test('mergeLoginShellPath puts login entries first and appends current-only entr
 test('loginShellExecutable honors $SHELL and falls back per platform', () => {
   assert.equal(loginShellExecutable({ SHELL: '/usr/local/bin/fish' }, 'darwin'), '/usr/local/bin/fish')
   assert.equal(loginShellExecutable({}, 'darwin'), '/bin/zsh')
-  assert.equal(loginShellExecutable({}, 'linux'), '/bin/bash')
+  // Linux fallback resolves bash through PATH (never assumes /bin/bash).
+  const linuxFallback = loginShellExecutable({}, 'linux')
+
+  assert.ok(linuxFallback, 'linux fallback must resolve to a bash path')
+  assert.ok(linuxFallback.endsWith('bash'), `unexpected linux fallback: ${linuxFallback}`)
+})
+
+test('loginShellExecutable resolves NixOS bash with unset SHELL and a minimal PATH', () => {
+  const env = {
+    HOME: '/home/floory',
+    PATH: '/usr/bin:/bin',
+    USER: 'floory'
+  }
+
+  let resolutionDeps: any
+
+  const result = loginShellExecutable(env, 'linux', deps => {
+    resolutionDeps = deps
+
+    return '/run/current-system/sw/bin/bash'
+  })
+
+  assert.equal(result, '/run/current-system/sw/bin/bash')
+  assert.equal(resolutionDeps.pathEnv, env.PATH)
+  assert.ok(resolutionDeps.knownLocations.includes('/run/current-system/sw/bin/bash'))
+  assert.ok(resolutionDeps.knownLocations.includes('/home/floory/.nix-profile/bin/bash'))
 })
 
 test('applyLoginShellPath merges the captured login PATH into the env', async () => {

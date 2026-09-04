@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import type { SpawnOptions } from 'node:child_process'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
 
+import { resolveBashExecutable } from './bash-resolver'
 import {
   collectRelaunchArgs,
   MARKER_SELF_ADOPT_EPOCH_MS,
@@ -251,6 +254,30 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
   ])
 })
 
+test('resolvePosixScriptHandoff resolves bash after the final PATH is installed', () => {
+  const root = '/home/hermes/.hermes/hermes-agent'
+  const expected = path.join(root, 'scripts', 'desktop-update', 'posix.sh')
+  const latePath = mkdtempSync(path.join(os.tmpdir(), 'late-bash-path-'))
+  const lateBash = path.join(latePath, 'bash')
+  const originalPath = process.env.PATH
+
+  writeFileSync(lateBash, '#!/bin/sh\n', { mode: 0o755 })
+  chmodSync(lateBash, 0o755)
+  process.env.PATH = latePath
+
+  try {
+    const handoff = resolvePosixScriptHandoff(root, {
+      isWindows: false,
+      fileExists: candidate => candidate === expected
+    })
+
+    assert.ok(handoff)
+    assert.equal(handoff.command, lateBash)
+  } finally {
+    process.env.PATH = originalPath
+  }
+})
+
 test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {
   const root = '/home/hermes/.hermes/hermes-agent'
   const expected = path.join(root, 'scripts', 'desktop-update', 'posix.sh')
@@ -261,7 +288,12 @@ test('resolvePosixScriptHandoff returns the bash recipe when the script exists',
   })
 
   assert.ok(handoff)
-  assert.equal(handoff.command, '/bin/bash')
+  // bash is resolved through the shared resolver (PATH-aware) instead of a
+  // hardcoded /bin/bash that does not exist on NixOS or musl distros.
+  const expectedBash = resolveBashExecutable({ pathEnv: process.env.PATH })
+
+  assert.ok(expectedBash, 'resolveBashExecutable must find bash in this environment')
+  assert.equal(handoff.command, expectedBash)
   assert.deepEqual(handoff.args, [expected])
 })
 

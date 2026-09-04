@@ -78,6 +78,15 @@ def _normalized_windows(raw=ISSUE_58026_WINDOWS):
     return _ingest_windows(raw)
 
 
+def test_cua_driver_install_hint_uses_path_resolved_bash():
+    from tools.computer_use.cua_backend import cua_driver_install_hint
+
+    hint = cua_driver_install_hint()
+
+    assert 'bash -c "$(curl -fsSL ' in hint
+    assert '/bin/bash -c' not in hint
+
+
 def test_parse_xprop_net_active_window_standard_output():
     from tools.computer_use.cua_backend import _parse_xprop_net_active_window
 

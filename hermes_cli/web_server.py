@@ -6594,7 +6594,7 @@ def _run_setup_command(
     return subprocess.run(
         command,
         shell=shell,
-        executable="/bin/bash" if shell else None,
+        executable=(shutil.which("bash") or "/bin/bash") if shell else None,
         env=_memory_provider_setup_env(),
         capture_output=True,
         text=True,

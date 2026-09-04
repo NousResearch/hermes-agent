@@ -2,6 +2,7 @@ import { spawn, type SpawnOptions } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
 
+import { resolveBashExecutable } from './bash-resolver'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 export interface UpdaterChild {
@@ -98,7 +99,7 @@ export function resolvePosixScriptHandoff(
   }
 
   return {
-    command: '/bin/bash',
+    command: resolveBashExecutable() ?? 'bash',
     args: [scriptPath],
     scriptPath
   }

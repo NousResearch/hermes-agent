@@ -31,6 +31,51 @@ export interface TerminalIpcApi {
   disposeAllTerminalSessions: () => void
 }
 
+// Resolve the POSIX interactive shell when no override applies.
+//
+// Preference order: a shell found on PATH first (NixOS, musl, and minimal
+// containers have no /bin/zsh or /bin/bash), then the traditional absolute
+// locations, then PATH `sh`, then a bare `/bin/sh` so node-pty always gets
+// something spawnable.
+export function resolvePosixInteractiveShell(
+  findOnPath: (name: string) => null | string,
+  isExecutable: (candidate: string) => boolean = isExecutableFile
+): string {
+  const fromPath = ['zsh', 'bash']
+    .map(name => findOnPath(name))
+    .find((candidate): candidate is string => {
+      if (!candidate) {
+        return false
+      }
+
+      return isExecutable(candidate)
+    })
+
+  const absolute = ['/bin/zsh', '/bin/bash', '/bin/sh'].find(isExecutable)
+  const pathSh = findOnPath('sh')
+  const executablePathSh = pathSh && isExecutable(pathSh) ? pathSh : null
+
+  return fromPath || absolute || executablePathSh || '/bin/sh'
+}
+
+function isExecutableFile(filePath) {
+  if (!filePath || !path.isAbsolute(filePath)) {
+    return false
+  }
+
+  try {
+    if (!fs.statSync(filePath).isFile()) {
+      return false
+    }
+
+    fs.accessSync(filePath, fs.constants.X_OK)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function registerTerminalIpc({
   isWindows,
   findOnPath,
@@ -40,20 +85,6 @@ export function registerTerminalIpc({
   getSshConnectionState
 }: TerminalIpcDeps): TerminalIpcApi {
   const terminalSessions = new Map()
-
-  function isExecutableFile(filePath) {
-    if (!filePath || !path.isAbsolute(filePath)) {
-      return false
-    }
-
-    try {
-      fs.accessSync(filePath, fs.constants.X_OK)
-
-      return true
-    } catch {
-      return false
-    }
-  }
 
   function posixShellSpec(shellPath) {
     const shellName = path.basename(shellPath)
@@ -110,7 +141,7 @@ export function registerTerminalIpc({
     if (override) {
       const resolved = isExecutableFile(override) ? override : findOnPath(override)
 
-      if (resolved) {
+      if (resolved && isExecutableFile(resolved)) {
         return shellSpecFor(resolved)
       }
     }
@@ -119,9 +150,7 @@ export function registerTerminalIpc({
       return windowsShellSpec()
     }
 
-    const shellPath = ['/bin/zsh', '/bin/bash', '/bin/sh'].find(candidate => isExecutableFile(candidate))
-
-    return posixShellSpec(shellPath || '/bin/sh')
+    return posixShellSpec(resolvePosixInteractiveShell(findOnPath, isExecutableFile))
   }
 
   function safeTerminalCwd(cwd) {

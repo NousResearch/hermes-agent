@@ -1004,6 +1004,24 @@ test('whenReady enables basic password-store encryption before createWindow', ()
   )
 })
 
+test('whenReady waits for login-shell PATH resolution before startup work', () => {
+  const source = readMain()
+  const readyStart = source.indexOf('app.whenReady().then(')
+  assert.notEqual(readyStart, -1, 'the app startup callback must exist')
+
+  const warmupIndex = source.indexOf('await ensureLoginShellPath()', readyStart)
+  assert.notEqual(warmupIndex, -1, 'startup must await login-shell PATH resolution')
+
+  const callbackPrefix = source.slice(readyStart, warmupIndex)
+  assert.match(callbackPrefix, /app\.whenReady\(\)\.then\(async \(\) => \{/)
+
+  const firstStartupWork = source.indexOf('installWindowsSystemCaTrust', warmupIndex)
+  assert.ok(
+    warmupIndex < firstStartupWork,
+    'login-shell PATH resolution must finish before startup work can resolve tools'
+  )
+})
+
 test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteTokenPlainText', () => {
   const source = readMain()
   const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')

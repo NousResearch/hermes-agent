@@ -130,6 +130,20 @@ function shq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
+function remotePythonCommand(script: string) {
+  const quotedScript = shq(script)
+
+  return (
+    `if command -v python3 >/dev/null 2>&1; then python3 -c ${quotedScript}; ` +
+    `elif command -v python >/dev/null 2>&1; then python -c ${quotedScript}; ` +
+    `elif command -v uv >/dev/null 2>&1; then ` +
+    `PYTHON_BIN="$(uv python find 2>/dev/null || true)"; ` +
+    `if [ -n "$PYTHON_BIN" ]; then "$PYTHON_BIN" -c ${quotedScript}; ` +
+    `else echo "remote python interpreter unavailable" >&2; exit 127; fi; ` +
+    `else echo "remote python interpreter unavailable" >&2; exit 127; fi`
+  )
+}
+
 function validateRemotePath(p) {
   const s = String(p || '')
 
@@ -632,7 +646,7 @@ async function pidIsOurDashboard(
       'except (ValueError,IndexError):pass\n' +
       'print("OWNED" if ok else "FOREIGN")'
 
-    const out = await ssh.exec(`python3 -c ${shq(script)}`)
+    const out = await ssh.exec(remotePythonCommand(script))
 
     return String(out || '').trim() === 'OWNED'
   } catch (cause) {
@@ -1215,7 +1229,7 @@ async function spawnRemoteDashboard(
     'finally:os.close(dd)'
 
   try {
-    await ssh.exec(`python3 -c ${shq(tokenUploadPy)}`, { stdinData: token })
+    await ssh.exec(remotePythonCommand(tokenUploadPy), { stdinData: token })
   } catch (error) {
     try {
       await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)

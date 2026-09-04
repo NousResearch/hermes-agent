@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 
 import { appendUniquePathEntries, delimiterForPlatform, pathEnvKey } from './backend-env'
+import { resolveBashExecutable } from './bash-resolver'
 
 // Login-shell PATH resolution for GUI launches.
 //
@@ -29,15 +30,40 @@ const PATH_END = '__HERMES_LOGIN_PATH_END__'
 const PROBE_COMMAND = "printf '%s' \"" + PATH_START + '${PATH}' + PATH_END + '"'
 const ATTEMPT_TIMEOUT_MS = 5000
 
-function loginShellExecutable(env: any = process.env, platform = process.platform) {
+function loginShellExecutable(
+  env: any = process.env,
+  platform = process.platform,
+  resolveBash = resolveBashExecutable
+) {
   const shell = typeof env?.SHELL === 'string' ? env.SHELL.trim() : ''
 
   if (shell) {
     return shell
   }
 
-  // macOS Catalina+ defaults to zsh; most Linux distros default to bash.
-  return platform === 'darwin' ? '/bin/zsh' : '/bin/bash'
+  // macOS Catalina+ defaults to zsh; on Linux prefer a PATH-resolved bash
+  // before platform profiles. NixOS GUI launches can have neither SHELL nor a
+  // profile path in the inherited environment, so include their stable links.
+  if (platform === 'darwin') {
+    return '/bin/zsh'
+  }
+
+  const user = typeof env?.USER === 'string' ? env.USER.trim() : ''
+  const home = typeof env?.HOME === 'string' ? env.HOME.trim() : ''
+
+  const nixLocations = [
+    '/run/current-system/sw/bin/bash',
+    user ? `/etc/profiles/per-user/${user}/bin/bash` : '',
+    home ? `${home}/.nix-profile/bin/bash` : '',
+    '/nix/var/nix/profiles/default/bin/bash'
+  ].filter(Boolean)
+
+  return (
+    resolveBash({
+      pathEnv: env?.PATH,
+      knownLocations: [...nixLocations, '/usr/bin/bash', '/bin/bash', '/usr/local/bin/bash']
+    }) ?? '/bin/bash'
+  )
 }
 
 // Extract $PATH from between the sentinel markers. Uses the LAST start marker

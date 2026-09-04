@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +28,68 @@ requires_posix_handoff = pytest.mark.skipif(
     not (os.path.exists("/bin/bash") and os.path.exists("/usr/bin/python3")),
     reason="posix.sh detaches through /bin/bash and /usr/bin/python3",
 )
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="bash is unavailable")
+def test_linux_relaunch_works_without_setsid(tmp_path: Path):
+    install_root = tmp_path / "hermes-agent"
+    bin_dir = tmp_path / "bin"
+    release_dir = install_root / "apps" / "desktop" / "release" / "linux-unpacked"
+    hermes_bin = install_root / "venv" / "bin" / "hermes"
+    relaunch_target = release_dir / "hermes"
+    relaunch_log = tmp_path / "relaunch.log"
+
+    release_dir.mkdir(parents=True)
+    hermes_bin.parent.mkdir(parents=True)
+    bin_dir.mkdir()
+    hermes_bin.write_text(
+        "#!/bin/sh\ncase \"$1\" in --help) printf '%s\\n' --keep-stash;; update) exit 0;; esac\n",
+        encoding="utf-8",
+    )
+    hermes_bin.chmod(0o755)
+    relaunch_target.write_text(
+        f"#!/bin/sh\nprintf 'launched\\n' >> {relaunch_log}\nsleep 5\n",
+        encoding="utf-8",
+    )
+    relaunch_target.chmod(0o755)
+
+    for name in (
+        "bash", "cat", "chmod", "date", "dirname", "grep", "head", "kill",
+        "mkdir", "mv", "nohup", "pwd", "rm", "seq", "sleep", "stat", "tee",
+        "tr", "uname",
+    ):
+        resolved = shutil.which(name)
+        assert resolved, f"missing host helper: {name}"
+        (bin_dir / name).symlink_to(resolved)
+    (bin_dir / "python3").symlink_to(sys.executable)
+
+    env = os.environ.copy()
+    env.update({"PATH": str(bin_dir), "HERMES_HOME": str(tmp_path), "TMPDIR": str(tmp_path)})
+    result = subprocess.run(
+        [
+            shutil.which("bash") or "bash",
+            str(SHIM_DIR / "posix.sh"),
+            "--install-root", str(install_root),
+            "--relaunch-target", str(relaunch_target),
+            "--relaunch-cwd", str(tmp_path),
+            "--no-ui",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    result_file = tmp_path / ".hermes-update-result.json"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not result_file.exists():
+        time.sleep(0.1)
+    assert result_file.exists(), "hand-off never wrote its result file"
+    while time.monotonic() < deadline and not relaunch_log.exists():
+        time.sleep(0.1)
+    assert relaunch_log.read_text(encoding="utf-8") == "launched\n"
+    assert json.loads(result_file.read_text(encoding="utf-8"))["manual"] is False
 
 
 # ── serve-ui.py: what the page actually receives ───────────────────────────

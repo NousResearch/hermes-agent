@@ -92,3 +92,14 @@ def test_watcher_resolves_when_all_children_are_dead():
             )
 
     asyncio.run(_run())
+
+
+def test_watcher_capability_probe_does_not_invoke_async_watcher():
+    """The handler must inspect the watcher function, not create a coroutine."""
+    import inspect
+
+    from tools import mcp_tool
+
+    source = inspect.getsource(mcp_tool)
+    assert "isawaitable(_watch_children())" not in source
+    assert "iscoroutinefunction(_watch_children)" in source

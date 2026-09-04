@@ -39,14 +39,24 @@ material is fingerprinted, never stored.
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import functools
 import hashlib
 import logging
 import os
+import select
+import secrets as secrets_module
 import shutil
+import signal
+import stat
 import subprocess
+import sys
+import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.secret_sources._cache import (
     CachedFetch,
@@ -115,7 +125,22 @@ _OP_ENV_ALLOWLIST = (
 _CacheKey = Tuple[str, str, str, str]  # (auth_fp, account, home, refs_fp)
 _CACHE: Dict[_CacheKey, CachedFetch] = {}
 
+# `op` can ignore private runtime settings and rendezvous through its global
+# daemon.  Serialize the entire cache/fetch/cleanup transaction so two gateway
+# reload paths cannot cross-adopt or reuse each other's daemon.
+_OP_FETCH_LOCK = threading.RLock()
+
 _DISK_CACHE_BASENAME = "op_cache.json"
+
+# One private, process-scoped CLI socket namespace.  The official CLI's global
+# fallback alternates between /var/run/user/<uid> and /run/user/<uid> depending
+# on whether XDG_RUNTIME_DIR is available; those aliases can make two clients
+# replace the same socket and leave both 24h daemons alive in one service
+# cgroup.  A per-Hermes-process name also prevents an old global daemon from
+# being reused by a supposedly cache-disabled read.
+_OP_SOCKET_NAMESPACE = hashlib.sha256(
+    f"{os.getpid()}:{time.time_ns()}".encode("ascii")
+).hexdigest()[:16]
 
 
 def _disk_key_str(cache_key: _CacheKey) -> str:
@@ -129,9 +154,7 @@ def _disk_key_str(cache_key: _CacheKey) -> str:
     return f"{auth_fp}|{account}|{refs_fp}"
 
 
-_DISK_CACHE: DiskCache = DiskCache(
-    _DISK_CACHE_BASENAME, key_serializer=_disk_key_str
-)
+_DISK_CACHE: DiskCache = DiskCache(_DISK_CACHE_BASENAME, key_serializer=_disk_key_str)
 
 
 def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
@@ -238,7 +261,705 @@ def _scrub(text: str) -> str:
     return strip_ansi(text).replace("\x1b", "").strip()
 
 
-def _op_child_env(token_value: str) -> Dict[str, str]:
+@dataclass(frozen=True)
+class _OpRuntimeNamespace:
+    """Kernel-bound runtime namespace owned by one 1Password fetch batch."""
+
+    runtime_dir: Path
+    child_runtime_dir: Path
+    socket_path: Path
+    dir_fd: int
+    dir_dev: int
+    dir_ino: int
+    uid: int
+    start_ticks_floor: int
+    cgroup: bytes
+
+
+@dataclass(frozen=True)
+class _OpDaemonProcess:
+    pid: int
+    start_ticks: int
+
+
+@dataclass(frozen=True)
+class _OpDaemonEvidence:
+    ppid: int
+    start_ticks: int
+    uid: int
+    executable_dev: int
+    executable_ino: int
+    cmdline: bytes
+    cgroup: bytes
+
+
+def _runtime_root_candidates(source_env: Mapping[str, str], uid: int) -> List[Path]:
+    candidates: List[Path] = []
+    raw_runtime = source_env.get("XDG_RUNTIME_DIR", "").strip()
+    if raw_runtime:
+        candidates.append(Path(raw_runtime).expanduser())
+    candidates.append(Path("/run/user") / str(uid))
+    return candidates
+
+
+def _runtime_root_is_safe_and_short(runtime_dir: Path, uid: int) -> Optional[Path]:
+    try:
+        resolved = runtime_dir.resolve(strict=True)
+        runtime_stat = resolved.stat()
+    except (OSError, RuntimeError):
+        return None
+    if (
+        not resolved.is_absolute()
+        or not stat.S_ISDIR(runtime_stat.st_mode)
+        or runtime_stat.st_uid != uid
+        or stat.S_IMODE(runtime_stat.st_mode) & 0o022
+        or not _runtime_root_ancestry_is_safe(resolved, uid)
+    ):
+        return None
+    return resolved
+
+
+def _runtime_root_ancestry_is_safe(runtime_dir: Path, uid: int) -> bool:
+    """Reject replaceable non-sticky ancestry for a canonical runtime root."""
+    for ancestor in (runtime_dir, *runtime_dir.parents):
+        try:
+            ancestor_stat = ancestor.stat()
+        except OSError:
+            return False
+        mode = stat.S_IMODE(ancestor_stat.st_mode)
+        if (
+            not stat.S_ISDIR(ancestor_stat.st_mode)
+            or ancestor_stat.st_uid not in {0, uid}
+            or (mode & 0o022 and not mode & stat.S_ISVTX)
+        ):
+            return False
+    return True
+
+
+def _open_bound_runtime_root(runtime_root: Path, uid: int) -> int:
+    """Open and bind the exact safe runtime-root inode used for mkdirat."""
+    checked = runtime_root.stat()
+    fd = os.open(
+        runtime_root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        opened = os.fstat(fd)
+        current = runtime_root.stat()
+        if (
+            checked.st_dev != opened.st_dev
+            or checked.st_ino != opened.st_ino
+            or current.st_dev != opened.st_dev
+            or current.st_ino != opened.st_ino
+            or not stat.S_ISDIR(opened.st_mode)
+            or opened.st_uid != uid
+            or stat.S_IMODE(opened.st_mode) & 0o022
+            or not _runtime_root_ancestry_is_safe(runtime_root, uid)
+        ):
+            raise RuntimeError("1Password runtime root identity drift; setup HOLD")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _fallback_op_runtime_root(source_env: Mapping[str, str], uid: int) -> Path:
+    """Create a private persistent root when no system runtime root exists."""
+    home_text = source_env.get("HERMES_HOME", "").strip()
+    if home_text:
+        hermes_home = Path(home_text).expanduser()
+    else:
+        user_home = source_env.get("HOME", "").strip()
+        hermes_home = (
+            Path(user_home).expanduser() / ".hermes"
+            if user_home
+            else Path.home() / ".hermes"
+        )
+    try:
+        hermes_home = hermes_home.resolve(strict=True)
+        home_stat = hermes_home.stat()
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError("no safe 1Password CLI runtime root available") from exc
+    if (
+        not hermes_home.is_absolute()
+        or not stat.S_ISDIR(home_stat.st_mode)
+        or home_stat.st_uid != uid
+        or stat.S_IMODE(home_stat.st_mode) & 0o022
+    ):
+        raise RuntimeError("unsafe HERMES_HOME for 1Password runtime fallback")
+
+    parent_fd = os.open(
+        hermes_home,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        try:
+            os.mkdir(".runtime", mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        runtime_fd = os.open(
+            ".runtime",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        try:
+            runtime_stat = os.fstat(runtime_fd)
+            runtime_root = hermes_home / ".runtime"
+            if (
+                not stat.S_ISDIR(runtime_stat.st_mode)
+                or runtime_stat.st_uid != uid
+                or stat.S_IMODE(runtime_stat.st_mode) != 0o700
+                or runtime_root.resolve(strict=True) != runtime_root
+            ):
+                raise RuntimeError("unsafe private 1Password runtime fallback")
+        finally:
+            os.close(runtime_fd)
+    finally:
+        os.close(parent_fd)
+
+    safe_root = _runtime_root_is_safe_and_short(runtime_root, uid)
+    if safe_root is None:
+        raise RuntimeError(
+            "private 1Password runtime fallback path is unsafe or too long"
+        )
+    return safe_root
+
+
+def _safe_op_runtime_root(
+    source_env: Optional[Mapping[str, str]] = None,
+) -> Path:
+    """Return a canonical uid-owned runtime root or create a private fallback."""
+    source = get_source_environment() if source_env is None else source_env
+    uid = os.getuid()  # windows-footgun: ok
+    for candidate in _runtime_root_candidates(source, uid):
+        safe_root = _runtime_root_is_safe_and_short(candidate, uid)
+        if safe_root is not None:
+            return safe_root
+    return _fallback_op_runtime_root(source, uid)
+
+
+def _linux_start_ticks_floor() -> int:
+    ticks = int(os.sysconf("SC_CLK_TCK"))
+    return max(0, int(time.clock_gettime(time.CLOCK_BOOTTIME) * ticks) - 1)
+
+
+def _create_op_runtime_namespace_inner() -> _OpRuntimeNamespace:
+    """Create a private XDG namespace so one batch owns any CLI daemon."""
+    if sys.platform != "linux":
+        raise RuntimeError("managed 1Password daemon cleanup requires Linux")
+
+    source_env = get_source_environment()
+    root = _safe_op_runtime_root(source_env)
+    uid = os.getuid()  # windows-footgun: ok
+    parent_fd = _open_bound_runtime_root(root, uid)
+    name = f"hermes-op-{_OP_SOCKET_NAMESPACE}-{secrets_module.token_hex(8)}"
+    runtime_dir = root / name
+    dir_fd = -1
+    created = False
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        created = True
+        dir_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        runtime_stat = os.fstat(dir_fd)
+        if (
+            not stat.S_ISDIR(runtime_stat.st_mode)
+            or runtime_stat.st_uid != uid
+            or stat.S_IMODE(runtime_stat.st_mode) != 0o700
+            or runtime_dir.resolve(strict=True) != runtime_dir
+        ):
+            raise RuntimeError("unsafe private 1Password runtime directory")
+        child_runtime_dir = Path("/proc") / str(os.getpid()) / "fd" / str(dir_fd)
+        if child_runtime_dir.resolve(strict=True) != runtime_dir:
+            raise RuntimeError("private 1Password runtime FD binding failed")
+        socket_path = child_runtime_dir / "op.sock"
+        # sockaddr_un.sun_path is 108 bytes on Linux including its NUL.
+        if len(os.fsencode(socket_path)) > 100:
+            raise RuntimeError("private 1Password CLI socket path is too long")
+        return _OpRuntimeNamespace(
+            runtime_dir=runtime_dir,
+            child_runtime_dir=child_runtime_dir,
+            socket_path=socket_path,
+            dir_fd=dir_fd,
+            dir_dev=runtime_stat.st_dev,
+            dir_ino=runtime_stat.st_ino,
+            uid=uid,
+            start_ticks_floor=_linux_start_ticks_floor(),
+            cgroup=Path("/proc/self/cgroup").read_bytes(),
+        )
+    except Exception:
+        if dir_fd >= 0:
+            os.close(dir_fd)
+        if created:
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        raise
+    finally:
+        os.close(parent_fd)
+
+
+def _create_op_runtime_namespace() -> _OpRuntimeNamespace:
+    try:
+        return _create_op_runtime_namespace_inner()
+    except RuntimeError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(
+            "1Password private runtime setup failed; setup HOLD"
+        ) from exc
+
+
+def _read_proc_stat(pid: int) -> Tuple[int, int]:
+    raw = (Path("/proc") / str(pid) / "stat").read_text(encoding="ascii")
+    close = raw.rfind(")")
+    if close < 0:
+        raise RuntimeError("malformed /proc stat")
+    fields = raw[close + 2 :].split()
+    if len(fields) < 20:
+        raise RuntimeError("short /proc stat")
+    return int(fields[1]), int(fields[19])  # PPID (field 4), starttime (field 22)
+
+
+def _read_proc_environment(pid: int) -> Dict[bytes, bytes]:
+    raw = (Path("/proc") / str(pid) / "environ").read_bytes()
+    return {
+        part.split(b"=", 1)[0]: part.split(b"=", 1)[1]
+        for part in raw.split(b"\0")
+        if b"=" in part
+    }
+
+
+def _read_op_daemon_evidence(pid: int) -> _OpDaemonEvidence:
+    proc = Path("/proc") / str(pid)
+    ppid, start_ticks = _read_proc_stat(pid)
+    proc_stat = proc.stat()
+    exe_stat = (proc / "exe").stat()
+    return _OpDaemonEvidence(
+        ppid=ppid,
+        start_ticks=start_ticks,
+        uid=proc_stat.st_uid,
+        executable_dev=exe_stat.st_dev,
+        executable_ino=exe_stat.st_ino,
+        cmdline=(proc / "cmdline").read_bytes(),
+        cgroup=(proc / "cgroup").read_bytes(),
+    )
+
+
+def _op_daemon_core_identity_matches(
+    evidence: _OpDaemonEvidence,
+    namespace: _OpRuntimeNamespace,
+    binary_stat: os.stat_result,
+) -> bool:
+    return (
+        evidence.ppid == 1
+        and evidence.start_ticks >= namespace.start_ticks_floor
+        and evidence.uid == namespace.uid
+        and evidence.cmdline == b"op\0daemon\0"
+        and evidence.executable_dev == binary_stat.st_dev
+        and evidence.executable_ino == binary_stat.st_ino
+        and evidence.cgroup == namespace.cgroup
+    )
+
+
+def _op_daemon_identity_matches_ignoring_exe(
+    evidence: _OpDaemonEvidence,
+    namespace: _OpRuntimeNamespace,
+) -> bool:
+    """Every core-identity axis except the executable inode.
+
+    A re-homed ``op daemon`` whose binary was swapped mid-batch (an ``op``
+    upgrade replaces the file, so ``/proc/<pid>/exe`` dev/ino no longer
+    matches the freshly stat-ed binary) still matches every other axis. Such
+    a daemon must be surfaced as ``foreign`` (reported, never signalled)
+    rather than silently dropped as ``unrelated``.
+    """
+    return (
+        evidence.ppid == 1
+        and evidence.start_ticks >= namespace.start_ticks_floor
+        and evidence.uid == namespace.uid
+        and evidence.cmdline == b"op\0daemon\0"
+        and evidence.cgroup == namespace.cgroup
+    )
+
+
+def _writable_by_others(st: os.stat_result, fd: int) -> bool:
+    """Whether anyone other than the file's owner can write it.
+
+    World-writable is always unsafe. A group-writable file is safe only when
+    BOTH: (a) it carries no extended POSIX ACL — a group-write bit can be an
+    ACL *mask* concealing a ``u:other:w`` grant (possibly inherited from a
+    directory default ACL), which the mode bits alone cannot distinguish from
+    a real group permission; and (b) the owning group is the owner's own
+    private per-user group — gid == the owner's primary/login gid, named after
+    the owner, no secondary members. This is the USERGROUPS / ``umask 002``
+    scheme in which each user's primary gid is unique. Any extended ACL, shared
+    group, or unresolvable identity fails closed. POSIX-only; Linux path.
+    """
+    import grp
+    import pwd
+
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & stat.S_IWOTH:
+        return True
+    if mode & stat.S_IWGRP:
+        try:
+            if "system.posix_acl_access" in os.listxattr(fd):
+                return True  # extended ACL: the group bit may be a mask
+        except OSError:
+            pass  # filesystem without xattr/ACL support -> the bit is a real perm
+        try:
+            owner = pwd.getpwuid(st.st_uid)
+            group = grp.getgrgid(st.st_gid)
+        except (KeyError, OSError):
+            return True
+        if (
+            st.st_gid != owner.pw_gid
+            or group.gr_name != owner.pw_name
+            or set(group.gr_mem) - {owner.pw_name}
+        ):
+            return True
+    return False
+
+
+def _inspect_op_daemon(
+    pid: int,
+    namespace: _OpRuntimeNamespace,
+    binary_stat: os.stat_result,
+) -> Tuple[str, Optional[_OpDaemonProcess]]:
+    """Classify a PID as gone, unrelated, exact, or foreign-in-namespace."""
+    try:
+        env = _read_proc_environment(pid)
+    except FileNotFoundError:
+        return "gone", None
+    except (OSError, RuntimeError):
+        try:
+            evidence = _read_op_daemon_evidence(pid)
+        except FileNotFoundError:
+            return "gone", None
+        except (OSError, RuntimeError, ValueError):
+            return "unrelated", None
+        return (
+            ("foreign", None)
+            if _op_daemon_core_identity_matches(evidence, namespace, binary_stat)
+            else ("unrelated", None)
+        )
+
+    expected_socket = os.fsencode(namespace.socket_path)
+    child_runtime_dir = getattr(namespace, "child_runtime_dir", None)
+    if not isinstance(child_runtime_dir, Path):
+        child_runtime_dir = namespace.runtime_dir
+    expected_runtime = os.fsencode(child_runtime_dir)
+    socket_matches = env.get(b"OP_SOCK") == expected_socket
+    runtime_matches = env.get(b"XDG_RUNTIME_DIR") == expected_runtime
+    if not socket_matches and not runtime_matches:
+        # CLI 2.38.1 can sanitize OP_SOCK and re-home XDG_RUNTIME_DIR to the
+        # global runtime after daemonizing.  A process whose remaining core
+        # identity still matches this fetch boundary is therefore ambiguous,
+        # not unrelated: fail closed and never signal it.
+        try:
+            evidence = _read_op_daemon_evidence(pid)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            return "unrelated", None
+        # An exe dev/ino swap (op upgraded mid-batch) must not downgrade a
+        # re-homed daemon that still matches every other axis to a silent
+        # "unrelated" pass — cleanup would then remove an empty namespace over
+        # a live global-runtime leak. Surface it as foreign so the backstop
+        # HOLDs; foreign is never signalled, so this can never kill a
+        # genuinely-unrelated process.
+        if _op_daemon_core_identity_matches(
+            evidence, namespace, binary_stat
+        ) or _op_daemon_identity_matches_ignoring_exe(evidence, namespace):
+            return "foreign", None
+        return "unrelated", None
+    if not socket_matches or not runtime_matches:
+        return "foreign", None
+
+    try:
+        evidence = _read_op_daemon_evidence(pid)
+    except FileNotFoundError:
+        return "gone", None
+    except (OSError, RuntimeError, ValueError):
+        return "foreign", None
+
+    if not _op_daemon_core_identity_matches(evidence, namespace, binary_stat):
+        return "foreign", None
+    return "exact", _OpDaemonProcess(pid=pid, start_ticks=evidence.start_ticks)
+
+
+def _scan_op_runtime_namespace(
+    namespace: _OpRuntimeNamespace,
+    binary_stat: os.stat_result,
+) -> Tuple[List[_OpDaemonProcess], List[int]]:
+    exact: List[_OpDaemonProcess] = []
+    foreign: List[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        status, identity = _inspect_op_daemon(pid, namespace, binary_stat)
+        if status == "exact" and identity is not None:
+            exact.append(identity)
+        elif status == "foreign":
+            foreign.append(pid)
+    return exact, foreign
+
+
+def _read_op_daemon_pidfile(namespace: _OpRuntimeNamespace) -> Optional[int]:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        fd = os.open("op-daemon.pid", flags, dir_fd=namespace.dir_fd)
+    except FileNotFoundError:
+        return None
+    try:
+        pid_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(pid_stat.st_mode)
+            or pid_stat.st_uid != namespace.uid
+            or stat.S_IMODE(pid_stat.st_mode) & 0o077
+            or pid_stat.st_nlink != 1
+        ):
+            raise RuntimeError("unsafe 1Password daemon pidfile; cleanup HOLD")
+        raw = os.read(fd, 64).strip()
+        if not raw.isdigit() or len(raw) > 20:
+            raise RuntimeError("malformed 1Password daemon pidfile; cleanup HOLD")
+        pid = int(raw)
+        if pid <= 0:
+            raise RuntimeError("invalid 1Password daemon pid; cleanup HOLD")
+        return pid
+    finally:
+        os.close(fd)
+
+
+def _pidfd_open(pid: int) -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        function = libc.pidfd_open
+    except AttributeError as exc:
+        raise RuntimeError("pidfd_open unavailable; 1Password cleanup HOLD") from exc
+    function.argtypes = [ctypes.c_int, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    fd = function(pid, 0)
+    if fd < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return fd
+
+
+def _pidfd_send_sigterm(pid_fd: int) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        function = libc.pidfd_send_signal
+    except AttributeError as exc:
+        raise RuntimeError(
+            "pidfd_send_signal unavailable; 1Password cleanup HOLD"
+        ) from exc
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    if function(pid_fd, signal.SIGTERM, None, 0) < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _wait_pidfd_exit(pid_fd: int, timeout_seconds: float = 5.0) -> bool:
+    poller = select.poll()
+    poller.register(pid_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+        try:
+            if poller.poll(remaining_ms):
+                return True
+        except InterruptedError:
+            continue
+        return False
+
+
+def _validate_runtime_namespace(namespace: _OpRuntimeNamespace) -> None:
+    fd_stat = os.fstat(namespace.dir_fd)
+    try:
+        path_stat = namespace.runtime_dir.stat()
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "1Password runtime directory vanished; cleanup HOLD"
+        ) from exc
+    if (
+        fd_stat.st_dev != namespace.dir_dev
+        or fd_stat.st_ino != namespace.dir_ino
+        or path_stat.st_dev != namespace.dir_dev
+        or path_stat.st_ino != namespace.dir_ino
+        or fd_stat.st_uid != namespace.uid
+        or stat.S_IMODE(fd_stat.st_mode) != 0o700
+        or namespace.child_runtime_dir.resolve(strict=True) != namespace.runtime_dir
+    ):
+        raise RuntimeError("1Password runtime identity drift; cleanup HOLD")
+
+
+def _remove_op_runtime_namespace(namespace: _OpRuntimeNamespace) -> None:
+    _validate_runtime_namespace(namespace)
+    allowed = {"op.sock", "op-daemon.pid"}
+    entries = os.listdir(namespace.dir_fd)
+    unexpected = sorted(set(entries) - allowed)
+    if unexpected:
+        raise RuntimeError("unexpected 1Password runtime entries; cleanup HOLD")
+    for name in entries:
+        entry_stat = os.stat(name, dir_fd=namespace.dir_fd, follow_symlinks=False)
+        valid = (
+            name == "op.sock"
+            and stat.S_ISSOCK(entry_stat.st_mode)
+            and entry_stat.st_uid == namespace.uid
+        ) or (
+            name == "op-daemon.pid"
+            and stat.S_ISREG(entry_stat.st_mode)
+            and entry_stat.st_uid == namespace.uid
+            and not stat.S_IMODE(entry_stat.st_mode) & 0o077
+        )
+        if not valid:
+            raise RuntimeError("unsafe 1Password runtime entry; cleanup HOLD")
+        os.unlink(name, dir_fd=namespace.dir_fd)
+    _validate_runtime_namespace(namespace)
+    os.rmdir(namespace.runtime_dir)
+    if os.fstat(namespace.dir_fd).st_nlink != 0:
+        raise RuntimeError("1Password runtime inode unlink proof failed; cleanup HOLD")
+
+
+def _require_op_runtime_quiescence(
+    namespace: _OpRuntimeNamespace,
+    binary_stat: os.stat_result,
+    *,
+    runtime_present: bool,
+) -> None:
+    """Require two bounded zero-process observations for this exact namespace."""
+    for observation in range(2):
+        pidfile_pid: Optional[int] = None
+        if runtime_present:
+            _validate_runtime_namespace(namespace)
+            pidfile_pid = _read_op_daemon_pidfile(namespace)
+        exact, foreign = _scan_op_runtime_namespace(namespace, binary_stat)
+        if exact or foreign:
+            raise RuntimeError(
+                "1Password runtime namespace is not quiescent; cleanup HOLD"
+            )
+        if pidfile_pid is not None and (Path("/proc") / str(pidfile_pid)).exists():
+            status, _ = _inspect_op_daemon(pidfile_pid, namespace, binary_stat)
+            if status != "gone":
+                raise RuntimeError("unattested 1Password daemon is live; cleanup HOLD")
+        if observation == 0:
+            time.sleep(0.05)
+
+
+def _close_op_runtime_namespace_fd(dir_fd: int) -> None:
+    os.close(dir_fd)
+
+
+def _cleanup_op_runtime_namespace(
+    namespace: _OpRuntimeNamespace,
+    binary: Path,
+) -> None:
+    """Gracefully stop only the exact daemon created in this fetch namespace."""
+    try:
+        _validate_runtime_namespace(namespace)
+        try:
+            binary_stat = binary.resolve(strict=True).stat()
+        except OSError as exc:
+            raise RuntimeError(
+                "1Password binary identity unavailable; cleanup HOLD"
+            ) from exc
+
+        pidfile_pid = _read_op_daemon_pidfile(namespace)
+        exact, foreign = _scan_op_runtime_namespace(namespace, binary_stat)
+        if foreign or len(exact) > 1:
+            raise RuntimeError("ambiguous 1Password daemon identity; cleanup HOLD")
+
+        if pidfile_pid is not None:
+            status, pidfile_identity = _inspect_op_daemon(
+                pidfile_pid, namespace, binary_stat
+            )
+            if status == "foreign" or status == "unrelated":
+                raise RuntimeError(
+                    "foreign 1Password daemon pidfile target; cleanup HOLD"
+                )
+            if (
+                status == "exact"
+                and pidfile_identity is not None
+                and pidfile_identity not in exact
+            ):
+                exact.append(pidfile_identity)
+
+        if exact:
+            identity = exact[0]
+            if pidfile_pid != identity.pid:
+                raise RuntimeError("1Password daemon pidfile mismatch; cleanup HOLD")
+            try:
+                pid_fd = _pidfd_open(identity.pid)
+            except OSError as exc:
+                if exc.errno != errno.ESRCH:
+                    raise RuntimeError(
+                        "cannot pin 1Password daemon; cleanup HOLD"
+                    ) from exc
+            else:
+                try:
+                    status, pinned = _inspect_op_daemon(
+                        identity.pid, namespace, binary_stat
+                    )
+                    if status != "exact" or pinned != identity:
+                        raise RuntimeError(
+                            "1Password daemon identity changed after pidfd pin; cleanup HOLD"
+                        )
+                    try:
+                        _pidfd_send_sigterm(pid_fd)
+                    except OSError as exc:
+                        if exc.errno != errno.ESRCH:
+                            raise RuntimeError(
+                                "cannot terminate 1Password daemon; cleanup HOLD"
+                            ) from exc
+                    if not _wait_pidfd_exit(pid_fd):
+                        raise RuntimeError(
+                            "1Password daemon did not exit after SIGTERM; cleanup HOLD"
+                        )
+                finally:
+                    os.close(pid_fd)
+        elif pidfile_pid is not None:
+            # A private pidfile whose process has already exited is only stale
+            # local state; it is safe to remove with the inode-bound directory.
+            if (Path("/proc") / str(pidfile_pid)).exists():
+                raise RuntimeError("unattested 1Password daemon is live; cleanup HOLD")
+
+        _require_op_runtime_quiescence(namespace, binary_stat, runtime_present=True)
+        _remove_op_runtime_namespace(namespace)
+        _require_op_runtime_quiescence(namespace, binary_stat, runtime_present=False)
+    except RuntimeError:
+        raise
+    except OSError as exc:
+        raise RuntimeError("1Password daemon cleanup failed; cleanup HOLD") from exc
+    finally:
+        primary_error = sys.exc_info()[1]
+        try:
+            _close_op_runtime_namespace_fd(namespace.dir_fd)
+        except OSError as close_error:
+            if primary_error is None:
+                raise RuntimeError(
+                    "1Password runtime namespace close failed; cleanup HOLD"
+                ) from close_error
+            if hasattr(primary_error, "add_note"):
+                primary_error.add_note(
+                    f"Additionally failed to close runtime namespace: {close_error}"
+                )
+
+
+def _op_child_env(
+    token_value: str,
+    runtime_namespace: Optional[_OpRuntimeNamespace] = None,
+) -> Dict[str, str]:
     """Build a minimal allowlisted environment for the ``op`` child process."""
     source_env = get_source_environment()
     env: Dict[str, str] = {}
@@ -254,8 +975,156 @@ def _op_child_env(token_value: str) -> Dict[str, str]:
     # configured Hermes to source it from, so normalize to that name here.
     if token_value:
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    # CLI 2.38.1 can still launch a Linux service-account cache daemon despite
+    # both OP_CACHE=false and --cache=false. Keep both producer controls, then
+    # bind that daemon to one private XDG namespace that Hermes cleans exactly.
+    env["OP_CACHE"] = "false"
+    # The official CLI can still create a daemon while probing desktop-app or
+    # biometric integration.  Force both documented producer controls even if
+    # a parent environment tried to enable them.
+    env["OP_LOAD_DESKTOP_APP_SETTINGS"] = "false"
+    env["OP_BIOMETRIC_UNLOCK_ENABLED"] = "false"
+    if sys.platform == "linux":
+        if runtime_namespace is not None:
+            child_runtime_dir = getattr(runtime_namespace, "child_runtime_dir", None)
+            runtime_dir = (
+                child_runtime_dir
+                if isinstance(child_runtime_dir, Path)
+                else runtime_namespace.runtime_dir
+            )
+            socket_path = runtime_namespace.socket_path
+        else:
+            runtime_dir = _safe_op_runtime_root(source_env)
+            socket_path = runtime_dir / f"hermes-op-{_OP_SOCKET_NAMESPACE}.sock"
+            if len(os.fsencode(socket_path)) > 100:
+                raise RuntimeError("private 1Password CLI socket path is too long")
+        # Pin both variables to the same canonical runtime. `op` uses
+        # XDG_RUNTIME_DIR for its pidfile even when OP_SOCK points elsewhere;
+        # leaving XDG inherited created /tmp and /run aliases in one cgroup.
+        env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+        env["OP_SOCK"] = str(socket_path)
     env["NO_COLOR"] = "1"
     return env
+
+
+def _run_op_process(
+    cmd: List[str], *, env: Dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run one exact op child with bounded SIGTERM-only timeout handling."""
+    process_cmd = cmd
+    process_env = env
+    helper_fd: Optional[int] = None
+    popen_kwargs: Dict[str, Any] = {}
+    timeout = float(_OP_RUN_TIMEOUT)
+    if sys.platform == "linux":
+        helper = Path(__file__).with_name("_op_subreaper.py")
+        try:
+            helper_fd = os.open(
+                helper,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+            fd_stat = os.fstat(helper_fd)
+            path_stat = helper.stat()
+        except OSError as exc:
+            if helper_fd is not None:
+                os.close(helper_fd)
+            raise RuntimeError(
+                "unable to bind op lifecycle helper; execution HOLD"
+            ) from exc
+        if (
+            not stat.S_ISREG(fd_stat.st_mode)
+            or fd_stat.st_uid != os.getuid()  # windows-footgun: ok
+            or _writable_by_others(fd_stat, helper_fd)
+            or (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino)
+        ):
+            os.close(helper_fd)
+            raise RuntimeError("unsafe op lifecycle helper; execution HOLD")
+        process_cmd = [
+            sys.executable,
+            "-I",
+            "-S",
+            f"/proc/self/fd/{helper_fd}",
+            "--",
+            *cmd,
+        ]
+        process_env = dict(env)
+        process_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        popen_kwargs["pass_fds"] = (helper_fd,)
+        timeout += 15.0
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — inode-bound helper / reviewed argv
+            process_cmd,
+            env=process_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **popen_kwargs,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"failed to invoke op: {exc}") from exc
+    finally:
+        if helper_fd is not None:
+            os.close(helper_fd)
+
+    pid_fd: Optional[int] = None
+    if sys.platform == "linux":
+        try:
+            pid_fd = _pidfd_open(proc.pid)
+        except (OSError, RuntimeError) as exc:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+            raise RuntimeError("unable to bind op child pidfd; execution HOLD") from exc
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                if pid_fd is not None:
+                    _pidfd_send_sigterm(pid_fd)
+                    exited = _wait_pidfd_exit(pid_fd)
+                else:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5.0)
+                        exited = True
+                    except subprocess.TimeoutExpired:
+                        exited = False
+            except (OSError, RuntimeError) as signal_exc:
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+                raise RuntimeError(
+                    f"op read timed out after {_OP_RUN_TIMEOUT}s; "
+                    "SIGTERM delivery failed; execution HOLD"
+                ) from signal_exc
+            if not exited:
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+                raise RuntimeError(
+                    f"op read timed out after {_OP_RUN_TIMEOUT}s; "
+                    "SIGTERM sent but child still running; execution HOLD"
+                ) from exc
+            try:
+                proc.communicate(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+                raise RuntimeError(
+                    f"op read timed out after {_OP_RUN_TIMEOUT}s; "
+                    "SIGTERM exited child but output pipes remained open; execution HOLD"
+                ) from exc
+            raise RuntimeError(
+                f"op read timed out after {_OP_RUN_TIMEOUT}s; SIGTERM completed"
+            ) from exc
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        if pid_fd is not None:
+            os.close(pid_fd)
 
 
 def _run_op_read(
@@ -264,6 +1133,7 @@ def _run_op_read(
     *,
     account: str = "",
     token_value: str = "",
+    child_env: Optional[Dict[str, str]] = None,
 ) -> str:
     """Resolve a single ``op://`` reference to its value.
 
@@ -271,37 +1141,36 @@ def _run_op_read(
     with empty output, which would otherwise silently clobber a good
     ``.env``/shell credential with ``""``.
     """
-    cmd: List[str] = [str(op), "read"]
+    cmd: List[str] = [str(op), "--cache=false", "read"]
     if account:
         cmd += ["--account", account]
     # `--` terminates option parsing so a reference can never be mis-parsed as
     # an `op` flag even if validation is ever loosened.
     cmd += ["--", reference]
 
-    try:
-        proc = subprocess.run(  # noqa: S603 — op path is user-trusted, argv list
-            cmd,
-            env=_op_child_env(token_value),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_OP_RUN_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"op read timed out after {_OP_RUN_TIMEOUT}s for {reference!r}"
-        ) from exc
-    except OSError as exc:
-        raise RuntimeError(f"failed to invoke op: {exc}") from exc
+    if child_env is None and sys.platform == "linux":
+        namespace = _create_op_runtime_namespace()
+        try:
+            return _run_op_read(
+                op,
+                reference,
+                account=account,
+                token_value=token_value,
+                child_env=_op_child_env(token_value, namespace),
+            )
+        finally:
+            _cleanup_op_runtime_namespace(namespace, op)
+
+    proc = _run_op_process(
+        cmd,
+        env=child_env if child_env is not None else _op_child_env(token_value),
+    )
 
     if proc.returncode != 0:
         err = _scrub(proc.stderr or "")[:200]
         if err:
             raise RuntimeError(f"op read failed for {reference!r}: {err}")
-        raise RuntimeError(
-            f"op read exited {proc.returncode} for {reference!r}"
-        )
+        raise RuntimeError(f"op read exited {proc.returncode} for {reference!r}")
 
     # `op` appends a trailing newline; strip only that so a value with
     # intentional internal/edge spaces survives.  But a value that is empty or
@@ -318,6 +1187,16 @@ def _run_op_read(
 # ---------------------------------------------------------------------------
 
 
+def _serialize_op_fetch(function):
+    @functools.wraps(function)
+    def serialized(*args: Any, **kwargs: Any):
+        with _OP_FETCH_LOCK:
+            return function(*args, **kwargs)
+
+    return serialized
+
+
+@_serialize_op_fetch
 def fetch_onepassword_secrets(
     *,
     references: Dict[str, str],
@@ -331,10 +1210,10 @@ def fetch_onepassword_secrets(
 ) -> Tuple[Dict[str, str], List[str]]:
     """Resolve ``references`` (name → ``op://…``) to ``(secrets, warnings)``.
 
-    Raises :class:`RuntimeError` only when no ``op`` binary is available — a
-    fatal "can't fetch anything" condition.  Per-reference failures (expired
-    auth, bad reference, empty value) are collected as warnings and the
-    reference is dropped, so one bad entry never sinks the rest.
+    Raises :class:`RuntimeError` for fatal batch-level conditions: no ``op``
+    binary, unsafe runtime setup, or an unverified daemon cleanup. Per-reference
+    failures (expired auth, bad reference, empty value) are collected as warnings
+    and the reference is dropped, so one bad entry never sinks the rest.
 
     Only a complete, error-free pull is cached, so a transient auth failure
     isn't frozen in for the whole TTL window.
@@ -371,14 +1250,28 @@ def fetch_onepassword_secrets(
 
     secrets: Dict[str, str] = {}
     read_errors = 0
-    for name in sorted(valid):
-        try:
-            secrets[name] = _run_op_read(
-                op, valid[name], account=account, token_value=token_value
-            )
-        except RuntimeError as exc:
-            warnings.append(str(exc))
-            read_errors += 1
+    runtime_namespace: Optional[_OpRuntimeNamespace] = None
+    child_env: Optional[Dict[str, str]] = None
+    if sys.platform == "linux":
+        runtime_namespace = _create_op_runtime_namespace()
+        child_env = _op_child_env(token_value, runtime_namespace)
+
+    try:
+        for name in sorted(valid):
+            try:
+                secrets[name] = _run_op_read(
+                    op,
+                    valid[name],
+                    account=account,
+                    token_value=token_value,
+                    child_env=child_env,
+                )
+            except RuntimeError as exc:
+                warnings.append(str(exc))
+                read_errors += 1
+    finally:
+        if runtime_namespace is not None:
+            _cleanup_op_runtime_namespace(runtime_namespace, op)
 
     if use_cache and not read_errors and secrets:
         entry = CachedFetch(secrets=dict(secrets), fetched_at=time.time())
@@ -539,7 +1432,7 @@ class OnePasswordSource(SecretSource):
             },
             "service_account_token_env": {
                 "description": "Env var holding the service-account token "
-                               "(unset = desktop/interactive session)",
+                "(unset = desktop/interactive session)",
                 "default": _DEFAULT_TOKEN_ENV,
             },
             "binary_path": {
@@ -642,17 +1535,27 @@ def _classify_op_error(message: str) -> ErrorKind:
     lowered = message.lower()
     if "timed out" in lowered:
         return ErrorKind.TIMEOUT
-    if "not found on path" in lowered or "not an executable" in lowered \
-            or "failed to invoke" in lowered:
+    if (
+        "not found on path" in lowered
+        or "not an executable" in lowered
+        or "failed to invoke" in lowered
+    ):
         return ErrorKind.BINARY_MISSING
-    if any(tok in lowered for tok in ("unauthorized", "not signed in",
-                                      "session expired", "authentication",
-                                      "401", "403")):
+    if any(
+        tok in lowered
+        for tok in (
+            "unauthorized",
+            "not signed in",
+            "session expired",
+            "authentication",
+            "401",
+            "403",
+        )
+    ):
         return ErrorKind.AUTH_FAILED
     if "empty value" in lowered:
         return ErrorKind.EMPTY_VALUE
-    if any(tok in lowered for tok in ("network", "connection", "resolve host",
-                                      "dns")):
+    if any(tok in lowered for tok in ("network", "connection", "resolve host", "dns")):
         return ErrorKind.NETWORK
     return ErrorKind.INTERNAL
 

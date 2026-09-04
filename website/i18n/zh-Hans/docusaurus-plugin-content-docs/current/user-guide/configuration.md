@@ -1170,6 +1170,7 @@ tts:
     voice: "alloy"              # alloy、echo、fable、onyx、nova、shimmer
     speed: 1.0                  # 速度倍数（API 限制为 0.25–4.0）
     base_url: "https://api.openai.com/v1"  # 覆盖 OpenAI 兼容 TTS 端点
+    pcm_sample_rate: 24000      # 原始 PCM 播放采样率；须与兼容端点输出一致
   minimax:
     speed: 1.0                  # 语音速度倍数
     # base_url: ""              # 可选：覆盖 OpenAI 兼容 TTS 端点

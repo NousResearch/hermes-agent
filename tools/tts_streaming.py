@@ -263,9 +263,30 @@ def _openai_config_api_key() -> str:
 
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
-    """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16)."""
+    """OpenAI-compatible speech with raw mono int16 PCM output."""
 
     sample_rate = 24000
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        configured_rate = section.get("pcm_sample_rate", self.sample_rate)
+        try:
+            parsed_rate = int(configured_rate)
+        except (TypeError, ValueError):
+            parsed_rate = None
+        if (
+            isinstance(configured_rate, bool)
+            or (isinstance(configured_rate, float) and not configured_rate.is_integer())
+            or parsed_rate is None
+            or parsed_rate <= 0
+        ):
+            logger.warning(
+                "Invalid tts.openai.pcm_sample_rate %r; falling back to %d Hz",
+                configured_rate,
+                self.sample_rate,
+            )
+            return
+        self.sample_rate = parsed_rate
 
     @staticmethod
     def available() -> bool:

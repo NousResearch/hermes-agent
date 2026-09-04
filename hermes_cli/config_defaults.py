@@ -1889,6 +1889,9 @@ DEFAULT_CONFIG = {
         "openai": {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
+            # Playback rate for raw PCM streams. OpenAI uses 24 kHz; compatible
+            # endpoints that emit another rate must override this to avoid drift.
+            "pcm_sample_rate": 24000,
             # Voices: alloy, ash, ballad, cedar, coral, echo, fable, marin,
             # nova, onyx, sage, shimmer, verse (gpt-4o-mini-tts; the tts-1
             # era stopped at alloy/echo/fable/onyx/nova/shimmer)

@@ -2922,6 +2922,7 @@ class _StreamingCall:
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
         finish_reason = model_name = usage_obj = None
+        relay_observed_usage = None
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
@@ -2935,8 +2936,16 @@ class _StreamingCall:
             message = {"role": role, "content": "".join(content_parts) or None,
                 "reasoning_content": "".join(reasoning_parts) or None,
                 "tool_calls": [tool_calls_acc[i] for i in sorted(tool_calls_acc)] or None}
-            return {"model": model_name, "usage": usage_obj,
+            return {"model": model_name,
+                "usage": relay_observed_usage if relay_observed_usage is not None else usage_obj,
                 "choices": [{"message": message, "finish_reason": finish_reason or "stop"}]}
+
+        def _capture_relay_usage(chunk: Any) -> None:
+            # Relay orders this collector before its finalizer; the consumer may not
+            # have copied a terminal usage-only frame into ``usage_obj`` yet.
+            nonlocal relay_observed_usage
+            if isinstance(chunk, dict) and chunk.get("usage") is not None:
+                relay_observed_usage = chunk["usage"]
 
         def _flush_pending_stream_text():
             pending_parts = list(pending_text_parts)
@@ -2947,7 +2956,7 @@ class _StreamingCall:
         from agent import relay_llm
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_stream,
             **_relay_stream_identity(self.agent, "provider"), finalizer=_relay_final_response,
-            on_stream_created=self._chat_stream_created,
+            on_stream_created=self._chat_stream_created, on_chunk=_capture_relay_usage,
             accept_chunk=lambda chunk: self._accept_chat_chunk(stream_attempt_id, chunk),
             completed_response_predicate=lambda value: hasattr(value, "choices"),
             metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True))

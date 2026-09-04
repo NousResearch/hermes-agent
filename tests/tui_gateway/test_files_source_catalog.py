@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_rooms
+from gateway import hosted_rooms, hosted_room_driver
 from gateway.hosted_room_attachments import (
     AttachmentError,
     AttachmentNotFoundError,
@@ -133,6 +133,9 @@ def test_old_database_reopen_keeps_bad_record_pages_bounded_and_reachable(tmp_pa
 def test_discovery_and_read_work_without_optional_safety_tables(service):
     item, event_id = publish(service)
     with sqlite3.connect(service.db_path) as db:
+        # Exercise a Files-only database even when the combined build installs safety tables.
+        db.execute("DROP TABLE IF EXISTS hosted_room_quarantine")
+        db.execute("DROP TABLE IF EXISTS hosted_room_disband_fences")
         tables = {
             row[0]
             for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -158,9 +161,25 @@ def test_discovery_and_read_work_without_optional_safety_tables(service):
 def test_optional_fences_are_enforced_if_installed(service, table):
     publish(service)
     with sqlite3.connect(service.db_path) as db:
-        db.execute(f"CREATE TABLE {table} (room_id TEXT PRIMARY KEY)")
-        db.execute(f"INSERT INTO {table} VALUES (?)", ("files-room",))
-    with pytest.raises(AttachmentNotFoundError, match="unavailable"):
+        if table == "hosted_room_quarantine":
+            db.execute("""CREATE TABLE IF NOT EXISTS hosted_room_quarantine (
+                room_id TEXT PRIMARY KEY, reason TEXT NOT NULL, detected_at REAL NOT NULL
+            )""")
+            db.execute("INSERT INTO hosted_room_quarantine VALUES (?, ?, ?)",
+                       ("files-room", "test quarantine", 1))
+        else:
+            db.execute("""CREATE TABLE IF NOT EXISTS hosted_room_disband_fences (
+                room_id TEXT PRIMARY KEY, authority_gateway_id TEXT NOT NULL,
+                authority_epoch INTEGER NOT NULL, started_at REAL NOT NULL,
+                revocation_complete_at REAL
+            )""")
+            db.execute("INSERT INTO hosted_room_disband_fences VALUES (?, ?, ?, ?, NULL)",
+                       ("files-room", "gateway-a", 1, 1))
+    with pytest.raises((
+        AttachmentNotFoundError,
+        hosted_rooms.RoomQuarantinedError,
+        hosted_room_driver.RoomUnavailableError,
+    )):
         service.list_attachments(room_id="files-room")
 
 

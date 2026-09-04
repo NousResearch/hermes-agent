@@ -215,22 +215,35 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual).
+
+    Skips a scope that reports ``LoadState=not-found``. ``systemctl show`` on a unit a
+    given scope has never heard of still exits 0 and prints ``TimeoutStopUSec=1min 30s``
+    -- systemd's compiled-in *default*, not that unit's real configured value. Trusting it
+    produces a false "Stale systemd unit" mismatch whenever a leftover or never-existed
+    unit name shadows the real, correctly-configured unit living in the other scope
+    (#103062, e.g. gateway runs as a system unit while a stale same-named user unit no
+    longer/never existed).
+    """
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        if result.returncode != 0:
+            continue
+        # Output: one "Key=value" line per --property, e.g. "TimeoutStopUSec=1min 30s".
+        props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        if props.get("LoadState") == "not-found":
+            continue  # this scope's TimeoutStopUSec is systemd's default, not real -- try the other scope
+        value = props.get("TimeoutStopUSec", "").strip()
+        timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+        if timeout_us is not None:
+            return timeout_us
     return None
 
 

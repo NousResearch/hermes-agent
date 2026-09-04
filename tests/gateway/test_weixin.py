@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -394,13 +395,162 @@ class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()
 
-        with patch("tools.url_safety.is_safe_url", return_value=False):
+        with patch("tools.url_safety.async_is_safe_url", new=AsyncMock(return_value=False)):
             try:
                 asyncio.run(adapter._download_remote_media("http://127.0.0.1/private.png"))
             except ValueError as exc:
                 assert "Blocked unsafe URL" in str(exc)
             else:
                 raise AssertionError("expected ValueError for unsafe URL")
+
+    def test_download_remote_media_blocks_redirect_to_private(self):
+        """Public URL that 302s to link-local must be refused (salvage #40255)."""
+        adapter = _make_adapter()
+
+        class _Resp:
+            def __init__(self, status, headers=None, body=b""):
+                self.status = status
+                self.headers = headers or {}
+                self._body = body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def raise_for_status(self):
+                if self.status >= 400:
+                    raise RuntimeError(f"HTTP {self.status}")
+
+            async def read(self):
+                return self._body
+
+        class _Session:
+            def get(self, url, allow_redirects=False):
+                assert allow_redirects is False
+                if url == "https://cdn.example.com/public.png":
+                    return _Resp(302, {"Location": "http://169.254.169.254/latest/meta-data/"})
+                raise AssertionError(f"unexpected fetch of {url}")
+
+        adapter._send_session = _Session()
+
+        async def _safe(u: str) -> bool:
+            return not (
+                "127.0.0.1" in u
+                or "169.254." in u
+                or "localhost" in u
+            )
+
+        with patch("tools.url_safety.async_is_safe_url", side_effect=_safe):
+            try:
+                asyncio.run(
+                    adapter._download_remote_media("https://cdn.example.com/public.png")
+                )
+            except ValueError as exc:
+                assert "Blocked redirect" in str(exc)
+            else:
+                raise AssertionError("expected ValueError for redirect SSRF")
+
+    def test_download_remote_media_follows_safe_public_redirect(self):
+        adapter = _make_adapter()
+        initial_url = "https://cdn.example.com/public.png"
+        final_url = "https://cdn.example.com/assets/final/public.jpg"
+
+        class _Resp:
+            def __init__(self, status, headers=None, body=b""):
+                self.status = status
+                self.headers = headers or {}
+                self._body = body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def raise_for_status(self):
+                if self.status >= 400:
+                    raise RuntimeError(f"HTTP {self.status}")
+
+            async def read(self):
+                return self._body
+
+        class _Session:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, allow_redirects=False):
+                self.calls.append((url, allow_redirects))
+                if url == initial_url:
+                    return _Resp(302, {"Location": "/assets/final/public.jpg"})
+                if url == final_url:
+                    return _Resp(200, body=b"safe-image")
+                raise AssertionError(f"unexpected fetch of {url}")
+
+        session = _Session()
+        adapter._send_session = session
+
+        with patch(
+            "tools.url_safety.async_is_safe_url", new=AsyncMock(return_value=True)
+        ) as safe_url_check:
+            output_path = asyncio.run(adapter._download_remote_media(initial_url))
+
+        try:
+            assert Path(output_path).read_bytes() == b"safe-image"
+            assert Path(output_path).suffix == ".jpg"
+            assert session.calls == [(initial_url, False), (final_url, False)]
+            assert [call.args[0] for call in safe_url_check.await_args_list] == [
+                initial_url,
+                final_url,
+            ]
+        finally:
+            Path(output_path).unlink(missing_ok=True)
+
+    def test_download_remote_media_rejects_unsupported_redirect_status(self):
+        adapter = _make_adapter()
+
+        class _Resp:
+            def __init__(self):
+                self.status = 304
+                self.headers = {}
+                self.read_called = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def raise_for_status(self):
+                if self.status >= 400:
+                    raise RuntimeError(f"HTTP {self.status}")
+
+            async def read(self):
+                self.read_called = True
+                return b"must-not-be-saved"
+
+        class _Session:
+            def __init__(self, response):
+                self.response = response
+
+            def get(self, url, allow_redirects=False):
+                assert url == "https://cdn.example.com/public.png"
+                assert allow_redirects is False
+                return self.response
+
+        response = _Resp()
+        adapter._send_session = _Session(response)
+
+        with patch(
+            "tools.url_safety.async_is_safe_url", new=AsyncMock(return_value=True)
+        ):
+            with pytest.raises(ValueError, match="Unsupported media redirect status: 304"):
+                asyncio.run(
+                    adapter._download_remote_media("https://cdn.example.com/public.png")
+                )
+
+        assert response.read_called is False
 
 
 class TestWeixinMarkdownLinks:
@@ -878,4 +1028,3 @@ class TestWeixinVoiceGatewayHandoff:
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
-

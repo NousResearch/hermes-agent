@@ -11,7 +11,11 @@ import threading
 
 import pytest
 
-from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
+from agent.prompt_builder import (
+    STEER_MARKER_OPEN,
+    TRUSTED_STEER_KEY,
+    format_steer_marker,
+)
 from run_agent import AIAgent
 
 
@@ -501,6 +505,7 @@ class TestSteerInjection:
         assert "ls output B" in messages[3]["content"]
         assert STEER_MARKER_OPEN in messages[3]["content"]
         assert "please also check auth.log" in messages[3]["content"]
+        assert messages[3][TRUSTED_STEER_KEY] == "please also check auth.log"
         # And pending_steer is consumed.
         assert agent._pending_steer is None
 

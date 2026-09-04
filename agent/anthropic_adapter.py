@@ -70,11 +70,14 @@ from agent.anthropic_message_convert import (  # noqa: F401
     _is_bedrock_model_id,
     _manage_thinking_signatures,
     _merge_consecutive_roles,
+    _model_supports_mid_conversation_system,
     _normalize_tool_input_schema,
+    _remove_trusted_steer_marker,
     _safe_text,
     _sanitize_replay_block,
     _sanitize_tool_id,
     _scrub_blank_text_blocks,
+    _split_trailing_steer_marker,
     _strip_orphaned_tool_blocks,
     _to_plain_data,
     convert_messages_to_anthropic,
@@ -898,8 +901,6 @@ def build_anthropic_bedrock_client(region: str):
         max_retries=0,
         default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
-
-
 
 
 def build_anthropic_kwargs(

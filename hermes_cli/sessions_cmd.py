@@ -936,7 +936,187 @@ def _cmd_stats(db, args):
 
 # -- dispatch -----------------------------------------------------------------
 
-_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+
+def _log(msg):
+    print(msg)
+
+
+def _print_restore_hint(backup_path: str):
+    """Official-style pointer to the restore command after a --apply write.
+
+    Mirrors the ``Next step — offline recovery`` hint the repair
+    command prints: short lead line, then the exact command the user can
+    run to undo the change.
+    """
+    print()
+    print("  If the result looks wrong, restore the pre-change snapshot:")
+    print(f"    hermes sessions restore-db --snapshot {backup_path} --force")
+    print("  (This stops processes holding state.db, restores the backup,")
+    print("   and verifies it. --force is required while Hermes is running.)")
+
+
+def _cmd_restore_db(args):
+    """``hermes sessions restore-db`` — runs BEFORE opening SessionDB()."""
+    from hermes_state import DEFAULT_DB_PATH as _DEFAULT_DB_PATH
+
+    from hermes_cli.session_migration import _confirm_snapshot, restore_state_db
+
+    db_path = _DEFAULT_DB_PATH
+    snapshot = getattr(args, "snapshot", None)
+    force = bool(getattr(args, "force", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    try:
+        stats = restore_state_db(
+            db_path,
+            snapshot=snapshot,
+            force=force,
+            dry_run=dry_run,
+            progress=_log,
+            confirm=_confirm_snapshot if not snapshot else None,
+        )
+    except Exception as exc:  # noqa: BLE001 — user-facing failure
+        print(f"✗ restore failed: {exc}")
+        return 1
+    print()
+    print(
+        f"✓ snapshot={stats['snapshot']} "
+        f"holders={len(stats['holders'])} "
+        f"killed={len(stats['killed'])} "
+        f"failed={len(stats['failed'])} "
+        f"restored={'yes' if stats['restored'] else 'no'} "
+        f"verified={'yes' if stats['verified'] else 'no'}"
+    )
+    if dry_run:
+        print("Dry run — nothing killed, nothing written.")
+    return 0
+
+
+def _cmd_repair_chains(db, args):
+    from hermes_cli.session_migration import _confirm_candidates, repair_chains
+
+    apply_changes = bool(getattr(args, "apply", False))
+    if not apply_changes:
+        print("Dry run — pass --apply to write. Rows the user titled are never touched.")
+    stats = repair_chains(
+        db,
+        apply_changes=apply_changes,
+        progress=_log,
+        confirm=_confirm_candidates if apply_changes else None,
+    )
+    print()
+    print(
+        f"✓ orphaned_chain_groups={stats['orphaned_chain_groups']} "
+        f"relinked={stats['relinked']} "
+        f"skipped={stats['skipped']}"
+    )
+    if stats.get("backup_path"):
+        print(f"  backup: {stats['backup_path']}")
+    if not apply_changes:
+        print("Dry run — nothing written.")
+    elif stats["backup_path"]:
+        _print_restore_hint(stats["backup_path"])
+    return 0
+
+
+def _cmd_retitle_missing(db, args):
+    from hermes_cli.session_migration import (
+        _confirm_candidates,
+        _describe_title_model,
+        retitle_missing,
+    )
+
+    apply_changes = bool(getattr(args, "apply", False))
+    include_chain = not bool(getattr(args, "no_chain_inherit", False))
+    include_legacy = not bool(getattr(args, "no_legacy_truncated", False))
+    limit = max(1, int(getattr(args, "limit", 500) or 500))
+
+    def _generate(fm):
+        from agent.title_generator import generate_title
+
+        return generate_title(fm, timeout=120)
+
+    if not apply_changes:
+        print("Dry run — pass --apply to write. Rows the user titled are never touched.")
+    else:
+        # Before any LLM spend, show which model will generate titles and
+        # let the user confirm (or abort) — cloud endpoints may incur cost.
+        print(_describe_title_model())
+        print()
+        ok = _confirm_prompt("Use this model to generate titles?")
+        if not ok:
+            print("Cancelled — nothing written.")
+            return
+        print()
+    stats = retitle_missing(
+        db,
+        generate=_generate,
+        apply_changes=apply_changes,
+        include_chain_segments=include_chain,
+        include_legacy_truncated=include_legacy,
+        limit=limit,
+        progress=_log,
+        confirm=_confirm_candidates if apply_changes else None,
+    )
+    print()
+    print(
+        f"✓ scanned={stats['scanned']} "
+        f"generated={stats['generated']} "
+        f"would_generate={stats['would_generate']} "
+        f"inherited={stats['inherited']} "
+        f"skipped={stats['skipped_untouchable']} "
+        f"failed={stats['failed']} "
+        f"up_to_date={stats['up_to_date']}"
+    )
+    if stats.get("backup_path"):
+        print(f"  backup: {stats['backup_path']}")
+    if not apply_changes:
+        print("Dry run — nothing written.")
+    elif stats["backup_path"]:
+        _print_restore_hint(stats["backup_path"])
+    return 0
+
+
+def _cmd_merge_chains(db, args):
+    from hermes_cli.session_migration import _confirm_candidates, merge_compression_chains
+
+    apply_changes = bool(getattr(args, "apply", False))
+    print(
+        "fork compression-chain flattening "
+        f"({'dry run — pass --apply to write' if not apply_changes else 'writing'})"
+    )
+    merge_stats = merge_compression_chains(
+        db,
+        apply_changes=apply_changes,
+        backup=apply_changes,
+        progress=_log,
+        confirm=_confirm_candidates if apply_changes else None,
+    )
+    print()
+    print(
+        f"✓ chains={merge_stats['chains']} "
+        f"segments={merge_stats['segments']} "
+        f"messages_moved={merge_stats['messages_moved']} "
+        f"orphans_redirected={merge_stats['orphans_redirected']} "
+        f"usage_merged={merge_stats['usage_merged']}"
+    )
+    if merge_stats.get("verify_report"):
+        v = merge_stats["verify_report"]
+        print(
+            f"  verify: messages {v['messages_before']} → "
+            f"{v['messages_after']} (Δ{v['delta']:+d}), "
+            f"usage orphans={v['usage_orphans']} "
+            f"{'✅ OK' if merge_stats['verified'] else '❌ MISMATCH'}"
+        )
+    if merge_stats["backup_path"]:
+        print(f"  backup: {merge_stats['backup_path']}")
+    if not apply_changes:
+        print("Dry run — nothing written.")
+    elif merge_stats["backup_path"]:
+        _print_restore_hint(merge_stats["backup_path"])
+    return 0
+
+
+_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import, "restore-db": _cmd_restore_db}
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
@@ -944,6 +1124,8 @@ _DB_HANDLERS = {
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,
+    "repair-chains": _cmd_repair_chains, "retitle-missing": _cmd_retitle_missing,
+    "merge-chains": _cmd_merge_chains,
 }
 
 

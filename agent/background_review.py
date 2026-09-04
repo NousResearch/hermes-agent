@@ -1707,10 +1707,14 @@ def _run_review_in_thread(
         )
 
         if actions:
-            summary = " · ".join(dict.fromkeys(actions))
-            agent._safe_print(
-                f"  💾 Self-improvement review: {summary}"
-            )
+            # Skip empty / whitespace-only entries so a phantom "Skill create"
+            # / " updated" cannot render as "💾 ...:  updated" (#75394).
+            deduped = dict.fromkeys(a for a in actions if a and a.strip())
+            if deduped:
+                summary = " · ".join(deduped)
+                agent._safe_print(
+                    f"  💾 Self-improvement review: {summary}"
+                )
             _bg_cb = agent.background_review_callback
             if _bg_cb:
                 try:

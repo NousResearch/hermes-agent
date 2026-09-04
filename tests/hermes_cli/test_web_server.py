@@ -3,6 +3,7 @@
 import asyncio
 import os
 import json
+import logging
 import re
 import shutil
 import sys
@@ -2625,6 +2626,224 @@ class TestNewEndpoints:
 
 
     # --- Profiles ---
+
+
+    def test_profiles_list_includes_cross_source_identity_metadata(self):
+        from hermes_constants import get_hermes_home
+
+        root = get_hermes_home()
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "profile.yaml").write_text(
+            yaml.safe_dump({
+                "display_name": "Asus",
+                "ui_meta": {
+                    "hermes-bots": {
+                        "title": "Asus Bot",
+                        "color": "#abcdef",
+                    },
+                    "private-plugin": {"token": "must-not-roam"},
+                },
+            }),
+            encoding="utf-8",
+        )
+        assets = root / "assets"
+        assets.mkdir(exist_ok=True)
+        (assets / "avatar.png").write_bytes(b"avatar")
+
+        response = self.client.get("/api/profiles")
+
+        assert response.status_code == 200
+        default = next(row for row in response.json()["profiles"] if row["name"] == "default")
+        assert default["display_name"] == "Asus"
+        assert default["ui_meta"] == {
+            "hermes-bots": {
+                "title": "Asus Bot",
+                "color": "#abcdef",
+            }
+        }
+        assert default["has_avatar"] is True
+
+    def test_profile_roster_fields_cache_invalidates_on_metadata_change(
+        self, monkeypatch, tmp_path
+    ):
+        from hermes_cli import web_server
+
+        meta_path = tmp_path / "profile.yaml"
+        meta_path.write_text(
+            yaml.safe_dump({"ui_meta": {"hermes-bots": {"title": "One"}}}),
+            encoding="utf-8",
+        )
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        avatar_path = assets / "avatar.png"
+        avatar_path.write_bytes(b"avatar")
+        calls = 0
+        original_safe_load = web_server.yaml.safe_load
+
+        def counted_safe_load(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original_safe_load(*args, **kwargs)
+
+        monkeypatch.setattr(web_server.yaml, "safe_load", counted_safe_load)
+
+        first = web_server._profile_roster_fields(tmp_path)
+        cached = web_server._profile_roster_fields(tmp_path)
+        assert first == cached
+        assert calls == 1
+
+        avatar_mtime = avatar_path.stat().st_mtime_ns
+        os.utime(avatar_path, ns=(avatar_mtime + 1_000_000, avatar_mtime + 1_000_000))
+        avatar_touched = web_server._profile_roster_fields(tmp_path)
+        assert avatar_touched == cached
+        assert calls == 1
+
+        meta_path.write_text(
+            yaml.safe_dump({"ui_meta": {"hermes-bots": {"title": "Updated"}}}),
+            encoding="utf-8",
+        )
+        current_mtime = meta_path.stat().st_mtime_ns
+        os.utime(meta_path, ns=(current_mtime + 1_000_000, current_mtime + 1_000_000))
+
+        refreshed = web_server._profile_roster_fields(tmp_path)
+        assert refreshed["ui_meta"]["hermes-bots"]["title"] == "Updated"
+        assert calls == 2
+
+    def test_profile_roster_fields_cache_is_deep_copied(self, tmp_path):
+        from hermes_cli import web_server
+
+        (tmp_path / "profile.yaml").write_text(
+            yaml.safe_dump({"ui_meta": {"hermes-bots": {"title": "Original"}}}),
+            encoding="utf-8",
+        )
+
+        first = web_server._profile_roster_fields(tmp_path)
+        first["ui_meta"]["hermes-bots"]["title"] = "Mutated"
+
+        cached = web_server._profile_roster_fields(tmp_path)
+        assert cached["ui_meta"]["hermes-bots"]["title"] == "Original"
+
+    def test_profile_roster_fields_cache_evicts_least_recently_used(
+        self, monkeypatch, tmp_path
+    ):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "_PROFILE_ROSTER_FIELDS_CACHE_MAX", 2)
+        monkeypatch.setattr(
+            web_server,
+            "_PROFILE_ROSTER_FIELDS_CACHE",
+            type(web_server._PROFILE_ROSTER_FIELDS_CACHE)(),
+        )
+
+        paths = [tmp_path / name for name in ("one", "two", "three")]
+        for path in paths:
+            path.mkdir()
+            (path / "profile.yaml").write_text(
+                yaml.safe_dump({"ui_meta": {"hermes-bots": {"title": path.name}}}),
+                encoding="utf-8",
+            )
+
+        web_server._profile_roster_fields(paths[0])
+        web_server._profile_roster_fields(paths[1])
+        web_server._profile_roster_fields(paths[0])
+        web_server._profile_roster_fields(paths[2])
+
+        assert list(web_server._PROFILE_ROSTER_FIELDS_CACHE) == [
+            str(paths[0]),
+            str(paths[2]),
+        ]
+
+    def test_profile_roster_fields_has_stable_empty_metadata_shape(self, tmp_path):
+        from hermes_cli import web_server
+
+        assert web_server._profile_roster_fields(tmp_path) == {
+            "ui_meta": {},
+            "has_avatar": False,
+        }
+
+    def test_profile_roster_fields_warns_once_when_ui_meta_is_dropped(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "_PROFILE_ROSTER_UI_META_MAX_BYTES", 8)
+        (tmp_path / "profile.yaml").write_text(
+            yaml.safe_dump({"ui_meta": {"hermes-bots": {"title": "Too long"}}}),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            first = web_server._profile_roster_fields(tmp_path)
+            second = web_server._profile_roster_fields(tmp_path)
+
+        assert first["ui_meta"] == {}
+        assert first == second
+        assert caplog.text.count("Ignoring oversized hermes-bots ui_meta") == 1
+
+    def test_profile_roster_fields_warns_once_for_non_json_ui_meta(
+        self, tmp_path, caplog
+    ):
+        from hermes_cli import web_server
+
+        (tmp_path / "profile.yaml").write_text(
+            yaml.safe_dump({"ui_meta": {"hermes-bots": {"weight": float("nan")}}}),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            first = web_server._profile_roster_fields(tmp_path)
+            second = web_server._profile_roster_fields(tmp_path)
+
+        assert first["ui_meta"] == {}
+        assert first == second
+        assert caplog.text.count("Ignoring non-JSON hermes-bots ui_meta") == 1
+
+    def test_fallback_profiles_read_metadata_once_per_profile(self, tmp_path):
+        from hermes_cli import web_server
+
+        default_home = tmp_path / "default"
+        profiles_root = tmp_path / "profiles"
+        worker_home = profiles_root / "worker"
+        default_home.mkdir()
+        worker_home.mkdir(parents=True)
+        reads = []
+
+        class ProfilesStub:
+            _PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+            @staticmethod
+            def _get_default_hermes_home():
+                return default_home
+
+            @staticmethod
+            def _get_profiles_root():
+                return profiles_root
+
+            @staticmethod
+            def _read_config_model(_path):
+                return None, None
+
+            @staticmethod
+            def _count_skills(_path):
+                return 0
+
+            @staticmethod
+            def _check_gateway_running(_path):
+                return False
+
+            @staticmethod
+            def read_profile_meta(path):
+                reads.append(Path(path))
+                return {
+                    "description": f"{Path(path).name} description",
+                    "description_auto": True,
+                    "display_name": Path(path).name.title(),
+                }
+
+        rows = web_server._fallback_profile_dicts(ProfilesStub)
+
+        assert reads == [default_home, worker_home]
+        assert [row["display_name"] for row in rows] == ["Default", "Worker"]
 
 
 

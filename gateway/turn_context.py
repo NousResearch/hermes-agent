@@ -42,6 +42,11 @@ class TurnContext:
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
     tool_progress_enabled: bool = False
+    # Tool-timer animation opt-in (native-stream bubbles). When True the
+    # progress callback dispatches timer lifecycle signals (tool.started /
+    # tool.completed) even if tool_progress_enabled is False, so a user who
+    # sets only extra.tool_timer_enabled: true still gets ticks (#96942).
+    tool_timer_enabled: bool = False
 
     # --- queues ----------------------------------------------------------
     progress_queue: Any = None

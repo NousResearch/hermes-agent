@@ -1133,3 +1133,359 @@ class TestNativeCommentaryPreservesAccumulated:
             f"pre-commentary prefix lost (the bug): {final_text!r}"
         )
         assert "finished (exit 0)." in final_text
+
+
+class TestNativeIndeterminateThroughRun:
+    """P0 regression: an INDETERMINATE finalize must survive the full
+    ``consumer.run()`` finalization path as a tri-state result — NOT be
+    overwritten back to "delivered".
+
+    The bug: the native-stream got_done branch in ``run()`` used to do
+    ``ok = await self._send_or_edit(...); if ok: self._final_content_
+    delivered = True``.  ``_send_or_edit`` returns truthy for INDETERMINATE
+    (to suppress the duplicate fallback), so that caller re-set
+    ``_final_content_delivered=True`` — leaking an unconfirmed delivery back
+    to confirmed and making the gateway skip its whole-response fallback.
+
+    These tests drive the WHOLE run() loop (not just _send_or_edit()) with an
+    adapter whose finalize frame returns ``StreamFrameResult.INDETERMINATE``
+    and assert the tri-state survives: response_sent=True (don't retry),
+    content_delivered=False (unconfirmed → gateway fallback still owed), and
+    exactly one finalize frame reached the wire (no duplicate).
+    """
+
+    def _make_indeterminate_finalize_adapter(self):
+        """BasePlatformAdapter subclass whose finalize frame settles
+        INDETERMINATE (the poisoned-ACK / final-fence-timeout case), while
+        seed and mid-stream frames succeed normally."""
+        from gateway.platforms.base import BasePlatformAdapter
+        from plugins.platforms.wecom.adapter import StreamFrameResult
+
+        IndeterminateAdapter = type(
+            "IndeterminateFinalizeAdapter",
+            (BasePlatformAdapter,),
+            {
+                "MAX_MESSAGE_LENGTH": 4096,
+                "SUPPORTS_MESSAGE_EDITING": False,
+                "SUPPORTS_NATIVE_STREAMING": True,
+            },
+        )
+        IndeterminateAdapter.__abstractmethods__ = frozenset()
+        adapter = IndeterminateAdapter.__new__(IndeterminateAdapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        adapter.frames = []
+        adapter.supports_native_streaming = (
+            lambda chat_type=None, metadata=None: True
+        )
+
+        async def _send_stream_frame(
+            text, *, finalize=False, chat_id=None, reply_to=None, **kwargs
+        ):
+            adapter.frames.append({
+                "text": text, "finalize": finalize,
+                "chat_id": chat_id, "reply_to": reply_to,
+            })
+            if finalize:
+                # The finalize frame settles INDETERMINATE: the bytes reached
+                # the wire but the ACK channel could not confirm delivery.
+                return StreamFrameResult.INDETERMINATE
+            return True
+        adapter.send_stream_frame = _send_stream_frame
+
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="fallback_msg"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_indeterminate_finalize_through_run_keeps_content_undelivered(self):
+        """Through run(): INDETERMINATE finalize → final_response_sent=True,
+        final_content_delivered=False, and no duplicate fallback send()."""
+        adapter = self._make_indeterminate_finalize_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="",
+            edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        consumer.on_delta("A full assistant answer that will be finalized.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # THE KEY TRI-STATE ASSERTIONS (through the whole run() path):
+        assert consumer.final_response_sent is True, (
+            "frame was sent — consumer must not retry/duplicate"
+        )
+        assert consumer.final_content_delivered is False, (
+            "INDETERMINATE delivery is unconfirmed — run() must NOT overwrite "
+            "the tri-state back to delivered (the P0 leak)"
+        )
+
+        # Exactly one finalize frame reached the wire — no duplicate finalize.
+        finalize_frames = [f for f in adapter.frames if f["finalize"]]
+        assert len(finalize_frames) == 1, (
+            f"expected exactly one finalize frame, got {len(finalize_frames)}"
+        )
+
+        # INDETERMINATE is truthy, so native streaming stayed on and the
+        # consumer did NOT do its own fallback proactive send() (the gateway
+        # owns the whole-response fallback, keyed on content_delivered=False).
+        assert adapter.send.await_count == 0, (
+            "consumer must not self-fallback on INDETERMINATE — the gateway's "
+            "whole-response fallback owns that, gated on content_delivered"
+        )
+
+    @pytest.mark.asyncio
+    async def test_indeterminate_empty_turn_through_run_keeps_content_undelivered(self):
+        """The tool-only / empty-turn native-close branch (line ~1818,
+        ``if not current_update_visible``) also must not leak INDETERMINATE
+        back to delivered.  No text is produced, so got_done takes the empty
+        native close path with the '✅' placeholder."""
+        adapter = self._make_indeterminate_finalize_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="",
+            edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        # No on_delta — a tool-only turn with no text output.
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.03)
+        consumer.finish()
+        await task
+
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is False, (
+            "empty-turn native-close with INDETERMINATE must not overwrite "
+            "content_delivered back to True"
+        )
+        assert adapter.send.await_count == 0
+
+
+class TestNativeRotationSplitNoRepeat:
+    """Gateway-side no-repeat: after the adapter reports a Layer 2 rotation
+    (StreamSendOutcome.rotated=True), the consumer advances _native_split_offset
+    so every subsequent frame on the fresh bubble carries only the incremental
+    text — never the prefix the sealed old bubble already showed — while the
+    reconciliation buffer (_accumulated) stays FULL."""
+
+    def _make_consumer(self):
+        from plugins.platforms.wecom.stream_types import (
+            StreamFrameResult, StreamSendOutcome,
+        )
+        adapter = _make_native_streaming_adapter()
+        # Override send_stream_frame to (a) record wire text and (b) return a
+        # StreamSendOutcome whose `rotated` we can toggle per call.
+        adapter.frames = []
+        adapter._rotate_next = {"v": False}
+
+        async def _ssf(text, *, finalize=False, chat_id=None, reply_to=None, **kw):
+            adapter.frames.append({"text": text, "finalize": finalize})
+            rotated = adapter._rotate_next["v"]
+            adapter._rotate_next["v"] = False
+            return StreamSendOutcome(
+                result=StreamFrameResult.DELIVERED, rotated=rotated,
+            )
+        adapter.send_stream_frame = _ssf
+
+        cfg = StreamConsumerConfig(chat_type="dm", cursor="")
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+        consumer._use_native_streaming = True
+        consumer._native_stream_opened = True
+        return consumer, adapter
+
+    @pytest.mark.asyncio
+    async def test_incremental_after_rotation_no_prefix_repeat(self):
+        consumer, adapter = self._make_consumer()
+
+        # Bubble #1: accumulate + send "AAAA".
+        consumer._accumulated = "AAAA"
+        await consumer._send_or_edit("AAAA", finalize=False)
+        assert adapter.frames[-1]["text"] == "AAAA"
+        assert consumer._native_split_offset == 0
+        assert consumer._native_committed_len == 4
+
+        # Next send triggers a rotation (adapter seals #1, opens #2).  This fake
+        # adapter reports rotated=True but does NOT itself defer/slice (the real
+        # adapter defers the body — covered by adapter-level tests).  What this
+        # gateway test pins is the OFFSET math: after observing rotated, the
+        # split offset advances to the SEAL POINT = the previous committed
+        # length (4 = what the old bubble showed), NOT len(_accumulated) (8,
+        # which would drop the rotation frame's own 'BBBB' increment).
+        adapter._rotate_next["v"] = True
+        consumer._accumulated = "AAAABBBB"
+        await consumer._send_or_edit("AAAABBBB", finalize=False)
+        assert consumer._native_split_offset == 4, (
+            "offset must advance to the seal point (previous committed length), "
+            "not len(_accumulated) — the off-by-one that dropped a segment"
+        )
+
+        # Bubble #2 continues: the next frame slices _accumulated[4:] and MUST
+        # include the previously-deferred 'BBBB' plus the new 'CCCC' — no loss.
+        consumer._accumulated = "AAAABBBBCCCC"
+        await consumer._send_or_edit("AAAABBBBCCCC", finalize=False)
+        assert adapter.frames[-1]["text"] == "BBBBCCCC", (
+            f"fresh bubble must carry the deferred BBBB + new CCCC (no loss, no "
+            f"prefix repeat); got {adapter.frames[-1]['text']!r}"
+        )
+        # _accumulated stays FULL for reconciliation.
+        assert consumer._accumulated == "AAAABBBBCCCC"
+
+    @pytest.mark.asyncio
+    async def test_finalize_wire_incremental_but_reconciliation_full(self):
+        """After a rotation, the finalize frame's WIRE text is incremental (no
+        repeat on the last bubble) but the recorded turn-final payload is the
+        FULL response, so delivered_final_matches still confirms → no resend."""
+        consumer, adapter = self._make_consumer()
+
+        consumer._accumulated = "AAAA"
+        await consumer._send_or_edit("AAAA", finalize=False)
+
+        adapter._rotate_next["v"] = True
+        consumer._accumulated = "AAAABBBB"
+        await consumer._send_or_edit("AAAABBBB", finalize=False)
+        assert consumer._native_split_offset == 4  # seal point (prev committed)
+
+        # Finalize with the FULL accumulated (this is what the run loop passes).
+        consumer._accumulated = "AAAABBBBCCCC"
+        consumer._message_id = None  # native draft: no edit id
+        ok = await consumer._send_or_edit("AAAABBBBCCCC", finalize=True)
+        assert ok
+
+        # Wire: the fresh bubble's own segment from the seal point — the
+        # deferred 'BBBB' plus 'CCCC', with no 'AAAA' prefix repeat and no loss.
+        final_frame = adapter.frames[-1]
+        assert final_frame["finalize"] is True
+        assert final_frame["text"] == "BBBBCCCC", (
+            f"finalize wire text must be the fresh bubble's segment (BBBB+CCCC), "
+            f"no prefix repeat, no loss; got {final_frame['text']!r}"
+        )
+
+        # Reconciliation: recorded final is the COMPLETE response.
+        assert consumer.delivered_final_matches("AAAABBBBCCCC") is True, (
+            "reconciliation must use the FULL response so the gateway does not "
+            "resend (double-bubble regression guard)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_commentary_frame_after_rotation_is_incremental(self):
+        """Regression: a commentary frame (finalize=False but full _accumulated,
+        _wire_full=True) after a rotation must ALSO be sliced.  The run-loop
+        passes _wire_full=(got_done or got_segment_break or commentary_text is
+        not None); an earlier version dropped the commentary arm and re-repeated
+        the prefix on the fresh bubble."""
+        consumer, adapter = self._make_consumer()
+
+        consumer._accumulated = "AAAA"
+        await consumer._send_or_edit("AAAA", finalize=False)
+
+        adapter._rotate_next["v"] = True
+        consumer._accumulated = "AAAABBBB"
+        await consumer._send_or_edit("AAAABBBB", finalize=False)
+        assert consumer._native_split_offset == 4  # seal point (prev committed)
+
+        # Commentary-equivalent: full accumulated, not finalize, but _wire_full.
+        consumer._accumulated = "AAAABBBBCCCC"
+        await consumer._send_or_edit(
+            "AAAABBBBCCCC", finalize=False, _wire_full=True,
+        )
+        assert adapter.frames[-1]["text"] == "BBBBCCCC", (
+            f"full-buffer non-finalize frame must slice at the seal point after "
+            f"rotation (BBBB+CCCC, no loss/repeat); got "
+            f"{adapter.frames[-1]['text']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_loop_commentary_after_rotation_slices_wire(self):
+        """END-TO-END guard for the run-loop's _wire_full arg (line ~1849).
+
+        The other tests in this class call _send_or_edit directly and pass
+        _wire_full explicitly, so they do NOT exercise the run-loop's own
+        computation of _wire_full.  This one drives the WHOLE run() loop:
+        stream some text, rotate, then emit a COMMENTARY frame.  The commentary
+        tick goes through the main _send_or_edit at 1837 with display_text=FULL
+        _accumulated (the compose+slice is skipped for commentary frames), so
+        the run loop MUST pass _wire_full=True for commentary — otherwise the
+        full cumulative text (incl. the sealed prefix) is re-sent on the fresh
+        bubble and the prefix repeats.  An earlier version computed
+        _wire_full=(got_done or got_segment_break) and dropped the commentary
+        arm; this test fails on that version and passes with the arm restored.
+        """
+        from plugins.platforms.wecom.stream_types import (
+            StreamFrameResult, StreamSendOutcome,
+        )
+
+        async def _wait_until(predicate, timeout: float = 1.0) -> bool:
+            deadline = asyncio.get_event_loop().time() + timeout
+            while asyncio.get_event_loop().time() < deadline:
+                if predicate():
+                    return True
+                await asyncio.sleep(0.01)
+            return predicate()
+
+        adapter = _make_native_streaming_adapter()
+        adapter.frames = []
+        adapter._rotate_on_next_content = {"v": False}
+
+        async def _ssf(text, *, finalize=False, chat_id=None, reply_to=None, **kw):
+            adapter.frames.append({"text": text, "finalize": finalize})
+            rotated = False
+            # Only a non-seed, non-empty content frame can rotate.
+            if text and adapter._rotate_on_next_content["v"]:
+                rotated = True
+                adapter._rotate_on_next_content["v"] = False
+            return StreamSendOutcome(
+                result=StreamFrameResult.DELIVERED, rotated=rotated,
+            )
+        adapter.send_stream_frame = _ssf
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_rot_c",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("AAAA")
+        await _wait_until(lambda: consumer._native_stream_opened)
+        # Arm rotation on the next content frame, then push a delta to trigger it.
+        adapter._rotate_on_next_content["v"] = True
+        consumer.on_delta("BBBB")
+        await _wait_until(
+            lambda: consumer._native_split_offset > 0, timeout=1.0
+        )
+        # The offset must advance to the SEAL POINT (how much the old bubble
+        # showed), not len(_accumulated).  Exact value depends on run-loop tick
+        # timing, but it must be a proper prefix boundary: strictly between 0 and
+        # the full buffer, so the fresh bubble carries a real (non-empty)
+        # increment and never the whole cumulative text.
+        assert 0 < consumer._native_split_offset <= len(consumer._accumulated), (
+            "rotation must advance the split offset to the seal point"
+        )
+        n_before = len(adapter.frames)
+        # Commentary frame AFTER rotation — the run loop's _wire_full must be
+        # True here so the stream frame it emits is incremental.
+        consumer.on_delta("CCCC")
+        consumer.on_commentary("🔮 recalled")
+        await _wait_until(lambda: adapter.send.await_count >= 1)
+        consumer.finish()
+        await task
+
+        # Every stream frame emitted on the NEW bubble (after the rotation) must
+        # be incremental — none may carry the sealed 'AAAABBBB' prefix.
+        post_rotation_content = [
+            f["text"] for f in adapter.frames[n_before:]
+            if f["text"] and f["text"] != ""
+        ]
+        assert post_rotation_content, "expected post-rotation stream frames"
+        for t in post_rotation_content:
+            assert not t.startswith("AAAABBBB"), (
+                f"fresh bubble frame repeated the sealed prefix: {t!r}"
+            )
+        # Reconciliation stays whole.
+        assert consumer.delivered_final_matches("AAAABBBBCCCC") is True

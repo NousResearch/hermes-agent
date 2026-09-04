@@ -37,7 +37,7 @@ class TestPerTurnStreamIsolation:
             ok2 = await adapter.send_stream_frame(
                 "user2 final", chat_id="user-2", finalize=True, turn_id="turn-2"
             )
-            assert ok2 is True
+            assert ok2
             assert "user-2:turn-2" not in adapter._stream_turns
             # User 1 and 3 still active
             assert "user-1:turn-1" in adapter._stream_turns
@@ -47,7 +47,7 @@ class TestPerTurnStreamIsolation:
             ok1 = await adapter.send_stream_frame(
                 "user1 final", chat_id="user-1", finalize=True, turn_id="turn-1"
             )
-            assert ok1 is True
+            assert ok1
             assert "user-1:turn-1" not in adapter._stream_turns
             # User 3 still active
             assert "user-3:turn-3" in adapter._stream_turns
@@ -56,7 +56,7 @@ class TestPerTurnStreamIsolation:
             ok3 = await adapter.send_stream_frame(
                 "user3 final", chat_id="user-3", finalize=True, turn_id="turn-3"
             )
-            assert ok3 is True
+            assert ok3
             assert "user-3:turn-3" not in adapter._stream_turns
         finally:
             await adapter.disconnect()
@@ -89,7 +89,7 @@ class TestPerTurnStreamIsolation:
             ok1 = await adapter.send_stream_frame(
                 "consumer1 final", chat_id="chat-1", finalize=True, turn_id="turn-1"
             )
-            assert ok1 is True
+            assert ok1
             assert "chat-1:turn-1" not in adapter._stream_turns
             # Consumer 2's turn still exists
             assert "chat-1:turn-2" in adapter._stream_turns
@@ -98,7 +98,7 @@ class TestPerTurnStreamIsolation:
             ok2 = await adapter.send_stream_frame(
                 "consumer2 final", chat_id="chat-1", finalize=True, turn_id="turn-2"
             )
-            assert ok2 is True
+            assert ok2
             assert "chat-1:turn-2" not in adapter._stream_turns
         finally:
             await adapter.disconnect()
@@ -128,7 +128,7 @@ class TestPerTurnStreamIsolation:
             okA = await adapter.send_stream_frame(
                 "A final", chat_id="user-A", finalize=True, turn_id="turn-A"
             )
-            assert okA is False
+            assert not okA
             assert "user-A" in adapter._stream_expired_chats
             assert "user-A:turn-A" not in adapter._stream_turns
 
@@ -140,8 +140,8 @@ class TestPerTurnStreamIsolation:
             okC = await adapter.send_stream_frame(
                 "C final", chat_id="user-C", finalize=True, turn_id="turn-C"
             )
-            assert okB is True  # ✅ User B unaffected
-            assert okC is True  # ✅ User C unaffected
+            assert okB  # ✅ User B unaffected
+            assert okC  # ✅ User C unaffected
             assert "user-B:turn-B" not in adapter._stream_turns
             assert "user-C:turn-C" not in adapter._stream_turns
 
@@ -176,7 +176,7 @@ class TestPerTurnStreamIsolation:
             ok1 = await adapter.send_stream_frame(
                 "c1 final", chat_id="chat-1", finalize=True, turn_id="turn-1"
             )
-            assert ok1 is False
+            assert not ok1
             assert "chat-1" in adapter._stream_expired_chats
             assert "chat-1:turn-1" not in adapter._stream_turns  # turn-1 cleaned up
 
@@ -185,7 +185,7 @@ class TestPerTurnStreamIsolation:
             ok2 = await adapter.send_stream_frame(
                 "c2 final", chat_id="chat-1", finalize=True, turn_id="turn-2"
             )
-            assert ok2 is True  # ✅ turn-2 not blocked by chat-level expired
+            assert ok2  # ✅ turn-2 not blocked by chat-level expired
             assert "chat-1:turn-2" not in adapter._stream_turns
         finally:
             await adapter.disconnect()
@@ -203,7 +203,7 @@ class TestPerTurnStreamIsolation:
 
             # Try to create a new turn after chat is expired
             ok = await adapter.send_stream_frame("new frame", chat_id="chat-1", turn_id="new-turn")
-            assert ok is False
+            assert not ok
             assert "chat-1:new-turn" not in adapter._stream_turns
         finally:
             await adapter.disconnect()

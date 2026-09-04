@@ -19,8 +19,8 @@ def root(tmp_path):
 
 def test_enqueue_writes_envelope_atomically(root):
     env = gr.enqueue(
-        root, room_id="rm-1", room_name="TraderChat", text="  hello  ",
-        from_profile="pax", label="Pax via Discord", thread=None,
+        root, room_id="rm-1", room_name="Launchpad", text="  hello  ",
+        from_profile="researcher", label="Ada via Discord", thread=None,
     )
     assert len(env["id"]) == 32 and env["text"] == "hello" and env["thread"] is None
     path = gr.relay_root(root) / gr.OUTBOX_DIR / f"{env['id']}.json"
@@ -51,7 +51,7 @@ def test_claim_pending_is_exactly_once_and_ordered(root):
 
 
 def test_claim_expires_stale_envelopes_with_error_line(root):
-    env = gr.enqueue(root, room_id="r", room_name="TraderChat", text="a", from_profile="p", label="l")
+    env = gr.enqueue(root, room_id="r", room_name="Launchpad", text="a", from_profile="p", label="l")
     path = gr.relay_root(root) / gr.OUTBOX_DIR / f"{env['id']}.json"
     stale = {**env, "created_at": int(time.time()) - 3600}
     path.write_text(json.dumps(stale))
@@ -59,7 +59,7 @@ def test_claim_expires_stale_envelopes_with_error_line(root):
     assert not path.exists()
     lines, _ = gr.read_reply_lines(root, env["id"])
     assert lines[0]["kind"] == "error" and lines[0]["reason"] == "queued_expired"
-    assert "TraderChat" in lines[0]["error"]
+    assert "Launchpad" in lines[0]["error"]
 
 
 def test_claim_ttl_zero_never_expires(root):
@@ -74,7 +74,7 @@ def test_reply_lines_append_and_incremental_read(root):
     gr.append_reply_line(root, env["id"], {"kind": "accepted", "thread": "tmtm1"})
     lines, off = gr.read_reply_lines(root, env["id"])
     assert [l["kind"] for l in lines] == ["accepted"] and lines[0]["thread"] == "tmtm1" and off > 0
-    gr.append_reply_line(root, env["id"], {"kind": "reply", "member": "socrates", "text": "hi"})
+    gr.append_reply_line(root, env["id"], {"kind": "reply", "member": "helper", "text": "hi"})
     gr.append_reply_line(root, env["id"], {"kind": "done", "status": "settled", "replies": 1})
     more, off2 = gr.read_reply_lines(root, env["id"], offset=off)
     assert [l["kind"] for l in more] == ["reply", "done"] and off2 > off
@@ -129,7 +129,7 @@ def test_sweep_and_cleanup_hook(root, monkeypatch):
 
 
 def test_gateway_root_resolves_profile_home_to_machine_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "pax"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "researcher"))
     assert gr.gateway_root() == tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     assert gr.gateway_root() == tmp_path / ".hermes"

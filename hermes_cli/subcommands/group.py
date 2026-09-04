@@ -695,8 +695,8 @@ def build_group_parser(subparsers) -> None:
             "\n"
             "Examples:\n"
             "  hermes group list\n"
-            "  hermes group create DevTeam --member archie --member mason\n"
-            '  hermes group send DevTeam "Plan the release checklist" --as "Pax via Discord" --wait\n'
+            "  hermes group create DevTeam --member researcher --member ops\n"
+            '  hermes group send DevTeam "Plan the release checklist" --as "Ada via Discord" --wait\n'
             "  hermes group log DevTeam --since 0\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -734,7 +734,7 @@ def build_group_parser(subparsers) -> None:
         dest="as_label",
         default=None,
         metavar="LABEL",
-        help="Who relayed, e.g. 'Pax via Discord' (default '<profile> relay')",
+        help="Who relayed, e.g. 'Ada via Discord' (default '<profile> relay')",
     )
     send.add_argument(
         "--event-id",

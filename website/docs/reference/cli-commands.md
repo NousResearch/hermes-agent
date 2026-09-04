@@ -507,7 +507,7 @@ background from an agent session and the completion output carries the
 replies — the same handoff shape as `hermes -p <agent> chat -q`:
 
 ```
-terminal(command='hermes group send DevTeam "Plan the release checklist" --as "Pax via Discord" --wait',
+terminal(command='hermes group send DevTeam "Plan the release checklist" --as "Ada via Discord" --wait',
          background=True, notify=True)
 ```
 

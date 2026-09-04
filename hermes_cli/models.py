@@ -1203,7 +1203,12 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     curated = list(_PROVIDER_MODELS.get(normalized, []))
     # Curated order, only models the account has access to; an account serving none of them (rare)
     # falls back to curated so the picker still offers sane defaults.
-    return [m for m in curated if m.lower() in live_lower] or curated or live
+    discovered = [m for m in curated if m.lower() in live_lower]
+    # Astra is intentionally absent from offline/static catalogs: the official API's
+    # account-scoped /models response is the only source that may advertise it.
+    if "gpt-6-astra" in live_lower:
+        discovered.append(next((m for m in live if m.lower() == "gpt-6-astra"), "gpt-6-astra"))
+    return discovered or curated or live
 
 
 def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:

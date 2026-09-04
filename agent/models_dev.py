@@ -522,6 +522,19 @@ _OVERRIDE_WARNED_KEYS: set = set()
 # shared by get_model_capabilities and get_model_info so the two unknown-model paths agree.
 _UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000, "output": 8192}, "tool_call": True}
 
+# Account-gated models may be usable before models.dev has indexed them.  Keep
+# their capabilities available for an explicitly selected/discovered model
+# without adding them to any picker catalog.
+_BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("openai", "gpt-6-astra"): {
+        "limit": {"context": 1_050_000, "output": 128_000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": True,
+        "reasoning": True,
+        "family": "gpt-6",
+    },
+}
+
 
 def _load_model_overrides() -> Dict[str, Any]:
     """The ``model_overrides`` config section ({} on any failure). Deliberately not memoized:
@@ -646,8 +659,11 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
     catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
-    override = _override_for(provider, model, catalog_hit=entry is not None)
-    return entry if override is None else _merge_catalog_entry_with_override(entry if entry is not None else _UNKNOWN_MODEL_BASE, override)
+    provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
+    builtin = _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+    base = entry if entry is not None else builtin
+    override = _override_for(provider, model, catalog_hit=base is not None)
+    return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
 
 
 def _entry_supports_vision(entry: Dict[str, Any]) -> bool:

@@ -559,7 +559,19 @@ async function openSecondary(entry: Secondary): Promise<void> {
       entry.connectionId && desktop.getGatewayWsUrlFor
         ? {
             getGatewayWsUrl: () =>
-              desktop.getGatewayWsUrlFor!({ connectionId: entry.connectionId, profile: entry.profile })
+              // Coalesced: `conn` was validated by getConnectionFor moments ago in
+              // this same switch — carry it so main skips the redundant probe.
+              desktop.getGatewayWsUrlForValidated
+                ? desktop.getGatewayWsUrlForValidated!({
+                    connectionId: entry.connectionId,
+                    profile: entry.profile ?? undefined,
+                    validatedConnection: {
+                      ...conn,
+                      profile: entry.profile ?? undefined,
+                      connectionId: entry.connectionId ?? undefined
+                    }
+                  })
+                : desktop.getGatewayWsUrlFor!({ connectionId: entry.connectionId, profile: entry.profile })
           }
         : entry.connectionId
           ? {}

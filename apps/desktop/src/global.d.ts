@@ -32,6 +32,14 @@ declare global {
         connectionId?: null | string
         profile?: null | string
       }) => Promise<GatewayWsUrlResult>
+      // Coalesced registry variant: carries the descriptor already validated by
+      // getConnectionFor in the same profile switch, so main skips the redundant
+      // dispatch probe and only mints (OAuth) + stamps headers.
+      getGatewayWsUrlForValidated?: (payload: {
+        connectionId?: null | string
+        profile?: null | string
+        validatedConnection?: (HermesConnection & { connectionId?: null | string; profile?: null | string }) | null
+      }) => Promise<GatewayWsUrlResult>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Credential-free routes across the union connection registry. The

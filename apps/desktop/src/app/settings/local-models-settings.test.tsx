@@ -74,7 +74,9 @@ const FITTING_MODEL: LocalCatalogModel = {
   fit_summary: 'runs at its full 256K context',
   start_window: 262144,
   start_window_label: '256K',
-  spilled: false
+  spilled: false,
+  predicted_tok_s: 30,
+  predicted_tok_s_label: '~30 tok/s',
 }
 
 const SPILLED_MODEL: LocalCatalogModel = {
@@ -97,6 +99,8 @@ const REFUSED_MODEL: LocalCatalogModel = {
   fits: false,
   fit_summary: 'Needs more memory than this machine has',
   fit_detail: 'needs ~60 GiB at the 64K floor',
+  predicted_tok_s: 8,
+  predicted_tok_s_label: '~10 tok/s',
   start_window: undefined,
   start_window_label: undefined
 }
@@ -158,6 +162,7 @@ describe('LocalModelsSettings', () => {
     // pill, plus the ceiling it would have had.
     expect(screen.getByText('Huge Model')).toBeTruthy()
     expect(screen.getByText('Too big for this machine')).toBeTruthy()
+    expect(screen.getAllByText('~10 tok/s').length).toBe(1)
 
     // The spilled model reads amber + ONE quiet ceiling pill — the same
     // 'Up to' shape the refused row wears; no start/grow pair.
@@ -225,6 +230,57 @@ describe('LocalModelsSettings', () => {
     await waitFor(() =>
       expect(screen.getAllByText(/would respond too slowly on its memory bandwidth/).length).toBeGreaterThan(0)
     )
+  })
+
+  it('renders the predicted speed pill for fitting models', async () => {
+    mocked.getLocalCatalog.mockResolvedValue({ models: [FITTING_MODEL] })
+    await renderFullPane()
+    await screen.findByText('~30 tok/s')
+
+    // Speed pill tone: >=20 tok/s is green.
+    const pill = screen.getByText('~30 tok/s')
+    expect(pill).toBeTruthy()
+    expect(pill?.className).toContain('emerald')
+  })
+
+  it('renders the speed pill in warn tone when predicted below the pleasant floor', async () => {
+    const slowModel: LocalCatalogModel = {
+      ...FITTING_MODEL,
+      id: 'Slow-Model',
+      display_name: 'Slow Model',
+      predicted_tok_s: 8,
+      predicted_tok_s_label: '~10 tok/s',
+    }
+
+    mocked.getLocalCatalog.mockResolvedValue({ models: [slowModel] })
+    await renderFullPane()
+    await screen.findByText('~10 tok/s')
+
+    expect(screen.getByText('~10 tok/s').className).toContain('destructive')
+  })
+
+  it('keeps the oversized speed estimate neutral even when it is fast', async () => {
+    const fastRefused: LocalCatalogModel = {
+      ...REFUSED_MODEL,
+      predicted_tok_s: 40,
+      predicted_tok_s_label: '~40 tok/s',
+    }
+
+    mocked.getLocalCatalog.mockResolvedValue({ models: [fastRefused] })
+    renderPane()
+    await screen.findByText('~40 tok/s')
+
+    expect(screen.getByText('~40 tok/s').className).toContain('muted')
+    expect(screen.getByText('~40 tok/s').className).not.toContain('emerald')
+  })
+
+  it('keeps exactly 20 tok/s in the green pleasant band', async () => {
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...FITTING_MODEL, predicted_tok_s: 20, predicted_tok_s_label: '~20 tok/s' }]
+    })
+    await renderFullPane()
+    await screen.findByText('~20 tok/s')
+    expect(screen.getByText('~20 tok/s').className).toContain('emerald')
   })
 
   it('enables downloads only once the runtime is installed', async () => {

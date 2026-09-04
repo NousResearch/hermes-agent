@@ -1393,6 +1393,8 @@ export const zh: Translations = {
       pillFitsGpu: '完全在 GPU 上运行',
       pillUsesRam: '使用系统内存',
       pillTooBig: '超出本机内存',
+      speedPillTip: '此硬件上的预测解码速度，并非实测值。',
+      speedPillTipSlow: '低于舒适使用门槛（约 20 tok/s）。',
       browseTitle: '发现更多模型',
       browseHint: '搜索整个 Hugging Face。在这里下载的模型会自动适配你的机器，但未经我们测试。',
       browsePlaceholder: '按名称或作者搜索模型…',

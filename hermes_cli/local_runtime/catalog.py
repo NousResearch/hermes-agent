@@ -272,6 +272,22 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant,
     return bandwidth * 1e9 / bytes_per_token
 
 
+def display_decode_tok_s(tok_s: float) -> int:
+    """UI-side rounding: predicted decode for ordering/gating is float-precise
+    noise (bandwidth is a class constant, not a per-machine measurement);
+    the user-facing figure rounds to the nearest 5 to keep the displayed
+    '~30 tok/s' style honest about the precision it actually has.
+
+    Below 10 tok/s rounds up to 10 — anything under that is unusably slow
+    and the row's spilled/too-big pills already say so; rendering it as
+    "3 tok/s" is the wrong level of precision for a recommendation tile.
+    """
+    if tok_s < 10:
+        return 10
+    rounded = round(tok_s / 5) * 5
+    return max(10, rounded)
+
+
 def recommended_entry(budget: HardwareBudget,
                       entries: "tuple[CatalogEntry, ...] | None" = None
                       ) -> "tuple[CatalogEntry, str] | None":

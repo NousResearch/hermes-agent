@@ -116,6 +116,33 @@ def test_catalog_never_hides_unaffordable_models(client, monkeypatch):
         assert row["fit_detail"] or row["fit_summary"]
 
 
+def test_catalog_fitting_rows_carry_predicted_tok_s(client, monkeypatch):
+    """Every fitting model surfaces a memory-bandwidth-derived predicted
+    decode speed. The endpoint emits both the rounded int (for tooling)
+    and the pre-formatted label (for the UI pill)."""
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(usable_vram_bytes=64 << 30,
+                            total_device_bytes=64 << 30,
+                            ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+                        lambda **kw: budget)
+    data = client.get("/api/local-models/catalog").json()
+    fitting = [m for m in data["models"] if m["fits"]]
+    assert fitting, "test budget (64 GiB VRAM) should fit several catalog entries"
+    for row in fitting:
+        # Raw int: positive and finite.
+        assert isinstance(row.get("predicted_tok_s"), int)
+        assert row["predicted_tok_s"] > 0
+        # Label: ~N tok/s shape.
+        assert row["predicted_tok_s_label"].startswith("~")
+        assert "tok/s" in row["predicted_tok_s_label"]
+        # Label rounds to the nearest 5 above the floor.
+        from hermes_cli.local_runtime.catalog import display_decode_tok_s
+        rendered = int(row["predicted_tok_s_label"].split("~")[1].split(" ")[0])
+        assert rendered == display_decode_tok_s(row["predicted_tok_s"])
+
+
 # ── downloads ────────────────────────────────────────────────
 
 

@@ -1212,6 +1212,12 @@ export const en: Translations = {
       pillFitsGpu: 'Fits your GPU',
       pillUsesRam: 'Uses system RAM',
       pillTooBig: 'Too big for this machine',
+      // Predicted decode speed pill (catalog endpoint emits predicted_tok_s_label,
+      // e.g. "~30 tok/s"; this copy is the tooltip explaining where the number comes from).
+      speedPillTip:
+        'Predicted decode speed on this hardware — memory-bandwidth math, not a measurement. Real speed depends on context length, prompt shape, and the engine build.',
+      speedPillTipSlow:
+        'Below the comfortable-use floor (~20 tok/s). The model will run, but feel sluggish on long replies.',
       browseTitle: 'Find more models',
       browseHint:
         'Search all of Hugging Face. Models you download here are sized to your machine automatically, but not tested by us.',

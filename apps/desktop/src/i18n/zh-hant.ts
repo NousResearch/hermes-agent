@@ -1060,6 +1060,8 @@ export const zhHant = defineLocale({
       pillFitsGpu: '完全在 GPU 上執行',
       pillUsesRam: '使用系統記憶體',
       pillTooBig: '超出本機記憶體',
+      speedPillTip: '此硬體上的預測解碼速度，並非實測值。',
+      speedPillTipSlow: '低於舒適使用門檻（約 20 tok/s）。',
       browseTitle: '發現更多模型',
       browseHint: '搜尋整個 Hugging Face。在這裡下載的模型會自動適配你的機器，但未經我們測試。',
       browsePlaceholder: '按名稱或作者搜尋模型…',

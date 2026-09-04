@@ -691,6 +691,27 @@ export function LocalModelsSettings() {
                         </Tip>
                       )}
 
+                      {/* Predicted decode speed: memory-bandwidth estimate, not a
+                          measurement. Tone mirrors the pleasant floor — green when
+                          still pleasant, red when below 20 tok/s.
+                          The label is pre-formatted by the backend so a future i18n
+                          rewrite can replace the format string without breaking the
+                          pill tone mapping. */}
+                      {model.predicted_tok_s_label && (
+                        <Tip
+                          label={model.fits
+                            ? (model.predicted_tok_s ?? 0) < 20
+                              ? copy.speedPillTipSlow
+                              : copy.speedPillTip
+                            : model.fit_detail ?? model.fit_summary}
+                        >
+                          <Pill tone={!model.fits ? 'muted' : (model.predicted_tok_s ?? 0) >= 20 ? 'success' : 'destructive'}>
+                            <Zap className="mr-1 size-3" />
+                            {model.predicted_tok_s_label}
+                          </Pill>
+                        </Tip>
+                      )}
+
                       {/* Context: one pill. Green 'Full X context' only when
                           the model earned its complete window resident on the
                           GPU — a big context served from system RAM is slow,

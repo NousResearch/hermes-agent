@@ -77,6 +77,23 @@ class _Snowflake:
     def __init__(self, id: int) -> None:  # noqa: A002 - matches discord API
         self.id = id
 
+
+class _AutoThreadRateLimited(Exception):
+    """Discord refused auto-thread creation and supplied a retry delay."""
+
+    def __init__(self, retry_after: float) -> None:
+        self.retry_after_seconds = max(1, math.ceil(retry_after))
+        super().__init__(f"Discord rate-limited thread creation for {self.retry_after_seconds}s")
+
+
+def _format_retry_delay(seconds: int) -> str:
+    minutes, remaining_seconds = divmod(max(1, seconds), 60)
+    if not minutes:
+        return f"{remaining_seconds}s"
+    if not remaining_seconds:
+        return f"{minutes}m"
+    return f"{minutes}m {remaining_seconds}s"
+
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
@@ -5335,6 +5352,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
+                if self._is_discord_rate_limit(direct_error):
+                    retry_after = self._extract_discord_retry_after(direct_error) or 60.0
+                    logger.warning(
+                        "[%s] Discord rate-limited auto-thread creation; retry after %.2fs",
+                        self.name, retry_after,
+                    )
+                    raise _AutoThreadRateLimited(retry_after) from direct_error
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
@@ -5343,6 +5367,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
+                    if self._is_discord_rate_limit(fallback_error):
+                        retry_after = self._extract_discord_retry_after(fallback_error) or 60.0
+                        logger.warning(
+                            "[%s] Discord rate-limited fallback auto-thread creation; retry after %.2fs",
+                            self.name, retry_after,
+                        )
+                        raise _AutoThreadRateLimited(retry_after) from fallback_error
                     if attempt == 0:
                         # Brief backoff: most failures here are transient connect errors.
                         await asyncio.sleep(0.75)
@@ -6001,7 +6032,12 @@ class DiscordAdapter(BasePlatformAdapter):
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                thread = await self._auto_create_thread(message)
+                rate_limit_error = None
+                try:
+                    thread = await self._auto_create_thread(message)
+                except _AutoThreadRateLimited as error:
+                    thread = None
+                    rate_limit_error = error
                 if thread:
                     parent_channel_id = str(message.channel.id)
                     is_thread = True
@@ -6018,10 +6054,19 @@ class DiscordAdapter(BasePlatformAdapter):
                         # That breaks thread-first Discord workflows by dumping a new task into a shared
                         # channel. Surface a short visible error so the user can retry once Discord
                         # recovers, and skip agent invocation for this message. See #20243.
-                        await message.channel.send(
-                            "⚠️ Hermes could not create a Discord thread for "
-                            "this message, so the request was not processed. Please retry."
-                        )
+                        if rate_limit_error is not None:
+                            retry_delay = _format_retry_delay(rate_limit_error.retry_after_seconds)
+                            notice = (
+                                "⚠️ Discord is temporarily rate-limiting Hermes from creating another "
+                                f"thread. This message was not processed. Try again in {retry_delay}, "
+                                "or continue in an existing thread."
+                            )
+                        else:
+                            notice = (
+                                "⚠️ Hermes could not create a Discord thread for this message, so the "
+                                "request was not processed. Please retry."
+                            )
+                        await message.channel.send(notice)
                     except Exception as notify_error:
                         logger.warning(
                             "[%s] Failed to notify user of auto-thread failure: %s", self.name,

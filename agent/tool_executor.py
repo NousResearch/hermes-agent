@@ -33,6 +33,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.prompt_cache_scope import resolve_browser_transport_scope
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -2529,6 +2530,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             effective_task_id,
                             tool_call_id=tool_call_id,
                             session_id=agent.session_id or "",
+                            conversation_id=resolve_browser_transport_scope(
+                                agent, function_name
+                            ),
                             turn_id=getattr(agent, "_current_turn_id", "") or "",
                             api_request_id=getattr(agent, "_current_api_request_id", "")
                             or "",
@@ -2611,6 +2615,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             effective_task_id,
                             tool_call_id=tool_call_id,
                             session_id=agent.session_id or "",
+                            conversation_id=resolve_browser_transport_scope(
+                                agent, function_name
+                            ),
                             turn_id=getattr(agent, "_current_turn_id", "") or "",
                             api_request_id=getattr(agent, "_current_api_request_id", "")
                             or "",

@@ -92,6 +92,45 @@ class TestCleanupTaskResourcesHeadedSkip:
             cleanup_task_resources(_make_agent(), "task-x")
             mock_vm.assert_called_once_with("task-x")
 
+    def test_tab_lifecycle_finalizer_uses_turn_then_falls_back_to_task(self):
+        from agent.chat_completion_helpers import cleanup_task_resources
+
+        for agent, expected in (
+            (SimpleNamespace(verbose_logging=False, _current_turn_id="turn-x"), "turn-x"),
+            (_make_agent(), "task-x"),
+        ):
+            with (
+                patch("tools.browser_tool._is_headed_mode", return_value=False),
+                patch("tools.browser_tool.finalize_browser_tab_lifecycle") as finalize,
+                patch("run_agent.cleanup_vm"),
+                patch("run_agent.cleanup_browser"),
+                patch(
+                    "agent.chat_completion_helpers.is_persistent_env",
+                    return_value=False,
+                ),
+            ):
+                cleanup_task_resources(agent, "task-x")
+                finalize.assert_called_once_with(expected)
+
+    def test_tab_lifecycle_finalizer_failure_does_not_skip_normal_cleanup(self):
+        from agent.chat_completion_helpers import cleanup_task_resources
+
+        with (
+            patch("tools.browser_tool._is_headed_mode", return_value=False),
+            patch(
+                "tools.browser_tool.finalize_browser_tab_lifecycle",
+                side_effect=RuntimeError("ledger unavailable"),
+            ),
+            patch("run_agent.cleanup_vm"),
+            patch("run_agent.cleanup_browser") as cleanup_browser,
+            patch(
+                "agent.chat_completion_helpers.is_persistent_env",
+                return_value=False,
+            ),
+        ):
+            cleanup_task_resources(_make_agent(), "task-x")
+            cleanup_browser.assert_called_once_with("task-x")
+
 
 # ---------------------------------------------------------------------------
 # --headed flag injection in local mode

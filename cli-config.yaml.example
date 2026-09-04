@@ -517,6 +517,13 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
+
+  # Opt-in ownership-aware cleanup for tabs created by browser_exec on an
+  # explicit plaintext loopback CDP browser. Cloud, TLS, and non-loopback
+  # browsers are never inspected by this guard (default: false).
+  resource_hygiene:
+    enabled: false
+
   # Let an authenticated browser extension register as the controller for an
   # existing Hermes session. Disabled by default. Local API registration also
   # requires the API server bearer key to be configured.

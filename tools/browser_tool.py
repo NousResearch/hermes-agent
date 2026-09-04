@@ -52,6 +52,7 @@ Usage:
 import atexit
 import contextlib
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -63,6 +64,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
@@ -618,6 +620,121 @@ def _get_cdp_override() -> str:
     if not raw:
         return ""
     return _resolve_cdp_override(raw)
+
+
+def _loopback_cdp_http_endpoint(value: str) -> Optional[str]:
+    """Convert a resolved local CDP URL to its HTTP target-control root.
+
+    ``_get_cdp_override`` already resolves discovery URLs to
+    ``webSocketDebuggerUrl``. Tab lifecycle therefore does no discovery of its
+    own; it only verifies that the resolved endpoint is plaintext loopback and
+    derives Chrome's sibling ``/json/*`` HTTP surface. Remote/cloud and TLS CDP
+    endpoints fail closed.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "ws"}:
+        return None
+    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return None
+    if parsed.username or parsed.password or not port:
+        return None
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"http://{host}:{port}"
+
+
+def _tab_lifecycle_enabled() -> bool:
+    """Read the profile-local tab-lifecycle feature flag."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        lifecycle_cfg = browser_cfg.get("resource_hygiene", {}) if isinstance(browser_cfg, dict) else {}
+        return isinstance(lifecycle_cfg, dict) and is_truthy_value(
+            lifecycle_cfg.get("enabled"), default=False
+        )
+    except Exception as exc:
+        logger.debug("Could not read browser.resource_hygiene config: %s", exc)
+        return False
+
+
+def prepare_browser_tab_lifecycle(
+    *,
+    session_name: str,
+    owner_key: str,
+    lease_minutes: int,
+    lease_reason: str,
+    lock_timeout_s: float,
+    cdp_url: str = "",
+    private_browser: bool = False,
+):
+    """Create and start per-turn cleanup for the resolved shared local browser.
+
+    Browser backend/session resolution stays in this module. Browser instances
+    proven private to a named/cloud session are never inspected; named harness
+    daemons sharing the configured local browser receive the same per-turn
+    ownership boundary. Returns ``(guard, error)``; when disabled or not
+    applicable both are ``None``.
+    """
+    if not _tab_lifecycle_enabled() or private_browser:
+        return None, None
+
+    resolved_cdp = _resolve_cdp_override(cdp_url) if cdp_url else _get_cdp_override()
+    if not resolved_cdp:
+        return None, (
+            "tab lifecycle requires browser.cdp_url to resolve to a plaintext "
+            "loopback Chrome endpoint"
+        )
+    endpoint = _loopback_cdp_http_endpoint(resolved_cdp)
+    if endpoint is None:
+        # Cloud/TLS/non-loopback browsers have their own session lifecycle.
+        # Local tab hygiene must not inspect or block them.
+        return None, None
+
+    from tools.browser_tab_lifecycle import BrowserTabLifecycleGuard
+
+    guard = BrowserTabLifecycleGuard(
+        enabled=True,
+        endpoint=endpoint,
+        browser_key=hashlib.sha256(resolved_cdp.encode("utf-8")).hexdigest(),
+        owner_key=owner_key,
+        lease_minutes=lease_minutes,
+        lease_reason=lease_reason,
+        lock_timeout_s=lock_timeout_s,
+    )
+    start_error = guard.start()
+    if start_error is None:
+        # CDP overrides bypass _get_session_info(), the historical cleanup-thread
+        # start point. Start it explicitly so bounded leases are reaped even if
+        # no later browser_exec call or turn finalizer reaches this process.
+        _start_browser_cleanup_thread()
+    return guard, start_error
+
+
+def finalize_browser_tab_lifecycle(owner_key: str) -> Dict[str, Any]:
+    """Finalize any leases that survived the completed conversation turn."""
+    try:
+        from tools.browser_tab_lifecycle import finalize_browser_tab_owner
+
+        return finalize_browser_tab_owner(owner_key)
+    except Exception as exc:
+        logger.warning("Browser tab lifecycle finalization failed: %s", exc)
+        return {"closed": 0, "failed": 1, "errors": [str(exc)]}
+
+
+def reap_expired_browser_tab_lifecycles() -> Dict[str, Any]:
+    """Reap expired bounded leases from the browser cleanup thread."""
+    try:
+        from tools.browser_tab_lifecycle import reap_expired_browser_tab_leases
+
+        return reap_expired_browser_tab_leases()
+    except Exception as exc:
+        logger.debug("Browser tab lease reaper failed: %s", exc)
+        return {"closed": 0, "failed": 1, "errors": [str(exc)]}
 
 
 def _get_dialog_policy_config() -> Tuple[str, float]:
@@ -2471,6 +2588,8 @@ def _cleanup_inactive_browser_sessions():
                 with _cleanup_lock:
                     _session_owner_homes.pop(task_id, None)
                     _cleanup_failures.pop(task_id, None)
+
+    reap_expired_browser_tab_lifecycles()
 
 
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:

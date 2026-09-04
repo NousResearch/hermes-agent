@@ -156,6 +156,117 @@ class TestGetCdpOverride:
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert bc.is_camofox_mode() is False
 
+class TestTabLifecycleResolution:
+    def test_only_plaintext_loopback_cdp_is_manageable(self):
+        from tools.browser_tool import _loopback_cdp_http_endpoint
+
+        assert _loopback_cdp_http_endpoint("http://127.0.0.1:9222") == "http://127.0.0.1:9222"
+        assert _loopback_cdp_http_endpoint("ws://localhost:9333/devtools/browser/x") == "http://localhost:9333"
+        assert _loopback_cdp_http_endpoint("ws://[::1]:9444/devtools/browser/x") == "http://[::1]:9444"
+        assert _loopback_cdp_http_endpoint("https://127.0.0.1:9222") is None
+        assert _loopback_cdp_http_endpoint("wss://127.0.0.1:9222/devtools/browser/x") is None
+        assert _loopback_cdp_http_endpoint("ws://192.168.1.20:9222/devtools/browser/x") is None
+        assert _loopback_cdp_http_endpoint("ws://user:pass@127.0.0.1:9222/devtools/browser/x") is None
+        assert _loopback_cdp_http_endpoint("ws://localhost:not-a-port") is None
+
+    def test_prepare_uses_browser_tools_native_resolved_websocket(self, monkeypatch):
+        import tools.browser_tab_lifecycle as lifecycle
+        import tools.browser_tool as browser_tool
+
+        seen = {}
+
+        class FakeGuard:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(browser_tool, "_tab_lifecycle_enabled", lambda: True)
+        monkeypatch.setattr(
+            browser_tool,
+            "_get_cdp_override",
+            lambda: "ws://127.0.0.1:9222/devtools/browser/native-resolved",
+        )
+        monkeypatch.setattr(lifecycle, "BrowserTabLifecycleGuard", FakeGuard)
+        cleanup_starts = []
+        monkeypatch.setattr(
+            browser_tool,
+            "_start_browser_cleanup_thread",
+            lambda: cleanup_starts.append(True),
+        )
+
+        guard, error = browser_tool.prepare_browser_tab_lifecycle(
+            session_name="",
+            owner_key="turn-123",
+            lease_minutes=10,
+            lease_reason="continue pagination",
+            lock_timeout_s=30,
+        )
+
+        assert guard is not None
+        assert error is None
+        assert seen["endpoint"] == "http://127.0.0.1:9222"
+        assert seen["owner_key"] == "turn-123"
+        assert cleanup_starts == [True]
+
+    def test_private_and_remote_sessions_are_never_managed(self, monkeypatch):
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.setattr(browser_tool, "_tab_lifecycle_enabled", lambda: True)
+        called = []
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: called.append(True) or WS_URL)
+        assert browser_tool.prepare_browser_tab_lifecycle(
+            session_name="isolated-cloud",
+            owner_key="turn-1",
+            lease_minutes=0,
+            lease_reason="",
+            lock_timeout_s=30,
+            private_browser=True,
+        ) == (None, None)
+        assert called == []
+
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: WS_URL)
+        guard, error = browser_tool.prepare_browser_tab_lifecycle(
+            session_name="",
+            owner_key="turn-1",
+            lease_minutes=0,
+            lease_reason="",
+            lock_timeout_s=30,
+        )
+        assert guard is None
+        assert error is None
+
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "")
+        guard, error = browser_tool.prepare_browser_tab_lifecycle(
+            session_name="",
+            owner_key="turn-1",
+            lease_minutes=0,
+            lease_reason="",
+            lock_timeout_s=30,
+        )
+        assert guard is None
+        assert error is not None
+        assert "plaintext loopback" in error
+
+    def test_inactivity_cleanup_reaps_leases_without_expired_sessions(
+        self, monkeypatch
+    ):
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.setattr(browser_tool, "_session_last_activity", {})
+        reaps = []
+        monkeypatch.setattr(
+            browser_tool,
+            "reap_expired_browser_tab_lifecycles",
+            lambda: reaps.append(True),
+        )
+
+        browser_tool._cleanup_inactive_browser_sessions()
+
+        assert reaps == [True]
+
+
 class TestCreateCdpSession:
     """_create_cdp_session() must sanitize the CDP URL before logging.
 

@@ -30,6 +30,24 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_registry_dispatch_receives_turn_identity(self):
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch:
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="tool-1",
+                turn_id="turn-1",
+                api_request_id="request-1",
+            )
+        assert result == '{"ok":true}'
+        assert dispatch.call_args.kwargs["task_id"] == "task-1"
+        assert dispatch.call_args.kwargs["session_id"] == "session-1"
+        assert dispatch.call_args.kwargs["tool_call_id"] == "tool-1"
+        assert dispatch.call_args.kwargs["turn_id"] == "turn-1"
+        assert dispatch.call_args.kwargs["api_request_id"] == "request-1"
+
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

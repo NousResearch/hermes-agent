@@ -478,6 +478,9 @@ def load_cli_config() -> Dict[str, Any]:
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
             "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
+            "resource_hygiene": {
+                "enabled": False,  # Close only locally owned Browser Use tabs after each call
+            },
             "camofox": {
                 "rewrite_loopback_urls": False,
                 "loopback_host_alias": "host.docker.internal",

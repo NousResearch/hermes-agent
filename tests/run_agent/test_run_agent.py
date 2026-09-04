@@ -1724,6 +1724,27 @@ class TestExecuteToolCalls:
         tool_results = [m for m in messages if m["role"] == "tool"]
         assert [m["tool_call_id"] for m in tool_results] == ["c1", "c2"]
 
+    def test_sequential_browser_exec_forwards_transport_scope(self, agent):
+        """browser_exec is a sequential barrier, so this is its production seam."""
+        agent.session_id = "compressed-child"
+        tc = _mock_tool_call(
+            name="browser_exec",
+            arguments=json.dumps({"code": "print(page_info())"}),
+            call_id="browser-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        with (
+            patch(
+                "agent.tool_executor.resolve_browser_transport_scope",
+                return_value="lineage-root",
+            ),
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, [], "task-1")
+        assert mock_hfc.call_args.kwargs["session_id"] == "compressed-child"
+        assert mock_hfc.call_args.kwargs["conversation_id"] == "lineage-root"
+
+
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"
         tc = _mock_tool_call(
@@ -2149,6 +2170,7 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                conversation_id="",
                 turn_id="",
                 api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
@@ -2159,6 +2181,7 @@ class TestConcurrentToolExecution:
                 tool_request_middleware_trace=[],
             )
             assert result == "result"
+
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

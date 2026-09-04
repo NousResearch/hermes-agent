@@ -628,6 +628,9 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        "resource_hygiene": {
+            "enabled": False,  # Per-turn ownership/cleanup for tabs on an explicit loopback CDP browser
+        },
         # Consent to browse with the user's REAL logins for local browsing.
         # When true, local browsing (the Browser Use CLI, or the built-in
         # browser tools) runs on a Hermes-managed SNAPSHOT of the user's

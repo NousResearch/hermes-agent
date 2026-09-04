@@ -317,3 +317,18 @@ def resolve_prompt_cache_scope_safe(agent: Any) -> Optional[str]:
     except Exception:
         logger.debug("prompt-cache scope resolution failed", exc_info=True)
         return None
+
+
+def resolve_browser_transport_scope(agent: Any, function_name: str) -> str:
+    """Return the fork-aware, rotation-stable scope for ``browser_exec``.
+
+    Browser-harness transports must survive compression rotation without
+    collapsing explicit branches, delegate children, or tool children onto a
+    parent's mutable CDP connection. The prompt-cache scope already encodes
+    exactly those boundaries. Other tools receive no extra handler context.
+    """
+    if function_name != "browser_exec":
+        return ""
+    return resolve_prompt_cache_scope_safe(agent) or str(
+        getattr(agent, "session_id", None) or ""
+    )

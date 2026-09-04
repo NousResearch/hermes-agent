@@ -14,7 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.prompt_cache_scope import resolve_prompt_cache_scope
+from agent.prompt_cache_scope import (
+    resolve_browser_transport_scope,
+    resolve_prompt_cache_scope,
+)
 from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
 from hermes_state import SessionDB
 
@@ -203,6 +206,30 @@ class TestResolvePromptCacheScope:
         # Normal path still resolves through to the plain variant.
         assert resolve_prompt_cache_scope_safe(_agent("sess-ok")) == "sess-ok"
         assert resolve_prompt_cache_scope_safe(_agent("")) is None
+
+    def test_browser_transport_reuses_rotation_scope_but_not_parent_forks(self, db):
+        db.create_session("root-sess", source="webui")
+        _rotate(db, "root-sess", "rotated-1")
+        assert (
+            resolve_browser_transport_scope(_agent("rotated-1", db), "browser_exec")
+            == "root-sess"
+        )
+
+        db.create_session(
+            "delegate-child",
+            source="webui",
+            parent_session_id="root-sess",
+            model_config={"_delegate_from": "root-sess"},
+        )
+        assert (
+            resolve_browser_transport_scope(
+                _agent("delegate-child", db), "browser_exec"
+            )
+            == "delegate-child"
+        )
+
+    def test_browser_transport_context_is_not_added_to_other_tools(self):
+        assert resolve_browser_transport_scope(_agent("sess-x"), "web_search") == ""
 
 
 class TestRotationContinuityEndToEnd:

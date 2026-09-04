@@ -1254,6 +1254,7 @@ def handle_function_call(
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     turn_id: Optional[str] = None,
     api_request_id: Optional[str] = None,
     user_task: Optional[str] = None,
@@ -1400,6 +1401,7 @@ def handle_function_call(
                 task_id=task_id,
                 tool_call_id=tool_call_id,
                 session_id=session_id,
+                conversation_id=conversation_id,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
                 user_task=user_task,
@@ -1556,6 +1558,11 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
+            conversation_context = (
+                {"conversation_id": conversation_id}
+                if function_name == "browser_exec" and conversation_id
+                else {}
+            )
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
@@ -1565,7 +1572,11 @@ def handle_function_call(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
+                        tool_call_id=tool_call_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
                         enabled_tools=sandbox_enabled,
+                        **conversation_context,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
@@ -1573,7 +1584,11 @@ def handle_function_call(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
+                        tool_call_id=tool_call_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
                         user_task=user_task,
+                        **conversation_context,
                     )
             if skip_tool_execution_middleware:
                 result = _dispatch(function_args)

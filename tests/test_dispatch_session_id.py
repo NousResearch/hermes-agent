@@ -73,3 +73,27 @@ class TestSessionIdForwarding:
                 skip_pre_tool_call_hook=True,
             )
         assert captured.get("task_id") == "task-999"
+
+    def test_conversation_lineage_is_forwarded_only_for_browser_exec(self):
+        captured = {}
+        with patch("model_tools.registry", _make_registry(captured)):
+            from model_tools import handle_function_call
+            handle_function_call(
+                "browser_exec", {"code": "print(1)"}, task_id="t1",
+                session_id="compressed-child", conversation_id="lineage-root",
+                skip_pre_tool_call_hook=True,
+            )
+        assert captured.get("session_id") == "compressed-child"
+        assert captured.get("conversation_id") == "lineage-root"
+
+    def test_conversation_lineage_does_not_expand_other_handler_contracts(self):
+        captured = {}
+        with patch("model_tools.registry", _make_registry(captured)):
+            from model_tools import handle_function_call
+            handle_function_call(
+                "web_search", {"query": "test"}, task_id="t1",
+                session_id="compressed-child", conversation_id="lineage-root",
+                skip_pre_tool_call_hook=True,
+            )
+        assert captured.get("session_id") == "compressed-child"
+        assert "conversation_id" not in captured

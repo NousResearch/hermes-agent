@@ -3586,6 +3586,21 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         if agent.verbose_logging:
             logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)
     try:
+        from tools.browser_tool import finalize_browser_tab_lifecycle
+
+        owner_key = getattr(agent, "_current_turn_id", "") or task_id
+        report = finalize_browser_tab_lifecycle(owner_key)
+        if report.get("failed") and agent.verbose_logging:
+            logger.warning(
+                "Failed to finalize %s browser tab lease(s) for turn %s: %s",
+                report.get("failed"),
+                owner_key,
+                report.get("errors"),
+            )
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning("Failed to finalize browser tabs for task %s: %s", task_id, e)
+    try:
         headed = False
         try:
             from tools.browser_tool import _is_headed_mode

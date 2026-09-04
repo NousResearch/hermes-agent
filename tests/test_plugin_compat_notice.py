@@ -28,6 +28,29 @@ MANIFEST = {"tools.web_tools": {"prefers_gateway": "tools.tool_backend_helpers.p
     ("from unittest.mock import patch\npatch('hermes_cli.kanban_db.connect')\n", ["hermes_cli.kanban_db.connect"]),
     ("from tools.web_tools import web_search\n", []),                       # live name: not a hit
     ("from tools.tool_backend_helpers import prefers_gateway\n", []),      # already migrated
+    # Guarded shapes survive the removal, so they are NOT hits (#102117 follow-up).
+    ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from tools.web_tools import prefers_gateway\n", []),
+    ("import typing\nif typing.TYPE_CHECKING:\n    from tools.web_tools import prefers_gateway\n", []),
+    ("try:\n    from tools.tool_backend_helpers import prefers_gateway\n"
+     "except ImportError:\n    from tools.web_tools import prefers_gateway\n", []),
+    ("try:\n    from tools.web_tools import prefers_gateway\n"
+     "except (ImportError, AttributeError):\n    from tools.tool_backend_helpers import prefers_gateway\n", []),
+    # A try that does not catch ImportError does not protect the import.
+    ("try:\n    from tools.web_tools import prefers_gateway\nexcept ValueError:\n    pass\n",
+     ["tools.web_tools.prefers_gateway"]),
+    # Dynamic shapes that DO still depend on the old facade ARE hits.
+    ("from tools.web_tools import *\nprefers_gateway()\n", ["tools.web_tools.prefers_gateway"]),
+    ("from tools.web_tools import *\nweb_search()\n", []),                  # star import alone is not a hit
+    ("from tools.web_tools import *\ndef prefers_gateway(): ...\nprefers_gateway()\n", []),  # local def shadows
+    ("try:\n    from tools.web_tools import prefers_gateway\nexcept ImportError:\n    raise\n",
+     ["tools.web_tools.prefers_gateway"]),                                # re-raise is not a fallback
+    ("try:\n    import tools.web_tools as wt\nexcept ImportError:\n    wt = None\nwt.prefers_gateway()\n",
+     ["tools.web_tools.prefers_gateway"]),                                # try can't guard F.n attribute use
+    ("import importlib\nimportlib.import_module('tools.web_tools').prefers_gateway()\n",
+     ["tools.web_tools.prefers_gateway"]),
+    ("import importlib\nm = importlib.import_module('tools.web_tools')\ngetattr(m, 'prefers_gateway')\n",
+     ["tools.web_tools.prefers_gateway"]),
+    ("m = __import__('hermes_cli.kanban_db')\nm.connect()\n", ["hermes_cli.kanban_db.connect"]),
 ])
 def test_scan_source_finds_every_import_form(src, expect):
     hits = pc.scan_source(src, "p.py", MANIFEST)

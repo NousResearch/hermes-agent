@@ -376,6 +376,11 @@ export function activeGateway(): HermesGateway | null {
   return g.secondaries.get(g.activeKey)?.gateway ?? null
 }
 
+/** The window-owned primary identity, independent of the foreground route. */
+export function primaryGatewayConnectionId(): null | string {
+  return g.primaryConnectionId
+}
+
 /**
  * The registry connection serving the gateway the user is currently looking
  * at. A registry-backed primary takes its identity from the published primary

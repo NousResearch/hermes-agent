@@ -77,6 +77,71 @@ class TestSanitizeGeminiSchema:
         assert sanitize_gemini_schema("not a schema") == {}
         assert sanitize_gemini_schema([1, 2, 3]) == {}
 
+    def test_inlines_local_defs_for_tool_parameters(self):
+        schema = {
+            "type": "object",
+            "properties": {"task": {"$ref": "#/$defs/Task"}},
+            "required": ["task"],
+            "$defs": {
+                "Task": {
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                    "required": ["title"],
+                }
+            },
+        }
+
+        cleaned = sanitize_gemini_schema(schema)
+
+        assert "$defs" not in cleaned
+        assert cleaned["properties"]["task"] == {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        }
+
+    def test_local_ref_siblings_override_definition_metadata(self):
+        schema = {
+            "properties": {
+                "task": {
+                    "$ref": "#/definitions/Task",
+                    "description": "Task supplied by this tool",
+                }
+            },
+            "definitions": {
+                "Task": {
+                    "type": "object",
+                    "description": "Generic task",
+                    "properties": {"title": {"type": "string"}},
+                }
+            },
+        }
+
+        cleaned = sanitize_gemini_schema(schema)
+
+        assert cleaned["properties"]["task"]["description"] == "Task supplied by this tool"
+        assert cleaned["properties"]["task"]["properties"] == {
+            "title": {"type": "string"}
+        }
+
+    def test_recursive_local_defs_terminate_with_object_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {"node": {"$ref": "#/$defs/Node"}},
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "properties": {"child": {"$ref": "#/$defs/Node"}},
+                }
+            },
+        }
+
+        cleaned = sanitize_gemini_schema(schema)
+
+        assert cleaned["properties"]["node"]["properties"]["child"] == {
+            "type": "object"
+        }
+
 
 class TestRequiredPropertyPruning:
     """Gemini rejects ``required`` names missing from the node's ``properties``.

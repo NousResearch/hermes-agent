@@ -15,6 +15,7 @@ relay adds to message_agent:
 import json
 import re
 import shlex
+import threading
 from pathlib import Path
 
 import pytest
@@ -258,6 +259,73 @@ def test_delayed_live_receipt_is_completed_by_persist_reconciliation(root):
         target_profile="researcher",
         target_handle="researcher",
     ) == {"disposition": "completed", "receipt": completed[0]}
+
+
+def test_delayed_and_normal_receipt_completion_are_serialized(root, monkeypatch):
+    """Concurrent completion paths return the one durable receipt, not two timestamps."""
+    message_id = "l" * 32
+    key = "mission:receipt:completion-race"
+    reply = "Delivered into @researcher's open Bot Chat; the reply will appear there."
+    bot_relay.begin_idempotent_delivery(
+        root,
+        key,
+        message_id,
+        "completion-race-fingerprint",
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+        completion_reply=reply,
+    )
+
+    first_write = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    write_count = 0
+    count_lock = threading.Lock()
+    original_write = bot_relay._atomic_write_json
+
+    def controlled_write(*args, **kwargs):
+        nonlocal write_count
+        with count_lock:
+            write_count += 1
+            is_first = write_count == 1
+        if is_first:
+            first_write.set()
+            assert release_first.wait(2)
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(bot_relay, "_atomic_write_json", controlled_write)
+    results = {}
+
+    normal = threading.Thread(
+        target=lambda: results.setdefault(
+            "normal",
+            bot_relay.complete_idempotent_delivery(
+                root, key, reply,
+                target_connection="ssh-vps",
+                target_profile="researcher",
+                target_handle="researcher",
+            ),
+        )
+    )
+    delayed = threading.Thread(
+        target=lambda: (
+            results.setdefault(
+                "delayed",
+                bot_relay.complete_pending_deliveries_for_message(root, message_id),
+            ),
+            second_done.set(),
+        )
+    )
+    normal.start()
+    assert first_write.wait(1)
+    delayed.start()
+    assert not second_done.wait(0.1)
+    release_first.set()
+    normal.join(2)
+    delayed.join(2)
+    assert not normal.is_alive() and not delayed.is_alive()
+    assert results["normal"] == results["delayed"][0]
 
 
 @pytest.mark.parametrize(

@@ -468,7 +468,66 @@ def complete_idempotent_delivery(
     )
 
 
+@contextlib.contextmanager
+def _receipt_completion_lock(path: Path) -> Iterator[None]:
+    """Serialize receipt read-modify-write cycles across relay workers."""
+    lock_path = path.parent.parent / LOCKS_DIR / f"{path.stem}.receipt.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    msvcrt = None
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows
+        fcntl = None
+        with contextlib.suppress(ImportError):
+            import msvcrt
+    else:
+        msvcrt = None
+    if fcntl is not None:
+        with open(lock_path, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is not None:  # pragma: no cover - Windows
+        with open(lock_path, "a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b" ")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                with contextlib.suppress(OSError, IOError):
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    yield
+
+
 def _complete_idempotent_delivery_path(
+    path: Path,
+    reply: str,
+    *,
+    target_connection: str = "",
+    target_profile: str = "",
+    target_handle: str = "",
+) -> dict:
+    with _receipt_completion_lock(path):
+        return _complete_idempotent_delivery_path_unlocked(
+            path,
+            reply,
+            target_connection=target_connection,
+            target_profile=target_profile,
+            target_handle=target_handle,
+        )
+
+
+def _complete_idempotent_delivery_path_unlocked(
     path: Path,
     reply: str,
     *,

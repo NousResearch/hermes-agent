@@ -238,7 +238,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
+export async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
   const next = String(newName || '')
     .trim()
     .slice(0, 64)

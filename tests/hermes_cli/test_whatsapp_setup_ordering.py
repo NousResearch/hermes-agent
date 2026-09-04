@@ -111,6 +111,10 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     monkeypatch.setattr("builtins.input", fake_input)
     monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "gateway.platforms.whatsapp_common.whatsapp_bridge_dependencies_fresh",
+        lambda _bridge_dir: True,
+    )
     # Skip the bridge npm install — we're testing setup-ordering, not bridge
     # bootstrapping.  Pretend node_modules exists (Path.exists -> True for that
     # specific check is hard to scope, so instead pretend npm install would
@@ -138,3 +142,45 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     # The skip-rebar branch should have set the env var on its way out.
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+
+
+def test_existing_stale_dependencies_are_reinstalled(isolated_home, monkeypatch, tmp_path):
+    from hermes_cli.main import cmd_whatsapp
+
+    session = isolated_home / "whatsapp" / "session"
+    session.mkdir(parents=True)
+    (session / "creds.json").write_text("{}")
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+
+    bridge_dir = tmp_path / "whatsapp-bridge"
+    bridge_dir.mkdir()
+    (bridge_dir / "bridge.js").write_text("// bridge\n")
+    (bridge_dir / "node_modules").mkdir()
+
+    inputs = iter(["n", "n"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir",
+        lambda: bridge_dir,
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.whatsapp_common.whatsapp_bridge_dependencies_fresh",
+        lambda _bridge_dir: False,
+    )
+    recorded = []
+    monkeypatch.setattr(
+        "gateway.platforms.whatsapp_common.record_whatsapp_bridge_dependency_fingerprint",
+        lambda path: recorded.append(path) or True,
+    )
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda name: name)
+    run = MagicMock(return_value=MagicMock(returncode=0, stderr=""))
+    monkeypatch.setattr("subprocess.run", run)
+
+    with redirect_stdout(io.StringIO()):
+        cmd_whatsapp(MagicMock())
+
+    install = run.call_args_list[0]
+    assert install.args[0][1] == "install"
+    assert recorded == [bridge_dir]

@@ -32,9 +32,11 @@ defined on the mixin and may be overridden per-adapter if needed.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -502,6 +504,55 @@ class WhatsAppBehaviorMixin:
 # ---------------------------------------------------------------------------
 # Shared bridge directory resolution for CLI and adapter
 # ---------------------------------------------------------------------------
+
+_WHATSAPP_DEPENDENCY_STAMP = ".hermes-pkg-hash"
+
+
+def whatsapp_bridge_dependency_fingerprint(bridge_dir: Path) -> str:
+    """Return a stable fingerprint for the bridge dependency manifests."""
+    digest = hashlib.sha256()
+    for name in ("package.json", "package-lock.json"):
+        path = bridge_dir / name
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return ""
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def whatsapp_bridge_dependencies_fresh(bridge_dir: Path) -> bool:
+    """Return whether installed bridge deps match the checked-in manifests."""
+    node_modules = bridge_dir / "node_modules"
+    if not node_modules.is_dir():
+        return False
+    fingerprint = whatsapp_bridge_dependency_fingerprint(bridge_dir)
+    if not fingerprint:
+        return False
+    try:
+        recorded = (node_modules / _WHATSAPP_DEPENDENCY_STAMP).read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        return False
+    return recorded == fingerprint
+
+
+def record_whatsapp_bridge_dependency_fingerprint(bridge_dir: Path) -> bool:
+    """Record the installed bridge manifest fingerprint after a successful install."""
+    fingerprint = whatsapp_bridge_dependency_fingerprint(bridge_dir)
+    if not fingerprint:
+        return False
+    try:
+        (bridge_dir / "node_modules" / _WHATSAPP_DEPENDENCY_STAMP).write_text(
+            fingerprint, encoding="utf-8"
+        )
+    except OSError:
+        return False
+    return True
 
 def resolve_whatsapp_bridge_dir() -> Path:
     """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.

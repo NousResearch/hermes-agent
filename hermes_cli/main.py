@@ -3672,7 +3672,11 @@ def cmd_whatsapp(args):
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from gateway.platforms.whatsapp_common import (
+        record_whatsapp_bridge_dependency_fingerprint,
+        resolve_whatsapp_bridge_dir,
+        whatsapp_bridge_dependencies_fresh,
+    )
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
 
@@ -3680,7 +3684,7 @@ def cmd_whatsapp(args):
         print(f"\n✗ Bridge script not found at {bridge_script}")
         return
 
-    if not (bridge_dir / "node_modules").exists():
+    if not whatsapp_bridge_dependencies_fresh(bridge_dir):
         print(
             "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
         )
@@ -3707,6 +3711,9 @@ def cmd_whatsapp(args):
             preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
             print("  ✗ npm install failed:")
             print(preview)
+            return
+        if not record_whatsapp_bridge_dependency_fingerprint(bridge_dir):
+            print("  ✗ Dependencies installed, but their version stamp could not be written")
             return
         print("  ✓ Dependencies installed")
     else:

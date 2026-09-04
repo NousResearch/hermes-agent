@@ -6994,11 +6994,9 @@ def run_job(
         # Cron runs start a fresh conversation, so history_offset=0. The
         # helper is fail-open and no-ops without a MEDIA: directive.
         if final_response:
-            from gateway.media_repair import (
-                repair_explicit_computer_use_media_paths,
-            )
+            from gateway.media_repair import finalize_chat_media_paths
 
-            final_response = repair_explicit_computer_use_media_paths(
+            final_response = finalize_chat_media_paths(
                 final_response,
                 result.get("messages", []),
             )

@@ -1,29 +1,33 @@
-"""Repair model-mangled ``computer_use`` screenshot paths in final responses.
+"""Repair and durable-stage ``MEDIA:`` paths in final assistant responses.
 
-``computer_use`` persists a bounded screenshot into the Hermes image cache and
-tells the model its absolute path.  Some models rewrite a Windows path into a
-POSIX-looking one (``C:\\Users\\Alice\\...`` -> ``/Users/Alice/...``) when
-emitting an explicit ``MEDIA:`` directive, so delivery-path validation rejects
-the nonexistent path and the attachment is dropped.
+Two related jobs share this module so every delivery surface (messaging
+gateway, TUI/desktop, cron) applies the same path hygiene:
 
-The repair is deliberately narrow: it only rewrites paths inside a response
-that *already* carries an explicit ``MEDIA:`` directive, and only when the
-directive's generated ``computer_use_<uuid>`` basename exactly matches a
-canonical screenshot path returned by ``computer_use`` in the current turn.
-It never auto-attaches captures, and normal media path validation still runs
-after the repair.
+1. **computer_use repair** — recover model-mangled screenshot paths when the
+   model rewrites a Windows path into a POSIX-looking one inside an explicit
+   ``MEDIA:`` directive.
+2. **ephemeral staging** — copy ``MEDIA:`` targets that live under volatile
+   locations (``/tmp``, system temp, etc.) into
+   ``$HERMES_HOME/cache/*/chat-media/`` and rewrite the tags. Desktop remote
+   mode fetches those paths via ``/api/fs/read-data-url``; if the agent left
+   files only in ``/tmp`` and the OS reaped them, the UI shows
+   "Couldn't fetch … from the gateway (missing, unreadable, or too large)."
 
-This lives in its own module (mirroring ``gateway/media_policy.py``) so every
-delivery surface — the messaging gateway's main turn path, gateway background
-tasks, and cron job delivery — shares one implementation.
+Staging is fail-open and size-capped. Paths already under the Hermes cache
+are left alone.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
-from typing import Any, Dict, Iterator, List
+import shutil
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -211,3 +215,202 @@ def _repair_explicit_computer_use_media_paths_inner(
         if canonical and emitted_path != canonical:
             repaired = repaired.replace(emitted_path, canonical)
     return repaired
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral MEDIA staging for durable chat display
+# ---------------------------------------------------------------------------
+
+# Cap staged copies so a runaway MEDIA dump cannot fill the Hermes home.
+# Matches the desktop /api/fs/read-data-url ceiling for inline image display.
+_CHAT_MEDIA_STAGE_MAX_BYTES = 16 * 1024 * 1024
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"}
+_AUDIO_EXTS = {".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac"}
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+
+_EPHEMERAL_PREFIXES = (
+    "/tmp/",
+    "/var/tmp/",
+    "/private/tmp/",  # macOS
+)
+
+
+def _chat_media_bucket(ext: str) -> str:
+    e = (ext or "").lower()
+    if e in _IMAGE_EXTS:
+        return "images"
+    if e in _AUDIO_EXTS:
+        return "audio"
+    if e in _VIDEO_EXTS:
+        return "videos"
+    return "documents"
+
+
+def _is_ephemeral_media_path(path: Path) -> bool:
+    """True when a path is expected to vanish (tmp dirs, OS temp roots)."""
+    try:
+        resolved = path.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    s = str(resolved)
+    posix = s.replace("\\", "/")
+    lower = posix.lower()
+    for prefix in _EPHEMERAL_PREFIXES:
+        base = prefix.rstrip("/").lower()
+        if lower == base or lower.startswith(base + "/"):
+            return True
+    try:
+        tmp = Path(tempfile.gettempdir()).expanduser().resolve(strict=False)
+        tmp_s = str(tmp).replace("\\", "/").lower()
+        if lower == tmp_s or lower.startswith(tmp_s.rstrip("/") + "/"):
+            return True
+    except (OSError, RuntimeError, ValueError):
+        pass
+    # macOS per-user temp: /var/folders/.../T/
+    if "/var/folders/" in lower and "/t/" in lower:
+        return True
+    return False
+
+
+def _already_in_hermes_cache(path: Path) -> bool:
+    """Skip restaging files already under $HERMES_HOME cache trees."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home().expanduser().resolve(strict=False)
+        resolved = path.expanduser().resolve(strict=False)
+        try:
+            resolved.relative_to(home / "cache")
+            return True
+        except ValueError:
+            pass
+        for legacy in ("image_cache", "audio_cache", "video_cache", "document_cache", "media"):
+            try:
+                resolved.relative_to(home / legacy)
+                return True
+            except ValueError:
+                continue
+    except Exception:
+        return False
+    return False
+
+
+def _stage_one_media_file(src: Path) -> Optional[Path]:
+    """Copy *src* into $HERMES_HOME/cache/<bucket>/chat-media/ and return dest."""
+    try:
+        if not src.is_file():
+            return None
+        st = src.stat()
+        if st.st_size <= 0 or st.st_size > _CHAT_MEDIA_STAGE_MAX_BYTES:
+            return None
+        if _already_in_hermes_cache(src):
+            return src
+        if not _is_ephemeral_media_path(src):
+            return None
+
+        from hermes_constants import get_hermes_home
+
+        ext = src.suffix.lower() or ".bin"
+        bucket = _chat_media_bucket(ext)
+        dest_dir = get_hermes_home() / "cache" / bucket / "chat-media"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        digest = hashlib.sha1(
+            str(src.resolve(strict=False)).encode("utf-8", "replace")
+        ).hexdigest()[:10]
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", src.stem)[:80] or "media"
+        dest = dest_dir / f"{stem}-{digest}{ext}"
+        if dest.exists() and dest.stat().st_size == st.st_size:
+            return dest
+        tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
+        try:
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dest)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+        return dest
+    except Exception:
+        logger.debug("chat media stage failed for %s", src, exc_info=True)
+        return None
+
+
+def stage_ephemeral_chat_media_paths(response: str) -> str:
+    """Copy ephemeral ``MEDIA:`` targets into durable Hermes cache and rewrite tags.
+
+    Fail-open: any error leaves the response unchanged. Non-ephemeral paths
+    (project trees, already-cached artifacts) are left alone.
+    """
+    if not response or "MEDIA:" not in response:
+        return response
+    try:
+        from gateway.platforms.base import (
+            MEDIA_TAG_CLEANUP_RE,
+            BasePlatformAdapter,
+            _normalize_media_tag_path,
+        )
+    except Exception:
+        logger.debug("chat media stage import failed", exc_info=True)
+        return response
+
+    try:
+        scan = BasePlatformAdapter._mask_protected_spans(response)
+        scan = BasePlatformAdapter._mask_json_string_media(scan)
+    except Exception:
+        scan = response
+
+    replacements: list[Tuple[str, str]] = []
+    seen: set[str] = set()
+    try:
+        for match in MEDIA_TAG_CLEANUP_RE.finditer(scan):
+            raw = match.group("path")
+            path_str = _normalize_media_tag_path(raw)
+            if not path_str or path_str in seen:
+                continue
+            seen.add(path_str)
+            try:
+                src = Path(path_str).expanduser()
+                if not src.is_absolute():
+                    continue
+            except (OSError, RuntimeError, ValueError):
+                continue
+            dest = _stage_one_media_file(src)
+            if dest is None:
+                continue
+            dest_s = str(dest)
+            if dest_s != path_str:
+                replacements.append((path_str, dest_s))
+    except Exception:
+        logger.debug("chat media stage scan failed", exc_info=True)
+        return response
+
+    if not replacements:
+        return response
+
+    repaired = response
+    for old, new in sorted(replacements, key=lambda pair: len(pair[0]), reverse=True):
+        repaired = repaired.replace(old, new)
+    return repaired
+
+
+def finalize_chat_media_paths(
+    response: str,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    history_offset: int = 0,
+) -> str:
+    """Apply computer_use path repair then durable ephemeral MEDIA staging.
+
+    Shared entry point for gateway turn / background / cron / TUI so no surface
+    forgets one of the two steps.
+    """
+    if not isinstance(response, str) or not response:
+        return response
+    if messages is not None and "MEDIA:" in response:
+        response = repair_explicit_computer_use_media_paths(
+            response, messages, history_offset=history_offset
+        )
+    return stage_ephemeral_chat_media_paths(response)

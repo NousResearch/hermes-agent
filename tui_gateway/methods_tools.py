@@ -1171,6 +1171,39 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"servers": [_mcp_summarize_server(name, cfg) for name, cfg in sorted(servers.items())]})
 
 
+@method("mcp.servers.status")
+def _(rid, params: dict) -> dict:
+    """Return credential-safe cached MCP runtime state without connecting."""
+    hc = _tools_mod("hermes_constants")
+    runtime_home_key = hc.hermes_home_key()
+    token = None
+    try:
+        if profile := _str_arg(params, "profile"):
+            profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+            if not profile_dir or not profile_dir.is_dir():
+                return _err(rid, 4064, f"profile '{profile}' not found")
+            token = hc.set_hermes_home_override(str(profile_dir))
+
+        import time
+        from agent.secret_scope import is_multiplex_active
+
+        configured = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+        get_status = _tools_mod("tools.mcp_tool_discovery").get_mcp_status
+        safe_fields = ("name", "transport", "tools", "connected", "disabled", "status", "reason")
+        servers = get_status(
+            configured,
+            include_runtime=is_multiplex_active() or hc.hermes_home_key() == runtime_home_key,
+        )
+        return _ok(rid, {
+            "servers": [{key: entry[key] for key in safe_fields if key in entry} for entry in servers],
+            "checked_at": int(time.time() * 1000),
+        })
+    except Exception:
+        return _err(rid, 5024, "MCP status unavailable")
+    finally:
+        _mcp_reset_profile(token)
+
+
 @_mcp_rpc("add")
 def _(rid, params: dict) -> dict:
     """Add ``name`` from ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/

@@ -4,9 +4,11 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import copy
 import json
 import logging
 import os
+import pickle
 import sys
 import threading
 import time
@@ -272,6 +274,19 @@ class TestMCPStatus:
         import tools.mcp_tool as mcp_tool
         from tools import mcp_tool_config as _mcp_config
         from tools import mcp_tool_discovery as _mcp_discovery
+        from tools import mcp_tool_errors as _mcp_errors
+        from tools.mcp_oauth import OAuthNonInteractiveError
+
+        assert _mcp_errors._connect_failure_reason(RuntimeError("network")) == "check_failed"
+        assert _mcp_errors._connect_failure_reason(
+            OAuthNonInteractiveError("browser required")
+        ) == "auth_required"
+        tagged = _mcp_errors._connect_error_text(
+            "Connection closed", OAuthNonInteractiveError("browser required")
+        )
+        for cloned in (copy.copy(tagged), copy.deepcopy(tagged), pickle.loads(pickle.dumps(tagged))):
+            assert cloned == "Connection closed"
+            assert getattr(cloned, "reason") == "auth_required"
 
         monkeypatch.setattr(
             _mcp_config, "_load_mcp_config",
@@ -284,13 +299,17 @@ class TestMCPStatus:
         )
         with mcp_tool._lock:
             saved_servers = dict(mcp_tool._servers)
+            saved_scopes = dict(mcp_tool._server_scope_keys)
             saved_connecting = set(mcp_tool._server_connecting)
             saved_errors = dict(mcp_tool._server_connect_errors)
             mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
             mcp_tool._server_connecting.clear()
             mcp_tool._server_connect_errors.clear()
             mcp_tool._server_connecting.add("connecting")
-            mcp_tool._server_connect_errors["failed"] = "Connection closed"
+            mcp_tool._server_connect_errors["failed"] = _mcp_errors._connect_error_text(
+                "Connection closed", OAuthNonInteractiveError("browser required")
+            )
 
         try:
             statuses = {
@@ -301,6 +320,8 @@ class TestMCPStatus:
             with mcp_tool._lock:
                 mcp_tool._servers.clear()
                 mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_scope_keys.clear()
+                mcp_tool._server_scope_keys.update(saved_scopes)
                 mcp_tool._server_connecting.clear()
                 mcp_tool._server_connecting.update(saved_connecting)
                 mcp_tool._server_connect_errors.clear()
@@ -310,10 +331,121 @@ class TestMCPStatus:
         assert statuses["configured"]["connected"] is False
         assert statuses["configured"]["disabled"] is False
         assert statuses["connecting"]["status"] == "connecting"
+        assert statuses["connecting"]["reason"] == "stale"
         assert statuses["failed"]["status"] == "failed"
         assert statuses["failed"]["error"] == "Connection closed"
+        assert statuses["failed"]["reason"] == "auth_required"
         assert statuses["disabled"]["status"] == "disabled"
         assert statuses["disabled"]["disabled"] is True
+
+    def test_status_ignores_a_runtime_owned_by_another_profile(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_config as _mcp_config
+        from tools import mcp_tool_discovery as _mcp_discovery
+
+        monkeypatch.setattr(
+            _mcp_config, "_load_mcp_config",
+            lambda: {"shared": {"command": "shared-mcp"}},
+        )
+        monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: "profile:work")
+        foreign_server = MagicMock(spec=mcp_tool.MCPServerTask)
+        foreign_server.session = object()
+        foreign_server._registered_tool_names = ["secret_tool"]
+        foreign_server._tools = []
+        foreign_server._sampling = None
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_scopes = dict(mcp_tool._server_scope_keys)
+            mcp_tool._servers["shared"] = foreign_server
+            mcp_tool._server_scope_keys["shared"] = "profile:other"
+
+        try:
+            [status] = _mcp_discovery.get_mcp_status()
+            with mcp_tool._lock:
+                mcp_tool._server_scope_keys.pop("shared", None)
+            [unscoped_status] = _mcp_discovery.get_mcp_status()
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_scope_keys.clear()
+                mcp_tool._server_scope_keys.update(saved_scopes)
+
+        assert status["status"] == "configured"
+        assert status["reason"] == "stale"
+        assert status["tools"] == 0
+        assert unscoped_status["status"] == "configured"
+        assert unscoped_status["reason"] == "stale"
+
+
+    def test_scoped_shutdown_clears_only_its_connection_status(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_lifecycle, mcp_tool_loop, mcp_tool_discovery
+
+        monkeypatch.setattr(mcp_tool_loop, "_stop_mcp_loop", lambda **_kwargs: None)
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_scopes = dict(mcp_tool._server_scope_keys)
+            saved_connecting = set(mcp_tool._server_connecting)
+            saved_errors = dict(mcp_tool._server_connect_errors)
+            saved_retry_after = dict(mcp_tool._server_connect_retry_after)
+            saved_failures = dict(mcp_tool._server_connect_failures)
+            mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
+            mcp_tool._server_scope_keys.update({
+                "work-connecting": "profile:work",
+                "work-failed": "profile:work",
+                "other-failed": "profile:other",
+            })
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connecting.add("work-connecting")
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connect_errors.update({
+                "work-failed": "work error",
+                "other-failed": "other error",
+            })
+            mcp_tool._server_connect_retry_after.clear()
+            mcp_tool._server_connect_retry_after.update({
+                "work-failed": 1.0,
+                "other-failed": 2.0,
+            })
+            mcp_tool._server_connect_failures.clear()
+            mcp_tool._server_connect_failures.update({
+                "work-failed": 1,
+                "other-failed": 2,
+            })
+
+        try:
+            mcp_tool_lifecycle.shutdown_mcp_servers(scope="profile:work")
+
+            with mcp_tool._lock:
+                assert mcp_tool._server_connecting == set()
+                assert mcp_tool._server_connect_errors == {
+                    "other-failed": "other error"
+                }
+                assert mcp_tool._server_scope_keys == {
+                    "other-failed": "profile:other"
+                }
+                assert mcp_tool._server_connect_retry_after == {
+                    "other-failed": 2.0
+                }
+                assert mcp_tool._server_connect_failures == {
+                    "other-failed": 2
+                }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_scope_keys.clear()
+                mcp_tool._server_scope_keys.update(saved_scopes)
+                mcp_tool._server_connecting.clear()
+                mcp_tool._server_connecting.update(saved_connecting)
+                mcp_tool._server_connect_errors.clear()
+                mcp_tool._server_connect_errors.update(saved_errors)
+                mcp_tool._server_connect_retry_after.clear()
+                mcp_tool._server_connect_retry_after.update(saved_retry_after)
+                mcp_tool._server_connect_failures.clear()
+                mcp_tool._server_connect_failures.update(saved_failures)
 
 
 class TestLifecycleConfig:
@@ -2688,6 +2820,53 @@ class TestSanitizeMcpNameComponent:
 
 
 class TestRegisterMcpServers:
+    def test_records_profile_scope_before_connect(self):
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_lifecycle, mcp_tool_loop, mcp_tool_discovery
+
+        seen = []
+
+        async def fake_register(name, _cfg):
+            with mcp_tool._lock:
+                seen.append((
+                    name in mcp_tool._server_connecting,
+                    mcp_tool._server_scope_keys.get(name),
+                ))
+            raise RuntimeError("expected connect failure")
+
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_scopes = dict(mcp_tool._server_scope_keys)
+            saved_connecting = set(mcp_tool._server_connecting)
+            saved_errors = dict(mcp_tool._server_connect_errors)
+            mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connect_errors.clear()
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool_config._filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+                 patch("tools.mcp_tool_discovery._connect_cooldown_active", return_value=False), \
+                 patch("tools.mcp_tool._mcp_registry_scope", return_value="profile:work"), \
+                 patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=fake_register):
+                mcp_tool_discovery.register_mcp_servers({"scoped": {"command": "test"}})
+
+            assert seen == [(True, "profile:work")]
+            with mcp_tool._lock:
+                assert mcp_tool._server_connect_errors["scoped"].reason == "check_failed"
+                assert mcp_tool._server_scope_keys["scoped"] == "profile:work"
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_scope_keys.clear()
+                mcp_tool._server_scope_keys.update(saved_scopes)
+                mcp_tool._server_connecting.clear()
+                mcp_tool._server_connecting.update(saved_connecting)
+                mcp_tool._server_connect_errors.clear()
+                mcp_tool._server_connect_errors.update(saved_errors)
+
     """Verify the new register_mcp_servers() public API."""
 
     def test_mcp_not_available_returns_empty(self):

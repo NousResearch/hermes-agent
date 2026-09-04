@@ -5895,6 +5895,25 @@ function expandUserPath(filePath) {
   return value
 }
 
+/** Markdown hrefs must percent-encode spaces (`/my%20notes/x.md`), but the
+ *  on-disk path is the decoded form. When the raw path misses, retry decoded
+ *  so chat links to paths with spaces still open in the preview rail. */
+function decodedPathIfMissing(resolvedPath) {
+  if (!/%[0-9a-fA-F]{2}/.test(resolvedPath)) {
+    return null
+  }
+
+  let decoded
+
+  try {
+    decoded = decodeURIComponent(resolvedPath)
+  } catch {
+    return null
+  }
+
+  return decoded !== resolvedPath ? decoded : null
+}
+
 async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
   const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
@@ -5920,6 +5939,19 @@ async function previewFileTarget(rawTarget, baseDir) {
 
         break
       }
+    }
+  }
+
+  // Markdown hrefs must percent-encode spaces (`/my%20notes/x.md`), but the
+  // on-disk path is the decoded form. When the encoded path misses, retry the
+  // decoded form so chat links to paths with spaces still open in the preview
+  // rail (#102782) — before the directory/missing classification below, so a
+  // decoded target is typed by what it actually is.
+  if (!fileExists(resolved) && !directoryExists(resolved)) {
+    const decoded = decodedPathIfMissing(resolved)
+
+    if (decoded && (fileExists(decoded) || directoryExists(decoded))) {
+      resolved = decoded
     }
   }
 

@@ -215,9 +215,12 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
-// image syntax (`![alt](path)`) on its existing inline pipeline. The target
-// char class excludes `)`/whitespace, matching how LLMs actually emit these.
-const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target><?(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*>?)\)/gi
+// image syntax (`![alt](path)`) on its existing inline pipeline. Plain
+// targets exclude `)`/whitespace, matching how LLMs actually emit these;
+// CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
+// matched separately so paths with spaces route to the preview pipeline too
+// (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
+const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
 
 // A transcript directive on its own line: `::name{...}`. Attribute values are
 // prose the model wrote (a task brief, a question) and read as markdown to the

@@ -265,6 +265,60 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    def test_multimodal_tool_result_preserves_image_blocks(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "take screenshot"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_img", "type": "function",
+                "function": {"name": "screenshot", "arguments": "{}"},
+            }]},
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": [
+                    {"type": "text", "text": "captured"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            },
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        tool_result_msg = [m for m in msgs if m["role"] == "user" and any(
+            "toolResult" in b for b in m["content"]
+        )]
+        assert len(tool_result_msg) == 1
+        tr = [b for b in tool_result_msg[0]["content"] if "toolResult" in b][0]
+        blocks = tr["toolResult"]["content"]
+        assert len(blocks) == 2
+        assert blocks[0]["text"] == "captured"
+        assert "image" in blocks[1]
+        assert blocks[1]["image"]["format"] == "png"
+
+    def test_non_dict_tool_use_arguments_normalized_to_dict(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "calc"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_raw", "type": "function",
+                "function": {"name": "eval", "arguments": "[1, 2, 3]"},
+            }]},
+            {"role": "tool", "tool_call_id": "call_raw", "content": "6"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        assistant_msg = next(m for m in msgs if m["role"] == "assistant")
+        tu = next(b for b in assistant_msg["content"] if "toolUse" in b)
+        assert isinstance(tu["toolUse"]["input"], dict)
+        assert tu["toolUse"]["input"] == {"_value": [1, 2, 3]}
+
+    def test_system_only_messages_produces_non_empty_converse_messages(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{"role": "system", "content": "You are Hermes"}]
+        system, msgs = convert_messages_to_converse(messages)
+        assert system == [{"text": "You are Hermes"}]
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"][0]["text"] != ""
+
 
 
 

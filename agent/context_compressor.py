@@ -4676,10 +4676,46 @@ class ContextCompressor(ContextEngine):
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+    # Cap on the bytes handed to the compaction REDACTOR per message (#99255).
+    # At most _CONTENT_HEAD + _CONTENT_TAIL chars of any body can reach the
+    # summarizer, but redaction historically ran on the whole body and the
+    # truncation was applied to its output — so an MB-scale tool result paid
+    # full strict-redaction cost to produce at most _CONTENT_MAX chars. The
+    # window below is 3x the retained budget, which makes the bound safe:
+    #   * a token bisected by this slice sits 8000 chars past anything the
+    #     later truncation can keep (longest secret pattern is < 200), so it
+    #     cannot reach the output unredacted; and
+    #   * post-redaction shrinkage (media directives, <think> stripping) must
+    #     remove >66% of the window before the retained slice notices.
+    _REDACT_INPUT_HEAD = 12000
+    _REDACT_INPUT_TAIL = 4500
     # Aggregate cap over the whole serialized block, applied AFTER the
     # per-message limits above. Alias of the module-level constant (which
     # carries the full rationale) so subclasses/tests can override per-class.
     _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
+
+    def _bound_redaction_input(self, text: Any) -> Any:
+        """Cap the bytes handed to the compaction redactor for one message.
+
+        Head+tail window (see ``_REDACT_INPUT_HEAD`` / ``_REDACT_INPUT_TAIL``),
+        so the strict-redaction cost of a message is bounded by what can
+        actually reach the summarizer instead of by the raw body size.
+        Short bodies — the overwhelming majority — are returned unchanged.
+
+        Non-``str`` values are passed through untouched: ``redact_sensitive_text``
+        already coerces them, and a provider that hands back a dict-shaped
+        ``content`` / ``arguments`` must keep reaching that coercion rather
+        than dying on a slice here.
+        """
+        if not isinstance(text, str):
+            return text
+        if len(text) <= self._REDACT_INPUT_HEAD + self._REDACT_INPUT_TAIL:
+            return text
+        return (
+            text[:self._REDACT_INPUT_HEAD]
+            + "\n...[omitted]...\n"
+            + text[-self._REDACT_INPUT_TAIL:]
+        )
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -4698,6 +4734,18 @@ class ContextCompressor(ContextEngine):
 
         parts = []
         for msg in turns:
+            # #99255: strict-redacting a large compression window is the
+            # CPU-bound phase of compaction, and it runs BEFORE any provider
+            # call — so the host's progress-aware wait sees no progress and
+            # gives up at ``compression.context_timeout_seconds`` while this
+            # loop keeps going. Without a checkpoint here the detached worker
+            # burned hours of GIL-holding CPU on a result the departed host
+            # had already discarded, starving the gateway event loop.
+            # ``AuxiliaryExplicitCancellation`` is a BaseException, so no
+            # broad ``except Exception`` between here and compress_context's
+            # rollback handler can swallow the abort.
+            if self._compression_cancelled():
+                raise AuxiliaryExplicitCancellation()
             role = msg.get("role", "unknown")
             content = msg.get("content")
             if isinstance(content, list):
@@ -4716,7 +4764,9 @@ class ContextCompressor(ContextEngine):
                     elif isinstance(part, str):
                         text_parts.append(part)
                 content = "\n".join(text_parts)
-            content = _redact_compaction_text(content or "")
+            content = _redact_compaction_text(
+                self._bound_redaction_input(content or "")
+            )
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
             # assistant content before it reaches the summarizer. Reasoning
@@ -4749,7 +4799,11 @@ class ContextCompressor(ContextEngine):
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
-                            args = _redact_compaction_text(fn.get("arguments", ""))
+                            args = _redact_compaction_text(
+                                self._bound_redaction_input(
+                                    fn.get("arguments", "") or ""
+                                )
+                            )
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."

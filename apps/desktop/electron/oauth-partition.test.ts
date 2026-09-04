@@ -51,6 +51,18 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     expect(b).toContain('conn-b')
   })
 
+  it('changes authority exactly once across an unregistered-to-registered remote transition', () => {
+    const before = registry('local', [{ id: 'local', kind: 'local' }])
+    const after = registry('local', [{ id: 'local', kind: 'local' }, remote('mac', 'https://gw.example.com:8443')])
+
+    expect(resolveOauthPartition('https://gw.example.com:8443/login', { registry: before })).toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+    expect(resolveOauthPartition('https://gw.example.com:8443/api/auth/ws-ticket', { registry: after })).toContain(
+      'conn:mac'
+    )
+  })
+
   it('keeps the v1 primary remote on the LEGACY partition so upgrades do not sign the user out', () => {
     const reg = registry('mig-1', [remote('mig-1', 'https://gw-a.example.com')])
 

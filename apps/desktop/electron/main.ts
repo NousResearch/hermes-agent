@@ -93,6 +93,7 @@ import { detectBundleSwap } from './bundle-swap'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
+  AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -122,6 +123,7 @@ import {
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
+  RT_COOKIE_VARIANTS,
   savedProfileSsh,
   tokenPreview,
   withTransientRetries
@@ -272,6 +274,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { handoffOauthCookies } from './oauth-cookie-handoff'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -7333,6 +7336,10 @@ function resolveOauthPartitionForUrl(url) {
 function getOauthSessionForUrl(url) {
   const partition = resolveOauthPartitionForUrl(url)
 
+  return getOauthSessionForPartition(partition)
+}
+
+function getOauthSessionForPartition(partition) {
   if (partition === OAUTH_SESSION_PARTITION) {
     return getOauthSession()
   }
@@ -9580,7 +9587,45 @@ async function saveRegistryConnection(input: any = {}) {
     managedConnectionUpdateGate.assertCanMutate(entry.id)
   }
 
-  writeDesktopConnectionsRegistry(upsertConnection(registry, entry))
+  const nextRegistry = upsertConnection(registry, entry)
+
+  // A new cookie-auth remote is commonly signed in while it is still an
+  // unsaved editor draft. At that point the single partition resolver must
+  // choose the legacy jar; after registration it chooses conn:<id>. Hand the
+  // gateway cookies to the new authoritative jar BEFORE publishing the
+  // registry, so every later REST/ws-ticket read follows policy without being
+  // stranded. Existing edits normally resolve to the same partition and skip.
+  if (entry.kind === 'remote' && entry.authMode === 'oauth') {
+    const sourcePartition = resolveOauthPartition(entry.url, {
+      registry,
+      v1RemoteUrl: readDesktopConnectionConfig()?.remote?.url
+    })
+    const targetPartition = resolveOauthPartition(entry.url, {
+      registry: nextRegistry,
+      v1RemoteUrl: readDesktopConnectionConfig()?.remote?.url
+    })
+
+    if (sourcePartition !== targetPartition) {
+      const source = getOauthSessionForPartition(sourcePartition)
+      const target = getOauthSessionForPartition(targetPartition)
+
+      if (!source || !target) {
+        throw new Error('OAuth session partition is unavailable during connection registration.')
+      }
+
+      await handoffOauthCookies({
+        source,
+        target,
+        url: entry.url,
+        cookieNames: [...AT_COOKIE_VARIANTS, ...RT_COOKIE_VARIANTS]
+      })
+      // The target has now been explicitly hydrated; do not let an older
+      // memoized warm-up describe its pre-handoff state.
+      oauthCookieWarmups.delete(targetPartition)
+    }
+  }
+
+  writeDesktopConnectionsRegistry(nextRegistry)
 
   // A dial-material edit (endpoint/auth/ssh routing — NOT a label rename)
   // leaves pooled backends under `conn:<id>::*` and renderer sockets pointing

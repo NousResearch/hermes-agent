@@ -953,23 +953,33 @@ def _ensure_current_event_loop(request):
     except RuntimeError:
         pass
 
-    if loop is None and sys.version_info < (3, 12):
-        try:
-            loop = asyncio.get_event_loop_policy().get_event_loop()
-        except RuntimeError:
-            loop = None
-
-    created = loop is None or loop.is_closed()
-    if created:
+    # Always prefer a freshly created loop when no running loop exists, to avoid
+    # leaking the implicitly created loop from get_event_loop() (socketpair).
+    created = False
+    if loop is None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        created = True
 
     try:
         yield
     finally:
         if created and loop is not None:
             try:
-                loop.close()
+                try:
+                    pending = asyncio.all_tasks(loop)
+                except RuntimeError:
+                    pending = set()
+                for t in list(pending):
+                    if not t.done():
+                        t.cancel()
+                if pending:
+                    try:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    except Exception:
+                        pass
+                if not loop.is_closed():
+                    loop.close()
             finally:
                 asyncio.set_event_loop(None)
 

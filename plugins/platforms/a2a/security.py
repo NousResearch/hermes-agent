@@ -436,7 +436,9 @@ def _audit_path() -> Path:
     return base / "a2a_audit.jsonl"
 
 
-def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
+def audit(
+    direction: str, peer: str, task_id: str, summary: str, context_id: Optional[str] = None
+) -> None:
     """Append an audit record. Best-effort — never raises into the caller."""
     try:
         rec = {
@@ -446,6 +448,8 @@ def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
             "task_id": task_id,
             "summary": (summary or "")[:500],
         }
+        if context_id:
+            rec["context_id"] = context_id
         path = _audit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:

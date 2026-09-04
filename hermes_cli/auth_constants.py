@@ -111,6 +111,11 @@ DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
 SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
 SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
 SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# OpenRouter PKCE (https://openrouter.ai/docs/guides/overview/auth/oauth): the "token" endpoint
+# mints a plain user-controlled API key; there is no refresh token.
+OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
+OPENROUTER_AUTH_KEYS_URL = "https://openrouter.ai/api/v1/auth/keys"
+OPENROUTER_OAUTH_DOCS_URL = "https://openrouter.ai/docs/guides/overview/auth/oauth"
 
 OAUTH_OVER_SSH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh"
 DEFAULT_SPOTIFY_SCOPE = " ".join((
@@ -156,6 +161,7 @@ _codex_err = _provider_error_factory("openai-codex")
 _spotify_err = _provider_error_factory("spotify")
 _qwen_err = _provider_error_factory("qwen-oauth")
 _minimax_err = _provider_error_factory("minimax-oauth")
+_openrouter_err = _provider_error_factory("openrouter")
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:

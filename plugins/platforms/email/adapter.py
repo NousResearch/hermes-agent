@@ -5,6 +5,7 @@ import asyncio
 import email as email_lib
 from contextlib import contextmanager, suppress
 import imaplib
+import json
 import logging
 import os
 import re
@@ -314,6 +315,8 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    splits_long_messages = True  # email has no practical length cap; the gateway must not truncate long sends
+
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
@@ -350,10 +353,28 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
-        # chat_id (sender email) -> last subject + message-id for threading
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
-        self._thread_context: Dict[str, Dict[str, str]] = {}
+        # Session lifecycle knob (config.yaml platforms.email.*): max_messages_per_session: 0 disables
+        # auto-rotation (default 1000 — a thread rotates to a fresh session after this many inbound
+        # messages so history re-processing cost stays bounded).
+        try:
+            self._max_messages_per_session = int(extra.get("max_messages_per_session", 1000) or 0)
+        except (TypeError, ValueError):
+            self._max_messages_per_session = 1000
+        # Thread-context persistence (per-account path, multiplexing-safe): map of chat keys
+        # (sender email / sender:slug / sender:thread_id) -> last subject + message-id (+ session
+        # epoch/count) for reply threading. Persisted to JSON on every mutation and reloaded here so
+        # replies keep their thread's subject/Message-ID across gateway restarts.
+        try:
+            from hermes_constants import get_hermes_home
+
+            _state_dir = Path(get_hermes_home()) / "state"
+        except Exception:
+            _state_dir = Path.home() / ".hermes" / "state"
+        _addr_slug = re.sub(r"[^a-z0-9]+", "_", self._address.lower()).strip("_") or "default"
+        self._thread_context_path: Optional[Path] = _state_dir / f"email_thread_context_{_addr_slug}.json"
+        self._thread_context: Dict[str, Dict[str, Any]] = self._load_thread_context()
         logger.info("[Email] Adapter initialized for %s", self._address)
 
     def _trim_seen_uids(self) -> None:
@@ -396,6 +417,46 @@ class EmailAdapter(BasePlatformAdapter):
             yield imap
         finally:
             _close_imap(imap)
+
+    # ── Thread-context persistence ─────────────────────────────────────────
+    # _thread_context is in-memory; without persistence a gateway restart loses every thread's
+    # subject/Message-ID and replies fall back to the generic "Hermes Agent" subject. Persist the map
+    # to a small per-account JSON file on every mutation and reload on adapter construction.
+    _thread_context_max_entries: int = 500
+
+    def _load_thread_context(self) -> Dict[str, Dict[str, Any]]:
+        """Load persisted thread context (subject/message_id per chat key)."""
+        if not self._thread_context_path or not self._thread_context_path.exists():
+            return {}
+        try:
+            raw = json.loads(self._thread_context_path.read_text("utf-8"))
+            if not isinstance(raw, dict):
+                return {}
+            return {
+                str(k): dict(v)
+                for k, v in raw.items()
+                if isinstance(v, dict) and isinstance(v.get("subject"), str)
+            }
+        except Exception as e:  # corrupt/partial file — start fresh
+            logger.warning("[Email] Thread-context load failed (%s); starting fresh", e)
+            return {}
+
+    def _save_thread_context(self) -> None:
+        """Persist the thread-context map atomically (tmp + rename)."""
+        if not self._thread_context_path:
+            return
+        try:
+            self._thread_context_path.parent.mkdir(parents=True, exist_ok=True)
+            data = dict(self._thread_context)
+            if len(data) > self._thread_context_max_entries:
+                # Keep the most recent entries (dict preserves insertion order
+                # — re-inserted keys move to the end, so drop the head).
+                data = dict(list(data.items())[-self._thread_context_max_entries:])
+            tmp = self._thread_context_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data), "utf-8")
+            tmp.replace(self._thread_context_path)
+        except Exception as e:
+            logger.warning("[Email] Thread-context persist failed: %s", e)
 
     def _connect_smtp(self) -> smtplib.SMTP:
         """SMTP connection with TLS established (callers go straight to ``login()``). An unreachable IPv6 address can
@@ -617,16 +678,103 @@ class EmailAdapter(BasePlatformAdapter):
         if not self._sender_accepted(sender_addr, msg_data):
             return
         subject, body, attachments = msg_data["subject"], msg_data["body"].strip(), msg_data["attachments"]
+
+        # Subject-based session isolation (#26277/#27804): derive a stable slug from the normalized
+        # subject and use it as thread_id so each distinct subject gets its own session, while replies
+        # (Re:/Fwd:/Fw: prefixes stripped) rejoin the same thread. Empty subjects fall back to the
+        # sender-only session (previous behaviour).
+        _subject_slug = None
+        if subject:
+            _inner = re.sub(r"(?i)^(re|fwd|fw)[-:\s]*\d*[-:\s]*", "", subject)
+            # Strip stacked prefixes (e.g. "Re: Fw: Meeting Notes")
+            while re.match(r"(?i)^(re|fwd|fw)[-:\s]", _inner):
+                _inner = re.sub(r"(?i)^(re|fwd|fw)[-:\s]*\d*[-:\s]*", "", _inner)
+            _subject_slug = (
+                re.sub(r"[^a-z0-9]+", "-", _inner.lower()).strip("-")[:80] or None
+            )
+
+        # ── Session lifecycle: /new in body + auto-rotation cap ──────────────
+        # A per-thread epoch counter (persisted with the thread context) lets a "/new" email body — or
+        # the message-count cap — start a FRESH session for this thread, while replies with the same
+        # subject keep rejoining the current generation ("<slug>-<epoch>").
+        _base_key = f"{sender_addr}:{_subject_slug}" if _subject_slug else sender_addr
+        _cur_ctx = self._thread_context.get(_base_key, {}) or {}
+        try:
+            _epoch = int(_cur_ctx.get("epoch", 0) or 0)
+        except (TypeError, ValueError):
+            _epoch = 0
+        try:
+            _msg_count = int(_cur_ctx.get("msg_count", 0) or 0) + 1
+        except (TypeError, ValueError):
+            _msg_count = 1
+
+        # "/new" (optionally followed by a fresh request) rotates the thread.
+        _is_new_cmd = bool(re.match(r"^/new\b", body, re.IGNORECASE))
+        if _is_new_cmd:
+            _epoch += 1
+            body = re.sub(r"^/new\b[ \t]*", "", body, flags=re.IGNORECASE).strip()
+
+        # Message-count cap: rotate once this thread exceeds the threshold so history re-processing
+        # cost stays bounded (the $2.69/4,175-call burst came from a 20K-message session
+        # re-processing everything per reply).
+        _cap_rotation = (
+            not _is_new_cmd
+            and self._max_messages_per_session > 0
+            and _msg_count > self._max_messages_per_session
+        )
+        if _cap_rotation:
+            _epoch += 1
+            _msg_count = 1
+
+        _thread_id = (
+            f"{_subject_slug}-{_epoch}" if (_epoch and _subject_slug) else _subject_slug
+        )
+        if _epoch and not _subject_slug:
+            _thread_id = f"new-{_epoch}"
+
         text = f"[Subject: {subject}]\n\n{body}" if subject and not subject.startswith("Re:") else body  # subject unless reply
         # DOCUMENT wins over PHOTO for mixed attachments: run.py keys image handling off the per-path mime type regardless
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
-        self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
+
+        # Store thread context for reply threading — keyed by the compound session id (sender:thread_id)
+        # so a reply carries THIS thread's subject, the base key (sender:slug) so the next dispatch
+        # finds the current epoch/count, plus the plain sender for legacy sender-only sessions.
+        # Persisted on every write so the mapping survives gateway restarts.
+        _ctx_key = f"{sender_addr}:{_thread_id}" if _thread_id else sender_addr
+        _ctx_entry = {
+            "subject": subject,
+            "message_id": msg_data["message_id"],
+            "epoch": _epoch,
+            "msg_count": _msg_count,
+        }
+        self._thread_context[_ctx_key] = _ctx_entry
+        self._thread_context[_base_key] = dict(_ctx_entry)
+        self._thread_context[sender_addr] = dict(_ctx_entry)
+        self._save_thread_context()
+
+        # A bare "/new" body resets the thread without running the agent — send a short confirmation
+        # and skip dispatch (saves tokens; the fresh request in the same body, if any, is dispatched).
+        if _is_new_cmd and not body:
+            logger.info(
+                "[Email] /new from %s — session reset for %s (epoch %d)",
+                sender_addr, _base_key, _epoch,
+            )
+            await self.send(
+                chat_id=_ctx_key,
+                content=(
+                    "✅ New session started for this thread. "
+                    "Send your next email to begin."
+                ),
+            )
+            return
+
         name = msg_data["sender_name"] or sender_addr
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
-            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
+            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
+                                     thread_id=_thread_id),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -642,23 +790,50 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        thread_id = (metadata or {}).get("thread_id")
+        explicit_subject = (metadata or {}).get("subject")
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, thread_id, explicit_subject), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
+                   thread_id: Optional[str] = None, explicit_subject: Optional[str] = None,
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
-        msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        # Extract the actual email address from a compound chat_id (sender:thread_id).
+        recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
+        msg = MIMEMultipart()
+        # Thread context for reply — resolve the compound (sender:thread_id) key via metadata
+        # thread_id FIRST so a reply to THIS thread carries THIS thread's subject even when several of
+        # the sender's threads were dispatched in the same poll cycle (the plain-sender key holds the
+        # last dispatch's subject). The plain-sender key is consulted ONLY for genuine replies (a
+        # reply-to message id is present): bare outbound sends (cron deliveries) must never inherit
+        # the sender's last inbound subject, or Gmail threads the report into that conversation.
+        ctx = {}
+        if thread_id:
+            ctx = self._thread_context.get(f"{recipient}:{thread_id}", {}) or {}
+        if not ctx and reply_to_msg_id:
+            ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
+        if explicit_subject:
+            # Outbound-only send (cron/standalone): verbatim subject, fresh conversation — no Re:
+            # prefix, no thread-context threading headers.
+            subject = explicit_subject  # keep the success log line bound
+            original_msg_id = reply_to_msg_id
+        else:
+            if ctx:
+                # Genuine reply context: keep the thread's subject with Re:.
+                subject = ctx.get("subject", "Hermes Agent")
+                if not subject.startswith("Re:"):
+                    subject = f"Re: {subject}"
+            else:
+                # No thread context at all (bare outbound send): neutral.
+                subject = "Hermes Agent"
+            original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
-        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
+        for key, value in (("From", self._address), ("To", recipient), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
@@ -677,16 +852,19 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
+                    thread_id: Optional[str] = None, explicit_subject: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, thread_id=thread_id,
+                                               explicit_subject=explicit_subject, attach_empty_body=True)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+                         thread_id: Optional[str] = None, explicit_subject: Optional[str] = None) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
-        msg, msg_id, _ = self._new_reply(to_addr, body)
+        msg, msg_id, _ = self._new_reply(to_addr, body, thread_id=thread_id, explicit_subject=explicit_subject)
         for path, name in files:
             try:
                 _attach_file(msg, path, name)
@@ -696,6 +874,18 @@ class EmailAdapter(BasePlatformAdapter):
                 logger.warning("[Email] Failed to attach %s: %s", path, e)
         self._smtp_send(msg)
         return msg_id
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> None:
+        """Suppress tool-progress chrome for email delivery.
+
+        Email is a plain-text, non-editable medium — there is no way to
+        update a previously sent message, so emitting a separate email per
+        tool call would spam the user's inbox. Return None to drop all
+        tool-progress events; the final assistant response is the only
+        message sent (#27804).
+        """
+        return None
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -721,25 +911,37 @@ class EmailAdapter(BasePlatformAdapter):
         if not local_paths and not body_parts:
             return
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            thread_id = (metadata or {}).get("thread_id")
+            explicit_subject = (metadata or {}).get("subject")
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths,
+                thread_id, explicit_subject)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
 
-    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
+    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str],
+                                     thread_id: Optional[str] = None, explicit_subject: Optional[str] = None) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
-        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
+        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths],
+                                       lenient=True, thread_id=thread_id, explicit_subject=explicit_subject)
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name), "[Email] Send document failed: %s")
+        metadata = (kwargs or {}).get("metadata") or {}
+        thread_id = metadata.get("thread_id")
+        explicit_subject = metadata.get("subject")
+        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name,
+                                                                       thread_id, explicit_subject), "[Email] Send document failed: %s")
 
-    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None) -> str:
+    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
+                                    thread_id: Optional[str] = None, explicit_subject: Optional[str] = None) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
-        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False)
+        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)],
+                                     lenient=False, thread_id=thread_id, explicit_subject=explicit_subject)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
@@ -758,7 +960,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        # Extract the actual email address from compound chat_id (cron delivery routes thread-scoped
+        # origins like "user@gmail.com:thread_id" here — Gmail rejects with 555 5.5.2).
+        recipient = chat_id.split(":")[0] if ":" in chat_id else chat_id
+        for key, value in (("From", address), ("To", recipient), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

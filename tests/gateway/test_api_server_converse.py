@@ -270,6 +270,41 @@ async def test_no_credential_first_frame_closes_unauthorized(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_origin_guard_exempts_key_bearing_ws_only(monkeypatch):
+    """A browser-context client sends an unsuppressible Origin (Electron → ``null``).
+    The cors_middleware origin guard must let a key-bearing converse upgrade through
+    (the key is explicit, non-ambient auth) while STILL blocking a bare Origin with
+    no key subprotocol."""
+    from gateway.platforms.api_server import cors_middleware
+
+    adapter = _adapter()  # no cors_origins configured → every browser Origin is "disallowed"
+    streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
+    _patch_converse(monkeypatch, streamer, transcript="turn it on")
+    _patch_run_agent(adapter, monkeypatch)
+
+    app = web.Application(middlewares=[cors_middleware])
+    app["api_server_adapter"] = adapter
+    app.router.add_get("/v1/audio/converse", adapter._handle_converse_ws)
+
+    async with TestClient(TestServer(app)) as client:
+        # (1) Electron-style: Origin: null + key subprotocol → past the guard, full turn.
+        ws = await client.ws_connect(
+            "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()),
+            headers={"Origin": "null"})
+        try:
+            assert ws.protocol == VOICE_PROTOCOL
+            await _drive_full_turn(ws, streamer)
+        finally:
+            await ws.send_str(json.dumps({"stop": True}))
+            await ws.close()
+
+        # (2) Same Origin but NO key subprotocol → origin guard still 403s the upgrade.
+        with pytest.raises(WSServerHandshakeError) as exc:
+            await client.ws_connect("/v1/audio/converse", headers={"Origin": "null"})
+        assert exc.value.status == 403
+
+
+@pytest.mark.asyncio
 async def test_query_token_is_not_a_credential(monkeypatch):
     """A ?token= param is NOT auth: the socket opens (no key subprotocol) but stays
     on the first-message-auth path and closes 4401 without it."""

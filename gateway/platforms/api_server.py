@@ -784,6 +784,25 @@ _SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer"}
 
 if AIOHTTP_AVAILABLE:
+    def _is_voice_key_ws_upgrade(request) -> bool:
+        """True for a ``/v1/audio/converse`` WebSocket upgrade carrying a
+        ``hermes-key.<KEY>`` subprotocol.
+
+        Such handshakes authenticate with an explicit bearer key in
+        ``Sec-WebSocket-Protocol`` (validated constant-time by the handler), not an
+        ambient cookie. The Origin/CSRF guard exists to protect credentials the
+        browser attaches automatically — a hostile page can set any subprotocol but
+        cannot produce a key it lacks — so it adds nothing on top of the key here,
+        while it *does* block legitimate browser-context clients (Electron renderers
+        send an unsuppressible ``Origin: null``). The converse route accepts no
+        cookie auth, so relaxing Origin for key-bearing upgrades is safe."""
+        if request.headers.get("Upgrade", "").lower() != "websocket":
+            return False
+        if "upgrade" not in request.headers.get("Connection", "").lower():
+            return False
+        protocols = request.headers.get("Sec-WebSocket-Protocol", "")
+        return any(p.strip().startswith("hermes-key.") for p in protocols.split(","))
+
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
@@ -791,7 +810,7 @@ if AIOHTTP_AVAILABLE:
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
-            if not adapter._origin_allowed(origin):
+            if not adapter._origin_allowed(origin) and not _is_voice_key_ws_upgrade(request):
                 return web.Response(status=403)
             cors_headers = adapter._cors_headers_for_origin(origin)
         if request.method == "OPTIONS":

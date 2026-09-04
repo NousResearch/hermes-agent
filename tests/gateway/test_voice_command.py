@@ -122,6 +122,16 @@ class TestHandleVoiceCommand:
         assert data["telegram:123"] == "voice_only"
 
 
+    @pytest.mark.asyncio
+    async def test_tts_only_mode_persists_and_enables_audio_only_output(self, runner):
+        event = _make_event("/voice tts-only")
+        result = await runner._handle_voice_command(event)
+        assert "voice-only output enabled" in result.lower()
+        assert runner._voice_mode["telegram:123"] == "tts_only"
+        data = json.loads(runner._VOICE_MODE_PATH.read_text())
+        assert data["telegram:123"] == "tts_only"
+
+
     def test_sync_populates_enabled_chats_from_voice_modes(self, runner):
         """Issue #16007: sync also restores per-chat /voice on|tts opt-ins.
 
@@ -267,6 +277,17 @@ class TestAutoVoiceReply:
         """all + text input: only runner fires (base auto-TTS only for voice)."""
         assert self._call(runner, "all", MessageType.TEXT) is True
 
+    def test_tts_only_runner_handles_text_and_voice_input(self, runner):
+        assert self._call(runner, "tts_only", MessageType.TEXT) is True
+        assert self._call(runner, "tts_only", MessageType.VOICE) is True
+
+    def test_tts_only_suppresses_text_streaming_before_final_voice(self, runner):
+        event = _make_event(message_type=MessageType.TEXT)
+        runner._voice_mode["telegram:123"] = "tts_only"
+        assert runner._voice_output_allows_text(event.source) is False
+        runner._voice_mode["telegram:123"] = "all"
+        assert runner._voice_output_allows_text(event.source) is True
+
 
     # -- Mode off: nothing fires -------------------------------------------
 
@@ -318,6 +339,28 @@ class TestSendVoiceReply:
         assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
+
+
+    @pytest.mark.asyncio
+    async def test_tts_only_marks_event_only_after_successful_native_send(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock(return_value=SimpleNamespace(success=True))
+        event = _make_event()
+        event.source.platform = Platform.TELEGRAM
+        runner.adapters[event.source.platform] = mock_adapter
+        runner._voice_mode["telegram:123"] = "tts_only"
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"):
+            delivered = await runner._send_voice_reply(event, "Audio only")
+
+        assert delivered is True
+        assert getattr(event, "_tts_only_voice_delivered", False) is True
 
 
     @pytest.mark.asyncio

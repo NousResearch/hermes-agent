@@ -66,6 +66,19 @@ def _allowed_media_path(tmp_path, monkeypatch, name):
 
 
 @pytest.mark.asyncio
+async def test_tts_only_success_marker_suppresses_duplicate_text_delivery():
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    event._tts_only_voice_delivered = True
+    adapter._message_handler = AsyncMock(return_value="this text was already spoken")
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_sender(tmp_path, monkeypatch):
     adapter = _MediaRoutingAdapter()
     event = _event()

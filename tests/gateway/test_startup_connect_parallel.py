@@ -219,6 +219,12 @@ class TestTelegramColdStartCap:
             Platform.DISCORD, initial=True
         ) == runner._platform_connect_timeout_secs(Platform.DISCORD)
 
+    def test_whatsapp_outer_budget_exceeds_bridge_readiness_window(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+        runner = self._runner(tmp_path)
+        assert runner._platform_connect_timeout_secs(Platform.WHATSAPP) == 45.0
+        assert runner._platform_connect_timeout_secs(Platform.WHATSAPP) > 30.0
+
     def test_env_override_applies_to_initial(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "12")
         runner = self._runner(tmp_path)

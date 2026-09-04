@@ -3372,7 +3372,7 @@ class GatewaySlashCommandsMixin:
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|tts-only|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         # Voice state belongs to the (bot, chat) pair: resolve the adapter that
@@ -3400,6 +3400,12 @@ class GatewaySlashCommandsMixin:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
+        elif args in {"tts-only", "tts_only", "audio-only"}:
+            self._voice_mode[voice_key] = "tts_only"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+            return "🔊 Voice-only output enabled. Successful audio replaces the text reply."
         elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
@@ -3410,6 +3416,7 @@ class GatewaySlashCommandsMixin:
                 "off": t("gateway.voice.label_off"),
                 "voice_only": t("gateway.voice.label_voice_only"),
                 "all": t("gateway.voice.label_all"),
+                "tts_only": "TTS only (audio replaces text)",
             }
             # Append voice channel info if connected
             guild_id = self._get_guild_id(event)

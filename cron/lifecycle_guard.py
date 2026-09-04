@@ -1023,6 +1023,15 @@ def _read_referenced_script(
     evicted placeholder's ``open()`` can hang preflight indefinitely
     (#88052). The lexical check covers direct cloud paths; the resolved
     check covers local launchers that are symlinks into a cloud subtree.
+
+    The same choke point also refuses a path with a live SQLite connection
+    in this process (e.g. the gateway's own ``state.db``, merely mentioned
+    in the terminal command being checked): ``close()`` on a bare
+    ``os.open()`` descriptor cancels every POSIX advisory lock this process
+    holds on that file, for every other fd, dropping the gateway's WAL
+    protection out from under it (#102589). ``sqlite_safe_read`` already
+    tracks which paths have a live connection; consult its registry instead
+    of reading blind.
     """
     byte_limit = _capped_read_limit(max_bytes)
     if _is_cloud_placeholder_path(path):
@@ -1035,6 +1044,10 @@ def _read_referenced_script(
         # guarded path must never crash the guard (#76762).
         resolved = path
     if _is_cloud_placeholder_path(resolved):
+        return None, True
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    if has_live_connection(path) or has_live_connection(resolved):
         return None, True
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:

@@ -48,6 +48,16 @@ class HandlerRegistry:
             real.__kwdefaults__ = fn.__kwdefaults__
             real.__doc__ = fn.__doc__
             real.__dict__.update(fn.__dict__)
+            if name == "prompt.submit":
+                # A resumed session's model-history snapshot can be advanced by
+                # an external writer (notably cron) without touching this
+                # gateway process. Refresh at the dispatch boundary so the
+                # handler claims the turn only after adopting newer durable
+                # context. Kept here to preserve methods_prompt.py's mechanical
+                # handler split and avoid a second copy of its large body.
+                from .prompt_history_sync import wrap_prompt_submit
+
+                real = wrap_prompt_submit(server, real)
             if getattr(fn, "_hermes_profile_scoped", False):
                 real = server._profile_scoped(real)
             server._methods[name] = real

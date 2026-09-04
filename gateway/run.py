@@ -17000,6 +17000,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _phase_elapsed(),
                 )
 
+                # Cancel the periodic scheduler so no background timer callback
+                # can touch SessionDB handles during the checkpoint/close below.
+                # The scheduler runs one shared daemon thread; shutdown() waits
+                # for any in-flight callback to finish (bounded by the same
+                # watchdog leash that governs the whole shutdown sequence).
+                try:
+                    from agent.periodic_scheduler import scheduler as _periodic_scheduler
+                    _periodic_scheduler.shutdown(wait=True)
+                    logger.info(
+                        "Shutdown phase: periodic scheduler stopped at +%.2fs",
+                        _phase_elapsed(),
+                    )
+                except Exception as _e:
+                    logger.debug("Periodic scheduler shutdown error: %s", _e)
+
+                # Wait for deferred agent workers (cron/delegation) to release
+                # their SessionDB handles. They run outside the executor but
+                # may still hold DB connections. Bounded by remaining watchdog
+                # budget so a stuck worker can't block the post-close window.
+                _deferred_budget = max(
+                    0.0,
+                    resolve_shutdown_watchdog_delay(timeout)
+                    - _phase_elapsed()
+                    - 0.5,
+                )
+                if _deferred_budget > 0 and self._active_deferred_agent_worker_count():
+                    logger.info(
+                        "Shutdown phase: waiting %.2fs for %d deferred agent worker(s)",
+                        _deferred_budget,
+                        self._active_deferred_agent_worker_count(),
+                    )
+                    _deferred_deadline = asyncio.get_running_loop().time() + _deferred_budget
+                    while (
+                        self._active_deferred_agent_worker_count()
+                        and asyncio.get_running_loop().time() < _deferred_deadline
+                    ):
+                        await asyncio.sleep(0.05)
+                    logger.info(
+                        "Shutdown phase: deferred workers settled at +%.2fs (remaining=%d)",
+                        _phase_elapsed(),
+                        self._active_deferred_agent_worker_count(),
+                    )
+
                 # Close SQLite session DBs so the WAL write lock is released.
                 # Without this, --replace and similar restart flows leave the
                 # old gateway's connection holding the WAL lock until Python

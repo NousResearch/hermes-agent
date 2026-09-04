@@ -17,6 +17,7 @@ method = _registry.method
 #: Wire order of ``groups.capabilities.methods``; every one runs on the RPC pool.
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
+    "groups.attachment.put", "groups.attachment.list", "groups.attachment.read",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register",
@@ -160,11 +161,12 @@ def _room_link_run_storage_durable() -> bool:
 
 
 def _local_catalog(installation_id: str, profile: str, execution_policy: dict) -> dict:
-    """Advertise this gateway's direct-only, text-only RoomLink catalog."""
+    """Advertise this gateway's direct RoomLink and available file support."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, local_catalog_mapping
+    from gateway.platforms.api_server_room_attachments import roomlink_attachments_available
     return local_catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,),
-        link_modes=("direct",), text=True, attachments=False, target_profile=profile,
+        link_modes=("direct",), text=True, attachments=roomlink_attachments_available(), target_profile=profile,
         execution_policy=execution_policy)
 
 
@@ -244,6 +246,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         "persistent_process": bool(room_link.get("catalog", {}).get("persistent_process", False)),
         "authority_gateway_id": local_authority_gateway_id(), "room_link": room_link,
         "features": [
+            "attachment_ids", "attachment_metadata_catalog", "attachment_same_gateway_delivery",
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "desktop_compatibility_mailbox", "reciprocal_room_control",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
@@ -295,6 +298,12 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
             or claims["target_install_id"] != local_authority_gateway_id()):
         raise ValueError("room grant target does not match this profile")
     revoke_room_grant_scope(db_path, claims=claims, expires_at=_expiry(claims))
+    try:
+        from gateway.platforms.api_server_room_attachments import _default_spool
+        _default_spool().discard_scope(claims)
+    except Exception:
+        # Revocation is durable; bounded expiry backs up failed spool cleanup.
+        pass
     _revoke_peer_room_control(str(claims["room_id"]), str(claims["member_id"]))
     return _ok(rid, {"revoked": True})
 
@@ -339,7 +348,8 @@ def _(rid, params: dict, service) -> dict:
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id=str(
             params.get("cancellation_scope_id") or f"cancel-{params.get('room_id') or ''}"),
-        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant)
+        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant,
+        attachments=catalog.attachments)
     service.register_peer_route(
         room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
         catalog=catalog)
@@ -421,6 +431,8 @@ def _(rid, params: dict, service) -> dict:
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1))
         hosted_room_controls.revoke_home_control_tokens(service.db_path, room_id=room_id)
+        service.attachments.mark_room_disbanded(params.get("room_id"))
+        service.attachments.prune()
         return _ok(rid, {"tombstone": tombstone})
     try:
         existing = room_state(
@@ -535,7 +547,6 @@ _passthrough(
 
 def register(server) -> None:
     _registry.install(server)
-
 
 def _revoke_peer_room_control(room_id: str, member_id: str) -> int:
     from gateway.hosted_room_control_client import revoke_stored_peer_control
@@ -778,3 +789,89 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"revoked": removed})
     except Exception as exc:
         return _err(rid, 4152, str(exc))
+
+@method("groups.attachment.put")
+def _(rid, params: dict) -> dict:
+    """Store one bounded attachment on the room's authority gateway."""
+
+    try:
+        from gateway.hosted_room_attachments import decode_content_base64
+
+        service = get_hosted_room_service()
+        if service is None:
+            return _err(rid, 4123, _WORKER_UNAVAILABLE)
+        attachment = service.put_attachment(
+            room_id=params.get("room_id"),
+            upload_id=params.get("upload_id"),
+            kind=params.get("kind"),
+            name=params.get("name"),
+            mime=params.get("mime"),
+            data=decode_content_base64(params.get("content_base64")),
+        )
+        return _ok(rid, {"attachment": attachment})
+    except Exception as exc:
+        return _err(rid, 4140, str(exc))
+
+@method("groups.attachment.read")
+def _(rid, params: dict) -> dict:
+    """Read committed bytes for a Group Chat viewer."""
+
+    try:
+        from gateway.hosted_room_attachments import encode_content_base64
+
+        if str(params.get("purpose") or "").strip().casefold() != "viewer":
+            raise ValueError("hosted attachment reads are viewer-only over RPC")
+        service = get_hosted_room_service()
+        if service is None:
+            return _err(rid, 4123, _WORKER_UNAVAILABLE)
+        stored = service.read_attachment(
+            room_id=params.get("room_id"),
+            attachment_id=params.get("attachment_id"),
+            recipient_member_id=None,
+            event_id=params.get("event_id"),
+            viewer=True,
+        )
+        return _ok(
+            rid,
+            {
+                "attachment": stored.attachment,
+                "content_base64": encode_content_base64(stored.data),
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4141, str(exc))
+
+
+@method("groups.attachment.list")
+def _(rid, params: dict) -> dict:
+    """List canonical published attachment metadata for a Group Chat viewer."""
+
+    from gateway.hosted_room_attachments import AttachmentCursorError
+
+    try:
+        if str(params.get("purpose") or "").strip().casefold() != "viewer":
+            raise ValueError("hosted attachment lists are viewer-only over RPC")
+        service = get_hosted_room_service()
+        if service is None:
+            return _err(rid, 4123, _WORKER_UNAVAILABLE)
+        page = service.list_attachments(
+            room_id=params.get("room_id"),
+            cursor=params.get("cursor"),
+            limit=params.get("limit"),
+            query=params.get("query"),
+            producer_member_id=params.get("producer_member_id"),
+        )
+        return _ok(rid, page)
+    except AttachmentCursorError as exc:
+        return _err(
+            rid,
+            4143,
+            str(exc),
+            {
+                "reason": "attachment_cursor_reset_required",
+                "reset_required": True,
+                "action": "return_to_latest",
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4142, str(exc))

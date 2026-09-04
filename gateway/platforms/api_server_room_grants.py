@@ -62,24 +62,26 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
     """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
     from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from gateway.platforms.api_server_room_attachments import roomlink_attachments_available
     with self._profile_scope(profile):
         execution_policy = execution_policy_mapping(target_profile=profile)
     catalog = catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,), link_modes=("direct",),
-        persistent_process=True, text=True, attachments=False, target_profile=profile,
+        persistent_process=True, text=True, attachments=roomlink_attachments_available(), target_profile=profile,
         execution_policy=execution_policy)
     return execution_policy, catalog
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
-    from gateway.platforms import api_server_room_controls
+    from gateway.platforms import api_server_room_controls, api_server_room_attachments
 
     return [
         ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
         ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
         ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
         ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke),
-        *api_server_room_controls._http_routes(self)]
+        *api_server_room_controls._http_routes(self),
+        *api_server_room_attachments._http_routes(self)]
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -227,11 +229,18 @@ async def _handle_room_member_grant_revoke(
     try:
         from gateway import hosted_rooms
         # Idempotent: a response-lost retry authenticates with the grant just denylisted, so
-        # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
+        # verify signature/scope directly (not _room_grant_claims) and upsert the id,
+        # even after expiry; this does not restore operational authority.
         claims = _decode_request_grant(self, request, permission="status", allow_expired_for_revocation=True)
         _local_target(claims, _api_request_profile)
         hosted_rooms.revoke_room_grant_scope(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
+        try:
+            from gateway.platforms.api_server_room_attachments import _default_spool
+            await asyncio.to_thread(_default_spool().discard_scope, claims)
+        except Exception:
+            # Authorization is already revoked; bounded expiry backs up failed cleanup.
+            pass
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
     try:

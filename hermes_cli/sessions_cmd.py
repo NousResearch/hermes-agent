@@ -126,6 +126,39 @@ def cmd_sessions(args, sessions_parser=None):
 
     action = args.sessions_action
 
+    # The reset is the service-owned replacement for operational scripts that
+    # moved state.db directly.  It must run before SessionDB() opens the store.
+    if action == "reset-store":
+        from hermes_cli.session_store_reset import (
+            finalize_session_store_reset,
+            report_exit_code,
+            reset_session_store,
+        )
+
+        if not getattr(args, "yes", False):
+            report = {
+                "schema": "hermes-session-store-reset/v1",
+                "attempt": args.attempt,
+                "status": "failed",
+                "code": "confirmation_required",
+            }
+        else:
+            report = (
+                finalize_session_store_reset(
+                    args.attempt, getattr(args, "manifest_sha256", None)
+                )
+                if getattr(args, "finalize", False)
+                else reset_session_store(args.attempt)
+            )
+        if getattr(args, "json", False):
+            print(_json.dumps(report, sort_keys=True, separators=(",", ":")))
+        else:
+            print(
+                "Session store reset "
+                + ("completed." if report["status"] == "completed" else "refused.")
+            )
+        return report_exit_code(report)
+
     # 'repair' and 'recover' must run BEFORE opening SessionDB(): a
     # malformed schema is exactly the case where SessionDB() can't open.
     # Recovery additionally promises never to open the supplied source

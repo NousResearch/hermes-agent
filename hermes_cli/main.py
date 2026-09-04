@@ -14792,6 +14792,42 @@ def main():
         help="Skip the timestamped backup copy (not recommended)",
     )
 
+    sessions_reset_store = sessions_subparsers.add_parser(
+        "reset-store",
+        help="Quarantine fixed active state.db and sessions, then initialize an empty store",
+        description=(
+            "Quarantine only the fixed active state.db SQLite family and "
+            "sessions directory under a one-use attempt name, then initialize "
+            "and verify an empty current-schema store. Archives, traces, "
+            "checkpoints, snapshots, and backups are excluded. This never "
+            "accepts file paths."
+        ),
+    )
+    sessions_reset_store.add_argument(
+        "--attempt",
+        required=True,
+        help="One-use lowercase reset attempt identifier",
+    )
+    sessions_reset_store.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm quarantining the owned SQLite store and sessions directory",
+    )
+    sessions_reset_store.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one sanitized result document",
+    )
+    sessions_reset_store.add_argument(
+        "--finalize",
+        action="store_true",
+        help="Purge only a completed, revalidated quarantine attempt",
+    )
+    sessions_reset_store.add_argument(
+        "--manifest-sha256",
+        help="Required exact attempt manifest digest for --finalize",
+    )
+
     sessions_repair_routing = sessions_subparsers.add_parser(
         "repair-routing",
         help="Re-stamp gateway sessions that lost their routing identity",

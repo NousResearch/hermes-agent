@@ -4841,6 +4841,35 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 dropped_tool_names=_dropped_names or None,
             )
 
+        # Chunking recovery for truncated tool args WITH a non-length
+        # finish_reason (#74798): when the provider reports finish_reason
+        # (e.g. "stop") but the tool arguments are still truncated, the
+        # accumulated call would be silently discarded.  Build a partial-
+        # stream stub so the caller can attempt chunked retry.  Do NOT
+        # intercept finish_reason="length" — that is a genuine output cap
+        # where the max_tokens-boost retry path is correct.
+        _tool_args_dropped_with_finish = (
+            has_truncated_tool_args
+            and finish_reason is not None
+            and finish_reason != "length"
+        )
+        if _tool_args_dropped_with_finish:
+            _dropped_names = [
+                (tool_calls_acc[idx]["function"]["name"] or "?")
+                for idx in sorted(tool_calls_acc)
+            ]
+            logger.warning(
+                "Stream finished with %r but tool arguments were truncated "
+                "(tools=%s); building partial-stream stub for chunked retry.",
+                finish_reason, _dropped_names,
+            )
+            return _build_partial_stream_stub(
+                role, full_content,
+                "".join(reasoning_parts) or None,
+                model_name, usage_obj,
+                dropped_tool_names=_dropped_names or None,
+            )
+
         # Text-only stream drop: the upstream closed the connection (or the
         # SSE stream simply ended) with no finish_reason after delivering
         # text content but no tool calls.  Without this guard the partial

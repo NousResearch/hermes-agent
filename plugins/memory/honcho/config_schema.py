@@ -71,6 +71,9 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         # — Message writing —
         _field("saveMessages", "Save messages", KIND_BOOL, "Persist conversation messages to Honcho.",
                default="true", group="Message writing"),
+        _field("logging", "Injection audit log", KIND_BOOL,
+               "Append what each turn injected, and why, to ~/.honcho/injection.log. The record holds the user's "
+               "representation verbatim.", default="false", group="Recall"),
         _field("writeFrequency", "Write frequency", KIND_TEXT, "When to flush messages: async, turn, session, or every N turns.",
                default="async", info=_WRITE_FREQUENCY_INFO, placeholder="async | turn | session | N", group="Message writing"),
         # — Dialectic —

@@ -1,5 +1,6 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
+import json
 import time
 
 from datetime import datetime
@@ -1329,4 +1330,113 @@ class TestContextTokensForwarded:
         assert result["summary"] == "short summary"
         honcho_session.context.assert_called_once_with(
             summary=True, tokens=4000, peer_target=session.user_peer_id, peer_perspective=session.assistant_peer_id)
+
+
+# ---------------------------------------------------------------------------
+# injection.sessionStart pins which base-context components render
+# ---------------------------------------------------------------------------
+
+
+_FULL_CTX = {
+    "summary": "sum", "representation": "rep", "card": "card",
+    "ai_representation": "ai-rep", "ai_card": "ai-card",
+}
+
+
+def _provider_with_raw(raw, host="hermes"):
+    from plugins.memory.honcho.client import HonchoClientConfig, _host_block, _HostLookup
+
+    provider = HonchoMemoryProvider()
+    look = _HostLookup(_host_block(raw, host), raw)
+    provider._session_start_components = provider._resolve_session_start(look)
+    provider._injection_log_path = provider._resolve_injection_log_path(look)
+    provider._config = HonchoClientConfig(api_key="k", enabled=True, raw=raw, host=host)
+    return provider
+
+
+class TestSessionStartInjection:
+    def test_unset_renders_every_component_in_fixed_order(self):
+        formatted = _provider_with_raw({})._format_first_turn_context(_FULL_CTX)
+        headings = [line for line in formatted.splitlines() if line.startswith("## ")]
+        assert headings == ["## Session Summary", "## User Representation", "## User Peer Card",
+                            "## AI Self-Representation", "## AI Identity Card"]
+
+    def test_empty_list_means_inject_nothing(self):
+        raw = {"injection": {"sessionStart": []}}
+        assert _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX) == ""
+
+    def test_pinned_names_render_in_table_order_not_config_order(self):
+        raw = {"injection": {"sessionStart": ["aiCard", "summary"]}}
+        formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
+        headings = [line for line in formatted.splitlines() if line.startswith("## ")]
+        assert headings == ["## Session Summary", "## AI Identity Card"]
+
+    def test_host_block_pin_beats_root(self):
+        raw = {"injection": {"sessionStart": ["summary"]},
+               "hosts": {"hermes": {"injection": {"sessionStart": ["peerCard"]}}}}
+        formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
+        assert "## User Peer Card" in formatted and "## Session Summary" not in formatted
+
+    def test_non_list_value_is_treated_as_unset(self):
+        raw = {"injection": {"sessionStart": "summary"}}
+        assert _provider_with_raw(raw)._session_start_components is None
+
+    def test_initialize_reads_the_pin(self):
+        raw = {"injection": {"sessionStart": ["summary"]}}
+        provider = TestDialecticCadenceDefaults._make_provider(cfg_extra={"raw": raw, "host": "hermes"})
+        assert provider._session_start_components == frozenset({"summary"})
+
+
+# ---------------------------------------------------------------------------
+# the logging key switches on the injection audit; it is off by default and never raises
+# ---------------------------------------------------------------------------
+
+
+class TestInjectionAuditLog:
+    def test_off_by_default(self, monkeypatch):
+        monkeypatch.delenv("HONCHO_LOGGING", raising=False)
+        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
+        assert _provider_with_raw({})._injection_log_path is None
+
+    def test_logging_key_enables_default_path(self, monkeypatch):
+        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
+        path = _provider_with_raw({"logging": True})._injection_log_path
+        assert path is not None and path.endswith("injection.log")
+
+    def test_host_block_can_switch_it_off(self, monkeypatch):
+        monkeypatch.delenv("HONCHO_LOGGING", raising=False)
+        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
+        raw = {"logging": True, "hosts": {"hermes": {"logging": False}}}
+        assert _provider_with_raw(raw)._injection_log_path is None
+
+    def test_explicit_path_env_overrides_destination(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HONCHO_INJECTION_LOG", str(tmp_path / "audit.log"))
+        assert _provider_with_raw({})._injection_log_path == str(tmp_path / "audit.log")
+
+    def test_record_carries_reason_turn_and_payload(self, tmp_path):
+        provider = _provider_with_raw({})
+        provider._injection_log_path = str(tmp_path / "nested" / "injection.log")
+        provider._turn_count = 3
+        provider._session_key = "cli:test"
+        assert provider._log_injection("injected", "## User Peer Card\nName: Eri") == "## User Peer Card\nName: Eri"
+        assert provider._log_injection("trivial-prompt") == ""
+        records = [json.loads(line) for line in (tmp_path / "nested" / "injection.log").read_text().splitlines()]
+        assert [r["reason"] for r in records] == ["injected", "trivial-prompt"]
+        assert records[0]["turn"] == 3 and records[0]["session_key"] == "cli:test"
+        assert records[0]["bytes"] == len("## User Peer Card\nName: Eri".encode()) and records[1]["bytes"] == 0
+
+    def test_unwritable_path_never_raises(self, tmp_path):
+        provider = _provider_with_raw({})
+        blocker = tmp_path / "file"
+        blocker.write_text("x")
+        provider._injection_log_path = str(blocker / "injection.log")
+        assert provider._log_injection("injected", "payload") == "payload"
+
+    def test_tools_mode_prefetch_logs_its_reason(self, tmp_path):
+        provider = _provider_with_raw({})
+        provider._injection_log_path = str(tmp_path / "injection.log")
+        provider._recall_mode = "tools"
+        assert provider.prefetch("hello") == ""
+        record = json.loads((tmp_path / "injection.log").read_text().splitlines()[0])
+        assert record["reason"] == "cron-or-tools-mode" and record["payload"] == ""
 

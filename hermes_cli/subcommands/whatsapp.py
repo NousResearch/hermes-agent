@@ -19,4 +19,15 @@ def build_whatsapp_parser(subparsers, *, cmd_whatsapp: Callable) -> None:
         help="Set up WhatsApp integration",
         description="Configure WhatsApp and pair via QR code",
     )
+    whatsapp_parser.add_argument(
+        "--list-groups",
+        action="store_true",
+        help="List participating groups from an already connected local bridge (read-only)",
+    )
+    whatsapp_parser.add_argument(
+        "--bridge-port",
+        type=int,
+        default=None,
+        help="Local bridge port for --list-groups (default: 3000)",
+    )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)

@@ -46,6 +46,9 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  inboundPolicyRejection,
+  borderoWriteRejection,
+  summarizeParticipatingGroups,
 } from './bridge_helpers.js';
 
 // Parse CLI args
@@ -112,6 +115,17 @@ const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
+const BORDERO_READ_ONLY = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.WHATSAPP_BORDERO_READ_ONLY || '').trim().toLowerCase(),
+);
+const BORDERO_GROUP_JIDS = BORDERO_READ_ONLY
+  ? new Set(
+      String(process.env.WHATSAPP_BORDERO_GROUP_JIDS || '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(value => /^\d+@g\.us$/.test(value)),
+    )
+  : null;
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
@@ -558,6 +572,14 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
+        if (BORDERO_READ_ONLY) {
+          emitDebugEvent({
+            stage: 'ignored',
+            reason: 'bordero_read_only_dm',
+            chatId: redactWhatsAppId(chatId),
+          });
+          continue;
+        }
         if (isGroup || chatId.includes('status')) {
           emitDebugEvent({
             stage: 'ignored',
@@ -635,22 +657,21 @@ async function startSocket() {
       // Python gateway, otherwise a pairing-code reply fires in response
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
-        if (WHATSAPP_MODE === 'self-chat') {
+        const policyRejection = inboundPolicyRejection({
+          fromMe: false,
+          isGroup,
+          groupJid: isGroup ? chatId : null,
+          allowedGroupJids: BORDERO_GROUP_JIDS,
+          mode: WHATSAPP_MODE,
+          dmPolicy: WHATSAPP_DM_POLICY,
+          senderAllowed: matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR),
+          borderoReadOnly: BORDERO_READ_ONLY,
+        });
+        if (policyRejection) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
-        }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'allowlist_mismatch',
+              reason: policyRejection,
               chatId,
               senderId,
             }));
@@ -809,6 +830,21 @@ app.use((req, res, next) => {
     return res.status(400).json({
       error: 'Invalid Host header. Bridge accepts loopback hosts only.',
     });
+  }
+  next();
+});
+
+// Borderô mode is read-only at the bridge boundary too. Python adapter gates
+// are defense in depth; a local caller must not be able to POST a WhatsApp
+// write directly to this loopback process.
+app.use((req, res, next) => {
+  const rejection = borderoWriteRejection({
+    enabled: BORDERO_READ_ONLY,
+    method: req.method,
+    path: req.path,
+  });
+  if (rejection) {
+    return res.status(403).json({ error: rejection });
   }
   next();
 });
@@ -1078,6 +1114,23 @@ app.post('/read', async (req, res) => {
   }
 });
 
+// List participating groups for local, read-only route discovery. This endpoint
+// returns only exact JIDs and subjects; it never returns messages/participants
+// and has no write capability. The bridge itself is loopback-only.
+app.get('/groups', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  try {
+    const participating = await sock.groupFetchAllParticipating();
+    return res.json({ groups: summarizeParticipatingGroups(participating) });
+  } catch (err) {
+    console.warn('[bridge] failed to list participating groups:', err?.message || String(err));
+    return res.status(502).json({ error: 'Failed to list WhatsApp groups' });
+  }
+});
+
 // Chat info
 app.get('/chat/:id', async (req, res) => {
   const chatId = req.params.id;
@@ -1111,6 +1164,8 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    borderoReadOnly: BORDERO_READ_ONLY,
+    borderoGroupJids: Array.from(BORDERO_GROUP_JIDS || []).sort(),
   });
 });
 

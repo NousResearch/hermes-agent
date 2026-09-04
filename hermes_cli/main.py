@@ -463,6 +463,7 @@ import stat
 import subprocess
 import tempfile
 import time as _time_mod
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -3565,8 +3566,77 @@ def cmd_proxy(args):
         raise SystemExit(rc)
 
 
+def _sanitize_group_display_name(value: str) -> str:
+    """Remove terminal escape/control characters from untrusted group names."""
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    safe_chars = []
+    for char in value:
+        codepoint = ord(char)
+        category = unicodedata.category(char)
+        if codepoint < 0x20 or codepoint == 0x7F:
+            continue
+        if category in {"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"}:
+            continue
+        safe_chars.append(char)
+    return "".join(safe_chars).strip()
+
+
+def _list_whatsapp_groups(args) -> None:
+    """List groups from an already-running loopback bridge without starting it."""
+    from urllib.error import HTTPError, URLError
+    from urllib.request import urlopen
+
+    port = getattr(args, "bridge_port", None) or 3000
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        print("Invalid bridge port.")
+        raise SystemExit(1)
+
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/groups", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        print("Could not read groups from the local WhatsApp bridge.")
+        print("Start a paired bridge first; this command does not start WhatsApp.")
+        raise SystemExit(1)
+
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    if not isinstance(groups, list):
+        print("Local bridge returned an invalid group inventory.")
+        raise SystemExit(1)
+
+    valid_groups = []
+    for item in groups:
+        if not isinstance(item, dict):
+            print("Local bridge returned an invalid group inventory.")
+            raise SystemExit(1)
+        group_jid = item.get("group_jid")
+        name = item.get("name")
+        if (
+            not isinstance(group_jid, str)
+            or re.fullmatch(r"\d+@g\.us", group_jid) is None
+            or not isinstance(name, str)
+        ):
+            print("Local bridge returned an invalid group inventory.")
+            raise SystemExit(1)
+        safe_name = _sanitize_group_display_name(name)
+        if not safe_name:
+            print("Local bridge returned an invalid group inventory.")
+            raise SystemExit(1)
+        valid_groups.append({"group_jid": group_jid, "name": safe_name})
+    valid_groups.sort(key=lambda item: item["group_jid"])
+    if not valid_groups:
+        print("No participating WhatsApp groups found.")
+        return
+    print("Participating WhatsApp groups (JID is the identity; name is informational):")
+    for item in valid_groups:
+        print(f"- {item['group_jid']}  {item['name'].strip()}")
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
+    if getattr(args, "list_groups", False) is True:
+        _list_whatsapp_groups(args)
+        return
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_constants import find_node_executable, with_hermes_node_path
@@ -3729,12 +3799,11 @@ def cmd_whatsapp(args):
             session_dir.mkdir(parents=True, exist_ok=True)
             print("  ✓ Session cleared")
         else:
-            # Existing pairing — ensure WHATSAPP_ENABLED reflects that.
-            # (Older installs may have lost the env var; covers re-runs
-            # where the user picked "no, keep my session" but the var
-            # was never set or got removed.)
-            if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
-                save_env_value("WHATSAPP_ENABLED", "true")
+            # Existing pairing — persist the enabled state even when an
+            # inherited environment/secret source already reports "true".
+            # The wizard's durable state must describe the paired session, and
+            # save_env_value is idempotent (and still refuses managed installs).
+            save_env_value("WHATSAPP_ENABLED", "true")
             print("\n✓ WhatsApp is configured and paired!")
             print("  Start the gateway with: hermes gateway")
             return

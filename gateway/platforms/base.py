@@ -151,16 +151,28 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         scope_id = getattr(source, "scope_id", None)
         if scope_id:
             metadata["slack_team_id"] = str(scope_id)
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        if thread_id is not None:
+            metadata["telegram_dm_topic_reply_fallback"] = True
+            tid = str(thread_id)
+            if tid and tid not in {"", "1"}:
+                metadata["direct_messages_topic_id"] = tid
+            if anchor is not None:
+                metadata["telegram_reply_to_message_id"] = str(anchor)
+    # A transport adapter may attach an immutable, non-serialized delivery
+    # route to the source. This keeps origin/session identity intact while
+    # allowing a source-specific final response to use another live adapter.
+    delivery_route = getattr(source, "_delivery_route", None)
+    if isinstance(delivery_route, dict) and delivery_route:
+        metadata["hermes_delivery_route"] = dict(delivery_route)
+        if delivery_route.get("read_only") is True:
+            # Borderô responses must be delivered as one complete Telegram
+            # report. Partial WhatsApp edits are suppressed by design and
+            # must not be mistaken for a delivered final answer.
+            metadata["disable_streaming"] = True
     if not metadata:
         return None
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
-        metadata["telegram_dm_topic_reply_fallback"] = True
-        tid = str(thread_id)
-        if tid and tid not in {"", "1"}:
-            metadata["direct_messages_topic_id"] = tid
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
-        if anchor is not None:
-            metadata["telegram_reply_to_message_id"] = str(anchor)
     # Routed Hermes profile for shared state.db namespaces (topic bindings
     # under multiplex / profile_routes). Outbound prune paths must not
     # assume the transport adapter's static profile stamp.
@@ -168,6 +180,24 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if profile:
         metadata["hermes_profile"] = profile
     return metadata
+
+
+def _delivery_ledger_target(source, metadata: dict | None) -> tuple[str, str, str | None]:
+    """Return the durable destination for a final-response obligation."""
+
+    route = metadata.get("hermes_delivery_route") if isinstance(metadata, dict) else None
+    if (
+        isinstance(route, dict)
+        and route.get("read_only") is True
+        and isinstance(route.get("telegram_chat_id"), str)
+        and isinstance(route.get("telegram_thread_id"), str)
+    ):
+        return "telegram", route["telegram_chat_id"], route["telegram_thread_id"]
+    return (
+        str(getattr(source.platform, "value", source.platform)),
+        source.chat_id,
+        getattr(source, "thread_id", None),
+    )
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
@@ -6910,6 +6940,39 @@ class BasePlatformAdapter(ABC):
                     # trouble must never block or delay the actual send.
                     # Slash-command and ephemeral replies are cheap to
                     # regenerate and are not recorded.
+                    _ledger_platform, _ledger_chat_id, _ledger_thread_id = _delivery_ledger_target(
+                        event.source,
+                        _final_thread_metadata,
+                    )
+                    _ledger_adapter_profile = getattr(
+                        delivery_adapter,
+                        "_owner_profile",
+                        None,
+                    )
+                    if _ledger_platform == Platform.TELEGRAM.value:
+                        _ledger_adapters = getattr(
+                            getattr(self, "gateway_runner", None),
+                            "adapters",
+                            None,
+                        )
+                        _ledger_profile_name = str(
+                            (_final_thread_metadata or {}).get("hermes_profile") or ""
+                        ).strip()
+                        if _ledger_profile_name and _ledger_profile_name != "default":
+                            _ledger_adapters = (
+                                getattr(
+                                    getattr(self, "gateway_runner", None),
+                                    "_profile_adapters",
+                                    None,
+                                )
+                                or {}
+                            ).get(_ledger_profile_name)
+                        if isinstance(_ledger_adapters, dict):
+                            _ledger_adapter_profile = getattr(
+                                _ledger_adapters.get(Platform.TELEGRAM),
+                                "_owner_profile",
+                                _ledger_adapter_profile,
+                            )
                     _obligation_id = None
                     if not is_ephemeral_response and not str(
                         event.text or ""
@@ -6932,16 +6995,11 @@ class BasePlatformAdapter(ABC):
                                     record_obligation,
                                     obligation_id=_obligation_id,
                                     session_key=session_key,
-                                    platform=str(
-                                        getattr(event.source.platform, "value",
-                                                event.source.platform)
-                                    ),
-                                    chat_id=event.source.chat_id,
-                                    thread_id=getattr(event.source, "thread_id", None),
+                                    platform=_ledger_platform,
+                                    chat_id=_ledger_chat_id,
+                                    thread_id=_ledger_thread_id,
                                     content=text_content,
-                                    adapter_profile=getattr(
-                                        delivery_adapter, "_owner_profile", None
-                                    ),
+                                    adapter_profile=_ledger_adapter_profile,
                                 )
                                 await asyncio.to_thread(mark_attempting, _obligation_id)
                         except Exception:
@@ -6987,18 +7045,53 @@ class BasePlatformAdapter(ABC):
                                         "_redeliver_failed_obligations_for_platform",
                                         None,
                                     )
-                                    if (
-                                        _live_adapter is not delivery_adapter
-                                        and callable(_runtime_redeliver)
-                                    ):
-                                        await _runtime_redeliver(
-                                            event.source.platform,
-                                            profile=getattr(
-                                                delivery_adapter,
-                                                "_owner_profile",
-                                                None,
-                                            ),
+                                    if callable(_runtime_redeliver):
+                                        try:
+                                            _ledger_target_platform = Platform(_ledger_platform)
+                                        except Exception:
+                                            _ledger_target_platform = None
+                                        _is_cross_platform_delivery = (
+                                            _ledger_target_platform is not None
+                                            and _ledger_target_platform != event.source.platform
                                         )
+                                        _target_profile_name = str(
+                                            (_final_thread_metadata or {}).get("hermes_profile") or ""
+                                        ).strip()
+                                        _target_adapter = None
+                                        if _is_cross_platform_delivery:
+                                            _target_adapters = getattr(
+                                                getattr(self, "gateway_runner", None),
+                                                "adapters",
+                                                None,
+                                            )
+                                            if _target_profile_name and _target_profile_name != "default":
+                                                _target_adapters = (
+                                                    getattr(
+                                                        getattr(self, "gateway_runner", None),
+                                                        "_profile_adapters",
+                                                        None,
+                                                    )
+                                                    or {}
+                                                ).get(_target_profile_name)
+                                            if isinstance(_target_adapters, dict):
+                                                _target_adapter = _target_adapters.get(
+                                                    _ledger_target_platform
+                                                )
+                                        if (
+                                            _ledger_target_platform is not None
+                                            and (
+                                                _is_cross_platform_delivery
+                                                or _live_adapter is not delivery_adapter
+                                            )
+                                        ):
+                                            await _runtime_redeliver(
+                                                _ledger_target_platform,
+                                                profile=getattr(
+                                                    _target_adapter or delivery_adapter,
+                                                    "_owner_profile",
+                                                    None,
+                                                ),
+                                            )
                         except Exception:
                             logger.debug(
                                 "delivery ledger update failed", exc_info=True

@@ -4828,6 +4828,43 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
         return False
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
+def _is_read_only_delivery_route(metadata: Any) -> bool:
+    """Whether metadata identifies a transport route that forbids interaction."""
+    route = metadata.get("hermes_delivery_route") if isinstance(metadata, dict) else None
+    return isinstance(route, dict) and route.get("read_only") is True
+
+
+def _rehydrate_bordero_delivery_route(source: Any, adapter: Any) -> None:
+    """Restore a validated transport-only Borderô route for resume turns."""
+    if hasattr(source, "_delivery_route"):
+        delattr(source, "_delivery_route")
+    if hasattr(source, "_channel_prompt"):
+        delattr(source, "_channel_prompt")
+    platform_value = getattr(source, "platform", None)
+    platform_value = getattr(platform_value, "value", platform_value)
+    if str(platform_value or "").lower() != "whatsapp":
+        return
+    reader = getattr(adapter, "_bordero_reader", None)
+    if reader is None or not getattr(reader, "enabled", False):
+        return
+    route = getattr(reader, "routes", {}).get(getattr(source, "chat_id", None))
+    if route is None:
+        return
+    setattr(
+        source,
+        "_delivery_route",
+        {
+            "group_jid": route.group_jid,
+            "telegram_chat_id": route.telegram_chat_id,
+            "telegram_thread_id": route.telegram_thread_id,
+            "telegram_target": route.telegram_target,
+            "read_only": True,
+        },
+    )
+    from plugins.platforms.whatsapp.bordero_reader import build_ingest_prompt
+
+    setattr(source, "_channel_prompt", build_ingest_prompt(route))
+
 
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
@@ -6027,13 +6064,18 @@ class TurnRunner:
             ctx.user_config, platform_key, "streaming"
         )
         # None = no per-platform override → follow global config
+        _streaming_disabled_for_turn = _is_read_only_delivery_route(
+            ctx._status_thread_metadata
+        )
         _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
+            _scfg.enabled and _scfg.transport != "off" and not _streaming_disabled_for_turn
             if _plat_streaming is None
-            else bool(_plat_streaming)
+            else bool(_plat_streaming) and not _streaming_disabled_for_turn
         )
         _want_stream_deltas = _streaming_enabled
-        _want_interim_messages = ctx.interim_assistant_messages_enabled
+        _want_interim_messages = (
+            ctx.interim_assistant_messages_enabled and not _streaming_disabled_for_turn
+        )
         _want_interim_consumer = _want_interim_messages
         if _want_stream_deltas or _want_interim_consumer:
             try:
@@ -6606,6 +6648,17 @@ class TurnRunner:
 
             if not ctx._status_adapter:
                 return ""
+
+            if _is_read_only_delivery_route(ctx._status_thread_metadata):
+                logger.info(
+                    "Clarify suppressed for read-only delivery route; returning a "
+                    "textual blocker for final Telegram reporting"
+                )
+                return (
+                    "[BLOCKED: interactive clarification is unavailable in the "
+                    "WhatsApp Borderô read-only reader; report the missing evidence "
+                    "or ambiguity in the final Telegram report.]"
+                )
 
             clarify_id = _uuid.uuid4().hex[:10]
             _clarify_mod.register(
@@ -13560,6 +13613,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     getattr(source.platform, "value", source.platform),
                 )
                 continue
+            _rehydrate_bordero_delivery_route(source, adapter)
 
             # Validate the session owner against the current allowlist
             # before auto-resuming. A session created before
@@ -13600,6 +13654,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                channel_prompt=getattr(source, "_channel_prompt", None),
             )
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
@@ -26810,6 +26865,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
+        delivery_route = getattr(source, "_delivery_route", None)
+        if isinstance(delivery_route, dict) and delivery_route:
+            metadata = dict(metadata or {})
+            metadata["hermes_delivery_route"] = dict(delivery_route)
+            if delivery_route.get("read_only") is True:
+                metadata["disable_streaming"] = True
         # Routed profile for shared state.db namespaces (#76423): the Telegram
         # prune path needs it because under profile_routes the transport
         # adapter's stamp is not the profile that wrote the binding.
@@ -30857,6 +30918,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        channel_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -30922,6 +30984,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if context_prompt:
             api_messages.append({"role": "system", "content": context_prompt})
+        if channel_prompt:
+            api_messages.append({"role": "system", "content": channel_prompt})
 
         for msg in history:
             role = msg.get("role")
@@ -30964,6 +31028,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+
+        _is_bordero_route = _is_read_only_delivery_route(
+            _thread_metadata
+            or {"hermes_delivery_route": getattr(source, "_delivery_route", None)}
+        )
+        if _is_bordero_route:
+            _streaming_enabled = False
 
         if _streaming_enabled:
             try:
@@ -31343,7 +31414,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Supports interruption via new messages.
         """
         # ---- Proxy mode: delegate to remote API server ----
-        if self._get_proxy_url():
+        if self._get_proxy_url() and not _is_read_only_delivery_route(
+            {"hermes_delivery_route": getattr(source, "_delivery_route", None)}
+        ):
             return await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
@@ -31353,6 +31426,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                channel_prompt=channel_prompt,
             )
 
         from run_agent import AIAgent
@@ -31723,9 +31797,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and not source.thread_id
             else None
         )
+        _is_bordero_route = _is_read_only_delivery_route(
+            {"hermes_delivery_route": getattr(source, "_delivery_route", None)}
+        )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
-            if _progress_thread_id == source.thread_id
+            if _is_bordero_route or _progress_thread_id == source.thread_id
             else self._thread_metadata_for_target(
                 source.platform,
                 source.chat_id,
@@ -31733,7 +31810,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_type=getattr(source, "chat_type", None),
                 reply_to_message_id=event_message_id,
             )
-        ) if _progress_thread_id else None
+        ) if (_progress_thread_id or _is_bordero_route) else None
         if _progress_metadata is None and _relay_prospective_thread_id:
             # No real thread yet, but the connector will auto-thread on the
             # reply anchor; carry it so progress joins that thread.
@@ -31875,7 +31952,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             _status_thread_metadata = (
                 self._thread_metadata_for_source(source, event_message_id)
-                if _progress_thread_id == source.thread_id
+                if _is_bordero_route or _progress_thread_id == source.thread_id
                 else self._thread_metadata_for_target(
                     source.platform,
                     source.chat_id,
@@ -31883,7 +31960,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=getattr(source, "chat_type", None),
                     reply_to_message_id=event_message_id,
                 )
-            ) if _progress_thread_id else None
+            ) if (_progress_thread_id or _is_bordero_route) else None
             if _status_thread_metadata is None and _relay_prospective_thread_id:
                 # Relay Discord auto-thread lane (see _progress_metadata above):
                 # carry the reply anchor so status/interim bubbles route into

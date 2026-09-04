@@ -130,6 +130,60 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### Silent Borderô group reader (personal number, read-only)
+
+For a personal WhatsApp number that already belongs to the two Borderô groups,
+use the opt-in reader contract below instead of an open group policy:
+
+```yaml
+# ~/.hermes/config.yaml
+# The JIDs below are intentionally invalid examples. Replace them only with
+# exact values returned by `hermes whatsapp --list-groups`.
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        bordero_read_only: true
+        mode: bot
+        dm_policy: disabled
+        group_policy: allowlist
+        send_read_receipts: false
+        bordero_routes:
+          - group_jid: "REPLACE_WITH_EXACT_UBBO_JID@g.us"
+            store: PTT
+            location: UBBO
+            telegram_chat_id: "REPLACE_WITH_TELEGRAM_CHAT_ID"
+            telegram_thread_id: "REPLACE_WITH_UBBO_TOPIC_ID"
+          - group_jid: "REPLACE_WITH_EXACT_SALDANHA_JID@g.us"
+            store: ODI
+            location: Saldanha
+            telegram_chat_id: "REPLACE_WITH_TELEGRAM_CHAT_ID"
+            telegram_thread_id: "REPLACE_WITH_SALDANHA_TOPIC_ID"
+```
+
+The reader rejects the configuration unless it contains exactly one
+`PTT → UBBO` route and one `ODI → Saldanha` route. It does not use group names
+as identity. DMs, Status, newsletters and every group outside those exact JIDs
+are discarded before the agent sees their content. Any text, media, poll,
+location, typing indicator or edit sent to those two WhatsApp groups is blocked
+by the adapter.
+
+After a *paired bridge is already running*, discover the JIDs locally with:
+
+```bash
+hermes whatsapp --list-groups
+```
+
+This command only calls the loopback `/groups` read endpoint; it does not start
+WhatsApp or display a QR code. The Telegram target must be an explicit forum
+topic. Reports and blockers are instructed to leave through that target; no
+WhatsApp reply is permitted. Keep `send_read_receipts: false` and protect the
+session directory because it contains the linked-device credentials.
+
+The Borderô writer remains a separate rollout gate: first run shadow/dry-run and
+complete the existing evidence, duplicate and Supabase read-backs. Enabling the
+reader is not authorization to activate financial writes.
+
 Then start the gateway:
 
 ```bash

@@ -156,6 +156,35 @@ describe('handleGroupRelayEnvelope', () => {
     expect(minted.length).toBeGreaterThan(0)
   })
 
+  it('streams a reply that lands synchronously during the send, before the watcher exists', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+
+    // Simulate a member reply appended INSIDE the send's synchronous window
+    // (the first store notification fires before handleGroupRelayEnvelope
+    // has registered its watcher). A watcher seeded after the send would
+    // treat this entry as pre-existing and never stream it.
+    let injected = false
+
+    const unsub = room.chat.$groupChats.listen(rooms => {
+      const log = rooms.Launchpad?.log || []
+      const user = log.find(entry => entry.text === 'race')
+
+      if (user && !injected) {
+        injected = true
+        room.chat.appendGroupChatEntry('Launchpad', { kind: 'member', name: 'scout' }, 'raced you', String(user.thread))
+      }
+    })
+
+    await room.relay.handleGroupRelayEnvelope({ id: 'e9', room_id: 'rm-launch', text: 'race' })
+    unsub()
+    await drain(() => isRunning(room))
+    await room.relay.tickGroupRelayWatchers()
+
+    const lines = replyLines(room, 'e9')
+    expect(lines.filter(l => l.kind === 'reply').map(l => l.text)).toContain('raced you')
+    expect(lines.pop()).toMatchObject({ kind: 'done' })
+  })
+
   it('reports room_not_found and no_members without touching any room', async () => {
     const room = await loadRoom()
 

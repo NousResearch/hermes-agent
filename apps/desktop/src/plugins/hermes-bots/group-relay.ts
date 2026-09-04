@@ -114,6 +114,12 @@ export function resolveRelayRoom(
   return null
 }
 
+/** Stable identity for a log entry; ids are minted on append, the fallback
+ *  covers legacy entries hydrated without one. */
+function entryKey(entry: GroupMessage): string {
+  return String(entry?.id || `${entry?.at}:${entry?.from?.name}:${entry?.thread || ''}`)
+}
+
 function relayMembers(group: string): GroupMember[] {
   return groupChatMemberBots(group, $lastRoster.get(), $botMeta.get())
 }
@@ -162,7 +168,7 @@ export async function tickGroupRelayWatchers(now = Date.now()) {
 
     // Stream newly committed member replies in the relay's thread.
     for (const entry of room.log || []) {
-      const key = String(entry?.id || `${entry?.at}:${entry?.from?.name}`)
+      const key = entryKey(entry)
 
       if (watcher.seen.has(key) || entry?.from?.kind !== 'member') {
         continue
@@ -261,6 +267,13 @@ export async function handleGroupRelayEnvelope(envelope: GroupRelayEnvelope): Pr
   const requested = String(envelope.thread || '').trim()
   const knownThread = requested && (resolved.room.log || []).some(entry => String(entry?.thread || '') === requested)
 
+  // Snapshot the log BEFORE the send: only entries that predate the relay
+  // are pre-seen, so a member reply appended at any point after this line —
+  // even synchronously inside sendToGroupChat's round kick — is streamed.
+  // (A watcher seeded after the send could swallow such a reply.)
+  const before = $groupChats.get()[resolved.name] || {}
+  const seen = new Set((before.log || []).map(entryKey))
+
   const thread = sendToGroupChat(resolved.name, members, text, knownThread ? requested : null, undefined, {
     via: String(envelope.label || '').trim() || undefined
   })
@@ -277,10 +290,7 @@ export async function handleGroupRelayEnvelope(envelope: GroupRelayEnvelope): Pr
     epoch: room.epoch || 0,
     group: resolved.name,
     replies: 0,
-    seen: new Set(
-      // Everything already in the log predates this relay — never re-stream it.
-      (room.log || []).map((entry: GroupMessage) => String(entry?.id || `${entry?.at}:${entry?.from?.name}`))
-    ),
+    seen,
     startedAt: Date.now(),
     thread,
     wasRunning: room.running === true

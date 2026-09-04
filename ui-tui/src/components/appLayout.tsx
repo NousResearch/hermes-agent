@@ -16,8 +16,8 @@ import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
+  composerInputHeight,
   composerPromptWidth,
-  inputVisualHeight,
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
@@ -291,7 +291,7 @@ const ComposerPane = memo(function ComposerPane({
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
-  const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputHeight = composerInputHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {

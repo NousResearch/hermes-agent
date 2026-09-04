@@ -164,8 +164,39 @@ class TestSend:
         assert call_args[0][0] == "https://dingtalk.example/webhook"
         payload = call_args[1]["json"]
         assert payload["msgtype"] == "markdown"
-        assert payload["markdown"]["title"] == "Hermes"
+        assert payload["markdown"]["title"] == "Hello!"
         assert payload["markdown"]["text"] == "Hello!"
+
+    @pytest.mark.parametrize(
+        ("content", "expected_title"),
+        [
+            ("\n\nLatest update\nDetails", "Latest update"),
+            ("更" * 81, "更" * 80),
+            (" \n\t", "Hermes"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_send_uses_bounded_first_nonempty_line_as_preview_title(
+        self, content, expected_title
+    ):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        mock_response = MagicMock(status_code=200, text="OK")
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123",
+            content,
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["markdown"]["title"] == expected_title
+        assert payload["markdown"]["text"] == adapter._normalize_markdown(content)
 
 
     @pytest.mark.asyncio

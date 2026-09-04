@@ -3160,11 +3160,18 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # at flush time; buffering the raw per-hop line here would re-expose
         # every hop on terminal failure, so only ``on`` buffers it.  The
         # ``Fallback activated`` log line below is emitted in every mode.
+        # Fail open to "on" for anything that is not a known mode string —
+        # a mock agent hands back a truthy Mock, which must not silently
+        # change buffering.
+        from agent.notice_collapse import FALLBACK_NOTIFICATION_MODES
+
         _notice_mode = "on"
         try:
             _mode_fn = getattr(agent, "_fallback_notice_mode", None)
             if callable(_mode_fn):
-                _notice_mode = _mode_fn()
+                _resolved = _mode_fn()
+                if _resolved in FALLBACK_NOTIFICATION_MODES:
+                    _notice_mode = _resolved
         except Exception:
             _notice_mode = "on"
         if _notice_mode == "on":

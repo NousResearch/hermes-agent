@@ -247,6 +247,51 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
 
 
 @pytest.mark.asyncio
+async def test_connect_clears_previous_fatal_error(monkeypatch):
+    """Regression: a successful connect() must clear any prior fatal-error
+    state via _mark_connected(), not just set self._running = True directly.
+
+    Every other platform adapter (Telegram, WeCom, Matrix, ...) calls
+    _mark_connected() on a successful connect, which clears
+    _fatal_error_code/_fatal_error_message/_fatal_error_retryable and
+    rewrites the runtime status file as "connected". DiscordAdapter used to
+    bypass this and set self._running = True directly, so a transient
+    connect failure (e.g. a DNS blip) left the platform reported as
+    permanently "fatal" in the dashboard/gateway_state.json even after the
+    adapter reconnected successfully and was actively serving messages.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(discord_platform.commands, "Bot", FakeBot)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    # Simulate a prior fatal error left over from a transient connect failure.
+    adapter._set_fatal_error("discord_connect_error", "Discord startup failed: boom", retryable=True)
+    assert adapter.has_fatal_error is True
+
+    assert await adapter.connect() is True
+
+    assert adapter.has_fatal_error is False, (
+        "connect() must clear a previously recorded fatal error via "
+        "_mark_connected() so the dashboard doesn't show a stale failure "
+        "forever after a successful reconnect"
+    )
+    assert adapter.fatal_error_code is None
+    assert adapter.fatal_error_message is None
+    assert adapter._running is True
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_connect_timeout_cancels_bot_task(monkeypatch):
     """Regression: connect() timeout must cancel _bot_task so the zombie
     Discord client cannot fire on_message after the adapter is discarded.

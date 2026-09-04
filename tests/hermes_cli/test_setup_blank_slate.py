@@ -8,10 +8,8 @@ resolver + tool-schema builder yield exactly the file/terminal tools.
 
 import pytest
 
-from hermes_cli.setup import (
-    _blank_slate_minimal_toolsets,
-    _blank_slate_minimize_config,
-)
+from hermes_cli.setup_quick import _blank_slate_minimal_toolsets, _blank_slate_minimize_config
+from hermes_cli import setup_quick
 
 
 class TestBlankSlateMinimalToolsets:
@@ -113,14 +111,14 @@ class TestBlankSlateFork:
         # Fork prompt returns 0 = finish now.
         monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 0)
         walked = {"called": False}
-        monkeypatch.setattr(s, "_blank_slate_walkthrough",
+        monkeypatch.setattr(setup_quick, "_blank_slate_walkthrough",
                             lambda cfg, home: walked.__setitem__("called", True))
         opted_out = {"value": None}
-        monkeypatch.setattr("tools.skills_sync.set_bundled_skills_opt_out",
+        monkeypatch.setattr("tools.skills_sync_bundled_ops.set_bundled_skills_opt_out",
                             lambda enabled: opted_out.__setitem__("value", enabled))
 
         cfg = {}
-        s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
+        setup_quick._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
 
         # Minimal baseline was applied, walkthrough was NOT run.
         assert cfg["platform_toolsets"]["cli"] == ["file", "skills", "terminal", "vision"]

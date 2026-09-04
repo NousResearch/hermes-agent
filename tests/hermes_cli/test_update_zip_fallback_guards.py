@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as hermes_main
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 
@@ -74,18 +75,21 @@ def test_unknown_command_gets_generic_stage():
 
 def test_windows_dep_failure_does_not_zip_fallback(monkeypatch):
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     exc = _cpe([r"C:\venv\Scripts\uv.exe", "pip", "install", "-e", "."])
     assert update_cmd._should_zip_fallback_on_update_error(exc) is False
 
 
 def test_windows_git_failure_still_zips(monkeypatch):
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     exc = _cpe(["git", "pull"], returncode=1)
     assert update_cmd._should_zip_fallback_on_update_error(exc) is True
 
 
 def test_posix_git_failure_does_not_zip(monkeypatch):
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     exc = _cpe(["git", "pull"], returncode=1)
     assert update_cmd._should_zip_fallback_on_update_error(exc) is False
 
@@ -179,7 +183,7 @@ def test_update_via_zip_aborts_before_download_when_dirty(
 
     with patch("urllib.request.urlretrieve") as download:
         with pytest.raises(SystemExit) as exc_info:
-            hermes_main._update_via_zip(SimpleNamespace(branch=None))
+            update_cmd._update_via_zip(SimpleNamespace(branch=None))
 
     assert exc_info.value.code == 1
     download.assert_not_called()
@@ -339,8 +343,11 @@ def test_swap_preserve_set_is_the_module_constant():
     truth for the preserved entries (no comment-synced duplicate)."""
     import inspect
 
-    src = inspect.getsource(update_cmd._update_via_zip)
-    assert "preserve = _ZIP_PRESERVED_TOP_LEVEL" in src
+    from hermes_cli import update_cmd_zip
+
+    # The swap loop lives in the download/swap collaborator the ZIP path calls.
+    src = inspect.getsource(update_cmd_zip._download_and_swap_zip)
+    assert "_ZIP_PRESERVED_TOP_LEVEL" in src
 
 
 def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):

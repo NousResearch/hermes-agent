@@ -53,11 +53,11 @@ def _tick(job, tmp_path, current_provider, deliveries):
         return None
 
     with patch("cron.scheduler._hermes_home", tmp_path), \
-         patch("cron.scheduler._resolve_origin", return_value=None), \
+         patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state.get_shared_session_db", return_value=fake_db), \
-         patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+         patch("hermes_state_registry.acquire", return_value=fake_db), \
+         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={
                    "api_key": "test-key",
@@ -138,11 +138,11 @@ class TestDriftAlertOnce:
             cron_jobs.save_jobs([job])
             fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
             with patch("cron.scheduler._hermes_home", tmp_path), \
-                 patch("cron.scheduler._resolve_origin", return_value=None), \
+                 patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                  patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.get_shared_session_db", return_value=fake_db), \
-                 patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+                 patch("hermes_state_registry.acquire", return_value=fake_db), \
+                 patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
                  patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                        return_value={
                            "api_key": "test-key",

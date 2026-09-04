@@ -60,7 +60,7 @@ class TestFalEditPayload:
 
 
     def test_text_only_model_has_no_edit_endpoint(self):
-        from tools.image_generation_tool import FAL_MODELS
+        from tools.image_generation_catalog import FAL_MODELS
 
         # z-image/turbo is a pure text-to-image model — no edit endpoint.
         assert "edit_endpoint" not in FAL_MODELS["fal-ai/z-image/turbo"]

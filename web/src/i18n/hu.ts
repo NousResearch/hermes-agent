@@ -469,6 +469,8 @@ export const hu: Translations = {
     copyCliCommand: "CLI-parancs másolása (külső / tartalék)",
     connect: "Csatlakozás",
     sessionExpires: "A munkamenet {time} múlva lejár",
+    sessionExpiredNoError:
+      "A bejelentkezés lejárt anélkül, hogy elérte volna a szolgáltatót. Ez általában azt jelenti, hogy a bejelentkezési oldal elakadt a megnyitott lapon (szerveroldali probléma) — fejezze be ott a bejelentkezést, majd kattintson az Újra gombra. Ha továbbra sem sikerül, használjon inkább API-kulcsot vagy a CLI-t.",
     initiatingLogin: "Bejelentkezési folyamat indítása…",
     exchangingCode: "Kód cseréje tokenekre…",
     connectedClosing: "Csatlakoztatva! Bezárás…",

@@ -133,19 +133,32 @@ fi
 echo -e "${CYAN}→${NC} Checking Python $PYTHON_VERSION..."
 
 if is_termux; then
-    if command -v python >/dev/null 2>&1; then
-        PYTHON_PATH="$(command -v python)"
-        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-            PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
-            echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
-        else
-            echo -e "${RED}✗${NC} Termux Python must be 3.11+"
-            echo "    Run: pkg install python"
-            exit 1
+    # Hermes currently declares requires-python >=3.11,<3.14. Termux can expose
+    # a newer default `python` before dependencies have compatible wheels, so
+    # prefer explicit compatible minors and verify the upper bound before using
+    # the interpreter to create the venv.
+    for python_cmd in python3.11 python3.12 python3.13 python; do
+        if command -v "$python_cmd" >/dev/null 2>&1; then
+            CANDIDATE_PATH="$(command -v "$python_cmd")"
+            if "$CANDIDATE_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                PYTHON_PATH="$CANDIDATE_PATH"
+                PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+                echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
+                break
+            fi
         fi
-    else
-        echo -e "${RED}✗${NC} Python not found in Termux"
-        echo "    Run: pkg install python"
+    done
+
+    if [ -z "${PYTHON_PATH:-}" ]; then
+        if command -v python >/dev/null 2>&1; then
+            PYTHON_FOUND_VERSION="$(python --version 2>/dev/null || true)"
+            echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+            echo "    Install a supported interpreter and re-run this script:"
+            echo "      pkg install tur-repo && pkg install python3.13"
+        else
+            echo -e "${RED}✗${NC} Python not found in Termux"
+            echo "    Run: pkg install python"
+        fi
         exit 1
     fi
 else

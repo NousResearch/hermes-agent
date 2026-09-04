@@ -1,8 +1,9 @@
-import { ANNOTATE_CSS_KEYS } from './tokens'
+import { ANNOTATE_CSS_KEYS, ANNOTATE_HTML_BUDGET } from './tokens'
 
 export interface ElementSnapshot {
   className?: string
   css: Record<string, string>
+  html?: string
   id?: string
   role?: string
   selector: string
@@ -12,6 +13,7 @@ export interface ElementSnapshot {
 
 export interface CompactIdentity {
   css: Record<string, string>
+  html: string
   selector: string
   tag: string
   text: string
@@ -47,6 +49,16 @@ function clip(value: string, max: number): string {
   return `${trimmed.slice(0, max - 1)}…`
 }
 
+/**
+ * Markup keeps its own clip: it arrives already budgeted and redacted from the
+ * guest, and this is the backstop for a snapshot built anywhere else. Newlines
+ * collapse but the tag structure survives — `clip` alone would be fine, this
+ * just names the different budget.
+ */
+function clipHtml(value: string): string {
+  return clip(value, ANNOTATE_HTML_BUDGET)
+}
+
 /** Keep only the curated CSS snapshot, drop empties and the whole document. */
 export function compactIdentity(snapshot: ElementSnapshot): CompactIdentity {
   const css: Record<string, string> = {}
@@ -64,8 +76,9 @@ export function compactIdentity(snapshot: ElementSnapshot): CompactIdentity {
   const tag = (snapshot.tag || 'div').toLowerCase()
   const selector = clip(snapshot.selector || tag, MAX_SELECTOR)
   const text = clip(snapshot.text || '', MAX_TEXT)
+  const html = clipHtml(snapshot.html || '')
 
-  return { css, selector, tag, text }
+  return { css, html, selector, tag, text }
 }
 
 export function formatIdentityLine(identity: CompactIdentity): string {

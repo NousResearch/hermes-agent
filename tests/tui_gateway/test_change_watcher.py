@@ -64,6 +64,23 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     assert ("sessions.changed", {}) in events
 
 
+def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, monkeypatch):
+    """A backend serving a sibling profile must see that profile's state.db
+    move too — otherwise a routed profile's Bot Chat never refreshes (#99333)."""
+    home, events = watcher_home
+    bot_home = home / "profiles" / "bot"
+    bot_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: home / "profiles" / name)
+    assert server._profile_home("bot") == bot_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (bot_home / "state.db").write_text("x")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) in events
+
+
 def test_gateway_state_move_broadcasts_platforms_changed(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)

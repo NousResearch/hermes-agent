@@ -275,7 +275,7 @@ class TestMinimaxPreserveDots:
 
 
     def test_normalize_preserves_m25_free_dot(self):
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name("minimax-m2.5-free", preserve_dots=True) == "minimax-m2.5-free"
 
 
@@ -312,8 +312,8 @@ class TestMinimaxSwitchModelCredentialGuard:
             agent._fallback_chain = []
 
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \
-             patch("agent.anthropic_adapter._is_oauth_token", return_value=False):
+             patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \
+             patch("agent.anthropic_credentials._is_oauth_token", return_value=False):
 
             agent.switch_model(
                 new_model="MiniMax-M2.7",

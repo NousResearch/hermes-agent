@@ -402,7 +402,9 @@ def start_loopback_flow_background(
 
     def _run() -> None:
         try:
-            authorize_via_loopback(config_path=config_path, host=host, source=source, timeout=timeout)
+            authorize_via_loopback(
+                config_path=config_path, host=host, source=source, apply_config=False, timeout=timeout
+            )
             _set_status("connected", "Honcho connected")
         except Exception as exc:
             logger.warning("Honcho OAuth loopback flow failed: %s", exc)

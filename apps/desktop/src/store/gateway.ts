@@ -522,16 +522,14 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
       // Hydration may already own this dial as a background slot wait. Kick a
       // foreground IPC so main can promote it onto the reserved slot.
       void (
-        (
-          entry.connectionId && desktop.getConnectionFor
-            ? desktop.getConnectionFor({
-                connectionId: entry.connectionId,
-                profile: entry.profile,
-                priority: 'foreground'
-              })
-            : desktop.getConnection(entry.profile, { priority: 'foreground' })
-        ).catch(() => undefined)
-      )
+        entry.connectionId && desktop.getConnectionFor
+          ? desktop.getConnectionFor({
+              connectionId: entry.connectionId,
+              profile: entry.profile,
+              priority: 'foreground'
+            })
+          : desktop.getConnection(entry.profile, { priority: 'foreground' })
+      ).catch(() => undefined)
     }
 
     await entry.connectPromise

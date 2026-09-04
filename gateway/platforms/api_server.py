@@ -7606,9 +7606,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     # /v1/runs has its own branch in its executor.
                     logger.warning("Provider authentication failed for session=%s: %s",
                                    session_id or "", exc)
+                    # resolve_direct_reply: this envelope is the answer to a
+                    # request somebody made, so a suppressed reply degrades to
+                    # one terse line, never to an empty body.
+                    from agent.notice_collapse import (
+                        provider_auth_error_reply,
+                        resolve_direct_reply,
+                    )
                     return (
                         {
-                            "final_response": f"⚠️ Provider authentication failed: {exc}",
+                            "final_response": resolve_direct_reply(
+                                provider_auth_error_reply(
+                                    exc, session_key=session_id,
+                                )
+                            ),
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],

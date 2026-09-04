@@ -3156,7 +3156,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # The buffered switch is surfaced on terminal failure. A successful
         # fallback clears retry chatter, so retain every switch as a durable
         # one-shot notice for _emit_pending_fallback_notice (run_agent.py).
-        agent._buffer_status(notice)
+        # Outside ``display.fallback_notifications: on`` the notice is collapsed
+        # at flush time; buffering the raw per-hop line here would re-expose
+        # every hop on terminal failure, so only ``on`` buffers it.  The
+        # ``Fallback activated`` log line below is emitted in every mode.
+        # Fail open to "on" for anything that is not a known mode string —
+        # a mock agent hands back a truthy Mock, which must not silently
+        # change buffering.
+        from agent.notice_collapse import FALLBACK_NOTIFICATION_MODES
+
+        _notice_mode = "on"
+        try:
+            _mode_fn = getattr(agent, "_fallback_notice_mode", None)
+            if callable(_mode_fn):
+                _resolved = _mode_fn()
+                if _resolved in FALLBACK_NOTIFICATION_MODES:
+                    _notice_mode = _resolved
+        except Exception:
+            _notice_mode = "on"
+        if _notice_mode == "on":
+            agent._buffer_status(notice)
         pending = getattr(agent, "_pending_fallback_notice", None)
         if isinstance(pending, list):
             pending.append(notice)

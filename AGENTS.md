@@ -1369,6 +1369,27 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 - `error` — only the final raw-output message when exit code != 0
 - `off` — no watcher messages at all
 
+### Model Fallback Notices (Gateway)
+
+A provider outage walks the fallback chain and posts one "⚠️ Model fallback: …" line per hop plus
+one "⚠️ Provider authentication failed …" reply per failed attempt. `display.fallback_notifications`
+(`on` | `collapse` | `off`, default `on`) and `display.fallback_notice_interval_seconds` (default
+3600) gate the **user-facing** notices only; the log lines are unconditional. `collapse` emits at
+most one notice per session per interval and folds the suppressed hop count into the next one.
+`off` silences notices, never an answer.
+
+The shared renderer is `agent/notice_collapse.py` — every gateway site that surfaces a provider
+auth failure must go through `provider_auth_error_reply` / `collapse_provider_error_reply`
+(enforced by an `ast` guard over the whole `gateway/` tree in
+`tests/agent/test_notice_collapse.py`).
+
+Suppression returns `notice_collapse.SUPPRESSED_NOTICE`, not `""`, so a caller can tell "already
+told this conversation" apart from "not a provider error". Resolve it before delivery:
+`resolve_direct_reply` (a reply to a message somebody sent — collapses to one terse line, never to
+silence and never to the raw provider text) or `resolve_status_notice` (unsolicited chatter — the
+only path allowed to collapse to nothing). The window is keyed per platform **and** chat id, and is
+in-memory, so a restart or an agent-cache eviction reopens it and allows one more notice.
+
 ---
 
 ## Profiles: Multi-Instance Support

@@ -1282,6 +1282,73 @@ class AIAgent:
         except Exception:
             pass
 
+    def _fallback_notice_config(self):
+        """Resolve ``(mode, interval, state)`` for model-fallback notices.
+
+        ``display.fallback_notifications`` / ``.fallback_notice_interval_seconds``
+        are read from the user config unless the embedder set the matching
+        ``fallback_notifications`` / ``fallback_notice_interval_seconds``
+        attributes on the agent (the gateway does, like ``memory_notifications``);
+        those are then authoritative for both keys.  The collapse window lives
+        on the agent, so it is per session.
+        """
+        from agent.notice_collapse import (
+            FallbackNoticeState,
+            resolve_fallback_notice_interval,
+            resolve_fallback_notification_mode,
+        )
+        override = (
+            getattr(self, "fallback_notifications", None),
+            getattr(self, "fallback_notice_interval_seconds", None),
+        )
+        cache = getattr(self, "_fallback_notice_cache", None)
+        if cache is None or cache[0] != override:
+            display = {}
+            if override[0] is not None:
+                display["fallback_notifications"] = override[0]
+            if override[1] is not None:
+                display["fallback_notice_interval_seconds"] = override[1]
+            cfg = {"display": display} if display else None
+            state = cache[3] if cache else FallbackNoticeState()
+            cache = (
+                override,
+                resolve_fallback_notification_mode(cfg),
+                resolve_fallback_notice_interval(cfg),
+                state,
+            )
+            self._fallback_notice_cache = cache
+        return cache[1], cache[2], cache[3]
+
+    def _fallback_notice_mode(self) -> str:
+        """``on`` | ``collapse`` | ``off`` — fail open to ``on``."""
+        try:
+            return self._fallback_notice_config()[0]
+        except Exception:
+            return "on"
+
+    def _collapse_fallback_notices(self, notices: list) -> list:
+        """Apply ``display.fallback_notifications`` to buffered hop notices."""
+        from agent.notice_collapse import collapse_fallback_notices
+        try:
+            mode, interval, state = self._fallback_notice_config()
+            clock = getattr(self, "_fallback_notice_clock", None)
+            now = float(clock()) if callable(clock) else time.time()
+            route = getattr(self, "_provider_fallback_route", None)
+            current = None
+            if isinstance(route, (tuple, list)) and len(route) == 2:
+                current = f"{route[0]} via {route[1]}"
+            return collapse_fallback_notices(
+                notices,
+                mode=mode,
+                interval=interval,
+                state=state,
+                now=now,
+                current_route=current,
+            )
+        except Exception:
+            # Never lose a switch notice to a collapse bug.
+            return list(notices)
+
     def _emit_pending_fallback_notice(self) -> None:
         """Surface the one-shot fallback-switch notice on successful recovery.
 
@@ -1293,6 +1360,9 @@ class AIAgent:
         produces one visible notice.  On terminal failure the buffered switch
         line is flushed instead (and this notice discarded) — see
         ``_flush_status_buffer`` — so the user always sees the switch once.
+
+        ``display.fallback_notifications`` gates the user-facing emission only:
+        ``try_activate_fallback``'s log line is unconditional in every mode.
         """
         try:
             notice = getattr(self, "_pending_fallback_notice", None)
@@ -1301,7 +1371,7 @@ class AIAgent:
                 # leave the notice set for a stale re-emit on a later turn.
                 self._pending_fallback_notice = None
                 notices = notice if isinstance(notice, list) else [notice]
-                for item in notices:
+                for item in self._collapse_fallback_notices(notices):
                     try:
                         self._emit_status(str(item))
                     except Exception:
@@ -1321,8 +1391,18 @@ class AIAgent:
         try:
             # The buffered trace already carries the fallback switch line, so
             # drop any one-shot fallback notice to avoid a stale duplicate
-            # leaking into a later successful turn.
+            # leaking into a later successful turn.  Outside ``on`` mode the
+            # switch was deliberately kept out of the retry buffer, so emit the
+            # collapsed notice here instead of losing it.
+            pending = getattr(self, "_pending_fallback_notice", None)
             self._pending_fallback_notice = None
+            if pending and self._fallback_notice_mode() != "on":
+                pending = pending if isinstance(pending, list) else [pending]
+                for item in self._collapse_fallback_notices(pending):
+                    try:
+                        self._emit_status(str(item))
+                    except Exception:
+                        continue
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return

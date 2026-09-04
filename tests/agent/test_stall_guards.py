@@ -2,7 +2,7 @@
 
 Two guards, both notice/re-prompt-only:
 
-1. Identical-call loop breaker — ``ToolCallGuardrailController.observe_identical_call``
+1. Identical-call loop breaker — ``ToolCallGuardrailController.observe_call``
    appends a compact notice to the tool RESULT on the 3rd consecutive call
    with identical (tool, canonical args) AND an identical result. It never
    blocks execution, exempts legitimately-repeatable pollers, and resets on
@@ -29,7 +29,7 @@ def _observe_n(controller, n, tool="web_search", args=None, result="same result"
     notices = []
     for _ in range(n):
         notices.append(
-            controller.observe_identical_call(tool, args or {"query": "x"}, result)
+            controller.observe_call(tool, args or {"query": "x"}, result).notice
         )
     return notices
 
@@ -58,18 +58,18 @@ def test_keeps_firing_past_threshold():
 def test_does_not_fire_when_arguments_differ():
     c = ToolCallGuardrailController()
     for i in range(5):
-        notice = c.observe_identical_call(
+        notice = c.observe_call(
             "web_search", {"query": f"q{i}"}, "same result"
-        )
+        ).notice
         assert notice is None
 
 
 def test_does_not_fire_when_results_differ():
     c = ToolCallGuardrailController()
     for i in range(5):
-        notice = c.observe_identical_call(
+        notice = c.observe_call(
             "terminal", {"command": "poll-status"}, f"output {i}"
-        )
+        ).notice
         assert notice is None
 
 
@@ -77,7 +77,7 @@ def test_streak_resets_when_a_different_call_intervenes():
     c = ToolCallGuardrailController()
     assert _observe_n(c, 2)[-1] is None
     # Different tool breaks the consecutive streak.
-    assert c.observe_identical_call("read_file", {"path": "/a"}, "data") is None
+    assert c.observe_call("read_file", {"path": "/a"}, "data").notice is None
     # Two more of the original are a fresh streak of 2 — still no notice.
     assert all(n is None for n in _observe_n(c, 2))
 
@@ -85,16 +85,16 @@ def test_streak_resets_when_a_different_call_intervenes():
 def test_arg_canonicalization_ignores_key_order():
     c = ToolCallGuardrailController()
     r = "same"
-    assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is None
-    assert c.observe_identical_call("t", {"b": 2, "a": 1}, r) is None
-    assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is not None
+    assert c.observe_call("t", {"a": 1, "b": 2}, r).notice is None
+    assert c.observe_call("t", {"b": 2, "a": 1}, r).notice is None
+    assert c.observe_call("t", {"a": 1, "b": 2}, r).notice is not None
 
 
 def test_allowlisted_pollers_never_fire():
     c = ToolCallGuardrailController()
     for tool in ("process_manage", "vendor_get_result", "job_poll"):
         for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD + 2):
-            assert c.observe_identical_call(tool, {"id": "j1"}, "Generating") is None
+            assert c.observe_call(tool, {"id": "j1"}, "Generating").notice is None
 
 
 def test_allowlist_membership_contract():
@@ -326,13 +326,6 @@ def test_multimodal_content_never_stubbed_and_breaks_streak():
     obs = c.observe_call("vision", args, None, tool_call_id="c2")
     assert obs.stub is None
     assert c.observe_call("vision", args, _BIG, tool_call_id="c3").stub is None
-
-
-def test_observe_identical_call_backcompat_notice_still_fires():
-    c = ToolCallGuardrailController()
-    for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD - 1):
-        assert c.observe_identical_call("web_search", {"q": 1}, "r") is None
-    assert c.observe_identical_call("web_search", {"q": 1}, "r") is not None
 
 
 def test_extract_persisted_path_round_trip():

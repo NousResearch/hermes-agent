@@ -1456,6 +1456,7 @@ def _install_tirith(
     expected_existing_sha256: str | None = None,
     current_version: tuple[int, int, int] | None = None,
     minimum_candidate_version: tuple[int, int, int] | None = None,
+    allow_same_version_replacement: bool = False,
 ) -> tuple[str | None, str]:
     """Download and install Tirith to Hermes' private managed cache.
 
@@ -1472,7 +1473,9 @@ def _install_tirith(
     replacing_existing = expected_existing_sha256 is not None
     if replacing_existing != (current_version is not None):
         return None, "invalid_replacement_request"
-    if minimum_candidate_version is not None and not replacing_existing:
+    if (
+        minimum_candidate_version is not None or allow_same_version_replacement
+    ) and not replacing_existing:
         return None, "invalid_replacement_request"
 
     log = logger.warning if log_failures else logger.debug
@@ -1482,6 +1485,11 @@ def _install_tirith(
         logger.info("tirith auto-install: unsupported platform %s/%s",
                      platform.system(), platform.machine())
         return None, "unsupported_platform"
+    if (
+        allow_same_version_replacement
+        and target != "aarch64-unknown-linux-musl"
+    ):
+        return None, "invalid_replacement_request"
 
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
     managed_dest = _managed_tirith_path()
@@ -1515,10 +1523,14 @@ def _install_tirith(
             if not cosign_verified or signed_version is None:
                 return None, "candidate_version_unverified"
             assert current_version is not None
-            if signed_version <= current_version:
+            candidate_is_older = signed_version < current_version
+            candidate_is_same = signed_version == current_version
+            if candidate_is_older or (
+                candidate_is_same and not allow_same_version_replacement
+            ):
                 logger.info(
-                    "tirith replacement skipped: signed candidate v%s is not newer "
-                    "than installed v%s",
+                    "tirith replacement skipped: signed candidate v%s cannot "
+                    "replace installed v%s",
                     ".".join(str(part) for part in signed_version),
                     ".".join(str(part) for part in current_version),
                 )
@@ -1571,6 +1583,16 @@ def _install_tirith(
 
 
 _TIRITH_VERSION_RE = re.compile(r"^tirith ([0-9]+)\.([0-9]+)\.([0-9]+)$")
+_TIRITH_EMBEDDED_VERSION_RES = (
+    # Tirith 0.3+ keeps the exact clap --version output in the release binary.
+    re.compile(rb"tirith ([0-9]{1,10})\.([0-9]{1,10})\.([0-9]{1,10})(?:\r?\n|\x00)"),
+    # Tirith 0.2.12, the release current when Hermes first enabled Termux,
+    # predates that stable string but embeds its shell-hook version marker.
+    re.compile(
+        rb"shell-version([0-9]{1,10})\.([0-9]{1,10})\."
+        rb"([0-9]{1,10})tirith\.sh"
+    ),
+)
 
 
 def _parse_tirith_version(output: str) -> tuple[int, int, int] | None:
@@ -1585,6 +1607,49 @@ def _parse_tirith_version(output: str) -> tuple[int, int, int] | None:
         return int(major), int(minor), int(patch)
     except ValueError:
         return None
+
+
+def _read_embedded_tirith_version(
+    path: str,
+) -> tuple[tuple[int, int, int] | None, str]:
+    """Read a release version without executing an incompatible binary.
+
+    Historical Hermes builds downloaded Tirith's glibc AArch64 artifact on
+    Termux. Android's Bionic loader cannot execute it, so ``--version`` is not
+    available during migration. Only stable, release-generated markers are
+    accepted, and the caller must still byte-match the tagged release before
+    replacing anything.
+    """
+    if not _is_managed_tirith(path):
+        return None, "managed_path_untrusted"
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as binary:
+            binary_stat = os.fstat(binary.fileno())
+            if not stat.S_ISREG(binary_stat.st_mode):
+                return None, "binary_read_failed"
+            size = binary_stat.st_size
+            if size <= 0 or size > _MAX_TIRITH_BINARY_BYTES:
+                return None, "binary_size_invalid"
+            payload = binary.read(_MAX_TIRITH_BINARY_BYTES + 1)
+    except OSError:
+        return None, "binary_read_failed"
+    if len(payload) != size or len(payload) > _MAX_TIRITH_BINARY_BYTES:
+        return None, "binary_size_invalid"
+
+    versions: set[tuple[int, int, int]] = set()
+    for pattern in _TIRITH_EMBEDDED_VERSION_RES:
+        for match in pattern.finditer(payload):
+            try:
+                versions.add(tuple(int(part) for part in match.groups()))
+            except ValueError:
+                return None, "unparseable"
+    if len(versions) != 1:
+        return None, "unparseable"
+    return versions.pop(), ""
 
 
 def _tirith_subprocess_env() -> dict[str, str]:
@@ -1626,6 +1691,7 @@ def _verify_legacy_release_binary(
     path: str,
     version: tuple[int, int, int],
     *,
+    target: str | None = None,
     log_failures: bool = True,
 ) -> tuple[str | None, str]:
     """Prove a pre-Hermes-provenance binary matches published release bytes.
@@ -1634,7 +1700,7 @@ def _verify_legacy_release_binary(
     therefore verifies the matching tagged archive before replacing it. The
     returned digest binds that proof to the later atomic swap.
     """
-    target = _detect_target()
+    target = target or _detect_target()
     if target is None:
         return None, "unsupported_platform"
     log = logger.warning if log_failures else logger.debug
@@ -1767,17 +1833,94 @@ def _run_tirith_update(path: str) -> str:
     return "failed"
 
 
+def _verify_termux_release_binary(
+    path: str,
+    version: tuple[int, int, int],
+    *,
+    log_failures: bool,
+) -> tuple[str | None, str | None, str]:
+    """Match a managed Termux binary to its tagged GNU or musl release."""
+    targets = ["aarch64-unknown-linux-gnu"]
+    # Tirith first published a Termux-compatible AArch64 musl artifact in
+    # v0.3.0. Earlier tags legitimately return 404 for that asset.
+    if version >= (0, 3, 0):
+        targets.append("aarch64-unknown-linux-musl")
+
+    failures: list[str] = []
+    for release_target in targets:
+        expected_sha256, reason = _verify_legacy_release_binary(
+            path,
+            version,
+            target=release_target,
+            log_failures=log_failures,
+        )
+        if expected_sha256 is not None:
+            return expected_sha256, release_target, ""
+        failures.append(reason)
+    if failures and all(reason == "binary_mismatch" for reason in failures):
+        return None, None, "binary_mismatch"
+    return None, None, next(
+        (reason for reason in failures if reason != "binary_mismatch"),
+        "binary_mismatch",
+    )
+
+
 def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
     """Bootstrap or update an existing Hermes-managed Tirith binary."""
     if not _is_managed_tirith(path):
         return "skipped"
     path = os.path.abspath(_managed_tirith_path())
 
+    target = _detect_target()
+    termux_musl_target = target == "aarch64-unknown-linux-musl"
+    version_was_embedded = False
     version, reason = _probe_tirith_version(path)
     if version is None:
-        if reason == "unparseable":
+        if termux_musl_target and reason == "probe_failed":
+            version, reason = _read_embedded_tirith_version(path)
+            version_was_embedded = version is not None
+        if version is None and reason == "unparseable":
             logger.info("tirith background update skipped: unrecognized build version")
             return "skipped"
+        if version is None:
+            return "failed"
+
+    if termux_musl_target:
+        # A future Tirith release that identifies its native musl target can
+        # safely use its own updater. v0.4.1 reports GNU for both AArch64
+        # builds, so older releases take the byte-matched migration below.
+        if not version_was_embedded and version >= _SELF_UPDATE_MIN_VERSION:
+            provenance, _ = _probe_tirith_provenance(path)
+            if provenance is not None and _provenance_allows_managed_update(
+                path, version, provenance
+            ):
+                if provenance.get("target") == "aarch64-unknown-linux-musl":
+                    return _run_tirith_update(path)
+
+        expected_sha256, matched_target, verification_reason = (
+            _verify_termux_release_binary(
+                path,
+                version,
+                log_failures=log_failures,
+            )
+        )
+        if expected_sha256 is None:
+            return "skipped" if verification_reason == "binary_mismatch" else "failed"
+        installed, install_reason = _install_tirith(
+            log_failures=log_failures,
+            expected_existing_sha256=expected_sha256,
+            current_version=version,
+            minimum_candidate_version=_SELF_UPDATE_MIN_VERSION,
+            allow_same_version_replacement=(
+                matched_target == "aarch64-unknown-linux-gnu"
+            ),
+        )
+        if installed and _is_managed_tirith(installed):
+            return "bootstrapped" if version < _SELF_UPDATE_MIN_VERSION else "updated"
+        if install_reason == "lazy_installs_disabled":
+            return "deferred"
+        if install_reason == "candidate_not_newer":
+            return "current"
         return "failed"
 
     if version < _SELF_UPDATE_MIN_VERSION:
@@ -1809,32 +1952,6 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
             "Hermes-managed release build"
         )
         return "skipped"
-
-    # Tirith 0.4.1 reports every AArch64 Linux build as the glibc release
-    # target.  On Termux, delegating to its self-updater would therefore fetch
-    # an unusable glibc binary over the working musl one.  Keep the same
-    # provenance gate, then use Hermes' checksum-verified, preimage-bound
-    # installer until Tirith can distinguish the musl target itself.
-    if (
-        _detect_target() == "aarch64-unknown-linux-musl"
-        and provenance.get("target") != "aarch64-unknown-linux-musl"
-    ):
-        try:
-            expected_sha256 = _sha256_file(path)
-        except OSError:
-            return "failed"
-        installed, install_reason = _install_tirith(
-            log_failures=log_failures,
-            expected_existing_sha256=expected_sha256,
-            current_version=version,
-        )
-        if installed and _is_managed_tirith(installed):
-            return "updated"
-        if install_reason == "lazy_installs_disabled":
-            return "deferred"
-        if install_reason == "candidate_not_newer":
-            return "current"
-        return "failed"
 
     return _run_tirith_update(path)
 

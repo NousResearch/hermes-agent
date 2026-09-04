@@ -99,6 +99,35 @@ class TestVersionParsing:
     def test_rejects_unparseable_or_development_versions(self, output):
         assert tirith._parse_tirith_version(output) is None
 
+    @pytest.mark.parametrize(
+        "payload, expected",
+        [
+            (b"prefix\x00tirith 0.4.1\nsuffix", (0, 4, 1)),
+            (b"prefixshell-version0.2.12tirith.shsuffix", (0, 2, 12)),
+        ],
+    )
+    def test_reads_historical_release_version_without_execution(
+        self, payload, expected, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith", payload)
+
+        assert tirith._read_embedded_tirith_version(str(managed)) == (expected, "")
+
+    def test_rejects_ambiguous_embedded_release_versions(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(
+            tmp_path / "bin" / "tirith",
+            b"tirith 0.4.0\ntirith 0.4.1\n",
+        )
+
+        assert tirith._read_embedded_tirith_version(str(managed)) == (
+            None,
+            "unparseable",
+        )
+
 
 class TestUpdateState:
     def test_successful_check_is_fresh_for_24_hours(self, tmp_path, monkeypatch):
@@ -464,6 +493,59 @@ class TestSignedReplacementFreshness:
         assert installed == str(destination)
         assert reason == ""
         assert destination.read_bytes() == b"new tirith"
+
+    def test_same_signed_release_can_replace_verified_cross_abi_binary(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        destination = _write_executable(
+            tmp_path / "home" / "bin" / "tirith", b"glibc tirith"
+        )
+        candidate = _write_executable(
+            tmp_path / "download" / "tirith", b"musl tirith"
+        )
+        monkeypatch.setattr(tirith, "_tirith_auto_install_allowed", lambda: True)
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-unknown-linux-musl"
+        )
+        monkeypatch.setattr(
+            tirith,
+            "_download_verified_tirith",
+            lambda *_args, **_kwargs: (str(candidate), "", True, (0, 4, 1)),
+        )
+
+        installed, reason = tirith._install_tirith(
+            log_failures=False,
+            expected_existing_sha256=tirith._sha256_file(str(destination)),
+            current_version=(0, 4, 1),
+            allow_same_version_replacement=True,
+        )
+
+        assert installed == str(destination)
+        assert reason == ""
+        assert destination.read_bytes() == b"musl tirith"
+
+    def test_same_version_replacement_is_termux_musl_only(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        destination = _write_executable(
+            tmp_path / "home" / "bin" / "tirith", b"current tirith"
+        )
+        download = MagicMock()
+        monkeypatch.setattr(tirith, "_tirith_auto_install_allowed", lambda: True)
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-apple-darwin"
+        )
+        monkeypatch.setattr(tirith, "_download_verified_tirith", download)
+
+        assert tirith._install_tirith(
+            log_failures=False,
+            expected_existing_sha256=tirith._sha256_file(str(destination)),
+            current_version=(0, 4, 1),
+            allow_same_version_replacement=True,
+        ) == (None, "invalid_replacement_request")
+        download.assert_not_called()
 
     def test_initial_install_is_create_only_when_destination_already_exists(
         self, tmp_path, monkeypatch
@@ -1138,6 +1220,15 @@ class TestMaintenanceDecision:
         )
         install = MagicMock(return_value=(str(managed), ""))
         update = MagicMock()
+        monkeypatch.setattr(
+            tirith,
+            "_verify_termux_release_binary",
+            lambda *_args, **_kwargs: (
+                expected_sha256,
+                "aarch64-unknown-linux-musl",
+                "",
+            ),
+        )
         monkeypatch.setattr(tirith, "_install_tirith", install)
         monkeypatch.setattr(tirith, "_run_tirith_update", update)
 
@@ -1149,8 +1240,81 @@ class TestMaintenanceDecision:
             log_failures=False,
             expected_existing_sha256=expected_sha256,
             current_version=(0, 4, 1),
+            minimum_candidate_version=(0, 4, 1),
+            allow_same_version_replacement=False,
         )
         update.assert_not_called()
+
+    def test_unexecutable_historical_termux_glibc_release_is_migrated(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(
+            tmp_path / "bin" / "tirith",
+            b"prefix\x00tirith 0.4.1\nsuffix",
+        )
+        expected_sha256 = tirith._sha256_file(str(managed))
+        monkeypatch.setattr(
+            tirith, "_probe_tirith_version", lambda _path: (None, "probe_failed")
+        )
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-unknown-linux-musl"
+        )
+        verify = MagicMock(
+            return_value=(
+                expected_sha256,
+                "aarch64-unknown-linux-gnu",
+                "",
+            )
+        )
+        provenance = MagicMock()
+        install = MagicMock(return_value=(str(managed), ""))
+        monkeypatch.setattr(tirith, "_verify_termux_release_binary", verify)
+        monkeypatch.setattr(tirith, "_probe_tirith_provenance", provenance)
+        monkeypatch.setattr(tirith, "_install_tirith", install)
+
+        assert (
+            tirith._maintain_managed_tirith(str(managed), log_failures=False)
+            == "updated"
+        )
+        verify.assert_called_once_with(
+            str(managed),
+            (0, 4, 1),
+            log_failures=False,
+        )
+        provenance.assert_not_called()
+        install.assert_called_once_with(
+            log_failures=False,
+            expected_existing_sha256=expected_sha256,
+            current_version=(0, 4, 1),
+            minimum_candidate_version=(0, 4, 1),
+            allow_same_version_replacement=True,
+        )
+
+    def test_unexecutable_unknown_termux_binary_is_never_replaced(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(
+            tmp_path / "bin" / "tirith",
+            b"prefix\x00tirith 0.4.1\nsuffix",
+        )
+        monkeypatch.setattr(
+            tirith, "_probe_tirith_version", lambda _path: (None, "probe_failed")
+        )
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-unknown-linux-musl"
+        )
+        monkeypatch.setattr(
+            tirith,
+            "_verify_termux_release_binary",
+            lambda *_args, **_kwargs: (None, None, "binary_mismatch"),
+        )
+        install = MagicMock()
+        monkeypatch.setattr(tirith, "_install_tirith", install)
+
+        assert tirith._maintain_managed_tirith(str(managed)) == "skipped"
+        install.assert_not_called()
 
     def test_termux_replayed_release_is_a_noop(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1174,6 +1338,15 @@ class TestMaintenanceDecision:
         )
         monkeypatch.setattr(
             tirith, "_detect_target", lambda: "aarch64-unknown-linux-musl"
+        )
+        monkeypatch.setattr(
+            tirith,
+            "_verify_termux_release_binary",
+            lambda *_args, **_kwargs: (
+                tirith._sha256_file(str(managed)),
+                "aarch64-unknown-linux-musl",
+                "",
+            ),
         )
         monkeypatch.setattr(
             tirith,

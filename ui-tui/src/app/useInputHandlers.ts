@@ -33,6 +33,16 @@ import { getUiState } from './uiStore.js'
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
+/**
+ * Match Ctrl+C without an action modifier such as Super or Meta.
+ *
+ * The busy-session interrupt uses this narrower predicate because
+ * `isCopyShortcut` also accepts forwarded Cmd+C events that carry Ctrl with an
+ * action modifier. Those events should continue to the selection-copy path.
+ */
+export const isRawCtrlC = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string): boolean =>
+  key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === 'c'
+
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 export function handleInputSelectionClipboard(
@@ -501,6 +511,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       cActions.setCompIdx(i => (key.upArrow ? (i - 1 + len) % len : (i + 1) % len))
 
       return
+    }
+
+    // Handle raw Ctrl+C during a busy turn before copy, selection, or composer
+    // handling can consume it. Forwarded Cmd+C events carry Super or Meta, so
+    // isRawCtrlC leaves those events for the selection-copy path below.
+    if (isRawCtrlC(key, ch) && live.busy && live.sid) {
+      return turnController.interruptTurn({
+        appendMessage: actions.appendMessage,
+        gw: gateway.gw,
+        sid: live.sid,
+        sys: actions.sys
+      })
     }
 
     if (key.wheelUp || key.wheelDown) {

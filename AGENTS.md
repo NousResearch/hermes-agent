@@ -1135,9 +1135,10 @@ Two shapes:
 - **Batch (dependency-aware):** give every task an `id` and optional
   `depends_on` ids. Ready nodes run immediately; descendants receive bounded
   prerequisite summaries after those nodes succeed. Disconnected components
-  deliver independently when the async runtime can atomically reserve them;
+  deliver independently within one async slot and one public graph handle;
   otherwise delivery automatically falls back to one consolidated batch while
-  preserving dependency order. Batches without ids keep the flat behavior.
+  preserving dependency order. IDs alone and empty `depends_on` lists keep the
+  flat behavior; at least one dependency edge is required to activate the DAG.
 
 Roles:
 

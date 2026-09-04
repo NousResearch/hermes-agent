@@ -76,3 +76,26 @@ def test_empty_results_is_noop():
         [{"task_index": 0, "status": "failed", "summary": None}],
         _FakeParent(131_000, 1_000, 8_000),
     )
+
+
+@pytest.mark.parametrize("sizes", [(1, 1, 1), (2, 1)])
+def test_independent_components_share_the_original_batch_budget(sizes, monkeypatch):
+    parent = _FakeParent(context_length=50_000, used_tokens=20_000, max_tokens=8_000)
+    monkeypatch.setattr(dt, "_load_config", lambda: {"max_summary_chars": 0})
+    batch_size = sum(sizes)
+    cap = dt._parent_summary_char_budget(parent, batch_size)
+    summary = "¶" * 100_000
+    summaries = []
+    for size in sizes:
+        results = [
+            {"task_index": len(summaries) + i, "status": "completed", "summary": summary}
+            for i in range(size)
+        ]
+        dt._apply_summary_budget(results, parent, batch_size=batch_size)
+        summaries.extend(results)
+    # The content allowance is divided across the entire graph, even when
+    # separate completions arrive in one gateway drain. Footers are overhead.
+    assert sum(r["summary"].count("¶") for r in summaries) == cap * batch_size
+    for result in summaries:
+        with open(result["summary_full_path"], encoding="utf-8") as stream:
+            assert stream.read() == summary

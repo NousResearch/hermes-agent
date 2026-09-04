@@ -1,5 +1,7 @@
 """Dependency-plan validation for adaptive subagent scheduling."""
 
+import pytest
+
 from tools.delegation_graph import build_dependency_plan
 
 
@@ -35,7 +37,7 @@ def test_dependencies_form_clusters_and_preserve_declared_order():
     assert plan.dependency_ids(2) == ("alpha", "beta")
 
 
-def test_ids_without_edges_make_independently_deliverable_components():
+def test_ids_without_edges_keep_flat_scheduler():
     plan, error = build_dependency_plan(
         [
             {"id": "one", "goal": "Complete the first task"},
@@ -44,15 +46,33 @@ def test_ids_without_edges_make_independently_deliverable_components():
     )
 
     assert error is None
-    assert plan.enabled is True
-    assert plan.components == ((0,), (1,))
+    assert plan.enabled is False
+    assert plan.components == ((0, 1),)
+
+
+@pytest.mark.parametrize("dependency", [[], None])
+def test_empty_dependencies_without_ids_keep_flat_scheduler(dependency):
+    plan, error = build_dependency_plan([
+        {"goal": "one", "depends_on": dependency},
+        {"id": "optional-label", "goal": "two", "depends_on": []},
+    ])
+    assert error is None
+    assert not plan.enabled
+    assert plan.components == ((0, 1),)
+
+
+@pytest.mark.parametrize("dependency", ["one", [1], False, {}, ""])
+def test_malformed_dependencies_are_not_silently_flattened(dependency):
+    plan, error = build_dependency_plan([{"goal": "one", "depends_on": dependency}])
+    assert not plan.enabled
+    assert "array of task-id strings" in error
 
 
 def test_partial_ids_are_rejected_instead_of_silently_flattened():
     _plan, error = build_dependency_plan(
         [
             {"id": "one", "goal": "Complete the first task"},
-            {"goal": "Complete the second task"},
+            {"goal": "Complete the second task", "depends_on": ["one"]},
         ]
     )
 

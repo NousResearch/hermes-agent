@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("plugins.memory.honcho.session")
 
 _PEER_ID_HASH_ESCALATION_LENGTHS = (8, 12, 16, 24, 32, 64)
+# Author ids the bot-mode dispatcher assigns to other Hermes profiles (tools/bot_relay.py).
+BOT_AUTHOR_PREFIX = "bot:"
 
 
 class SessionPeersMixin:
@@ -103,12 +105,18 @@ class SessionPeersMixin:
 
     def _peer_id_for_runtime_id(self, runtime_id: str) -> str:
         """Map one gateway runtime identity onto its Honcho peer ID with the same alias-then-prefix
-        order ``_resolve_user_peer_id`` applies, so an aliased account lands on its peer on any turn."""
+        order ``_resolve_user_peer_id`` applies, so an aliased account lands on its peer on any turn.
+        A ``bot:<profile>`` author maps onto the profile name: a cloned profile's aiPeer defaults to
+        that name, so a sender in the same workspace lands on its existing AI peer. Prefixes never
+        apply to bot ids."""
         aliases = getattr(self._config, "user_peer_aliases", {}) if self._config else {}
         if isinstance(aliases, dict):
             alias = aliases.get(runtime_id)
             if isinstance(alias, str) and alias.strip():
                 return self._sanitize_id(alias.strip())
+        if runtime_id.startswith(BOT_AUTHOR_PREFIX):
+            profile = runtime_id[len(BOT_AUTHOR_PREFIX):].strip()
+            return self._sanitize_id(profile or runtime_id)
         prefix = getattr(self._config, "runtime_peer_prefix", "") if self._config else ""
         prefix = prefix.strip() if isinstance(prefix, str) else ""
         return self._generated_runtime_peer_id(prefix, runtime_id) if prefix else self._sanitize_id(runtime_id)

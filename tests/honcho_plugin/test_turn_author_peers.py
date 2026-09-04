@@ -78,6 +78,31 @@ class TestResolveAuthorPeerId:
         mgr = _manager(_config(pin_peer_name=True), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:group1", "111222") is None
 
+    def test_bot_author_lands_on_its_profile_peer(self):
+        """A cloned profile's aiPeer defaults to the profile name, so the sender reuses its AI peer."""
+        mgr = _manager(_config(), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
+
+    def test_bot_author_alias_wins_over_the_profile_name(self):
+        mgr = _manager(_config(user_peer_aliases={"bot:coder": "hermes-coder"}), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "hermes-coder"
+
+    def test_bot_author_ignores_the_runtime_prefix(self):
+        mgr = _manager(_config(runtime_peer_prefix="telegram_"), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
+
+    def test_bot_author_profile_name_is_sanitized(self):
+        mgr = _manager(_config(), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:my profile.v2") == "my-profile-v2"
+
+    def test_bot_author_without_a_profile_keeps_the_raw_id(self):
+        mgr = _manager(_config(), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:") == "bot-"
+
+    def test_pin_peer_name_collapses_bot_authors_too(self):
+        mgr = _manager(_config(pin_peer_name=True), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") is None
+
     def test_display_name_never_becomes_a_peer_id(self):
         """Display names are attacker-influenceable on most platforms."""
         mgr = _manager(_config(), runtime_id="7654321")

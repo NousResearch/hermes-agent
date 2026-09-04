@@ -11,6 +11,7 @@ Tests exercise the real ``_apply_session_model_override()`` and
 ``_is_intentional_model_switch()`` methods on ``GatewayRunner``.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -260,4 +261,260 @@ class TestOneTurnNeverPersisted:
         assert sk in runner._pending_one_turn_model_restores
         # ...but NEVER written through to the persistent session store.
         runner.async_session_store.set_model_override.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_global_900k_switch_clears_stale_session_override(
+        self, tmp_path, monkeypatch
+    ):
+        """A global context-variant selection must become the live authority.
+
+        Keeping the previous per-session base slug makes it outrank the newly
+        persisted global ``-900k`` alias after restart, shrinking the effective
+        window back to 272K and firing compression at 231,200 tokens.
+        """
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+        events = []
+        from hermes_cli.config import save_config as real_save_config
+
+        def recording_save(config):
+            events.append("config")
+            return real_save_config(config)
+
+        monkeypatch.setattr("hermes_cli.config.save_config", recording_save)
+        runner.async_session_store.set_model_override.side_effect = (
+            lambda _key, value: events.append(("session", value))
+        )
+        runner._session_model_overrides[sk] = {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model",
+            lambda **kw: ModelSwitchResult(
+                success=True,
+                new_model="gpt-5.6-sol-900k",
+                target_provider="openai-codex",
+                provider_changed=False,
+                api_key="oauth-token",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_mode="codex_responses",
+                provider_label="OpenAI Codex",
+            ),
+        )
+
+        result = await runner._handle_model_command(
+            self._event("/model gpt-5.6-sol-900k --global")
+        )
+
+        assert result is not None and "gpt-5.6-sol-900k" in result
+        assert sk not in runner._session_model_overrides
+        runner.async_session_store.set_model_override.assert_awaited_with(sk, None)
+        assert events[-2:] == ["config", ("session", None)]
+
+    @pytest.mark.asyncio
+    async def test_global_save_failure_keeps_900k_session_override(
+        self, tmp_path, monkeypatch
+    ):
+        """If config persistence fails, the successful switch stays session-local."""
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model",
+            lambda **kw: ModelSwitchResult(
+                success=True,
+                new_model="gpt-5.6-sol-900k",
+                target_provider="openai-codex",
+                api_key="oauth-token",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_mode="codex_responses",
+                provider_label="OpenAI Codex",
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.save_config",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        result = await runner._handle_model_command(
+            self._event("/model gpt-5.6-sol-900k --global")
+        )
+
+        assert result is not None
+        assert "global config write failed" in result.lower()
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.6-sol-900k"
+        runner.async_session_store.set_model_override.assert_awaited_with(
+            sk, runner._session_model_overrides[sk]
+        )
+
+    @pytest.mark.asyncio
+    async def test_global_clear_failure_rolls_back_config_and_keeps_900k(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed durable clear rolls config back before session fallback."""
+        import yaml as _yaml
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+        durable = {}
+
+        async def write_override(key, value):
+            if value is None:
+                raise OSError("state db locked")
+            durable[key] = value
+
+        runner.async_session_store.set_model_override.side_effect = write_override
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model",
+            lambda **kw: ModelSwitchResult(
+                success=True,
+                new_model="gpt-5.6-sol-900k",
+                target_provider="openai-codex",
+                api_key="oauth-token",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_mode="codex_responses",
+                provider_label="OpenAI Codex",
+            ),
+        )
+
+        result = await runner._handle_model_command(
+            self._event("/model gpt-5.6-sol-900k --global")
+        )
+
+        cfg = _yaml.safe_load(
+            (tmp_path / ".hermes" / "config.yaml").read_text(encoding="utf-8")
+        )
+        assert cfg["model"]["default"] == "gpt-5.6-sol-900k"
+        assert "override cleanup failed" in result.lower()
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.6-sol-900k"
+        assert durable[sk]["model"] == "gpt-5.6-sol-900k"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_later_session_switch_wins_durably(
+        self, tmp_path, monkeypatch
+    ):
+        """One session's model-switch commit is serialized end to end."""
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+        clear_started = asyncio.Event()
+        release_clear = asyncio.Event()
+        durable = {}
+
+        async def write_override(key, value):
+            if value is None:
+                clear_started.set()
+                await release_clear.wait()
+            durable[key] = value
+
+        runner.async_session_store.set_model_override.side_effect = write_override
+
+        def switch_model(**kwargs):
+            raw = kwargs["raw_input"]
+            is_large = raw.endswith("-900k")
+            return ModelSwitchResult(
+                success=True,
+                new_model=raw,
+                target_provider="openai-codex",
+                api_key="oauth-token",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_mode="codex_responses",
+                provider_label="OpenAI Codex",
+                provider_changed=False,
+                resolved_via_alias="large" if is_large else "small",
+            )
+
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", switch_model)
+
+        global_task = asyncio.create_task(
+            runner._handle_model_command(
+                self._event("/model gpt-5.6-sol-900k --global")
+            )
+        )
+        await asyncio.wait_for(clear_started.wait(), timeout=2)
+        session_task = asyncio.create_task(
+            runner._handle_model_command(
+                self._event("/model gpt-5.6-sol --session")
+            )
+        )
+        await asyncio.sleep(0.05)
+
+        # The later command must wait for the global command's config+override
+        # commit; otherwise its durable write can be erased by the older clear.
+        assert not session_task.done()
+
+        release_clear.set()
+        await asyncio.gather(global_task, session_task)
+
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.6-sol"
+        assert durable[sk]["model"] == "gpt-5.6-sol"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_global_switches_share_config_lock(
+        self, tmp_path, monkeypatch
+    ):
+        """Global config commits serialize across different conversation keys."""
+        import yaml as _yaml
+        from gateway.platforms.base import MessageEvent, MessageType
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        clear_a_started = asyncio.Event()
+        release_a = asyncio.Event()
+
+        async def write_override(key, value):
+            if value is None and key.endswith(":c1"):
+                clear_a_started.set()
+                await release_a.wait()
+                raise OSError("session A clear failed")
+
+        runner.async_session_store.set_model_override.side_effect = write_override
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model",
+            lambda **kw: ModelSwitchResult(
+                success=True,
+                new_model=kw["raw_input"],
+                target_provider="openai-codex",
+                api_key="oauth-token",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_mode="codex_responses",
+                provider_label="OpenAI Codex",
+            ),
+        )
+
+        def event(chat_id, model):
+            return MessageEvent(
+                text=f"/model {model} --global",
+                message_type=MessageType.TEXT,
+                source=SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_id=chat_id,
+                    chat_type="dm",
+                ),
+            )
+
+        first = asyncio.create_task(
+            runner._handle_model_command(event("c1", "gpt-5.6-sol-900k"))
+        )
+        await asyncio.wait_for(clear_a_started.wait(), timeout=2)
+        second = asyncio.create_task(
+            runner._handle_model_command(event("c2", "gpt-5.6-terra-900k"))
+        )
+        await asyncio.sleep(0.05)
+        assert not second.done()
+
+        release_a.set()
+        await asyncio.gather(first, second)
+
+        cfg = _yaml.safe_load(
+            (tmp_path / ".hermes" / "config.yaml").read_text(encoding="utf-8")
+        )
+        assert cfg["model"]["default"] == "gpt-5.6-terra-900k"
 

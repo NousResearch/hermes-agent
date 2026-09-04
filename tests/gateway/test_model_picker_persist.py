@@ -20,6 +20,7 @@ closure the PR changed, against a real temp ``HERMES_HOME``.
 """
 
 import types
+from unittest.mock import AsyncMock, MagicMock
 
 import yaml
 import pytest
@@ -27,7 +28,7 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 class _FakePickerAdapter:
@@ -53,6 +54,13 @@ def _make_runner(adapter):
     runner._voice_mode = {}
     runner._session_model_overrides = {}
     runner._running_agents = {}
+    runner._session_db = None
+    store = MagicMock()
+    store.set_model_override = AsyncMock()
+    store.get_or_create_session = AsyncMock()
+    store._store = None
+    runner.session_store = None
+    runner._async_session_store = store
     return runner
 
 
@@ -184,8 +192,26 @@ async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model
     always end up a nested dict regardless of the seed shape."""
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, seed_model)
+    event = _make_event("/model --global")
+    runner = _make_runner(adapter)
+    session_key = build_session_key(event.source)
+    events = []
+    from hermes_cli.config import save_config as real_save_config
 
-    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model --global"))
+    def recording_save(config):
+        events.append("config")
+        return real_save_config(config)
+
+    monkeypatch.setattr("hermes_cli.config.save_config", recording_save)
+    runner.async_session_store.set_model_override.side_effect = (
+        lambda _key, value: events.append(("session", value))
+    )
+    runner._session_model_overrides[session_key] = {
+        "model": "stale-session-model",
+        "provider": "openrouter",
+    }
+
+    confirmation = await _drive_picker(runner, event)
 
     assert confirmation is not None
     assert "gpt-5.5" in confirmation
@@ -199,6 +225,75 @@ async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model
     assert "api_key" not in written["model"]
     assert "api_mode" not in written["model"]
     assert "context_length" not in written["model"]
+    # A global selection must not leave a redundant per-session override.
+    # Otherwise this old value survives later global config changes and can
+    # silently downgrade an opted-in context alias (for example 900K -> 272K).
+    assert session_key not in runner._session_model_overrides
+    runner.async_session_store.set_model_override.assert_awaited_with(
+        session_key, None
+    )
+    assert events[-2:] == ["config", ("session", None)]
+
+
+@pytest.mark.asyncio
+async def test_picker_global_save_failure_keeps_session_override(
+    tmp_path, monkeypatch
+):
+    """A failed global config write must not discard the selected model."""
+    adapter = _FakePickerAdapter()
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openrouter"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    event = _make_event("/model --global")
+    runner = _make_runner(adapter)
+    session_key = build_session_key(event.source)
+
+    confirmation = await _drive_picker(runner, event)
+
+    assert confirmation is not None
+    assert "global config write failed" in confirmation.lower()
+    assert runner._session_model_overrides[session_key]["model"] == "gpt-5.5"
+    runner.async_session_store.set_model_override.assert_awaited_with(
+        session_key, runner._session_model_overrides[session_key]
+    )
+
+
+@pytest.mark.asyncio
+async def test_picker_global_clear_failure_rolls_back_config(
+    tmp_path, monkeypatch
+):
+    """A failed durable clear cannot publish a shadowed global selection."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openrouter"},
+    )
+    event = _make_event("/model --global")
+    runner = _make_runner(adapter)
+    session_key = build_session_key(event.source)
+    durable = {}
+
+    async def write_override(key, value):
+        if value is None:
+            raise OSError("state db locked")
+        durable[key] = value
+
+    runner.async_session_store.set_model_override.side_effect = write_override
+
+    confirmation = await _drive_picker(runner, event)
+
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"]["default"] == "gpt-5.5"
+    assert "override cleanup failed" in confirmation.lower()
+    assert runner._session_model_overrides[session_key]["model"] == "gpt-5.5"
+    assert durable[session_key]["model"] == "gpt-5.5"
 
 
 @pytest.mark.asyncio

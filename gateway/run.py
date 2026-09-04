@@ -9087,11 +9087,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
+        def _load_model_router_config() -> dict:
+            """Load model-router settings from the canonical config source."""
+            try:
+                from hermes_cli.config import load_config_readonly
+                live_config = load_config_readonly() or {}
+                router = live_config.get("model_router", {}) if isinstance(live_config, dict) else {}
+                return router if isinstance(router, dict) else {}
+            except Exception:
+                return {}
+
         # Model routing happens once while constructing the turn route. It is
         # deliberately before AIAgent creation and is never consulted from
         # the tool loop, preserving the frozen prompt/tool cache for a turn.
-        router_cfg = getattr(self, "config", None)
-        router_cfg = router_cfg.get("model_router", {}) if isinstance(router_cfg, dict) else {}
+        # GatewayConfig is a typed runtime object and does not expose arbitrary
+        # config.yaml keys. The helper reads the canonical readonly config
+        # source; treating GatewayConfig as a dict makes routing silently skip.
+        router_cfg = _load_model_router_config()
         mode = router_cfg.get("mode", "off") if isinstance(router_cfg, dict) else "off"
         raw_candidates = router_cfg.get("candidates", []) if isinstance(router_cfg, dict) else []
         if mode in {"suggest", "auto"} and isinstance(raw_candidates, list) and raw_candidates:

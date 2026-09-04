@@ -43,6 +43,7 @@ import {
   XIcon
 } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
+import { useSessionProfileAppearance } from '@/lib/session-profile-appearance'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -170,11 +171,9 @@ const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }>
   )
 }
 
-const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null | ReactNode }> = ({
-  collapsedNotice = null,
-  onBranchInNewChat,
-  onDismissError
-}) => {
+const AssistantMessageBody: FC<
+  AssistantMessageProps & { collapsedNotice?: null | ReactNode }
+> = ({ collapsedNotice = null, onBranchInNewChat, onDismissError }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
   const { t } = useI18n()
@@ -226,8 +225,14 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
       ref={enterRef}
     >
-      {collapsedNotice ?? (
+      {collapsedNotice ? (
         <>
+          <AssistantSessionIdentity />
+          {collapsedNotice}
+        </>
+      ) : (
+        <>
+          <AssistantSessionIdentity />
           <div
             className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
             data-slot="aui_assistant-message-content"
@@ -277,6 +282,45 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         </>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+const AssistantSessionIdentity: FC = () => {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const { appearance, owner } = useSessionProfileAppearance(storedId ?? runtimeId)
+
+
+  const displayName = owner && appearance ? appearance.displayName : 'Assistant'
+  const role = owner && appearance ? appearance.role : 'Identity unavailable'
+
+  return (
+    <div
+      className="mb-1.5 flex min-h-8 items-center gap-2 px-(--message-text-indent)"
+      data-slot="assistant-session-identity"
+    >
+      <span
+        aria-hidden="true"
+        className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-(--ui-stroke-tertiary) bg-muted text-xs font-semibold text-muted-foreground"
+      >
+        {appearance?.avatarDataUrl ? (
+          <img
+            alt=""
+            aria-hidden="true"
+            className="size-full object-cover"
+            draggable={false}
+            src={appearance.avatarDataUrl}
+          />
+        ) : (
+          <span aria-hidden="true">AI</span>
+        )}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-semibold text-foreground">{displayName}</span>
+        {role && <span className="block truncate text-[0.6875rem] text-muted-foreground">{role}</span>}
+      </span>
+    </div>
   )
 }
 

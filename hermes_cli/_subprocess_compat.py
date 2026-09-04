@@ -37,6 +37,7 @@ from typing import Mapping, Sequence
 
 __all__ = [
     "IS_WINDOWS",
+    "resolve_executable",
     "resolve_node_command",
     "split_command_line",
     "suppress_platform_ver_console",
@@ -68,6 +69,59 @@ NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 # and friends reject the flags (``unknown option``), so the helper must gate on
 # this set rather than blanket-prepending.
 _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
+
+
+def _platform_bin_dirs() -> tuple[str, ...]:
+    """Return existing package-manager bin directories for this platform."""
+    if sys.platform != "linux":
+        return ()
+
+    home = os.path.expanduser("~")
+    candidates = (
+        "/run/current-system/sw/bin",
+        "/run/current-system/sw/sbin",
+        "/nix/var/nix/profiles/default/bin",
+        "/nix/var/nix/profiles/default/sbin",
+        os.path.join(home, ".nix-profile", "bin"),
+        os.path.join(home, ".nix-profile", "sbin"),
+        os.path.join(home, ".local", "state", "nix", "profiles", "profile", "bin"),
+        os.path.join(home, ".local", "state", "nix", "profiles", "profile", "sbin"),
+    )
+    return tuple(path for path in candidates if os.path.isdir(path))
+
+
+def _platform_search_path() -> str:
+    """Return the normal PATH plus known package-manager bin directories."""
+    entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
+    for candidate in _platform_bin_dirs():
+        if candidate not in entries:
+            entries.append(candidate)
+    return os.pathsep.join(entries)
+
+
+def resolve_executable(name: str, *, fallback: str | None = None) -> str | None:
+    """Resolve an executable through PATH and known NixOS profile paths.
+
+    The caller's PATH takes precedence. On Linux, Hermes also checks existing
+    NixOS system and user profile directories because supervised services often
+    start with a reduced PATH that omits them. The process environment is not
+    modified.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+
+    resolved = shutil.which(name, path=_platform_search_path())
+    if resolved:
+        return resolved
+
+    if fallback and os.path.isfile(fallback) and os.access(fallback, os.X_OK):
+        return fallback
+    return None
+
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -182,7 +236,7 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     Returns:
         A list suitable for passing to subprocess.Popen/run/call.
     """
-    resolved = shutil.which(name)
+    resolved = resolve_executable(name)
     if resolved:
         return [resolved, *argv]
     return [name, *argv]

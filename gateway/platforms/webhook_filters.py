@@ -6,11 +6,12 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
+
+from hermes_cli._subprocess_compat import resolve_executable
 
 logger = logging.getLogger(__name__)
 
@@ -234,9 +235,7 @@ class WebhookRouteProcessor:
 
         suffix = path.suffix.lower()
         if suffix in {".sh", ".bash"}:
-            bash = shutil.which("bash") or (
-                "/bin/bash" if os.path.isfile("/bin/bash") else None
-            )
+            bash = resolve_executable("bash")
             if bash is None:
                 logger.warning("[webhook] script ignored webhook: bash not found")
                 return False, None

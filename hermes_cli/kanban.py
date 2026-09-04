@@ -639,6 +639,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Administratively reconcile an already-resolved triage task to done",
+    )
+    p_reconcile.add_argument("task_id")
+    p_reconcile.add_argument(
+        "--reason",
+        required=True,
+        help="Required audit reason explaining why no worker completion is needed",
+    )
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -1164,6 +1175,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "attachments": _cmd_attachments,
             "attach-rm": _cmd_attach_rm,
             "complete": _cmd_complete,
+            "reconcile": _cmd_reconcile,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
@@ -1232,6 +1244,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "attach",
     "attach-rm",
     "complete",
+    "reconcile",
     "edit",
     "block",
     "schedule",
@@ -2419,6 +2432,22 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Operator-only terminal transition for resolved triage tasks."""
+    with kb.connect_closing() as conn:
+        outcome = kb.reconcile_triage_task(
+            conn,
+            args.task_id,
+            reason=args.reason,
+            operator=_profile_author(),
+        )
+    if outcome == "already_reconciled":
+        print(f"Already reconciled {args.task_id}")
+    else:
+        print(f"Reconciled {args.task_id}")
+    return 0
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:

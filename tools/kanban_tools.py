@@ -456,6 +456,19 @@ def _normalize_profile(value: Any) -> Optional[str]:
     return text
 
 
+def _operator_identity() -> str:
+    """Return the trusted active profile name for administrative audit events."""
+    profile = os.environ.get("HERMES_PROFILE")
+    if profile and profile.strip():
+        return profile.strip()
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "operator"
+    except Exception:
+        return "operator"
+
+
 def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     value = args.get(name)
     if value is None:
@@ -1661,6 +1674,46 @@ def _handle_unblock(args: dict, **kw) -> str:
         return tool_error(f"kanban_unblock: {e}")
 
 
+def _handle_reconcile(args: dict, **kw) -> str:
+    """Administratively reconcile an already-resolved triage task."""
+    delegated_err = _reject_delegated_child_mutation("kanban_reconcile")
+    if delegated_err:
+        return delegated_err
+    guard = _require_orchestrator_tool("kanban_reconcile")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required for the administrative audit event")
+    reason = redact_sensitive_text(str(reason), force=True)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            outcome = kb.reconcile_triage_task(
+                conn,
+                str(tid),
+                reason=reason,
+                operator=_operator_identity(),
+            )
+            task = kb.get_task(conn, str(tid))
+            return _ok(
+                task_id=str(tid),
+                status=task.status if task else None,
+                outcome=outcome,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_reconcile: {e}")
+    except Exception as e:
+        logger.exception("kanban_reconcile failed")
+        return tool_error(f"kanban_reconcile: {e}")
+
+
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
     delegated_err = _reject_delegated_child_mutation("kanban_link")
@@ -2350,6 +2403,35 @@ KANBAN_UNBLOCK_SCHEMA = {
     },
 }
 
+KANBAN_RECONCILE_SCHEMA = {
+    "name": "kanban_reconcile",
+    "description": (
+        "Administratively reconcile an already-resolved triage task to done "
+        "without dispatching a worker or recording worker completion. Requires "
+        "an audit reason and refuses active runs or open parent dependencies. "
+        "Orchestrator-only — dispatcher-spawned workers never see this tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Triage task id to reconcile to done.",
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Required audit reason explaining why the task is already "
+                    "resolved and does not need worker execution."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "reason"],
+    },
+}
+
+
 KANBAN_LINK_SCHEMA = {
     "name": "kanban_link",
     "description": (
@@ -2488,6 +2570,15 @@ registry.register(
     handler=_handle_unblock,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="▶",
+)
+
+registry.register(
+    name="kanban_reconcile",
+    toolset="kanban",
+    schema=KANBAN_RECONCILE_SCHEMA,
+    handler=_handle_reconcile,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✓",
 )
 
 registry.register(

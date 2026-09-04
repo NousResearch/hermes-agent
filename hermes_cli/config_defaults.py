@@ -1246,6 +1246,19 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Named worker profiles pinning provider/model (and optionally reasoning_effort,
+        # max_iterations, fallback) per tier, e.g.
+        # profiles: {small: {provider: anthropic, model: claude-haiku-current, fallback: []}}.
+        # A profile's fallback list ([] = no model promotion) replaces the parent's chain.
+        # Selection precedence: per-task profile > top-level profile > default_profile > legacy
+        # delegation.provider/model > parent inherit. Profiles never touch toolsets.
+        "profiles": {},
+        # Profile applied when a task doesn't pick one; must name a key in profiles. Empty =
+        # legacy behavior (delegation.provider/model or parent inherit).
+        "default_profile": "",
+        # Phase 2 gate: expose a model_profile enum (configured profile names) on delegate_task so
+        # the parent model can pick a tier per task. Off = profiles are config-driven only.
+        "agent_routing": False,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

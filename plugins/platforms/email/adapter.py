@@ -311,8 +311,109 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
         msg.attach(part)
 
 
+def _html_subtype(body: str) -> str:
+    """Detect whether ``body`` is a complete HTML document and return the
+    appropriate MIME subtype (``"html"`` or ``"plain"``).
+
+    Cron jobs that produce branded reports emit a bare ``<!DOCTYPE html>...
+    </html>`` document. When that document is wrapped in a
+    ``MIMEText(..., "plain", ...)`` envelope the mail client renders it as
+    plain text and the user sees raw HTML tags in their inbox. Detecting the
+    doctype at the start of the body and switching to ``"html"`` makes the
+    mail client render it as a real HTML email.
+
+    The check is anchored on ``<!doctype html`` (case-insensitive) followed
+    by optional whitespace and ``<html`` — that way literal mentions of
+    ``<!DOCTYPE html>`` inside prose (e.g. an agent's "validation summary"
+    preamble that quotes the doctype) don't trigger a false positive.
+    """
+    if not body:
+        return "plain"
+    stripped = body.lstrip()
+    if re.match(r"(?is)^<!doctype\s+html[^>]*>\s*<html", stripped):
+        return "html"
+    return "plain"
+
+
+def _extract_title_from_html(body: str) -> Optional[str]:
+    """Pull the subject for an email from the document's ``<title>`` tag.
+
+    Branded cron emails set the Subject header from the HTML ``<title>``,
+    so that the email client shows the same name in the inbox list that the
+    user sees on the banner inside the message. Anchored on a real
+    ``<title>...</title>`` element so literal mentions inside prose don't
+    trigger a false positive.
+
+    Returns ``None`` if no ``<title>`` tag is present.
+    """
+    if not body:
+        return None
+    # Anchor the open tag on a literal ``<title`` that is *not* self-closing
+    # (``<title/>`` and ``<title />`` are void elements, not what we want)
+    # and require a non-tag inner body so a stray ``<title/> then
+    # <title>Real</title>`` prose passage doesn't grab interior tags. Real
+    # cron titles are plain text (em-dash separators, spaces, digits), so
+    # ``[^<]*`` is sufficient.
+    m = re.search(r"(?is)<title\b(?:[^>/]|/(?!>))*>([^<]*)</title>", body)
+    if not m:
+        return None
+    title = re.sub(r"\s+", " ", m.group(1)).strip()
+    return title or None
+
+
+def _subject_for_body(body: str, fallback: str = "Hermes Agent") -> str:
+    """Return an exact report title, or a threaded subject for plain replies.
+
+    Branded HTML reports are new messages, not replies: their Subject must
+    match the document's ``<title>`` exactly and must never gain a ``Re:``
+    prefix. Plain-text responses keep the normal email reply behaviour.
+    """
+    title = _extract_title_from_html(body)
+    if title:
+        return title
+    return fallback if fallback.startswith("Re:") else f"Re: {fallback}"
+
+
+def _strip_leading_prose(body: str) -> str:
+    """Strip any prose the agent wrote outside the HTML document envelope.
+
+    Even with explicit ``NO PREAMBLE`` instructions in the prompt, LLMs
+    emit a "validation summary" sentence before the bare HTML 20-30% of the
+    time. When that prose precedes the document, the MIME-type detector
+    (``_html_subtype``) sees plain text first and tags the email as
+    ``text/plain`` — so the mail client renders the raw HTML tags instead
+    of the styled report.
+
+    If a complete HTML document is found, anything before ``<!DOCTYPE html>``
+    and anything after the final ``</html>`` is discarded. Cron wrappers and
+    occasional model code fences otherwise leak outside the document envelope
+    and make an email formally malformed. Plain-text bodies are unchanged.
+    """
+    if not body:
+        return body
+    m = re.search(r"(?is)<!doctype\s+html[^>]*>\s*<html", body)
+    if not m:
+        return body
+    document = body[m.start():]
+    closing = list(re.finditer(r"(?is)</html\s*>", document))
+    if closing:
+        document = document[:closing[-1].end()]
+    return document
+
+
 class EmailAdapter(BasePlatformAdapter):
-    """Email gateway adapter using IMAP (receive) and SMTP (send)."""
+    """Email gateway adapter using IMAP (receive) and SMTP (send).
+
+    SMTP email has no per-message character limit — RFC 5321 allows ~75MB
+    per message and every modern client handles multi-MB HTML emails. We
+    declare ``splits_long_messages = True`` so the gateway delivery layer
+    skips its ``MAX_PLATFORM_OUTPUT = 4000`` char truncation, which would
+    otherwise slice HTML mid-``<td>`` and produce a broken/truncated email.
+    Our ``send()`` ships the full body in one SMTP transaction; no chunking
+    needed.
+    """
+
+    splits_long_messages = True
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
@@ -650,19 +751,27 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
-        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
+        """Build a reply skeleton. Returns ``(msg, msg_id, subject)``.
+
+        Branded HTML report bodies (a complete ``<!DOCTYPE html>...</html>``
+        document from a cron job) are treated as new messages: Subject comes
+        from the document ``<title>`` with no ``Re:`` prefix and no thread
+        headers. Plain-text bodies keep normal reply behaviour.
+        """
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        body = _strip_leading_prose(body)
+        report_title = _extract_title_from_html(body)
+        subject = _subject_for_body(body, ctx.get("subject", "Hermes Agent"))
+        # Branded reports are new messages, not replies. Do not attach stale
+        # thread headers or a mail client may group them into an old thread.
+        original_msg_id = None if report_title else (reply_to_msg_id or ctx.get("message_id"))
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(MIMEText(body, _html_subtype(body), "utf-8"))
         return msg, msg_id, subject
 
     def _smtp_send(self, msg: MIMEMultipart) -> None:
@@ -757,8 +866,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
-        msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        # Strip any leading prose the agent wrote before <!DOCTYPE html>
+        # so the MIME detector sees the real document.
+        stripped_message = _strip_leading_prose(message)
+        # Pull the Subject from the HTML <title> tag when present, falling
+        # back to the hardcoded default for plain-text sends.
+        subject = _extract_title_from_html(stripped_message) or "Hermes Agent"
+        msg = MIMEText(stripped_message, _html_subtype(stripped_message), "utf-8")
+        for key, value in (("From", address), ("To", chat_id), ("Subject", subject), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

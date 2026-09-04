@@ -2287,6 +2287,43 @@ class _FireAudit:
 
 
 
+def _run_email_contract_repair_turn(
+    agent,
+    prompt: str,
+    *,
+    task_id: str,
+    timeout_seconds: Optional[float],
+    cancel_event: Optional[_CancelEventLike],
+):
+    """Run one format-only correction turn in the existing cron session.
+
+    The initial turn's research and tool results remain in conversation history,
+    so this avoids repeating side effects.  The correction is wall-clock bounded
+    because it is explicitly forbidden from calling tools.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    ctx = contextvars.copy_context()
+    future = pool.submit(ctx.run, agent.run_conversation, prompt, task_id=task_id)
+    deadline = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None and timeout_seconds > 0
+        else None
+    )
+    try:
+        while True:
+            done, _ = concurrent.futures.wait({future}, timeout=1.0)
+            if done:
+                return future.result()
+            if cancel_event is not None and cancel_event.is_set():
+                request_hard_interrupt(agent, "Cron fire claim ownership was lost")
+                raise RuntimeError("Cron fire claim ownership was lost during email repair")
+            if deadline is not None and time.monotonic() >= deadline:
+                request_hard_interrupt(agent, "Cron email contract repair timed out")
+                raise TimeoutError("Cron email contract repair timed out")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
@@ -2347,6 +2384,58 @@ def run_job(
         result = _run_agent_with_watchdog(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+
+        # Central email generation gate. Existing report jobs are inferred from
+        # their HTML prompt contract; new jobs may set email_contract explicitly.
+        # A malformed first response gets ONE format-only correction in this same
+        # agent session, preserving research context without repeating tools or
+        # side effects. Nothing reaches the adapter until this passes.
+        from cron.email_contract import (
+            build_repair_prompt,
+            format_contract_error,
+            validate_email_output,
+        )
+
+        _contract_result = validate_email_output(job, final_response)
+        if (
+            not _contract_result.valid
+            and _contract_result.contract is not None
+            and _contract_result.contract.retries > 0
+        ):
+            logger.warning(
+                "Job '%s': email output contract rejected first response: %s; repairing once",
+                job_id,
+                "; ".join(_contract_result.errors),
+            )
+            _cron_timeout = _cron_inactivity_seconds()
+            _repair_result = _run_email_contract_repair_turn(
+                agent,
+                build_repair_prompt(job, _contract_result.errors),
+                task_id=scope.task_id,
+                timeout_seconds=_cron_timeout if _cron_timeout > 0 else None,
+                cancel_event=cancel_event,
+            )
+            if not isinstance(_repair_result, dict):
+                raise RuntimeError(
+                    format_contract_error(
+                        (f"repair turn returned {type(_repair_result).__name__} instead of dict",)
+                    )
+                )
+            _repair_final = str(_repair_result.get("final_response") or "")
+            if _repair_result.get("failed") is True or _repair_result.get("completed") is False:
+                _repair_error = str(
+                    _repair_result.get("error")
+                    or _repair_final
+                    or "repair turn reported failure"
+                )
+                raise RuntimeError(format_contract_error((_repair_error,)))
+            _contract_result = validate_email_output(job, _repair_final)
+            result = _repair_result
+
+        if not _contract_result.valid:
+            raise RuntimeError(format_contract_error(_contract_result.errors))
+        final_response = _contract_result.content
+
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
@@ -2607,6 +2696,24 @@ def _compose_run_delivery(
     drift_skip = drift_skip_silent or DRIFT_SKIP_MARKER in err
     incident_acked = False
     failure_incident_id = None
+
+    # A blocked email-contract failure delivers a deterministic branded alert
+    # (same purple envelope as every report) instead of the generic failure
+    # summarizer — but only when the job's failure lane actually targets email;
+    # non-email lanes keep the plain-text summarizer.
+    from cron.email_contract import (
+        EMAIL_CONTRACT_FAILED_MARKER,
+        render_contract_failure_email,
+        resolve_email_contract,
+    )
+
+    _email_contract_failed = (
+        not success
+        and bool(err)
+        and EMAIL_CONTRACT_FAILED_MARKER in err
+        and resolve_email_contract(job) is not None
+        and _normalize_deliver_value(_delivery_lane_value(job, for_failure=True)) == "email"
+    )
     if blocked_config and not success:
         # Bypass the generic failure summarizer (its auth/timeout heuristics would mislabel this).
         _pf_text = re.sub(r"\[blocked_config[^\]]*\]\s*", "", err).strip()
@@ -2618,6 +2725,19 @@ def _compose_run_delivery(
         )
     elif success:
         deliver_content = final_response
+    elif _email_contract_failed:
+        incident_acked, failure_incident_id = _upsert_incident_for_failure(
+            job, error or "", output_file=output_file
+        )
+        if incident_acked:
+            deliver_content = ""
+        else:
+            deliver_content = render_contract_failure_email(
+                job,
+                str(error),
+                generated=_hermes_now().strftime("%Y-%m-%d %H:%M %z"),
+                run_id=str(job.get("execution_id") or "")[:12],
+            )
     else:
         # Record the job+error signature once; if already acked by the operator, suppress the
         # per-run ping. Best-effort: a ledger failure never breaks delivery.

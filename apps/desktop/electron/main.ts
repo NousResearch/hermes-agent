@@ -340,6 +340,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { selectGitBinary as _selectGitBinary } from './select-git-binary'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -2823,33 +2824,47 @@ function makeDashboardReadyFile() {
 // standard Git-for-Windows locations, then PATH. Cached after first probe.
 let _gitBinaryCache = null
 
+// A candidate can exist on disk and still be unusable. PortableGit under
+// %LOCALAPPDATA%\hermes\git ships `cmd\git.exe` as a small launcher that
+// re-execs the real binary under `mingw64\`; if that payload is missing —
+// an interrupted or partially-cleaned PortableGit install — the launcher is
+// still a file, so an existence-only check selects it and every later
+// candidate is skipped. It then fails at spawn time with
+//
+//   error launching git: The system cannot find the path specified.
+//
+// which surfaces to the user as "Couldn't check for updates. Check your
+// connection and try again." — pointing at the network instead of at git,
+// on a machine with a perfectly good Git-for-Windows one entry further down
+// the list. Probe the candidate before committing to it.
+function gitBinaryRuns(candidate) {
+  try {
+    execFileSync(candidate, ['--version'], {
+      stdio: 'ignore',
+      timeout: 5000,
+      windowsHide: true
+    })
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 function resolveGitBinary() {
   if (_gitBinaryCache) {
     return _gitBinaryCache
   }
 
-  if (!IS_WINDOWS) {
-    _gitBinaryCache = findOnPath('git') || 'git'
-
-    return _gitBinaryCache
-  }
-
-  const localAppData = process.env.LOCALAPPDATA || ''
-  const candidates = []
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
-  }
-
-  candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
-  candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'cmd', 'git.exe'))
-  }
-
-  _gitBinaryCache = candidates.find(fileExists) || findOnPath('git') || 'git'
+  // Candidate selection lives in ./select-git-binary so it is unit-testable
+  // without booting Electron — see select-git-binary.test.ts.
+  _gitBinaryCache = _selectGitBinary({
+    isWindows: IS_WINDOWS,
+    env: process.env,
+    fileExists,
+    binaryRuns: gitBinaryRuns,
+    findOnPath
+  })
 
   return _gitBinaryCache
 }

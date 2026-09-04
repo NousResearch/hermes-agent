@@ -18,6 +18,12 @@ import { ProfilesView } from './index'
 
 afterEach(cleanup)
 
+globalThis.ResizeObserver ??= class ResizeObserver {
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+}
+
 // Real i18n (useI18n falls back to English with no provider), so labels are the
 // actual strings — no brittle key snapshot to maintain here.
 

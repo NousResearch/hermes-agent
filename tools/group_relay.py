@@ -26,6 +26,7 @@ errors; ids are 32 hex chars so paths cannot be steered.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -60,6 +61,28 @@ DONE_STATUSES = frozenset({"settled", "capped", "cancelled", "timeout"})
 
 class GroupRelayError(ValueError):
     """Validation failure on an envelope or reply line."""
+
+
+class GroupRelayConflictError(GroupRelayError):
+    """An ``event_key`` was reused with different content."""
+
+
+def envelope_id_for_key(event_key: str) -> str:
+    """Deterministic 32-hex envelope id for a caller retry key."""
+    return hashlib.sha256(f"group-relay:{event_key}".encode("utf-8")).hexdigest()[:32]
+
+
+def _find_envelope(base: Path, envelope_id: str) -> dict[str, Any] | None:
+    for sub in (OUTBOX_DIR, CLAIMED_DIR):
+        path = base / sub / f"{envelope_id}.json"
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(loaded, dict):
+                return loaded
+    return None
 
 
 def relay_root(root: Path | str) -> Path:
@@ -101,8 +124,16 @@ def enqueue(
     from_profile: str,
     label: str,
     thread: str | None = None,
+    event_key: str | None = None,
 ) -> dict[str, Any]:
-    """Queue one relay request for the Desktop. Returns the envelope."""
+    """Queue one relay request for the Desktop. Returns the envelope.
+
+    With ``event_key`` the envelope id is deterministic: repeating the same
+    key with identical room/thread/text returns the already-queued (or
+    already-claimed) envelope instead of queueing a duplicate; the same key
+    with different content raises :class:`GroupRelayConflictError`. Without
+    a key every call is a fresh envelope.
+    """
     room_id = str(room_id or "").strip()
     room_name = str(room_name or "").strip()
     body = str(text or "").strip()
@@ -116,16 +147,31 @@ def enqueue(
     if len(who) > MAX_LABEL_CHARS:
         raise GroupRelayError(f"label too long ({len(who)} > {MAX_LABEL_CHARS} chars)")
     base = _ensure_dirs(root)
+    key = str(event_key or "").strip() or None
+    normalized_thread = (str(thread).strip() or None) if thread is not None else None
     envelope = {
-        "id": uuid.uuid4().hex,
+        "id": envelope_id_for_key(key) if key else uuid.uuid4().hex,
         "created_at": int(time.time()),
         "from_profile": str(from_profile or "default"),
         "label": who,
         "room_id": room_id,
         "room_name": room_name,
-        "thread": (str(thread).strip() or None) if thread is not None else None,
+        "thread": normalized_thread,
         "text": body,
+        **({"event_key": key} if key else {}),
     }
+    if key:
+        existing = _find_envelope(base, envelope["id"])
+        if existing is not None:
+            same = all(existing.get(field) == envelope[field] for field in ("room_id", "room_name", "thread", "text"))
+            if not same:
+                raise GroupRelayConflictError(
+                    f"event key {key!r} was already used with different content; pick a new key"
+                )
+            return existing
+        if (base / REPLIES_DIR / f"{envelope['id']}.jsonl").is_file():
+            # Claimed, acted on, and already swept from claimed/ — still the same request.
+            return envelope
     _atomic_write_json(base / OUTBOX_DIR, f"{envelope['id']}.json", envelope, prefix=".env-")
     return envelope
 

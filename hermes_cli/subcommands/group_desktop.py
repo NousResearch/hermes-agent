@@ -110,7 +110,6 @@ class DesktopTransport:
         return out
 
     def send(self, ref, *, text, thread, label, event_key):
-        del event_key  # relay envelopes are single-shot; the Desktop dedupes appends
         stale = group_relay.pending_count(_root(), older_than_seconds=_STALE_OUTBOX_MIN_AGE_SECONDS)
         if stale >= _STALE_OUTBOX_MAX_PENDING:
             raise base.GroupCLIError(
@@ -129,6 +128,7 @@ class DesktopTransport:
                 from_profile=base._profile(),
                 label=label,
                 thread=requested,
+                event_key=event_key,
             )
         except group_relay.GroupRelayError as exc:
             raise base.GroupCLIError(str(exc)) from exc

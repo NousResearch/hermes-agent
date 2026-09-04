@@ -233,3 +233,15 @@ def test_log_renders_projection_with_via(home, capsys):
     assert rows[2]["thread"] == "tmtm9"
     assert _run(["log", "Launchpad", "--since", "2"]) == 0
     assert capsys.readouterr().out.strip() == "User (Ada via Discord): relayed question"
+
+
+def test_send_event_id_is_idempotent_for_desktop_rooms(home, capsys):
+    assert _run(["send", "Launchpad", "once", "--event-id", "k1", "--json"]) == 0
+    first = _out_json(capsys)
+    assert _run(["send", "Launchpad", "once", "--event-id", "k1", "--json"]) == 0
+    again = _out_json(capsys)
+    assert first["message_id"] == again["message_id"] == gr.envelope_id_for_key("k1")
+    assert gr.pending_count(home) == 1
+    assert _run(["send", "Launchpad", "different", "--event-id", "k1"]) == 1
+    assert "different content" in capsys.readouterr().err
+    assert gr.pending_count(home) == 1

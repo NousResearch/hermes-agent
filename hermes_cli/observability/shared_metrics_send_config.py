@@ -1,10 +1,4 @@
-"""Configuration for shared-metrics transmission.
-
-Collection (``telemetry.shared_metrics.enabled``) and transmission
-(``telemetry.shared_metrics.send``) are separate opt-ins. See
-``docs/observability/relay-shared-metrics.md`` Appendix A for the consent,
-identity, rotation, retention, and deletion decisions behind this module.
-"""
+"""Configuration for shared-metrics transmission."""
 
 from __future__ import annotations
 
@@ -14,14 +8,10 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-#: Production ingest endpoint. Overridable through config only.
-#:
-#: Deliberately NOT overridable by an environment variable: AGENTS.md reserves
-#: HERMES_* env vars for secrets, and a behavioural override here would be a
-#: consent hazard — a user who agreed to send metrics to Nous could have them
-#: silently redirected to any host by an inherited variable, with nothing
-#: visible in their config to show it. Tests and the staging E2E write this
-#: key into a throwaway profile instead.
+#: Production ingest endpoint. Overridable through config only — deliberately NOT by an
+#: environment variable: AGENTS.md reserves HERMES_* for secrets, and an inherited variable
+#: could silently redirect consented metrics to any host with nothing visible in config.
+#: Tests and the staging E2E write this key into a throwaway profile instead.
 DEFAULT_ENDPOINT = "https://telemetry.nousresearch.com/v1/telemetry"
 
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
@@ -44,29 +34,21 @@ class SendConfig:
 
 
 def _endpoint_is_safe(endpoint: str) -> bool:
-    """Reject plaintext destinations unless they are loopback.
-
-    Telemetry must not leave a machine in clear text because of a typo in a
-    config file. Loopback stays allowed so tests can use a local HTTP server.
-    """
+    """Reject plaintext destinations unless they are loopback (so tests can use local HTTP)."""
     try:
         parsed = urlparse(endpoint)
     except ValueError:
         return False
     if parsed.scheme == "https":
         return True
-    if parsed.scheme == "http":
-        return (parsed.hostname or "") in _LOCAL_HOSTS
-    return False
+    return parsed.scheme == "http" and (parsed.hostname or "") in _LOCAL_HOSTS
 
 
 def resolve_send_config(config: dict | None) -> SendConfig:
-    """Resolve transmission settings from config plus the environment.
+    """Resolve transmission settings from config (endpoint: config > production default).
 
-    Endpoint precedence: config > production default.
-
-    ``send`` is returned as False whenever transmission cannot legitimately
-    happen, so callers never have to re-check the combination.
+    ``send`` is False whenever transmission cannot legitimately happen, so callers never
+    have to re-check the combination.
     """
     global _warned_send_without_collection
 
@@ -80,8 +62,7 @@ def resolve_send_config(config: dict | None) -> SendConfig:
     send_requested = shared.get("send") is True
 
     if send_requested and not enabled:
-        # Loud, not silent: the user believes telemetry is being sent, and it
-        # never will be. Error level, once per process.
+        # Loud, not silent: the user believes telemetry is being sent, and it never will be.
         if not _warned_send_without_collection:
             _warned_send_without_collection = True
             logger.error(

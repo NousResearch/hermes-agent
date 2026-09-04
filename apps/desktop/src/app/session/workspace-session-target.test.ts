@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $currentBranch,
@@ -22,6 +23,8 @@ describe('startWorkspaceSession', () => {
     setNewChatWorkspaceTarget(undefined)
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set(null)
     vi.restoreAllMocks()
   })
 
@@ -106,5 +109,23 @@ describe('startWorkspaceSession', () => {
     expect(requestGateway).not.toHaveBeenCalled()
     expect($newChatWorkspaceTarget.get()).toBeNull()
     expect($currentCwd.get()).toBe('')
+  })
+
+  // #79005 flaw 3: the project "+" must pin the profile the tree is shown
+  // under; otherwise session.create reads $activeGatewayProfile after a swap.
+  it('pins the new chat to the profile the project tree is displayed under', () => {
+    $activeGatewayProfile.set('work')
+    $newChatProfile.set(null)
+
+    startWorkspaceSession({
+      activeSessionIdRef: { current: null },
+      path: '/workspace-work',
+      requestGateway: vi.fn(() => new Promise<never>(() => {})),
+      startFreshSessionDraft: vi.fn()
+    })
+
+    $activeGatewayProfile.set('personal')
+
+    expect($newChatProfile.get()).toBe('work')
   })
 })

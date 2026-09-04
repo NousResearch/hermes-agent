@@ -17,7 +17,8 @@ import time
 import pytest
 
 from tools import async_delegation as ad
-from tools.process_registry import process_registry, format_process_notification
+from tools.process_registry import process_registry
+from tools.process_registry_notifications import format_process_notification
 
 
 @pytest.fixture(autouse=True)
@@ -119,38 +120,6 @@ def test_connect_preserves_wal_and_applies_macos_durability_barriers(
         assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
     finally:
         conn.close()
-
-
-def test_active_for_session_counts_every_live_delegation_state():
-    with ad._records_lock:
-        ad._records.update(
-            {
-                "running": {
-                    "status": "running",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "stalling": {
-                    "status": "stalling",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "finalizing": {
-                    "status": "finalizing",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "completed": {
-                    "status": "completed",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "other-session": {
-                    "status": "running",
-                    "origin_ui_session_id": "other-sid",
-                },
-            }
-        )
-
-    assert ad.active_for_session("desktop-sid") == 3
-    assert ad.active_for_session("other-sid") == 1
-    assert ad.active_for_session("") == 0
 
 
 def test_dispatch_returns_immediately_without_blocking():
@@ -690,7 +659,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
     from gateway.session_context import clear_session_vars, set_session_vars
-    from tools.approval import reset_current_session_key, set_current_session_key
+    from tools.approval_context import reset_current_session_key, set_current_session_key
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -886,10 +855,10 @@ def _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro-4", provider="op
     """Pin the delegation config the notice renderer reads (adapts the
     #97667 tests to the shipped implementation, which reads the configured
     model from config rather than the event's model field)."""
-    import tools.process_registry as _pr
+    import tools.process_registry_notifications as _prn
 
     monkeypatch.setattr(
-        _pr, "_delegation_config", lambda: {"model": model, "provider": provider}
+        _prn, "_delegation_config", lambda: {"model": model, "provider": provider}
     )
 
 

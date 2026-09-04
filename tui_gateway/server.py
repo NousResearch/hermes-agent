@@ -35,6 +35,7 @@ from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.transport import (StdioTransport, Transport, bind_transport, current_transport, reset_transport)
+from tui_gateway.observer import observer_plane
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,74 @@ _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
+
+
+def _observer_sessions() -> list[dict]:
+    """Return the observer's merged durable-recent and process-local view."""
+    rows: list[dict] = []
+    try:
+        db = _get_db()
+        if db is not None:
+            rows.extend(db.list_sessions_rich(
+                source=None, limit=20, order_by_last_active=True,
+                compact_rows=True,
+            ))
+    except Exception:
+        logger.debug("observer durable session listing failed", exc_info=True)
+    with _sessions_lock:
+        live = list(_sessions.items())
+    by_id = {str(row.get("id")): row for row in rows if row.get("id")}
+    for sid, session in live:
+        key = str(session.get("session_key") or sid)
+        row = by_id.setdefault(key, {"id": key})
+        row.update({
+            "running": bool(session.get("running")),
+            "state": "working" if session.get("running") else row.get("state", "not_live"),
+            "profile": session.get("profile_name") or "default",
+            "model": (session.get("model_override") or {}).get("model", "")
+            if isinstance(session.get("model_override"), dict) else "",
+        })
+    return list(by_id.values())[:20]
+
+
+def _observer_transcript(session_id: str) -> list[dict]:
+    try:
+        db = _get_db()
+        if db is None:
+            return []
+        messages = db.get_messages_as_conversation(
+            session_id, include_ancestors=True, include_row_ids=True,
+        )
+        result = []
+        for message in messages:
+            role = message.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                content = " ".join(
+                    str(part.get("text", "")) for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            result.append({
+                "durable_item_id": f"di_{message.get('_row_id', len(result))}",
+                "role": role,
+                "text": str(content or ""),
+                "created_at": message.get("timestamp") or _now_iso(),
+                "display_kind": message.get("display_kind") or "message",
+            })
+        return result
+    except Exception:
+        logger.debug("observer transcript read failed", exc_info=True)
+        return []
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+observer_plane._session_reader = _observer_sessions
+observer_plane._transcript_reader = _observer_transcript
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
 def _ws_orphan_setting(env_var: str, cfg_key: str, default: float) -> float:
@@ -574,6 +643,12 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
+    # Observer projection is a second sink. It runs before any observer
+    # subscriber sees the event and never participates in controller routing.
+    try:
+        observer_plane.capture(event, sid, payload)
+    except Exception:
+        logger.debug("observer capture failed type=%s session=%s", event, sid, exc_info=True)
     write_json(_event_frame(event, sid, payload))
 
 

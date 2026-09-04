@@ -38,7 +38,15 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
-    "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
+    "/assets/",
+    "/favicon.ico",
+    "/ds-assets/",
+    "/fonts/",
+    "/fonts-terminal/",
+    # The observer source authenticates its own distinct bearer at the route
+    # boundary; do not force a human dashboard cookie on this service path.
+    "/observer/v1",
+)
 
 
 def _path_is_public(path: str) -> bool:

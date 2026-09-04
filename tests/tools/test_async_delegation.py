@@ -946,3 +946,76 @@ def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypa
     text = format_process_notification(evt)
     assert text is not None
     assert "SUBAGENT MODEL REJECTED" not in text
+
+
+# ── Parked completions replayed for the owning session ──────────────────────
+def _park_dead_owner_row(tmp_path, monkeypatch, delegation_id, session_key, *, dispatched_at=None):
+    """Durable ``unknown``/``pending`` row: dispatched by a process that died before finishing."""
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    ad._persist_dispatch({
+        "delegation_id": delegation_id, "goal": "parked goal", "context": None, "toolsets": None,
+        "role": "leaf", "model": "m", "session_key": session_key, "origin_ui_session_id": "dead-ui-sid",
+        "parent_session_id": session_key, "status": "running",
+        "dispatched_at": dispatched_at if dispatched_at is not None else time.time() - 2.0,
+        "completed_at": None, "interrupt_fn": None})
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+    assert ad.recover_abandoned_delegations() == 1
+    if dispatched_at is not None:  # recovery stamps completed_at=now; pin the age basis
+        with ad._transaction() as conn:
+            conn.execute("UPDATE async_delegations SET completed_at=? WHERE delegation_id=?",
+                         (dispatched_at, delegation_id))
+
+
+def test_restore_pending_for_session_replays_only_the_owning_key(tmp_path, monkeypatch):
+    _park_dead_owner_row(tmp_path, monkeypatch, "d-parked", "owner-key")
+
+    unrelated = queue.Queue()
+    assert ad.restore_pending_for_session({"someone-else", ""}, unrelated) == 0
+    assert unrelated.empty()
+    assert ad.get_durable_delegation("d-parked")["delivery_state"] == "pending"
+
+    owner = queue.Queue()
+    assert ad.restore_pending_for_session({"owner-key"}, owner) == 1
+    evt = owner.get_nowait()
+    assert evt["delegation_id"] == "d-parked"
+    assert evt["session_key"] == "owner-key"
+    assert evt["status"] == "unknown"
+    assert evt["restored"] is True
+
+
+def test_restore_pending_for_session_drops_rows_past_the_replay_age_cap(tmp_path, monkeypatch):
+    stale = time.time() - ad._MAX_COMPLETION_REPLAY_AGE_S - 60
+    _park_dead_owner_row(tmp_path, monkeypatch, "d-stale", "owner-key", dispatched_at=stale)
+
+    q = queue.Queue()
+    assert ad.restore_pending_for_session({"owner-key"}, q) == 0
+    assert q.empty()
+    assert ad.get_durable_delegation("d-stale")["delivery_state"] == "dropped"
+
+
+def test_restore_pending_for_session_skips_rows_under_a_fresh_claim(tmp_path, monkeypatch):
+    """A row a consumer is delivering right now is not handed to a second consumer."""
+    _park_dead_owner_row(tmp_path, monkeypatch, "d-claimed", "owner-key")
+    assert ad.claim_completion_delivery("d-claimed", "poller:live")
+
+    q = queue.Queue()
+    assert ad.restore_pending_for_session({"owner-key"}, q) == 0
+    assert q.empty()
+
+
+def test_second_in_memory_copy_cannot_be_claimed_twice(tmp_path, monkeypatch):
+    """Process-start replay + session replay may both enqueue one row; only one copy claims."""
+    _park_dead_owner_row(tmp_path, monkeypatch, "d-twice", "owner-key")
+
+    q = queue.Queue()
+    assert ad.restore_undelivered_completions(q) == 1
+    assert ad.restore_pending_for_session({"owner-key"}, q) == 1
+    first, second = q.get_nowait(), q.get_nowait()
+    assert first["delegation_id"] == second["delegation_id"] == "d-twice"
+
+    first_claim = ad.claim_event_delivery(first, "tui-poller")
+    assert first_claim
+    assert ad.claim_event_delivery(second, "tui-poller") is None
+    ad.complete_event_delivery(first, first_claim)
+    assert ad.get_durable_delegation("d-twice")["delivery_state"] == "delivered"
+    assert ad.claim_event_delivery(second, "tui-poller") is None

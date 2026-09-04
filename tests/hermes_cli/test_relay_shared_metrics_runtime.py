@@ -975,6 +975,7 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
     assert relay_runtime.get_runtime() is None
     host = relay_runtime.HOST_REGISTRY.for_profile()
     assert isinstance(host, relay_runtime.NoopRelayRuntime)
+    assert host.available is False
     assert host.profile_key == relay_runtime.current_profile_key()
     assert "nemo_relay" in host.reason
     assert host.apply_tool_request_intercepts(

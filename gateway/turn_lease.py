@@ -76,6 +76,9 @@ class SessionTurnLeaseRegistry:
         self._leases: Dict[str, _SessionLease] = {}
         self._max_entries = max(1, int(max_entries))
 
+    def __len__(self) -> int:
+        return len(self._leases)
+
     def _get_or_create(self, session_id: str) -> _SessionLease:
         if (lease := self._leases.get(session_id)) is None:
             self._evict_idle()

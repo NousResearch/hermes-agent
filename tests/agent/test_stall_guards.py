@@ -328,6 +328,13 @@ def test_multimodal_content_never_stubbed_and_breaks_streak():
     assert c.observe_call("vision", args, _BIG, tool_call_id="c3").stub is None
 
 
+def test_observe_identical_call_backcompat_notice_still_fires():
+    c = ToolCallGuardrailController()
+    for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD - 1):
+        assert c.observe_identical_call("web_search", {"q": 1}, "r") is None
+    assert c.observe_identical_call("web_search", {"q": 1}, "r") is not None
+
+
 def test_extract_persisted_path_round_trip():
     # The stub's spillover reference is parsed from the <persisted-output>
     # block that maybe_persist_tool_result builds — assert the round trip.

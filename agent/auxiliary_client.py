@@ -1434,6 +1434,11 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
+        # Keep auxiliary Responses calls on the same exact-model contract as main
+        # turns. This runs last so caller overrides cannot reintroduce unsupported
+        # Astra reasoning/sampling fields or replace the official cache TTL.
+        from agent.transports.codex import _sanitize_astra_request_kwargs
+        _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 
     def create(self, **kwargs) -> Any:

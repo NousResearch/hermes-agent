@@ -118,13 +118,17 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
 
     (tmp_path / "config.toml").write_text('model = "gpt-6-astra"\n', encoding="utf-8")
     (tmp_path / "models_cache.json").write_text(
-        json.dumps({"models": [{"slug": "gpt-6-astra", "priority": 0}]}),
+        json.dumps({"models": [
+            {"slug": "gpt-6-astra", "priority": 0},
+            {"slug": "openai/gpt-6-astra", "priority": 1},
+        ]}),
         encoding="utf-8",
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token: [])
 
     assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
+    assert "openai/gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
 
     monkeypatch.setattr(
         codex_models,

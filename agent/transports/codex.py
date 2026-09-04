@@ -211,15 +211,6 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         elif reasoning_config.get("effort"):
             reasoning_effort = reasoning_config["effort"]
 
-    # Astra has no wire-level disable/minimal setting.  Preserve Hermes' user-facing
-    # controls by sending the documented lowest enabled level instead; this also keeps
-    # an explicit ``enabled: false`` request valid on the Responses API.
-    if model.strip().lower().rsplit("/", 1)[-1] == "gpt-6-astra":
-        requested = str(reasoning_effort or "").strip().lower()
-        if not reasoning_enabled or requested in {"", "none", "minimal", "disabled", "off"}:
-            return "low", True
-        return clamp_effort(reasoning_effort, CODEX_ASTRA_EFFORTS), True
-
     # Wire vocabularies are declared in agent.reasoning_effort; the shared clamp policy (nearest weaker
     # supported level, never escalate, never invert the ladder) replaces the per-backend hand maps that
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
@@ -288,18 +279,24 @@ def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url:
     """Apply Astra's model-specific restrictions after all request overrides are merged."""
     if not _is_astra_model(model):
         return
+    if not _is_official_openai_responses_route(model, base_url):
+        kwargs.pop("prompt_cache_options", None)
+        return
+    reasoning = kwargs.get("reasoning")
+    requested = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    normalized = str(requested or "").strip().lower()
+    effort = "low" if normalized in {"", "none", "minimal", "disabled", "off"} else clamp_effort(
+        requested, CODEX_ASTRA_EFFORTS
+    )
+    kwargs["reasoning"] = {**(reasoning if isinstance(reasoning, dict) else {}), "effort": effort}
+    kwargs["reasoning"].setdefault("summary", "auto")
     for key in ("temperature", "top_p", "top_logprobs", "logprobs"):
         kwargs.pop(key, None)
     include = kwargs.get("include")
     if isinstance(include, list):
         kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
-    if _is_official_openai_responses_route(model, base_url):
-        kwargs["prompt_cache_options"] = {"ttl": "30m"}
-        kwargs.pop("prompt_cache_retention", None)
-    else:
-        # A caller override must not accidentally send official-only cache syntax to a
-        # proxy or another provider that happens to accept the Astra model name.
-        kwargs.pop("prompt_cache_options", None)
+    kwargs["prompt_cache_options"] = {"ttl": "30m"}
+    kwargs.pop("prompt_cache_retention", None)
 
 
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:

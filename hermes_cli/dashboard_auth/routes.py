@@ -113,6 +113,23 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
+    """Segment dict from a provider's ``LoginStart.cookie_payload``.
+
+    Providers serialise their PKCE material as the flat
+    ``state=…;verifier=…`` string documented on
+    :class:`~hermes_cli.dashboard_auth.base.LoginStart` (values are
+    ``token_urlsafe`` — never containing ``;`` or ``=``). This is the ONE
+    place that flat provider string is parsed; from here on the payload
+    is a dict all the way to :func:`set_pkce_cookie`'s base64url(JSON)
+    wire encoding.
+    """
+    flat = cookie_payload.get("hermes_session_pkce", "")
+    return dict(
+        seg.split("=", 1) for seg in flat.split(";") if "=" in seg
+    )
+
+
 def _prefix(request: Request) -> str:
     """Resolve the X-Forwarded-Prefix header for the active request.
 
@@ -225,20 +242,21 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     resp = RedirectResponse(url=ls.redirect_url, status_code=302)
     # Pack the provider name into the PKCE cookie so the callback can
     # find it without a separate cookie. Provider may or may not have
-    # already included a ``provider=`` segment.
-    pkce = ls.cookie_payload.get("hermes_session_pkce", "")
-    if "provider=" not in pkce:
-        pkce = f"provider={provider};{pkce}" if pkce else f"provider={provider}"
+    # already included a ``provider`` segment.
+    pkce = _provider_pkce_segments(ls.cookie_payload)
+    pkce.setdefault("provider", provider)
     # Carry ``next=`` through the round trip in the PKCE cookie. Real
     # IDPs only echo back ``code`` + ``state`` on the callback URL, so
     # query-string transport would lose the value — the cookie is the
     # only server-controlled channel that survives. Validate before we
     # store it so an attacker who reaches /auth/login directly with
-    # ``next=//evil.example`` can't poison the cookie.
+    # ``next=//evil.example`` can't poison the cookie. Stored as the
+    # validator's decoded path VERBATIM — JSON has no delimiter to
+    # collide with, so no extra encoding layer (the callback validator's
+    # single unquote stays symmetric with the query-string decode).
     safe_next = _validate_post_login_target(next)
     if safe_next:
-        from urllib.parse import quote
-        pkce = f"{pkce};next={quote(safe_next, safe='')}"
+        pkce["next"] = safe_next
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
         prefix=_prefix(request),
@@ -391,7 +409,7 @@ async def auth_native_authorize(
         )
         set_pkce_cookie(
             resp,
-            payload=f"provider={p.name};broker={broker_state}",
+            payload={"provider": p.name, "broker": broker_state},
             use_https=detect_https(request),
             prefix=_prefix(request),
         )
@@ -413,10 +431,9 @@ async def auth_native_authorize(
     # cookie so the callback can (a) dispatch to the right provider and (b)
     # find the pending native authorization. The desktop's challenge/state
     # never touch this cookie — only our opaque broker_state does.
-    pkce = ls.cookie_payload.get("hermes_session_pkce", "")
-    if "provider=" not in pkce:
-        pkce = f"provider={p.name};{pkce}" if pkce else f"provider={p.name}"
-    pkce = f"{pkce};broker={broker_state}"
+    pkce = _provider_pkce_segments(ls.cookie_payload)
+    pkce.setdefault("provider", p.name)
+    pkce["broker"] = broker_state
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
         prefix=_prefix(request),
@@ -444,13 +461,11 @@ async def auth_callback(
             detail="Missing PKCE state cookie",
         )
 
-    # Parse ``provider=...;state=...;verifier=...;next=...`` — the
-    # ``next`` segment is optional (only present when /auth/login was
-    # given a next= query). All keys live in the same flat namespace;
-    # ``next`` carries a URL-encoded path so it never contains ``;``.
-    # parse_pkce_payload URL-decodes the wire value (the setter encodes
-    # the whole payload so no raw ``;``/``"``/``\`` reaches the wire)
-    # before the ``;`` split.
+    # Parse the segment dict (``provider`` / ``state`` / ``verifier`` /
+    # ``next`` — ``next`` only present when /auth/login was given a
+    # next= query). parse_pkce_payload decodes the base64url(JSON) wire
+    # value, with a compatibility ladder for the two legacy flat formats
+    # (see its docstring).
     parts = parse_pkce_payload(pkce_raw)
     provider_name = parts.get("provider", "")
     expected_state = parts.get("state", "")

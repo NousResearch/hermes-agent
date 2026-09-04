@@ -399,6 +399,7 @@ def _run_agent(
     # the caller just asked for.
     effective_provider = (provider or "").strip() or None
     explicit_base_url_from_alias: Optional[str] = None
+    explicit_api_key_from_alias: Optional[str] = None
     if effective_provider is None and (model or env_model):
         # Only auto-detect when the model was explicitly requested via arg or
         # env var (not when it came from config — that's the "use my defaults"
@@ -417,6 +418,20 @@ def _run_agent(
             if direct is not None:
                 effective_model = direct.model
                 effective_provider = direct.provider
+                # Resolve the alias through the SAME owner the interactive
+                # `/model` path uses. Passing `direct.provider` alongside a
+                # URL-bearing alias would let a label like `anthropic` reach
+                # that provider's explicit-runtime branch, keep the alias's
+                # unrelated base_url, and fall back to the live vendor token —
+                # a bearer credential crossing an origin boundary. The helper
+                # forces bare `custom` for URL-bearing aliases (host-gated,
+                # #28660) and carries the alias's own key when it declares one.
+                try:
+                    effective_provider, explicit_api_key_from_alias = (
+                        _ms.direct_alias_runtime_request(direct)
+                    )
+                except Exception:
+                    explicit_api_key_from_alias = None
                 if direct.base_url:
                     explicit_base_url_from_alias = direct.base_url.rstrip("/")
             else:
@@ -436,6 +451,7 @@ def _run_agent(
         requested=effective_provider,
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
+        explicit_api_key=explicit_api_key_from_alias,
     )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user

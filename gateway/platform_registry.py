@@ -4,10 +4,11 @@ Platform Adapter Registry
 Allows platform adapters (built-in and plugin) to self-register so the gateway
 can discover and instantiate them without hardcoded if/elif chains.
 
-Built-in adapters continue to use the existing if/elif in _create_adapter()
+Built-in adapters continue to use the existing if/elif in _instantiate_adapter()
 for now.  Plugin adapters register here via PluginContext.register_platform()
 and are looked up first -- if nothing is found the gateway falls through to
-the legacy code path.
+the legacy code path.  GatewayRunner._create_adapter() wraps both paths and
+binds every successful adapter to its runner.
 
 Usage (plugin side):
 

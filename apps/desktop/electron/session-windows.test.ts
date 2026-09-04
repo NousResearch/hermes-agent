@@ -68,6 +68,12 @@ test('buildSessionWindowUrl avoids a double slash when the dev server has a trai
   assert.equal(url, 'http://localhost:5173/?win=secondary#/abc123')
 })
 
+test('buildSessionWindowUrl carries the owning profile in the query before the hash (#82768)', () => {
+  const url = buildSessionWindowUrl('abc123', { devServer: 'http://localhost:5173', profile: 'work', watch: true })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1&profile=work#/abc123')
+})
+
 test('buildSessionWindowUrl encodes the session id in the hash route', () => {
   const url = buildSessionWindowUrl('a b/c', { devServer: 'http://localhost:5173' })
 

@@ -132,8 +132,8 @@ def _find_session_id(
     """
     # Primary: state.db
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from hermes_state import get_shared_session_db
+        db = get_shared_session_db()
         try:
             finder = getattr(db, "find_session_by_origin", None)
             if callable(finder):
@@ -146,7 +146,8 @@ def _find_session_id(
                 if session_id:
                     return str(session_id)
         finally:
-            db.close()
+            from hermes_state import release_or_close
+            release_or_close(db)
     except Exception as e:
         logger.debug("Mirror state.db session lookup failed: %s", e)
 
@@ -211,8 +212,8 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     """Append a message to the SQLite session database."""
     db = None
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from hermes_state import get_shared_session_db
+        db = get_shared_session_db()
         db.append_message(
             session_id=session_id,
             role=message.get("role", "assistant"),
@@ -222,4 +223,5 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
         logger.debug("Mirror SQLite write failed: %s", e)
     finally:
         if db is not None:
-            db.close()
+            from hermes_state import release_or_close
+            release_or_close(db)

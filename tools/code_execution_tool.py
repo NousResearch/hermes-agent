@@ -408,9 +408,9 @@ _TOOL_STUBS = {
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, order: str = "discovery"',
         '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "order": order}',
     ),
     "patch": (
         "patch",
@@ -1553,6 +1553,21 @@ def execute_code(
             "Use normal tool calls (terminal, read_file, write_file, ...) instead."
         )
 
+    # Fail closed under a terminal-policy refusal scope (#68559): the routed
+    # profile's terminal policy could not be resolved and execute_code runs on
+    # the configured terminal backend — refuse rather than inheriting the
+    # launch process's ambient policy.
+    try:
+        from tools.terminal_scope import enforce_no_refusal
+
+        enforce_no_refusal()
+    except Exception as refusal:
+        return tool_error(
+            f"execute_code refused: {refusal} "
+            "(profile terminal policy unresolved; fix the profile's "
+            "config.yaml / .env and retry)"
+        )
+
     if not code or not code.strip():
         return tool_error(
             "No code provided. execute_code requires a non-empty 'code' "
@@ -2282,7 +2297,9 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    raw = scope_terminal_cwd().strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):
@@ -2314,7 +2331,7 @@ _TOOL_DOC_LINES = [
      "  write_file(path: str, content: str) -> dict\n"
      "    Always overwrites the entire file."),
     ("search_files",
-     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
+     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
     ("patch",
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"

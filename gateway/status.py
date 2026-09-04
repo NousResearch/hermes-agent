@@ -157,6 +157,41 @@ def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
     )
 
 
+def recorded_gateway_home_conflicts(
+    record: Optional[dict[str, Any]],
+    *,
+    expected_home: Optional[Path | str] = None,
+) -> bool:
+    """True when a persisted gateway record names a DIFFERENT HERMES_HOME.
+
+    Cross-profile kill refusal (#89315): a poisoned/contaminated PID record
+    inside one profile's home can truthfully name ANOTHER profile's live
+    gateway (its ``hermes_home`` stamp records the real owner). Any
+    destructive caller about to signal the recorded PID must consult this
+    first and refuse when the record positively proves the target belongs to
+    a different profile — otherwise ``gateway stop``/``restart``/``profile
+    delete`` from profile B SIGTERMs profile A's gateway and the supervisors
+    enter the mutual restart loop from the issue report.
+
+    ``expected_home`` overrides the comparison base (e.g. ``profile delete``
+    stopping a TARGET profile's gateway rather than the current process's).
+    Legacy records without a ``hermes_home`` stamp return False — they prove
+    nothing either way, and destructive callers already pair this with the
+    exact PID + start-time identity guards. A comparison failure returns True
+    (destructive action + unprovable ownership ⇒ fail closed).
+    """
+    if not isinstance(record, dict):
+        return False
+    recorded_home = record.get("hermes_home")
+    if not isinstance(recorded_home, str) or not recorded_home.strip():
+        return False
+    try:
+        base = expected_home if expected_home is not None else _get_process_hermes_home()
+        return not _same_hermes_home(recorded_home, base)
+    except Exception:
+        return True
+
+
 # Mirrors hermes_cli.profiles._PROFILE_ID_RE — duplicated here because gateway
 # identity code must stay import-light (hermes_constants + stdlib only).
 _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -302,13 +337,50 @@ def normalize_updated_at(value: Any) -> Optional[str]:
     return None
 
 
-def terminate_pid(pid: int, *, force: bool = False) -> None:
+def _assert_process_start_time_matches(
+    pid: int, expected_start_time: Optional[float]
+) -> None:
+    """Fail closed unless ``pid`` still names the recorded process object."""
+    if expected_start_time is None:
+        raise OSError(
+            f"refusing to force-kill PID {pid} without a process start-time guard"
+        )
+    current_start_time = _get_process_start_time(pid)
+    if current_start_time is None:
+        raise OSError(
+            f"refusing to force-kill PID {pid}; process start time is unavailable"
+        )
+    try:
+        expected = float(expected_start_time)
+        current = float(current_start_time)
+    except (TypeError, ValueError) as exc:
+        raise OSError(f"refusing to force-kill PID {pid}; malformed start time") from exc
+    if expected <= 0 or current <= 0 or abs(expected - current) > 0.001:
+        raise OSError(f"refusing to force-kill PID {pid}; process identity changed")
+
+
+def terminate_pid(
+    pid: int,
+    *,
+    force: bool = False,
+    expected_start_time: Optional[float] = None,
+) -> None:
     """Terminate a PID with platform-appropriate force semantics.
 
     POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
     because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
+
+    Identity guard: on Windows, ``force=True`` REQUIRES a matching
+    ``expected_start_time`` (fail closed — taskkill /T /F on a recycled PID
+    has killed svchost.exe and blue-screened the host, #89614). On POSIX an
+    expectation is optional, but when the caller provides one and it no
+    longer matches the live process, the kill is refused on every platform —
+    a mismatched fingerprint always means the PID was recycled.
     """
+    if force and expected_start_time is not None and not _IS_WINDOWS:
+        _assert_process_start_time_matches(pid, expected_start_time)
     if force and _IS_WINDOWS:
+        _assert_process_start_time_matches(pid, expected_start_time)
         # CREATE_NO_WINDOW: terminate_pid runs from the windowless pythonw.exe
         # gateway/desktop backend, so a bare taskkill spawn would flash a
         # conhost window on every force-kill.
@@ -661,6 +733,30 @@ def _get_code_identity_fields() -> dict[str, Any]:
         return {}
 
 
+def _pid_record_belongs_to_current_profile(
+    record: Optional[dict[str, Any]],
+) -> bool:
+    """Return True when the PID record's ``hermes_home`` matches the current process.
+
+    PID records written by ``_build_pid_record()`` include the gateway's
+    ``hermes_home`` at write time. If a profile gateway was started (or recorded)
+    under a different HERMES_HOME, the record belongs to a different profile
+    and must be ignored — otherwise the default-profile gateway can mistakenly
+    assume the identity of another profile (issue #74872).
+
+    Records that predate the ``hermes_home`` field (pre-#74872 gateways) are
+    accepted conservatively (no field → assume current profile).
+    """
+    if not isinstance(record, dict):
+        return False
+    record_home = record.get("hermes_home")
+    if not record_home:
+        # Records without hermes_home belong to a pre-#74872 gateway;
+        # accept them conservatively.
+        return True
+    return _same_hermes_home(record_home, _get_process_hermes_home())
+
+
 def _build_runtime_status_record() -> dict[str, Any]:
     payload = _build_pid_record()
     payload.update({
@@ -998,6 +1094,20 @@ def release_gateway_runtime_lock() -> None:
     except OSError:
         pass
     _clear_running_pid_cache()
+
+
+def owns_gateway_runtime_lock() -> bool:
+    """Return True when THIS process holds the gateway runtime lock.
+
+    ``is_gateway_runtime_lock_active`` answers "does *anyone* hold the lock?"
+    and deliberately returns True for the lock's own owner — a caller deciding
+    whether to yield to a *fresh* gateway (e.g. the cron tick's stale-code
+    gate) must distinguish self-ownership from another process's lock, and
+    re-probing the lock file cannot: acquiring a probe handle on a lock this
+    process already holds succeeds on POSIX. The in-process handle is the only
+    discriminator, so expose it as a tiny predicate.
+    """
+    return _gateway_lock_handle is not None
 
 
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
@@ -1493,6 +1603,13 @@ def get_runtime_status_running_pid(
         and current_start is not None
         and current_start != recorded_start
     ):
+        return None
+
+    # When no explicit expected_home is given (active profile context),
+    # verify the persisted record's hermes_home matches the current process.
+    # This prevents the default-profile gateway from assuming another
+    # profile's identity via a stale runtime status record (#74872).
+    if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
         return None
 
     if _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
@@ -2220,7 +2337,11 @@ def _terminate_scoped_lock_owner_once(
             return None
 
         try:
-            terminate_pid(owner_pid, force=True)
+            terminate_pid(
+                owner_pid,
+                force=True,
+                expected_start_time=owner_start_time,
+            )
         except ProcessLookupError:
             return owner_pid
         except (PermissionError, OSError):
@@ -2375,6 +2496,9 @@ def get_running_pid(
         recorded_start = record.get("start_time")
         current_start = _get_process_start_time(pid)
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
+            continue
+
+        if not _pid_record_belongs_to_current_profile(record):
             continue
 
         if _record_matches_live_gateway_pid(record, pid):

@@ -892,8 +892,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # (developing Hermes). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
+        context_cwd = resolve_context_cwd()
+        if getattr(agent, "_context_cwd_is_launch_artifact", False):
+            # Desktop session creation pins the backend launch directory so
+            # tools have a deterministic cwd even when the user picked no
+            # workspace. Preserve that tool routing, but let context discovery
+            # see it as the fallback it really is. The install-tree guard can
+            # then reject Hermes's bundled contributor AGENTS.md (#97448).
+            context_cwd = None
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+            cwd=context_cwd, skip_soul=_soul_loaded,
             context_length=_ctx_len,
             allow_install_tree_fallback=agent.platform in ("cli", "tui"),
             home_override=_agent_home(agent))

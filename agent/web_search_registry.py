@@ -16,7 +16,7 @@ The active provider is chosen by configuration with this precedence:
 2. ``web.backend`` (shared fallback).
 3. If exactly one capability-eligible provider is registered AND available,
    use it.
-4. Legacy preference order — ``firecrawl`` → ``parallel`` →
+4. Legacy preference order — ``firecrawl`` → ``parallel`` → ``tavily`` →
    ``exa`` → ``searxng`` → ``brave-free`` → ``ddgs`` — filtered by
    availability. Matches the historic ``tools.web_tools._get_backend()``
    candidate order so installs that never set a config key keep landing
@@ -159,6 +159,7 @@ def _read_config_key(*path: str) -> Optional[str]:
 _LEGACY_PREFERENCE = (
     "firecrawl",
     "parallel",
+    "tavily",
     "exa",
     "searxng",
     "brave-free",
@@ -167,7 +168,7 @@ _LEGACY_PREFERENCE = (
 
 # Keyless free-tier walk — strictly LAST-resort, tried only after the
 # availability-filtered legacy walk finds nothing (i.e. the user has zero
-# web credentials and no importable ddgs). All five vendors expose public
+# web credentials and no importable ddgs). Ring vendors expose public
 # anonymous free tiers (see plugins/web/keyless_mcp.py). Unpinned keyless
 # traffic round-robins across the ring per request (the ring cursor lives
 # in keyless_mcp; an explicit `hermes tools` pick bypasses this walk
@@ -220,7 +221,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
        supports *capability* AND ``is_available()`` reports True, return it.
 
     3. **Legacy preference walk, filtered by availability.** Walk the
-       :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel →
+       :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel → tavily →
        exa → searxng → brave-free → ddgs) looking for a provider whose
        ``supports_<capability>()`` is True AND whose ``is_available()`` is
        True. Matches the historic ``tools.web_tools._get_backend()``

@@ -42,6 +42,7 @@ for the full rationale):
 
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import logging
@@ -56,6 +57,8 @@ import snowballstemmer
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.tool_search")
+
+_SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
 
 
 # Bridge tool names. These names are reserved and may not collide with a
@@ -110,6 +113,14 @@ class ToolSearchConfig:
     # Absolute cap on the embedded listing, regardless of context size.
     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
     listing_max_tokens: int = 4000
+    # Core/GUI tool names deferred behind the bridge. None = use the curated
+    # default (_DEFAULT_DEFERRED_TOOLS); an explicit list from config
+    # replaces the default wholesale ([] = defer no core tools — legacy).
+    defer_tools: Optional[frozenset] = None
+
+    @property
+    def effective_defer_tools(self) -> frozenset:
+        return _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -159,6 +170,14 @@ class ToolSearchConfig:
             listing = "auto"
         listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
 
+        defer_raw = raw.get("defer")
+        if isinstance(defer_raw, (list, tuple, set)):
+            defer_tools = frozenset(
+                str(n).strip() for n in defer_raw if str(n).strip()
+            )
+        else:
+            defer_tools = None  # curated default
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
@@ -166,6 +185,7 @@ class ToolSearchConfig:
             max_search_limit=max_search_limit,
             listing=listing,
             listing_max_tokens=listing_max_tokens,
+            defer_tools=defer_tools,
         )
 
 
@@ -230,21 +250,54 @@ def _core_tool_names() -> frozenset[str]:
 
 
 # Session-gated GUI toolsets. Off ``_HERMES_CORE_TOOLS`` so non-GUI clients
-# never pay their schema; once a session enables them they stay direct.
+# never pay their schema; once a session enables them they stay direct
+# UNLESS the deferral list (below) names them.
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 
+# Core-tool deferral (2026-08, maintainer-directed): the curated set of
+# event-triggered tools that hide behind the bridge BY DEFAULT. These are
+# tools a session reaches for when something specific happens (user asks
+# for a tour / a cron job / a screenshot / a clarification), not tools in
+# the every-turn working set — so a catalog stub is enough to find them.
+# Config override: ``tools.tool_search.defer`` (list of tool names);
+# ``[]`` restores the legacy everything-eager behavior, any other list
+# replaces this default wholesale. Names here are POST-rename.
+#
+# ``clarify`` was in the original curated set but was pulled back to eager
+# after the maintainer A/B (PR #97979, 288 runs × 3 model tiers): with the
+# schema visible models used structured clarify 18/18 on ambiguous tasks;
+# deferred, usage collapsed to 7/18 (gpt-terra 0/6) — models fell back to
+# plain-text questions, losing the structured-choice UX and costing an
+# extra user round-trip. The ask-the-user affordance has to be ambient to
+# fire; a catalog stub is not enough. (~250 tok to keep it eager.)
+_DEFAULT_DEFERRED_TOOLS = frozenset({
+    "computer_use", "session_search", "image_generate",
+    "todo_list", "process_manage", "cronjob_manage",
+    # Desktop GUI surface (desktop_ui + project toolsets)
+    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+    "show_tip", "setup_mcp", "desktop_project", "close_terminal",
+    "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+})
 
-def is_deferrable_tool_name(name: str) -> bool:
+
+def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
-    A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is neither in ``_HERMES_CORE_TOOLS`` nor a session-gated GUI
-    surface toolset. Core and direct surface tools are never deferred even
-    when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    A tool is deferrable iff:
+    * it is named in ``defer_tools`` (the maintainer-curated core-deferral
+      set, or the user's ``tools.tool_search.defer`` override) — this is
+      the 2026-08 revision of the old "core never defers" rule: core tools
+      in the WORKING set (terminal, files, memory, ...) still never defer,
+      but the curated event-triggered set (computer_use, the GUI
+      surface, ...) hides behind the bridge by default; OR
+    * it is registered with an MCP toolset prefix; OR
+    * it is neither in ``_HERMES_CORE_TOOLS`` nor a session-gated GUI
+      surface toolset (plugin tools).
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
+    if defer_tools is not None and name in defer_tools:
+        return True
     if name in _core_tool_names():
         return False
     # Check registry toolset for MCP prefix.
@@ -265,6 +318,7 @@ def is_deferrable_tool_name(name: str) -> bool:
 
 def _describe_classification(
     name: str,
+    defer_tools: Optional[frozenset] = None,
 ) -> Literal["available", "not_found", "not_deferrable"]:
     """Classify a describe name without treating unknown names as errors."""
     try:
@@ -274,6 +328,8 @@ def _describe_classification(
         return "not_found"
     if entry is None:
         return "not_found"
+    if defer_tools is not None and name in defer_tools:
+        return "available"
     if (
         name in BRIDGE_TOOL_NAMES
         or name in _core_tool_names()
@@ -283,12 +339,15 @@ def _describe_classification(
     return "available"
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    defer_tools: Optional[frozenset] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
-    ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, every session-gated GUI surface tool, plus any tool we
-    can't classify. ``deferrable`` is the candidate set for catalog entry.
+    ``visible`` retains every tool that must stay in the model-facing array.
+    ``deferrable`` is the candidate set for catalog entry — MCP/plugin tools
+    plus any core/GUI tool named in ``defer_tools``.
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
@@ -299,7 +358,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, defer_tools):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -927,7 +986,7 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
@@ -1078,7 +1137,9 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
-    _, deferrable = classify_tools(current_tool_defs)
+    _, deferrable = classify_tools(
+        current_tool_defs, load_config_readonly().effective_defer_tools
+    )
     catalog = build_catalog(deferrable)
 
     results: List[Dict[str, Any]] = []
@@ -1151,7 +1212,9 @@ def dispatch_tool_describe(args: Dict[str, Any],
             "Retry with fewer names per call."
         )
 
-    _, deferrable = classify_tools(current_tool_defs)
+    _, deferrable = classify_tools(
+        current_tool_defs, load_config_readonly().effective_defer_tools
+    )
     by_name: Dict[str, Dict[str, Any]] = {}
     for td in deferrable:
         fn = td.get("function") or {}
@@ -1168,7 +1231,9 @@ def dispatch_tool_describe(args: Dict[str, Any],
                 "description": fn.get("description", ""),
                 "parameters": fn.get("parameters", {}),
             }
-        elif _describe_classification(name) == "not_deferrable":
+        elif _describe_classification(
+            name, load_config_readonly().effective_defer_tools
+        ) == "not_deferrable":
             errors[name] = (
                 f"'{name}' is not a deferrable tool. If you see it in the tools list "
                 "already, call it directly; otherwise check the spelling against tool_search."
@@ -1198,15 +1263,93 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     an out-of-scope tool via the bridge.
     """
     names: set[str] = set()
+    defer_tools = load_config_readonly().effective_defer_tools
     for td in tool_defs:
         name = (td.get("function") or {}).get("name", "")
-        if name and is_deferrable_tool_name(name):
+        if name and is_deferrable_tool_name(name, defer_tools):
             names.add(name)
     return frozenset(names)
 
 
+def _schema_for_local_validation(node: Any) -> Any:
+    """Return a JSON-Schema-compatible copy that honors ``nullable: true``.
+
+    Some MCP/plugin schemas use OpenAPI's ``nullable`` extension instead of a
+    JSON Schema null union.  Hermes' normal coercion path accepts that shape;
+    mirror it here so local validation never rejects a value dispatch would
+    intentionally accept.
+    """
+    if isinstance(node, list):
+        return [_schema_for_local_validation(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    normalized = {}
+    for key, value in node.items():
+        if key == "nullable":
+            continue
+        # These keywords contain instance data, not nested schemas. An enum
+        # value such as {"nullable": true} must remain byte-for-byte data.
+        normalized[key] = (
+            copy.deepcopy(value)
+            if key in _SCHEMA_LITERAL_KEYS
+            else _schema_for_local_validation(value)
+        )
+    if node.get("nullable") is not True:
+        return normalized
+
+    schema_type = normalized.get("type")
+    if isinstance(schema_type, str):
+        if schema_type != "null":
+            normalized["type"] = [schema_type, "null"]
+        return normalized
+    if isinstance(schema_type, list):
+        if "null" not in schema_type:
+            normalized["type"] = [*schema_type, "null"]
+        return normalized
+
+    # ``nullable`` alongside a $ref/combinator has no ``type`` to extend.
+    # Wrap the original constraint so local references keep resolving from the
+    # parameters schema's root while null remains an explicit alternative.
+    return {"anyOf": [normalized, {"type": "null"}]}
+
+
+def _schema_has_external_ref(node: Any) -> bool:
+    """Return whether *node* contains a non-local ``$ref``.
+
+    Local validation must never turn a tool call into an implicit network
+    fetch.  Schemas with remote/file references remain the underlying tool's
+    responsibility and therefore follow the existing fail-open contract.
+    """
+    if isinstance(node, list):
+        return any(_schema_has_external_ref(item) for item in node)
+    if not isinstance(node, dict):
+        return False
+    ref = node.get("$ref")
+    if isinstance(ref, str) and not ref.startswith("#"):
+        return True
+    return any(
+        _schema_has_external_ref(value)
+        for key, value in node.items()
+        if key not in _SCHEMA_LITERAL_KEYS
+    )
+
+
+def _validation_path(error: Any) -> str:
+    """Format a jsonschema error path as a compact argument path."""
+    path = "arguments"
+    for part in getattr(error, "absolute_path", ()):
+        if isinstance(part, int):
+            path += f"[{part}]"
+        elif isinstance(part, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
+            path += f".{part}"
+        else:
+            path += f"[{json.dumps(part, ensure_ascii=False)}]"
+    return path
+
+
 def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
-    """Probe-validate ``tool_call`` arguments against the deferred tool's schema.
+    """Validate ``tool_call`` arguments against the deferred tool's schema.
 
     A deferred tool's parameter schema is invisible to the model until it
     calls ``tool_describe`` — so models routinely invoke deferred tools
@@ -1215,17 +1358,16 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
     that tells the model nothing about what the tool expects, and cheap
     models loop on it until the iteration budget dies.
 
-    Port of the describe-first probe-validation fix from nearai/ironclaw#5149:
-    when required arguments are missing, return the tool's parameter schema
-    instead of dispatching blind — the model repairs the call in one
-    round-trip. Valid calls (and any call we can't confidently validate)
-    dispatch untouched, so this can never block a legitimate invocation.
+    Keep the original describe-first required-field probe from
+    nearai/ironclaw#5149, then run the same schema-guided coercion used by
+    normal dispatch and validate the repaired copy.  This restores the
+    concrete-schema checks that the provider cannot perform through the
+    generic ``arguments: object`` bridge.
 
-    Only *key absence* of schema-``required`` fields counts as invalid.
-    No type checking, no null rejection — nullable/typed edge cases are the
-    tool's own business, and ``coerce_tool_args`` already handles type repair
-    downstream. Returns a JSON error string when invalid, ``None`` when the
-    call should dispatch.
+    Missing/malformed schemas, unavailable validators, and external references
+    fail open so validation cannot make a previously callable tool unavailable.
+    Returns a JSON error string when invalid, ``None`` when the call should
+    dispatch through the existing middleware/hook/approval pipeline.
     """
     try:
         from tools.registry import registry as _registry
@@ -1239,14 +1381,68 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         if not isinstance(params, dict):
             return None
         required = params.get("required")
-        if not isinstance(required, list) or not required:
+        if isinstance(required, list) and required:
+            missing = [r for r in required if isinstance(r, str) and r not in args]
+            if missing:
+                return tool_error(
+                    f"tool_call to '{name}' is missing required argument(s): "
+                    f"{', '.join(missing)}. The tool was NOT invoked.",
+                    path="arguments",
+                    constraint="required",
+                    parameters=params,
+                    hint=(
+                        "Retry tool_call with 'arguments' matching the parameters "
+                        "schema above."
+                    ),
+                )
+
+        validation_schema = _schema_for_local_validation(params)
+        if _schema_has_external_ref(validation_schema):
+            logger.debug(
+                "Skipping local deferred-argument validation for %s: external $ref",
+                name,
+            )
             return None
-        missing = [r for r in required if isinstance(r, str) and r not in args]
-        if not missing:
+
+        # Validate the same repaired shape normal dispatch will receive. Work on
+        # a copy because coerce_tool_args may normalize values in place; actual
+        # dispatch performs the canonical coercion again after this probe.
+        candidate_args = dict(args)
+        try:
+            from model_tools import coerce_tool_args
+            candidate_args = coerce_tool_args(name, candidate_args)
+        except Exception:
+            logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
+            candidate_args = dict(args)
+
+        try:
+            from jsonschema.exceptions import best_match
+            from jsonschema.validators import validator_for
+        except ImportError:
+            logger.debug(
+                "jsonschema unavailable; keeping required-only validation for %s",
+                name,
+            )
             return None
+
+        validator_cls = validator_for(validation_schema)
+        validator_cls.check_schema(validation_schema)
+        validation_error = best_match(
+            validator_cls(validation_schema).iter_errors(candidate_args)
+        )
+        if validation_error is None:
+            return None
+
+        path = _validation_path(validation_error)
+        constraint = str(getattr(validation_error, "validator", None) or "schema")
+        detail = re.sub(r"\s+", " ", str(validation_error.message)).strip()
+        if len(detail) > 600:
+            detail = detail[:597] + "..."
         return tool_error(
-            f"tool_call to '{name}' is missing required argument(s): "
-            f"{', '.join(missing)}. The tool was NOT invoked.",
+            f"tool_call to '{name}' failed argument validation at {path} "
+            f"({constraint}): {detail}. The tool was NOT invoked.",
+            path=path,
+            constraint=constraint,
             parameters=params,
             hint=(
                 "Retry tool_call with 'arguments' matching the parameters "
@@ -1283,7 +1479,7 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
             return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
-    if not is_deferrable_tool_name(name):
+    if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."

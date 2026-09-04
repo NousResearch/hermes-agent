@@ -155,21 +155,21 @@ def check_requirements() -> bool:
     """
     if not HTTPX_AVAILABLE:
         return False
-    topic = os.getenv("NTFY_TOPIC", "").strip()
+    topic = _get_scoped_secret("NTFY_TOPIC", "").strip()
     return bool(topic)
 
 
 def validate_config(config) -> bool:
     """Validate that the configured ntfy platform has a topic set."""
     extra = getattr(config, "extra", {}) or {}
-    topic = extra.get("topic") or os.getenv("NTFY_TOPIC", "")
+    topic = extra.get("topic") or _get_scoped_secret("NTFY_TOPIC", "")
     return bool(topic)
 
 
 def is_connected(config) -> bool:
     """Check whether ntfy is configured (env or config.yaml)."""
     extra = getattr(config, "extra", {}) or {}
-    topic = os.getenv("NTFY_TOPIC") or extra.get("topic", "")
+    topic = _get_scoped_secret("NTFY_TOPIC") or extra.get("topic", "")
     return bool(topic)
 
 
@@ -189,12 +189,12 @@ class NtfyAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self._server: str = (
             extra.get("server")
-            or os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER)
+            or _get_scoped_secret("NTFY_SERVER_URL", DEFAULT_SERVER)
         ).rstrip("/")
-        self._topic: str = extra.get("topic") or os.getenv("NTFY_TOPIC", "")
+        self._topic: str = extra.get("topic") or _get_scoped_secret("NTFY_TOPIC", "")
         self._publish_topic: str = (
             extra.get("publish_topic")
-            or os.getenv("NTFY_PUBLISH_TOPIC", "")
+            or _get_scoped_secret("NTFY_PUBLISH_TOPIC", "")
             or self._topic
         )
         self._token: str = extra.get("token") or _get_scoped_secret("NTFY_TOKEN", "")
@@ -488,27 +488,27 @@ def _env_enablement() -> dict | None:
     core hook — it becomes a proper ``HomeChannel`` dataclass on the
     ``PlatformConfig`` rather than being merged into ``extra``.
     """
-    topic = os.getenv("NTFY_TOPIC", "").strip()
+    topic = _get_scoped_secret("NTFY_TOPIC", "").strip()
     if not topic:
         return None
     seed: dict = {
         "topic": topic,
-        "server": os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/"),
+        "server": _get_scoped_secret("NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/"),
     }
-    publish_topic = os.getenv("NTFY_PUBLISH_TOPIC", "").strip()
+    publish_topic = _get_scoped_secret("NTFY_PUBLISH_TOPIC", "").strip()
     if publish_topic:
         seed["publish_topic"] = publish_topic
     token = _get_scoped_secret("NTFY_TOKEN", "").strip()
     if token:
         seed["token"] = token
-    markdown = os.getenv("NTFY_MARKDOWN", "").strip().lower()
+    markdown = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
     if markdown:
         seed["markdown"] = markdown in ("1", "true", "yes")
-    home = os.getenv("NTFY_HOME_CHANNEL", "").strip() or topic
+    home = _get_scoped_secret("NTFY_HOME_CHANNEL", "").strip() or topic
     if home:
         seed["home_channel"] = {
             "chat_id": home,
-            "name": os.getenv("NTFY_HOME_CHANNEL_NAME", home),
+            "name": _get_scoped_secret("NTFY_HOME_CHANNEL_NAME", home),
         }
     return seed
 
@@ -540,20 +540,20 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     server = (
         extra.get("server")
-        or os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER)
+        or _get_scoped_secret("NTFY_SERVER_URL", DEFAULT_SERVER)
     ).rstrip("/")
     publish_topic = (
         chat_id
         or extra.get("publish_topic")
-        or os.getenv("NTFY_PUBLISH_TOPIC", "").strip()
+        or _get_scoped_secret("NTFY_PUBLISH_TOPIC", "").strip()
         or extra.get("topic")
-        or os.getenv("NTFY_TOPIC", "").strip()
+        or _get_scoped_secret("NTFY_TOPIC", "").strip()
     )
     if not publish_topic:
         return {"error": "ntfy standalone send: NTFY_TOPIC not configured"}
 
     token = extra.get("token") or _get_scoped_secret("NTFY_TOKEN", "")
-    markdown_env = os.getenv("NTFY_MARKDOWN", "").strip().lower()
+    markdown_env = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
     markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
 
     headers = {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ECHO_TAG, **_build_auth_header(token)}

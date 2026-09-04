@@ -37,9 +37,9 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    cache_image_from_bytes,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
     cache_image_from_url,
     utf16_len,
 )
@@ -942,11 +942,11 @@ class SignalAdapter(BasePlatformAdapter):
                 raw_data, ext = remuxed
 
         if _is_image_ext(ext):
-            path = cache_image_from_bytes(raw_data, ext)
+            path = await cache_image_from_bytes_async(raw_data, ext)
         elif _is_audio_ext(ext):
-            path = cache_audio_from_bytes(raw_data, ext)
+            path = await cache_audio_from_bytes_async(raw_data, ext)
         else:
-            path = cache_document_from_bytes(raw_data, ext)
+            path = await cache_document_from_bytes_async(raw_data, ext)
 
         return path, ext
 

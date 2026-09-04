@@ -248,6 +248,69 @@ class TestGatewayRunnerInjection:
         assert hasattr(BasePlatformAdapter, "gateway_runner")
         assert BasePlatformAdapter.gateway_runner is None
 
+    def test_factory_binds_every_adapter_to_runner(self, monkeypatch):
+        """``_create_adapter`` binds the runner regardless of which branch
+        built the adapter (plugin registry OR built-in if/elif) — every
+        lifecycle path (startup, reconnect, secondary profiles) goes through
+        it, so this is the single seam that makes profile_routes reachable
+        for built-ins like Signal (#68332 / #70831)."""
+        from gateway.config import PlatformConfig
+
+        runner = object.__new__(GatewayRunner)
+        adapter = MagicMock(spec=BasePlatformAdapter)
+        monkeypatch.setattr(runner, "_instantiate_adapter", lambda platform, config: adapter)
+        assert runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is adapter
+        assert adapter.gateway_runner is runner
+        monkeypatch.setattr(runner, "_instantiate_adapter", lambda platform, config: None)
+        assert runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is None
+
+    @pytest.mark.asyncio
+    async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
+        """A factory-built (built-in) Signal adapter resolves profile_routes
+        for a real inbound envelope — fails on main where the Signal branch
+        returned a bare ``SignalAdapter(config)`` with no runner."""
+        from gateway.config import PlatformConfig
+
+        group_id = "test-signal-route"
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", group_id)
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            profile_routes=[
+                ProfileRoute(name="signal", platform="signal", profile="ops", chat_id=f"group:{group_id}"),
+            ],
+        )
+        adapter = runner._create_adapter(
+            Platform.SIGNAL,
+            PlatformConfig(enabled=True, extra={"http_url": "http://127.0.0.1:18080", "account": "+15555550123"}),
+        )
+        assert adapter is not None and adapter.gateway_runner is runner
+
+        captured = {}
+
+        async def capture_event(event):
+            captured["event"] = event
+
+        adapter.handle_message = capture_event
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", Path("/profiles/default")), ("ops", Path("/profiles/ops"))],
+        ):
+            await adapter._handle_envelope({
+                "envelope": {
+                    "sourceNumber": "+15555550124",
+                    "sourceName": "Test Operator",
+                    "timestamp": 1700000000000,
+                    "dataMessage": {
+                        "message": "diagnose the cluster",
+                        "groupInfo": {"groupId": group_id, "groupName": "US East 7"},
+                    },
+                },
+            })
+        source = captured["event"].source
+        assert source.profile == "ops"
+        assert build_session_key(source, profile=source.profile).startswith("agent:ops:")
+
 
 # A concrete adapter we can instantiate without the full platform stack.
 # ``build_source`` only reads ``self.platform`` and ``self.gateway_runner``, so a

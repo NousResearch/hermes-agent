@@ -93,7 +93,12 @@ class TestReceiptLifecycle:
 
         payload = json.loads(path.read_text(encoding="utf-8"))
         persisted = payload["gateway_restart"]["fresh_recovery"]
-        assert persisted == recovery
+        assert {key: persisted[key] for key in recovery} == recovery
+        # Serve coverage is always persisted, even when the pass had nothing
+        # to report, so a reader can tell "no serve runtime" from "the field
+        # predates #92145".
+        assert persisted["serve_units"] == {"verified": [], "failed": []}
+        assert persisted["stale_runtimes"] == []
         # The conservative vocabulary is the persisted contract: no bucket may
         # rebrand an unverified relaunch as supervisor-backed success.
         assert "succeeded" not in persisted

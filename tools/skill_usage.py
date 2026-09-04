@@ -1115,10 +1115,15 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         dest = archive_root / f"{skill_dir.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
     # Audit ledger pre-capture (best-effort; never blocks the archive).
+    # complete_package: consolidation may have re-homed support files out of
+    # the tree first, so a disk-only capture can come back hollow; the fill
+    # from the newest curator backup keeps rollback restorable (#96962).
     _ledger_before = None
     try:
         from tools import skill_ledger as _ledger
-        _ledger_before = _ledger.capture_before(skill_dir)
+        _ledger_before = _ledger.capture_before(
+            skill_dir, complete_package=True, skill=skill_name
+        )
     except Exception:
         _ledger = None  # type: ignore[assignment]
 

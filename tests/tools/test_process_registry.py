@@ -2,6 +2,8 @@
 
 import json
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -781,7 +783,7 @@ class TestSpawnEnvSanitization:
             def __init__(self):
                 self.commands = []
                 self._responses = iter([
-                    {"output": "hello\n"},
+                    {"output": "6 0\nhello\n"},
                     {"output": "1\n"},
                     {"output": "0\n"},
                 ])
@@ -802,9 +804,178 @@ class TestSpawnEnvSanitization:
                 "/path with spaces/hermes_bg.exit",
             )
 
-        assert env.commands[0][0] == "cat '/path with spaces/hermes_bg.log' 2>/dev/null"
+        assert "'/path with spaces/hermes_bg.log'" in env.commands[0][0]
+        assert "cat '/path with spaces/hermes_bg.log'" not in env.commands[0][0]
         assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
         assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
+
+
+class TestEnvPollerIncrementalRead:
+    """The sandbox log poller must read only new bytes, not the whole file.
+
+    Reading the whole file every poll made one poll cost grow with the total
+    output so far, so a long noisy job re-sent all of its output over the
+    docker or SSH channel every two seconds.
+    """
+
+    @staticmethod
+    def _run_poller(registry, session, responses):
+        """Drive one poll cycle and hand back the commands the env saw."""
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+                self._responses = iter(responses)
+
+            def execute(self, command, **kwargs):
+                self.commands.append(command)
+                return next(self._responses)
+
+        env = FakeEnv()
+        with patch("tools.process_registry.time.sleep", return_value=None), \
+            patch.object(registry, "_move_to_finished"):
+            registry._env_poller_loop(
+                session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit"
+            )
+        return env.commands
+
+    def test_read_command_asks_only_for_new_bytes(self):
+        cmd = ProcessRegistry._log_delta_command("'/tmp/bg.log'", 4096)
+        # The offset is carried into the command, and the file is opened with
+        # tail rather than cat.
+        assert "O=4096" in cmd
+        assert "tail -c +$((O+1)) '/tmp/bg.log'" in cmd
+        assert "cat '/tmp/bg.log'" not in cmd
+
+    def test_read_command_starts_from_zero_on_first_poll(self):
+        cmd = ProcessRegistry._log_delta_command("'/tmp/bg.log'", 0)
+        assert "O=0" in cmd
+
+    @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX sh")
+    def test_read_command_holds_back_a_split_utf8_sequence(self, tmp_path):
+        """A multibyte character straddling two polls must not be split.
+
+        The backend decodes each execute() result on its own, so returning
+        the first byte of an 'é' in one poll and the rest in the next would
+        yield replacement characters in the transcript (and break watch
+        patterns at the seam). Every prefix of a mixed ASCII/2/3/4-byte
+        string must come back decodable, with at most 3 bytes held back and
+        nothing held back once the trailing character is complete.
+        """
+        full = "hé😀中a\n€bz🚀".encode()
+        log = tmp_path / "bg.log"
+        quoted = shlex.quote(str(log))
+        for n in range(1, len(full) + 1):
+            log.write_bytes(full[:n])
+            out = subprocess.run(
+                ["sh", "-c", ProcessRegistry._log_delta_command(quoted, 0)],
+                capture_output=True, timeout=30,
+            ).stdout
+            header, _, delta = out.partition(b"\n")
+            size, _offset = map(int, header.split())
+            delta.decode("utf-8")  # must not raise
+            assert delta == full[:size]
+            complete = full[:n].decode("utf-8", "ignore").encode() == full[:n]
+            assert (n - size) == 0 if complete else 0 < (n - size) <= 3
+
+    def test_first_poll_reads_from_the_start(self, registry):
+        session = _make_session(sid="proc_delta")
+        session.exited = False
+        commands = self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "11 0\nfirst chunk"},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert "O=0" in commands[0]
+        assert session.output_buffer == "first chunk"
+
+    def test_delta_is_appended_not_replaced(self, registry):
+        session = _make_session(sid="proc_append", output="already here ")
+        session.exited = False
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "8 0\nand new"},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "already here and new"
+
+    def test_second_poll_asks_from_where_the_first_one_stopped(self, registry):
+        session = _make_session(sid="proc_two_polls")
+        session.exited = False
+        commands = self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "11 0\nfirst chunk"},
+                {"output": "0\n"},          # still running, poll again
+                {"output": "17 11\n and more"},
+                {"output": "1\n"},          # gone now
+                {"output": "0\n"},
+            ],
+        )
+        assert "O=0" in commands[0]
+        # The second read starts at byte 11, so the first chunk is not sent
+        # a second time.
+        assert "O=11" in commands[2]
+        assert session.output_buffer == "first chunk and more"
+
+    def test_truncated_log_drops_the_stale_buffer(self, registry):
+        session = _make_session(sid="proc_rotate")
+        session.exited = False
+        # The second read reports offset 0 even though the first one left off
+        # at byte 11. The file no longer reaches that byte, so it was rotated
+        # or truncated and the buffer we hold no longer matches it.
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "11 0\nfirst chunk"},
+                {"output": "0\n"},          # still running, poll again
+                {"output": "5 0\nfresh"},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "fresh"
+
+    def test_unreadable_header_leaves_the_buffer_alone(self, registry):
+        session = _make_session(sid="proc_bad", output="keep me")
+        session.exited = False
+        # No header at all, for example when the shell is missing one of the
+        # tools the command needs.
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": ""},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "keep me"
+
+    def test_buffer_stays_within_the_cap(self, registry):
+        session = _make_session(sid="proc_cap")
+        session.exited = False
+        session.max_output_chars = 10
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "20 0\n" + "x" * 20},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "x" * 10
 
 
 # =========================================================================
@@ -2284,6 +2455,77 @@ class TestSystemdCgroupIsolation:
         )
 
         assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
+
+    def test_darwin_never_takes_scope_path_even_with_systemd_run_on_path(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """macOS no-op guarantee (#70716 cross-platform audit).
+
+        With ``_IS_LINUX = False`` (darwin), the spawn path must be
+        byte-identical to the legacy path even when a ``systemd-run``
+        binary is somehow on PATH and the gateway identity checks pass:
+        no probe, no wrapping, no unit recorded.
+        """
+        import tools.process_registry as pr
+
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr(pr, "_IS_LINUX", False)
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process", lambda: True
+        )
+        # If any branch consults the probe or builds a scope argv on darwin,
+        # fail loudly.
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/systemd-run")
+        scope_builds = []
+        real_build = pr._build_systemd_scope_argv
+        monkeypatch.setattr(
+            pr,
+            "_build_systemd_scope_argv",
+            lambda *a, **k: scope_builds.append(a) or real_build(*a, **k),
+        )
+        probe_runs = []
+
+        def fake_probe_run(argv, **kwargs):
+            probe_runs.append(argv)
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        monkeypatch.setattr("subprocess.run", fake_probe_run)
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+        assert session.systemd_unit == ""
+        assert scope_builds == [], "darwin must never build a systemd scope argv"
+        assert probe_runs == [], "darwin must never run the systemd-run probe"
+
+    def test_probe_returns_false_off_linux(self, monkeypatch):
+        """``_systemd_run_user_scope_available`` is False on non-Linux even
+        when a ``systemd-run`` binary exists on PATH."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_IS_LINUX", False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/systemd-run")
+        probe_runs = []
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda argv, **kwargs: probe_runs.append(argv)
+            or subprocess.CompletedProcess(args=argv, returncode=0),
+        )
+
+        assert pr._systemd_run_user_scope_available() is False
+        assert probe_runs == [], "non-Linux must not exec the probe"
 
 
 class TestNotificationRedaction:

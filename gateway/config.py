@@ -444,6 +444,7 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
     "sms",
     "whatsapp_cloud",
     "line",
+    "teams",
 })
 
 # Platforms whose port-binding status depends on connection mode. Feishu in
@@ -1980,6 +1981,64 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
                 pconfig.enabled = False
 
 
+# Platforms for which the "explicitly disabled in config.yaml, but credentials
+# are present in the environment" WARNING has already been emitted in this
+# process. The gateway reloads its config on every turn (and other surfaces
+# call load_gateway_config() repeatedly), so the notice is one-time per
+# platform per process — loud once at startup, never a per-turn drumbeat.
+_EXPLICIT_DISABLE_WARNED: set = set()
+
+
+# Env var(s) whose presence drives each platform's env-enable branch, for the
+# explicit-disable WARNING below. Kept next to the branches that read them.
+_ENV_ENABLE_CREDENTIALS: dict = {
+    Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
+    Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
+    Platform.SLACK: ("SLACK_BOT_TOKEN",),
+    Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
+    Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
+    Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
+    Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
+    Platform.HOMEASSISTANT: ("HASS_TOKEN",),
+    Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+    Platform.SMS: ("TWILIO_ACCOUNT_SID",),
+    Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
+    Platform.FEISHU: ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
+    Platform.WECOM: ("WECOM_BOT_ID", "WECOM_SECRET"),
+    Platform.WECOM_CALLBACK: ("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
+    Platform.WEIXIN: ("WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID"),
+    Platform.BLUEBUBBLES: ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
+    Platform.QQBOT: ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
+    Platform.YUANBAO: ("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"),
+    Platform.RELAY: ("GATEWAY_RELAY_URL",),
+}
+
+
+def _warn_explicit_disable_beats_env(platform: Platform) -> None:
+    """One-time WARNING: ``platforms.<x>.enabled: false`` wins over env creds.
+
+    Until #48820 the credential-presence branches force-enabled twelve
+    platforms regardless of an explicit ``enabled: false`` in config.yaml, so
+    users who relied on "creds in .env = platform on" would see it go dark
+    after the fix with no explanation. Name the platform, the config key that
+    is winning, and the env var(s) that used to override it.
+    """
+    if platform in _EXPLICIT_DISABLE_WARNED:
+        return
+    _EXPLICIT_DISABLE_WARNED.add(platform)
+    names = _ENV_ENABLE_CREDENTIALS.get(platform) or ()
+    present = [n for n in names if (os.environ.get(n) or "").strip()]
+    creds = ", ".join(present or names) or "its credentials"
+    logger.warning(
+        "Platform '%s' is explicitly disabled by platforms.%s.enabled: false in "
+        "config.yaml, so the credentials found in the environment (%s) will NOT "
+        "start its adapter. Environment credentials no longer override an "
+        "explicit disable. Remove the key or set platforms.%s.enabled: true to "
+        "turn it back on.",
+        platform.value, platform.value, creds, platform.value,
+    )
+
+
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     getenv = _getenv_str
@@ -1998,8 +2057,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # flag is cleared once for all platforms in the final cleanup at the
         # end of _apply_env_overrides.
         enabled_was_explicit = bool(platform_config.extra.get("_enabled_explicit", False))
-        if not platform_config.enabled and not enabled_was_explicit:
-            platform_config.enabled = True
+        if not platform_config.enabled:
+            if enabled_was_explicit:
+                # Credentials are present (that is why we are here) but the
+                # user said no in config.yaml. Say so once (#48820).
+                _warn_explicit_disable_beats_env(platform)
+            else:
+                platform_config.enabled = True
         return platform_config
     
     # Telegram
@@ -2083,9 +2147,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     whatsapp_cloud_phone_id = getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
     whatsapp_cloud_token = getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
     if whatsapp_cloud_phone_id and whatsapp_cloud_token:
-        if Platform.WHATSAPP_CLOUD not in config.platforms:
-            config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
-        config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
+        # Honors an explicit ``platforms.whatsapp_cloud.enabled: false`` (#48820).
+        _enable_from_env(Platform.WHATSAPP_CLOUD)
         config.platforms[Platform.WHATSAPP_CLOUD].extra.update({
             "phone_number_id": whatsapp_cloud_phone_id,
             "access_token": whatsapp_cloud_token,
@@ -2151,6 +2214,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 # turn an env-token setup into a disabled platform. Only an
                 # explicit slack.enabled/platforms.slack.enabled false should.
                 slack_config.enabled = True
+            elif not slack_config.enabled:
+                _warn_explicit_disable_beats_env(Platform.SLACK)
         # If yaml config exists, respect its enabled flag (don't override
         # explicit enabled: false). Token is still stored so skills that
         # send Slack messages can use it without activating the gateway adapter.
@@ -2248,9 +2313,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Home Assistant
     hass_token = getenv("HASS_TOKEN")
     if hass_token:
-        if Platform.HOMEASSISTANT not in config.platforms:
-            config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
+        # Honors an explicit ``platforms.homeassistant.enabled: false`` (#48820).
+        _enable_from_env(Platform.HOMEASSISTANT)
         config.platforms[Platform.HOMEASSISTANT].token = hass_token
         hass_url = getenv("HASS_URL")
         if hass_url:
@@ -2262,9 +2326,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_imap = getenv("EMAIL_IMAP_HOST")
     email_smtp = getenv("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
-        if Platform.EMAIL not in config.platforms:
-            config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
+        # Honors an explicit ``platforms.email.enabled: false`` (#48820).
+        _enable_from_env(Platform.EMAIL)
         config.platforms[Platform.EMAIL].extra.update({
             "address": email_addr,
             "imap_host": email_imap,
@@ -2282,9 +2345,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # SMS (Twilio)
     twilio_sid = getenv("TWILIO_ACCOUNT_SID")
     if twilio_sid:
-        if Platform.SMS not in config.platforms:
-            config.platforms[Platform.SMS] = PlatformConfig()
-        config.platforms[Platform.SMS].enabled = True
+        # Honors an explicit ``platforms.sms.enabled: false`` (#48820).
+        _enable_from_env(Platform.SMS)
         config.platforms[Platform.SMS].api_key = getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
@@ -2345,7 +2407,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
-        config.platforms[Platform.WEBHOOK].enabled = True
+        # Honor an explicit ``enabled: false`` in config.yaml (flagged by
+        # ``_enabled_explicit``). In multiplex mode a secondary profile's
+        # config.yaml pins ``platforms.webhook.enabled: false`` so it shares
+        # the default profile's listener instead of binding its own port. That
+        # profile may still carry ``WEBHOOK_ENABLED`` in its own .env (or the
+        # process env, single-profile); without this guard the env var would
+        # force-enable the listener and trip the MultiplexConfigError check.
+        # Pop (don't read) the marker — the webhook branch is terminal (no
+        # later registry pass re-enables it), matching the api_server branch
+        # above.
+        webhook_explicit = config.platforms[Platform.WEBHOOK].extra.pop(
+            "_enabled_explicit", False
+        )
+        if not webhook_explicit or config.platforms[Platform.WEBHOOK].enabled:
+            config.platforms[Platform.WEBHOOK].enabled = True
         if webhook_port:
             try:
                 config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
@@ -2373,7 +2449,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.MSGRAPH_WEBHOOK not in config.platforms:
             config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
         if msgraph_webhook_enabled:
-            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+            # Same explicit-disable guard as the webhook branch above (#85637).
+            # READ (don't pop) the marker here: the relay-exclusive pass below
+            # still consults it, and the end-of-function scrub removes it for
+            # every platform.
+            msgraph_cfg = config.platforms[Platform.MSGRAPH_WEBHOOK]
+            if not msgraph_cfg.extra.get("_enabled_explicit", False) or msgraph_cfg.enabled:
+                msgraph_cfg.enabled = True
         if msgraph_webhook_port:
             try:
                 config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(
@@ -2410,9 +2492,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     dingtalk_client_id = getenv("DINGTALK_CLIENT_ID")
     dingtalk_client_secret = getenv("DINGTALK_CLIENT_SECRET")
     if dingtalk_client_id and dingtalk_client_secret:
-        if Platform.DINGTALK not in config.platforms:
-            config.platforms[Platform.DINGTALK] = PlatformConfig()
-        config.platforms[Platform.DINGTALK].enabled = True
+        # Honors an explicit ``platforms.dingtalk.enabled: false`` (#48820).
+        _enable_from_env(Platform.DINGTALK)
         config.platforms[Platform.DINGTALK].extra.update({
             "client_id": dingtalk_client_id,
             "client_secret": dingtalk_client_secret,
@@ -2430,9 +2511,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = getenv("FEISHU_APP_ID")
     feishu_app_secret = getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
-        if Platform.FEISHU not in config.platforms:
-            config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
+        # Honors an explicit ``platforms.feishu.enabled: false`` (#48820).
+        _enable_from_env(Platform.FEISHU)
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
@@ -2458,9 +2538,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     wecom_bot_id = getenv("WECOM_BOT_ID")
     wecom_secret = getenv("WECOM_SECRET")
     if wecom_bot_id and wecom_secret:
-        if Platform.WECOM not in config.platforms:
-            config.platforms[Platform.WECOM] = PlatformConfig()
-        config.platforms[Platform.WECOM].enabled = True
+        # Honors an explicit ``platforms.wecom.enabled: false`` (#48820).
+        _enable_from_env(Platform.WECOM)
         config.platforms[Platform.WECOM].extra.update({
             "bot_id": wecom_bot_id,
             "secret": wecom_secret,
@@ -2481,9 +2560,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     wecom_callback_corp_id = getenv("WECOM_CALLBACK_CORP_ID")
     wecom_callback_corp_secret = getenv("WECOM_CALLBACK_CORP_SECRET")
     if wecom_callback_corp_id and wecom_callback_corp_secret:
-        if Platform.WECOM_CALLBACK not in config.platforms:
-            config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
-        config.platforms[Platform.WECOM_CALLBACK].enabled = True
+        # Honors an explicit ``platforms.wecom_callback.enabled: false`` (#48820).
+        _enable_from_env(Platform.WECOM_CALLBACK)
         config.platforms[Platform.WECOM_CALLBACK].extra.update({
             "corp_id": wecom_callback_corp_id,
             "corp_secret": wecom_callback_corp_secret,
@@ -2501,9 +2579,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     weixin_token = getenv("WEIXIN_TOKEN")
     weixin_account_id = getenv("WEIXIN_ACCOUNT_ID")
     if weixin_token or weixin_account_id:
-        if Platform.WEIXIN not in config.platforms:
-            config.platforms[Platform.WEIXIN] = PlatformConfig()
-        config.platforms[Platform.WEIXIN].enabled = True
+        # Honors an explicit ``platforms.weixin.enabled: false`` (#48820).
+        _enable_from_env(Platform.WEIXIN)
         if weixin_token:
             config.platforms[Platform.WEIXIN].token = weixin_token
         extra = config.platforms[Platform.WEIXIN].extra
@@ -2543,9 +2620,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     bluebubbles_server_url = getenv("BLUEBUBBLES_SERVER_URL")
     bluebubbles_password = getenv("BLUEBUBBLES_PASSWORD")
     if bluebubbles_server_url and bluebubbles_password:
-        if Platform.BLUEBUBBLES not in config.platforms:
-            config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
-        config.platforms[Platform.BLUEBUBBLES].enabled = True
+        # Honors an explicit ``platforms.bluebubbles.enabled: false`` (#48820).
+        _enable_from_env(Platform.BLUEBUBBLES)
         config.platforms[Platform.BLUEBUBBLES].extra.update({
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
@@ -2583,9 +2659,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     qq_app_id = getenv("QQ_APP_ID")
     qq_client_secret = getenv("QQ_CLIENT_SECRET")
     if qq_app_id or qq_client_secret:
-        if Platform.QQBOT not in config.platforms:
-            config.platforms[Platform.QQBOT] = PlatformConfig()
-        config.platforms[Platform.QQBOT].enabled = True
+        # Honors an explicit ``platforms.qqbot.enabled: false`` (#48820).
+        _enable_from_env(Platform.QQBOT)
         extra = config.platforms[Platform.QQBOT].extra
         if qq_app_id:
             extra["app_id"] = qq_app_id
@@ -2625,9 +2700,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     yuanbao_app_id = getenv("YUANBAO_APP_ID") or getenv("YUANBAO_APP_KEY")
     yuanbao_app_secret = getenv("YUANBAO_APP_SECRET")
     if yuanbao_app_id and yuanbao_app_secret:
-        if Platform.YUANBAO not in config.platforms:
-            config.platforms[Platform.YUANBAO] = PlatformConfig()
-        config.platforms[Platform.YUANBAO].enabled = True
+        # Honors an explicit ``platforms.yuanbao.enabled: false`` (#48820).
+        _enable_from_env(Platform.YUANBAO)
         extra = config.platforms[Platform.YUANBAO].extra
         extra["app_id"] = yuanbao_app_id
         extra["app_secret"] = yuanbao_app_secret

@@ -55,7 +55,7 @@ alibaba_token_plan_cn = ProviderProfile(
     display_name="Alibaba Cloud (Token Plan, China)",
     description="Alibaba Cloud Model Studio Token Plan, mainland-China endpoint",
     signup_url="https://help.aliyun.com/zh/model-studio/",
-    env_vars=("ALIBABA_TOKEN_PLAN_API_KEY", "ALIBABA_TOKEN_PLAN_CN_BASE_URL"),
+    env_vars=("ALIBABA_TOKEN_PLAN_CN_API_KEY", "ALIBABA_TOKEN_PLAN_API_KEY", "ALIBABA_TOKEN_PLAN_CN_BASE_URL"),
     base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     auth_type="api_key",
 )

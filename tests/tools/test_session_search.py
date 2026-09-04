@@ -114,23 +114,54 @@ class TestFormatTimestamp:
 # =========================================================================
 
 class TestBrowseShape:
-    def test_lazy_database_is_closed_after_search(self, monkeypatch):
+    def test_browse_uses_bounded_recent_path(self):
         class _DB:
-            closed = 0
+            rich_called = False
+            bounded_kwargs = None
 
-            def list_sessions_rich(self, **_kwargs):
+            def list_recent_sessions_bounded(self, **kwargs):
+                self.bounded_kwargs = kwargs
                 return []
 
-            def close(self):
-                self.closed += 1
+            def list_sessions_rich(self, **_kwargs):
+                self.rich_called = True
+                raise AssertionError("unbounded rich listing must not be used")
 
         db = _DB()
-        monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+        result = json.loads(session_search(db=db))
+
+        assert result["success"] is True
+        assert db.rich_called is False
+        assert db.bounded_kwargs["timeout_seconds"] == 3.0
+
+    def test_browse_fails_closed_without_bounded_database_capability(self):
+        class _LegacyDB:
+            def list_sessions_rich(self, **_kwargs):
+                raise AssertionError("known-unbounded fallback must not be called")
+
+        result = json.loads(session_search(db=_LegacyDB()))
+
+        assert result["success"] is False
+        assert "does not support bounded recent-session browse" in result["error"]
+
+    def test_lazy_database_is_released_after_search(self, monkeypatch):
+        class _DB:
+            released = 0
+
+            def list_recent_sessions_bounded(self, **_kwargs):
+                return []
+
+        db = _DB()
+        monkeypatch.setattr("hermes_state.get_shared_session_db", lambda: db)
+        monkeypatch.setattr(
+            "hermes_state.release_or_close",
+            lambda _: setattr(db, "released", db.released + 1),
+        )
 
         result = json.loads(session_search())
 
         assert result["success"] is True
-        assert db.closed == 1
+        assert db.released == 1
 
     def test_cross_profile_database_is_closed_but_shared_database_is_not(
         self, monkeypatch
@@ -139,7 +170,7 @@ class TestBrowseShape:
             def __init__(self):
                 self.closed = 0
 
-            def list_sessions_rich(self, **_kwargs):
+            def list_recent_sessions_bounded(self, **_kwargs):
                 return []
 
             def close(self):

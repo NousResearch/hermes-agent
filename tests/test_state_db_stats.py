@@ -236,6 +236,20 @@ def test_render_large_db_legacy_trigram_suggests_optimize():
     assert "optimize-storage" in blob
 
 
+def test_render_large_db_v1_trigram_suggests_optimize():
+    from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+
+    lines = _render_state_db_stats(
+        _base_stats(
+            logical_size_bytes=STATE_DB_SIZE_WARN_BYTES + 1,
+            fts_storage_version=1,
+        ),
+        holders=None,
+    )
+    blob = " ".join(" ".join(str(p) for p in line) for line in lines)
+    assert "optimize-storage" in blob
+
+
 def test_render_does_not_duplicate_legacy_wal_warning():
     """A large WAL must NOT warn here: doctor's pre-existing WAL check
     (50 MB threshold, with a --fix checkpoint) already covers it, and a

@@ -133,7 +133,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
             return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
 
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, reprobe_tool_availability
 
         def _refresh_session_agent() -> None:
             """Rebuild THIS session's cached tool snapshot from the live
@@ -184,6 +184,7 @@ def _(rid, params: dict) -> dict:
             loaded = _compute_mcp_rev()
             for _ in range(_MCP_RELOAD_MAX_PASSES):
                 shutdown_mcp_servers()
+                reprobe_tool_availability()
                 discover_mcp_tools()
                 after = _compute_mcp_rev()
                 if after == loaded:
@@ -1057,12 +1058,31 @@ def _(rid, params: dict) -> dict:
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
+            _late_session = session
+
+            def _on_late_ack(late: dict, _sid=sid) -> None:
+                _adopt_late_compute_host_compress_ack(_sid, _late_session, late, route_name="slash.compress")
+
             try:
                 ack = _send_compute_host_control(
                     sid,
                     route_name="slash.compress",
                     command=command,
                     wait=True,
+                    timeout=_compute_host_compress_wait_seconds(),
+                    on_late_ack=_on_late_ack,
+                )
+            except queue.Empty:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "status": "pending",
+                        "output": (
+                            "compression still running in the background; "
+                            "the transcript will refresh when it finishes"
+                        ),
+                    },
                 )
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host slash.compress failed: {exc}")

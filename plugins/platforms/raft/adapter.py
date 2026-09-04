@@ -97,6 +97,52 @@ _RAFT_TURN_IDS: set[str] = set()
 _RAFT_PROMPT_TURN_IDS: set[str] = set()
 
 
+def _profile_scoped() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed, connected, and reloaded
+    inside ``_profile_runtime_scope`` (secret scope installed + multiplex
+    active) — the same discriminator the Buzz/SimpleX adapters use for this
+    bug class (#98738). The DEFAULT profile under multiplexing runs
+    unscoped: ``os.environ`` holds its own bridge output there and keeps its
+    legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
+def _resolve_raft_profile() -> str:
+    """Scope-aware resolution of the ``RAFT_PROFILE`` slug.
+
+    Raft has no ``config.yaml`` equivalent for this value (env-only), so a
+    secondary multiplex profile's only way to configure Raft is via its own
+    ``.env`` file — which the installed secret scope (built from that
+    profile's ``.env`` by ``_profile_runtime_scope``) already carries.
+    Reading raw ``os.environ.get("RAFT_PROFILE")`` here would instead return
+    the DEFAULT profile's bridged value, misdirecting the bridge subprocess
+    or CLI hint at another profile's external Raft workspace/agent identity.
+
+    ``get_secret()`` is only called when ``_profile_scoped()`` is True — the
+    callers of this helper (``connect()``/``register()``) run inside
+    ``_profile_runtime_scope`` for secondary profiles, but the DEFAULT
+    profile's own startup path never installs a scope, where ``get_secret()``
+    would raise ``UnscopedSecretError``; the guard keeps that path on the
+    unchanged ``os.environ`` read.
+    """
+    if _profile_scoped():
+        try:
+            from agent.secret_scope import get_secret
+
+            return (get_secret("RAFT_PROFILE") or "").strip()
+        except Exception:
+            return ""
+    return os.environ.get("RAFT_PROFILE", "").strip()
+
+
 def check_raft_requirements() -> bool:
     """Check if Raft channel dependencies are available.
 
@@ -533,7 +579,7 @@ class RaftAdapter(BasePlatformAdapter):
             logger.warning("[raft] raft CLI not found in PATH; bridge not spawned — wake-only polling mode")
             return
 
-        profile = os.environ.get("RAFT_PROFILE", "")
+        profile = _resolve_raft_profile()
         if not profile:
             logger.warning("[raft] RAFT_PROFILE not set; bridge not spawned")
             return
@@ -777,8 +823,12 @@ def _env_enablement() -> Optional[dict]:
     """Seed PlatformConfig.extra from env vars during gateway config load.
 
     Auto-enables when RAFT_PROFILE is set (the adapter needs it anyway).
+    Scope-aware: consults the active profile's own RAFT_PROFILE (env, or a
+    secondary profile's own .env via the secret scope) instead of the
+    default profile's bridged env value (mirrors the Buzz/SimpleX fix for
+    #98738) — see ``_resolve_raft_profile``.
     """
-    if not os.getenv("RAFT_PROFILE"):
+    if not _resolve_raft_profile():
         return None
 
     return {"enabled": True}
@@ -839,12 +889,18 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,
         emoji="🔔",
+        # Scope-aware (mirrors _resolve_raft_profile's docstring): register()
+        # runs inside _profile_runtime_scope for a secondary multiplex
+        # profile (via discover_plugins() in
+        # gateway/run.py::_start_one_profile_adapters), so this resolves
+        # that profile's own RAFT_PROFILE instead of the default profile's
+        # bridged env value baked into a shared registry entry.
         platform_hint=(
             "You are connected to Raft via an external-agent channel. "
             "Run `raft --profile {profile} profile show` to confirm which agent profile is active. "
             "Run `raft --profile {profile} manual get raft-cli-overview` to learn available Raft commands. "
             "Always pass `--profile {profile}` to every raft CLI call."
-        ).format(profile=os.environ.get("RAFT_PROFILE", "your-agent-profile")),
+        ).format(profile=_resolve_raft_profile() or "your-agent-profile"),
     )
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)

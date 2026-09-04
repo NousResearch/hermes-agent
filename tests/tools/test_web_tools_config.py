@@ -210,6 +210,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
+        "TAVILY_API_KEY",
     )
 
     def setup_method(self):
@@ -254,7 +255,7 @@ class TestBackendSelection:
             assert _get_backend() == "exa"
 
     def test_fallback_exa_takes_priority_over_parallel(self):
-        """Direct-credential backends are tried in the order exa > parallel > keenable
+        """Direct-credential backends are tried in the order tavily > exa > parallel > keenable
         so an explicit Exa key wins when both Exa and Parallel are configured."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
@@ -274,6 +275,27 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "exa"
+
+    def test_fallback_tavily_only_key(self):
+        """Only TAVILY_API_KEY set → 'tavily'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            assert _get_backend() == "tavily"
+
+    def test_fallback_tavily_beats_firecrawl_direct(self):
+        """Tavily ranks above firecrawl in the explicit-credential block."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "tavily"
+
+    def test_fallback_tavily_beats_exa(self):
+        """Tavily ranks above Exa in the explicit-credential block."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "EXA_API_KEY": "exa-test"}):
+            assert _get_backend() == "tavily"
 
 
     def test_fallback_parallel_beats_firecrawl_direct(self):
@@ -341,6 +363,14 @@ class TestBackendSelection:
              patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "exa"
+
+    def test_managed_gateway_does_not_preempt_explicit_tavily(self):
+        """A Nous OAuth token must not beat an explicit TAVILY_API_KEY."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            assert _get_backend() == "tavily"
 
     def test_managed_gateway_only_falls_through_to_firecrawl(self):
         """When no explicit-credential backend is configured, a Nous-managed
@@ -494,6 +524,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
+        "TAVILY_API_KEY",
     )
 
     def setup_method(self):
@@ -597,7 +628,9 @@ class TestCheckWebApiKey:
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
-    assert "EXA_API_KEY" in _web_requires_env()
+    env = _web_requires_env()
+    assert "EXA_API_KEY" in env
+    assert "TAVILY_API_KEY" in env
 
 
 class TestNonBuiltinProviderAvailability:
@@ -625,6 +658,7 @@ class TestNonBuiltinProviderAvailability:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
+        "TAVILY_API_KEY",
         "SEARXNG_URL",
         "BRAVE_SEARCH_API_KEY",
         "XAI_API_KEY",
@@ -765,6 +799,7 @@ class TestSiblingProvidersEnvResolution:
         ("plugins.web.exa.provider", "ExaWebSearchProvider", "EXA_API_KEY"),
         ("plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
         ("plugins.web.keenable.provider", "KeenableWebSearchProvider", "KEENABLE_API_KEY"),
+        ("plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
         ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
     ]
 
@@ -810,6 +845,28 @@ class TestSiblingProvidersEnvResolution:
             headers = mock_post.call_args.kwargs["headers"]
             assert headers["Authorization"] == "Bearer kn-from-dotenv"
             assert headers["X-Keenable-Title"] == "hermes-agent"
+
+    def test_tavily_request_reads_key_via_get_env_value(self, monkeypatch):
+        """Keyed Tavily must Bearer-auth with a key that lives only in .env."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"results": []}
+        mock_response.text = "{}"
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "tvly-from-dotenv" if k == "TAVILY_API_KEY" else None,
+        ), patch(
+            "plugins.web.tavily.provider.httpx.post", return_value=mock_response
+        ) as mock_post:
+            from plugins.web.tavily.provider import _tavily_request
+
+            _tavily_request("search", {"query": "q"})
+            headers = mock_post.call_args.kwargs["headers"]
+            assert headers["Authorization"] == "Bearer tvly-from-dotenv"
+            assert headers["X-Client-Name"] == "hermes-agent"
+            assert "X-Tavily-Access-Mode" not in headers
 
 
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):

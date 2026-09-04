@@ -35,6 +35,11 @@ Configuration (config.yaml):
           chat_id: "YOUR_CHANNEL_ID"
           thread_id: "YOUR_THREAD_ID"
           profile: thread-profile
+
+        - name: owner-whatsapp
+          platform: whatsapp
+          chat_id: "15551234567"   # phone, JID, or LID — all equivalent
+          profile: owner
 """
 
 from __future__ import annotations
@@ -45,6 +50,43 @@ from typing import Any, Dict, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Baileys and Cloud share phone/JID/LID identity rules. Other platforms keep
+# exact string compare so Telegram numeric ids and Discord snowflakes stay
+# unchanged.
+_WHATSAPP_IDENTITY_PLATFORMS = {"whatsapp", "whatsapp_cloud"}
+_WHATSAPP_NON_USER_SUFFIXES = ("@g.us", "@broadcast", "@newsletter")
+
+
+def _is_whatsapp_non_user_chat(chat_id: Optional[str]) -> bool:
+    """True for group / broadcast / newsletter JIDs — not a sender identity."""
+    if not chat_id:
+        return False
+    cid = str(chat_id).strip().lower()
+    return any(cid.endswith(suffix) for suffix in _WHATSAPP_NON_USER_SUFFIXES)
+
+
+def _whatsapp_user_chat_ids_match(platform: str, left: Optional[str], right: Optional[str]) -> bool:
+    """True when two WhatsApp *user* chat_ids refer to the same person.
+
+    Reuses :func:`gateway.whatsapp_identity.expand_whatsapp_aliases` so a
+    bare phone number, a ``@s.whatsapp.net`` JID, and a ``@lid`` LID collapse
+    to one identity — the same helper session keys and adapter allowlists
+    already use. Group/broadcast JIDs are excluded: those are chats, not
+    senders. Returns False for non-WhatsApp platforms (exact match only).
+    """
+    if (platform or "").strip().lower() not in _WHATSAPP_IDENTITY_PLATFORMS:
+        return False
+    if not left or not right:
+        return False
+    if _is_whatsapp_non_user_chat(left) or _is_whatsapp_non_user_chat(right):
+        return False
+    from gateway.whatsapp_identity import expand_whatsapp_aliases
+
+    left_aliases = expand_whatsapp_aliases(str(left))
+    if not left_aliases:
+        return False
+    return bool(left_aliases & expand_whatsapp_aliases(str(right)))
 
 
 class ProfileRouteRejected(RuntimeError):
@@ -92,6 +134,11 @@ class ProfileRoute:
         - Thread in channel: parent_chat_id == route.chat_id
         A route declaring both ``guild_id`` and ``chat_id`` requires both to
         match (a chat match alone does not satisfy a guild constraint).
+
+        WhatsApp / WhatsApp Cloud ``chat_id`` also matches across user-identity
+        forms (bare number, JID, LID) after the exact-string check. Exact
+        matches always win first, so existing configs keep working. Groups
+        (``@g.us``) and broadcasts stay exact-only.
         """
         if not self.enabled:
             return False
@@ -100,10 +147,39 @@ class ProfileRoute:
         if self.thread_id and self.thread_id != thread_id:
             return False
         if self.chat_id and self.chat_id != chat_id and self.chat_id != parent_chat_id:
-            return False
+            if not (
+                _whatsapp_user_chat_ids_match(platform, self.chat_id, chat_id)
+                or _whatsapp_user_chat_ids_match(platform, self.chat_id, parent_chat_id)
+            ):
+                return False
         if self.guild_id and self.guild_id != guild_id:
             return False
         return True
+
+
+def _coerce_route_id(value: Any) -> Optional[str]:
+    """Normalize a route discriminator to str for strict equality matching.
+
+    PyYAML loads unquoted numeric IDs (Discord snowflakes, Telegram negative
+    chat ids) as ``int``. Inbound ``SessionSource`` fields are always ``str``
+    via ``build_source``, so leaving ints here makes ``matches()`` fail silently.
+
+    Only ``int`` is coerced (the legitimate YAML-numeric case). ``bool`` is an
+    ``int`` subclass but never a valid id; floats and other types stringify to
+    something (``"123.0"``) that can never equal an inbound id — recreating the
+    silent no-match this exists to fix — so they are passed through with a
+    load-time warning instead of being silently "fixed" (#86470).
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    logger.warning(
+        "Profile route discriminator %r (type %s) can never match an inbound "
+        "id — quote it in config.yaml (e.g. chat_id: \"%s\").",
+        value, type(value).__name__, value,
+    )
+    return str(value)
 
 
 def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
@@ -143,9 +219,9 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
                 name=name,
                 platform=platform,
                 profile=profile,
-                guild_id=entry.get("guild_id"),
-                chat_id=entry.get("chat_id"),
-                thread_id=entry.get("thread_id"),
+                guild_id=_coerce_route_id(entry.get("guild_id")),
+                chat_id=_coerce_route_id(entry.get("chat_id")),
+                thread_id=_coerce_route_id(entry.get("thread_id")),
                 enabled=entry.get("enabled", True),
             )
         )

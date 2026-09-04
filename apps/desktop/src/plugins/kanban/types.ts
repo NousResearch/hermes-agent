@@ -15,6 +15,8 @@ export interface KanbanTask {
   latest_summary?: null | string
   comment_count?: number
   link_counts?: { parents: number; children: number }
+  /** Display owners used to collapse completed workflow children. */
+  collapse_parent_ids?: string[]
   /** N-of-M child completion, or null when the task has no children. */
   progress?: null | { done: number; total: number }
   /** Compact diagnostics rollup — present only when a card has warnings. */

@@ -1541,6 +1541,7 @@ export {
 export { DisclosureCaret } from '@/components/ui/disclosure-caret'
 export {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,

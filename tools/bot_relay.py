@@ -405,7 +405,8 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
 
 
 def write_reply(
-    root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = ""
+    root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "",
+    status: str = "completed",
 ) -> Path:
     """Persist the relayed reply (or delivery error) for the waiter.
 
@@ -431,6 +432,7 @@ def write_reply(
         "reply": str(reply or ""),
         "error": err,
         "reason": code,
+        "status": status if status in {"accepted", "completed"} else "completed",
     }
     fd, tmp = tempfile.mkstemp(dir=str(base / REPLIES_DIR), prefix=".rep-", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -521,6 +523,9 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "            tag = ' [reason: ' + code + ']' if code else ''\n"
         "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
         "            sys.exit(1)\n"
+        "        if d.get('status') == 'accepted':\n"
+        "            print('Delivery to ' + label + ' was accepted; the reply will appear in the open Bot Chat.')\n"
+        "            sys.exit(0)\n"
         "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
         "        sys.exit(0)\n"

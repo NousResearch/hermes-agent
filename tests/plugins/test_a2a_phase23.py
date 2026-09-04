@@ -445,6 +445,20 @@ class TestMetrics:
 
 
 class TestTaskStore:
+    def test_task_ownership_is_scoped_to_authenticated_peer(self):
+        store = protocol.TaskStore()
+        store.create("alice-task", "ctx", "alice", "agent", "tenant")
+        store.create("bob-task", "ctx", "bob", "agent", "tenant")
+
+        assert store.get("alice-task", "agent", "tenant", "alice") is not None
+        assert store.get("alice-task", "agent", "tenant", "bob") is None
+        records, _ = store.list(agent_slug="agent", tenant="tenant", peer="bob")
+        assert [record["task_id"] for record in records] == ["bob-task"]
+        assert store.set_push_config(
+            "alice-task", "https://example.com/hook", "agent", "tenant", "bob"
+        ) is None
+        assert store.watch("alice-task", "agent", "tenant", "bob") is None
+
     def test_create_and_get(self):
         store = protocol.TaskStore()
         store.create("t1", "c1", "peer-1")
@@ -646,6 +660,21 @@ class TestA2AOrchestrate:
         assert out.startswith("[first: ")
         assert "win" in out
 
+    def test_first_mode_returns_without_waiting_for_slowest_peer(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
+
+        def call(name, entry, msg, ctx=""):
+            time.sleep(0.05 if name == "coder" else 0.5)
+            return name, f"win {name}"
+
+        monkeypatch.setattr(tools, "_call_peer_sync", call)
+        started = time.monotonic()
+
+        out = tools.a2a_orchestrate({"capability": "code", "message": "go", "mode": "first"})
+
+        assert out.startswith("[first: coder]")
+        assert time.monotonic() - started < 0.25
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SSRF protection for push callbacks
@@ -653,6 +682,39 @@ class TestA2AOrchestrate:
 
 
 class TestSSRFProtection:
+    @pytest.mark.parametrize("address", ["100.64.0.1", "224.0.0.1", "0.0.0.0", "ff02::1"])
+    def test_special_use_addresses_are_blocked(self, monkeypatch, address):
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *_args, **_kwargs: [(2, 1, 6, "", (address, 443))],
+        )
+
+        assert security.is_safe_callback_url(
+            "https://public-looking.example/hook", localhost_mode=False
+        ) is False
+
+    def test_hostname_resolving_to_private_address_is_blocked(self, monkeypatch):
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *_args, **_kwargs: [(2, 1, 6, "", ("127.0.0.1", 443))],
+        )
+
+        assert security.is_safe_callback_url(
+            "https://public-looking.example/hook", localhost_mode=False
+        ) is False
+
+    def test_callback_resolution_returns_the_validated_ip(self, monkeypatch):
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+        )
+
+        resolved = security.resolve_safe_callback_url(
+            "https://example.com/hook", localhost_mode=False
+        )
+
+        assert resolved[1] == "93.184.216.34"
+
     def test_safe_public_urls_allowed(self):
         assert security.is_safe_callback_url("https://example.com/webhook") is True
         assert security.is_safe_callback_url("http://example.com/webhook") is True

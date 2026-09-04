@@ -364,6 +364,7 @@ def sign_push_payload(payload: dict) -> str:
 # --------------------------------------------------------------------------
 
 import ipaddress
+import socket
 import urllib.parse
 
 # Blocked IP ranges for push callback URLs (SSRF prevention).
@@ -384,43 +385,52 @@ _BLOCKED_PREFIXES = (
 )
 
 
-def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
-    """Check if a push notification callback URL is safe from SSRF.
-
-    Blocks internal/private/loopback/metadata addresses.
-    Only allows http:// and https:// schemes.
-    """
+def resolve_safe_callback_url(
+    url: str, *, localhost_mode: Optional[bool] = None
+) -> Optional[tuple[urllib.parse.ParseResult, str]]:
+    """Validate a callback and return the exact IP that must be dialed."""
     if localhost_mode is None:
         localhost_mode = localhost_only()
     if not url or not isinstance(url, str):
-        return False
+        return None
     try:
         parsed = urllib.parse.urlparse(url)
     except Exception:
-        return False
+        return None
     if parsed.scheme not in ("http", "https"):
-        return False
+        return None
     hostname = parsed.hostname or ""
     if not hostname:
-        return False
+        return None
     hostname_lower = hostname.lower()
     if hostname_lower == "localhost":
-        # Loopback callbacks only make sense for local testing.
-        return localhost_mode
+        return (parsed, "127.0.0.1") if localhost_mode else None
     for prefix in _BLOCKED_PREFIXES:
         if hostname_lower.startswith(prefix.lower()):
             if localhost_mode and prefix in ("127.", "::1"):
-                return True
-            return False
+                return parsed, hostname
+            return None
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            if localhost_mode and ip.is_loopback:
-                return True
-            return False
+        addresses = [ipaddress.ip_address(hostname)]
     except ValueError:
-        pass  # not an IP, it's a hostname — fine
-    return True
+        try:
+            addresses = {
+                ipaddress.ip_address(info[4][0])
+                for info in socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+            }
+        except (OSError, ValueError):
+            return None
+    for ip in addresses:
+        if localhost_mode and ip.is_loopback:
+            continue
+        if not ip.is_global or ip.is_multicast or ip.is_unspecified:
+            return None
+    return parsed, str(next(iter(addresses)))
+
+
+def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
+    """Check if a push notification callback URL is safe from SSRF."""
+    return resolve_safe_callback_url(url, localhost_mode=localhost_mode) is not None
 
 
 # --------------------------------------------------------------------------

@@ -71,7 +71,7 @@ class TestCliApprovalSurvivesExecAskLeak:
             return "once"
 
         set_approval_callback(_cb)
-        result = check_all_command_guards("rm -rf /tmp/testdir", "local")
+        result = check_all_command_guards("rm -rf ~/scratch-area/testdir", "local")
 
         assert calls, "CLI approval callback was never invoked"
         assert result.get("status") != "pending_approval"
@@ -85,7 +85,7 @@ class TestCliApprovalSurvivesExecAskLeak:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         set_approval_callback(None)
 
-        result = check_all_command_guards("rm -rf /tmp/testdir", "local")
+        result = check_all_command_guards("rm -rf ~/scratch-area/testdir", "local")
 
         assert result.get("approved") is False
         assert result.get("status") == "pending_approval"

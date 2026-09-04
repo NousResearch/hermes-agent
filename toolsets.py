@@ -266,7 +266,17 @@ TOOLSETS = {
         ],
         "includes": []
     },
-    
+
+    # Opt-in: only offered when PHOTON_REACTIONS=true and the gateway runs a
+    # live Photon adapter (the check_fn on the tool enforces both at runtime;
+    # listing it here just names the bucket). Selective vibe-based iMessage
+    # tapbacks — see tools/photon_react_tool.py.
+    "photon_react": {
+        "description": "Selective emoji tapbacks on iMessage via Photon (opt-in)",
+        "tools": ["photon_react"],
+        "includes": []
+    },
+
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],

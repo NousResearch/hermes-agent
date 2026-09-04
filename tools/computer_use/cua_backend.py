@@ -366,7 +366,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             args["element_token"] = token
         elif (
             isinstance(idx, int)
-            and self._last_snapshot_id
+            and getattr(self, "_last_snapshot_id", None)
             and self._session.supports_input_property(name, "snapshot_id")
         ):
             # Snapshot-gated drivers (trycua/cua element_token gate) refuse a bare element_index; the

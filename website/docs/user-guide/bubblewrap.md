@@ -14,7 +14,8 @@ and cannot read your credentials. It needs no image, no daemon and no
 network round trip, so it fits a personal machine or a small server where
 the `local` backend is too open and Docker is too heavy.
 
-Linux only. Requires bubblewrap 0.9.0 or later and unprivileged user
+Linux only. Requires bubblewrap 0.9.0 or later, `prlimit` from util-linux
+(installed on every mainstream distribution) and unprivileged user
 namespaces (or a setuid `bwrap`).
 
 ## Quick start
@@ -169,6 +170,12 @@ that limit.
 | `bubblewrap_memory_mb` | `256` | Virtual memory per process (`RLIMIT_AS`) |
 | `bubblewrap_cpu_seconds` | `30` | CPU time per process (`RLIMIT_CPU`) |
 | `bubblewrap_max_procs` | `256` | Processes the command may add (`RLIMIT_NPROC`) |
+
+The limits are set by `prlimit` from util-linux, which runs in front of
+`bwrap` for every command: it sets the three limits on itself and then
+starts `bwrap`, so they cover the sandbox and every process inside it.
+`hermes doctor` reports a missing `prlimit` the same way as a missing
+`bwrap`.
 
 The defaults are deliberately tight and some everyday tools exceed them:
 

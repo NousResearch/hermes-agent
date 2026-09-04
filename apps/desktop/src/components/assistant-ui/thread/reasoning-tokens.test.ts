@@ -54,13 +54,13 @@ describe('reasoning typography tokens (#99793)', () => {
     expect(REASONING_CONTAINER_CLASSES.join(' ')).not.toContain('text-xs')
   })
 
-  it('keeps the fade default intact on the open-disclosure path (layer 3 lands separately)', async () => {
+  it('gates the open-disclosure opacity behind a token with the stock fade as default', async () => {
     const css = await compiled()
 
-    // No open-disclosure exemption yet: the stock fade applies to every
-    // scaffold row, thinking included. The follow-up commit gates the open
-    // body's opacity behind --conversation-reasoning-open-opacity.
-    expect(css).not.toContain('--conversation-reasoning-open-opacity')
+    expect(css).toContain('--conversation-reasoning-open-opacity, 0.67')
+    // The rule targets an open disclosure specifically — the body must be a
+    // direct child, so collapsed rows keep the stock fade.
+    expect(css).toContain("[data-slot='aui_thinking-disclosure']:has(> [data-slot='aui_thinking-body'])")
   })
 
   it('keeps the component free of the old hard-coded utilities', () => {

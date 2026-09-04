@@ -1119,11 +1119,28 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     operand = argv[2]
     temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
-    return (
-        operand == os.path.join(temp_dir, basename)
-        and os.path.dirname(os.path.realpath(operand)) == temp_dir
-        and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
-    )
+    # The operand's directory must resolve to the canonical temp dir, and its
+    # spelling must be either that canonical form or the exact value
+    # gettempdir() reports (when that value is itself a real directory —
+    # on macOS realpath() canonicalizes the automount prefix, e.g.
+    # "/var/folders/..." -> "/private/var/folders/...", so cleanup commands
+    # spelled through gettempdir()'s own value must still match). A different
+    # alias of the temp dir (any other symlink pointing at it) is rejected.
+    spelled_dir = os.path.dirname(operand)
+    if os.path.realpath(spelled_dir) != temp_dir:
+        return False
+    if spelled_dir not in (temp_dir, tempfile.gettempdir()):
+        return False
+    if (
+        spelled_dir != temp_dir
+        and os.path.islink(spelled_dir)
+    ):
+        return False
+
+    target = os.path.realpath(operand)
+    if os.path.dirname(target) != temp_dir:
+        return False
+    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:

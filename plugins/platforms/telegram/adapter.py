@@ -848,6 +848,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._status_offline_text: str = str(
             self.config.extra.get("status_offline", "Offline")
         )
+        # Operator's original short description, captured the first time we go
+        # online so it can be restored on disconnect instead of permanently
+        # clobbering the profile (#78784).
+        self._status_saved_description: Optional[str] = None
+        self._status_desc_captured: bool = False
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
@@ -5144,6 +5149,10 @@ class TelegramAdapter(BasePlatformAdapter):
         profile. It is the closest Bot API surface to a presence indicator —
         bots have no real online/offline dot (that's a user-account feature).
 
+        When going online the operator's existing description is captured (once)
+        so it can be **restored** on disconnect instead of being permanently
+        overwritten by "Offline" text (#78784).
+
         No-op unless ``extra.status_indicator`` is enabled. Best-effort: any
         failure is logged at debug and swallowed so it never blocks connect or
         disconnect. The default (no language_code) description applies to every
@@ -5154,7 +5163,34 @@ class TelegramAdapter(BasePlatformAdapter):
         bot = self._bot
         if bot is None:
             return
-        text = self._status_online_text if online else self._status_offline_text
+
+        if online:
+            # Capture the operator's real description the first time we go
+            # online, before we overwrite it with status text (#78784).
+            if not self._status_desc_captured:
+                try:
+                    current = await bot.get_my_short_description()
+                    self._status_saved_description = (
+                        getattr(current, "short_description", "") or ""
+                    )
+                    self._status_desc_captured = True
+                except Exception as e:
+                    logger.debug(
+                        "[%s] Failed to capture original short description: %s",
+                        self.name, _redact_telegram_error_text(e),
+                    )
+                    # Leave _status_desc_captured False so the offline path
+                    # falls back to the configured offline text rather than
+                    # restoring an empty description.
+            text = self._status_online_text
+        elif self._status_desc_captured:
+            # Restore the operator's original instead of leaving "Offline".
+            text = self._status_saved_description or ""
+        else:
+            # Capture never happened (e.g. connect failed before this point):
+            # fall back to the configured offline text.
+            text = self._status_offline_text
+
         # Telegram caps short_description at 120 chars.
         text = text[:120]
         try:

@@ -265,6 +265,34 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
   })
+
+  it('mirrors runtime model/provider into the view without persisting over the composer selection (#102793)', () => {
+    // A real user pick: persisted to localStorage, the same as picking a
+    // provider in the model menu.
+    setCurrentModel('claude-opus-5')
+    setCurrentProvider('anthropic')
+    expect(window.localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
+
+    let cache!: Cache
+
+    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+
+    // A session.info heartbeat reports the resolved runtime class — `custom`
+    // for a named custom provider — for the same foreground session.
+    act(() => {
+      cache.updateSessionState(
+        'fg-runtime',
+        state => ({ ...state, model: 'claude-opus-5', provider: 'custom' }),
+        'fg-stored'
+      )
+    })
+
+    // The visible status area follows the runtime...
+    expect($currentProvider.get()).toBe('custom')
+    // ...but the user's persisted composer selection must survive the
+    // heartbeat, so a fresh chat still follows it instead of `custom`.
+    expect(window.localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
+  })
 })
 
 interface LayoutProbeHarnessProps {

@@ -8518,6 +8518,65 @@ def _register_linux_desktop_entry() -> None:
         print(f"⚠ Could not install the desktop launcher entry: {exc}")
 
 
+def _stale_installed_macos_desktop_app(
+    packaged_executable: Path | None,
+    *,
+    search_bases: list[Path] | None = None,
+) -> Path | None:
+    """Return an installed Hermes.app that is older than ``packaged_executable``.
+
+    Used by ``hermes gui --build-only`` to warn when a terminal rebuild left the
+    Applications (or other) install untouched. Non-darwin and missing inputs
+    return None. When the built executable already lives inside the candidate
+    bundle, do not warn (in-place build).
+    """
+    if packaged_executable is None:
+        return None
+    if sys.platform != "darwin":
+        return None
+    try:
+        built = Path(packaged_executable).resolve()
+        built_mtime = built.stat().st_mtime
+    except OSError:
+        return None
+
+    if search_bases is None:
+        home = Path.home()
+        search_bases = [
+            Path("/Applications"),
+            home / "Applications",
+        ]
+
+    candidates: list[Path] = []
+    for base in search_bases:
+        try:
+            app = Path(base) / "Hermes.app"
+            exe = app / "Contents" / "MacOS" / "Hermes"
+            if not exe.is_file():
+                continue
+            # Same bundle as the build output → not stale.
+            try:
+                if built.resolve() == exe.resolve():
+                    continue
+                # built lives under this app bundle
+                if app.resolve() in built.resolve().parents:
+                    continue
+            except OSError:
+                pass
+            try:
+                inst_mtime = exe.stat().st_mtime
+            except OSError:
+                continue
+            if inst_mtime < built_mtime:
+                candidates.append(app.resolve())
+        except OSError:
+            continue
+    if not candidates:
+        return None
+    # Prefer the oldest stale install if multiple.
+    return min(candidates, key=lambda a: (a / "Contents" / "MacOS" / "Hermes").stat().st_mtime)
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
@@ -8801,6 +8860,27 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+            stale_app = _stale_installed_macos_desktop_app(packaged_executable)
+            if stale_app is not None:
+                built_app = packaged_executable.parents[2]
+                staged = stale_app.parent / f"{stale_app.name}.new"
+                print(
+                    f"  ⚠ Your installed {stale_app} is older than this build and was "
+                    "NOT replaced."
+                )
+                print(
+                    "    Launching it from Finder/Dock will run the stale app. The supported "
+                    "way to update is `hermes update` (the in-app updater stages a fresh bundle "
+                    "and swaps it after exit)."
+                )
+                print(
+                    "    To replace it manually, stage the new bundle then swap it in "
+                    "(replacement-safe — avoids merging into a stale bundle):"
+                )
+                print(
+                    f"      rm -rf '{staged}' && cp -R '{built_app}' '{staged}' && "
+                    f"rm -rf '{stale_app}' && mv '{staged}' '{stale_app}'"
+                )
         return
 
     if source_mode:

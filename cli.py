@@ -988,15 +988,17 @@ def _ensure_kanban_worker_lifecycle(
         return True
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
 
     delays = retry_delays or (0.0,)
     for attempt, delay in enumerate(delays):
         if delay:
             time.sleep(delay)
         try:
-            with kb.connect_closing() as conn:
-                disposition = kb.finalize_clean_worker_exit(conn, task_id, run_id)
-            with kb.connect_closing() as verify_conn:
+            with kbc.connect_closing() as conn:
+                disposition = kbd.finalize_clean_worker_exit(conn, task_id, run_id)
+            with kbc.connect_closing() as verify_conn:
                 run = kb.get_run(verify_conn, run_id)
                 durable = bool(
                     run is not None

@@ -3605,12 +3605,23 @@ def _insert_decomposed_child(
     """
     root_ws_kind = root_row["workspace_kind"] or "scratch"
     child_ws_kind = child.get("workspace_kind") or root_ws_kind
+    root_repo_anchor: Optional[str] = None
+    root_ws_path = root_row["workspace_path"]
+    if root_ws_kind == "worktree" and root_ws_path:
+        root_path = Path(root_ws_path)
+        if _is_linked_worktree_checkout(root_path):
+            common = _git_common_dir(root_path)
+            if common is not None and common.name == ".git":
+                root_repo_anchor = str(common.parent)
+        if root_repo_anchor is None:
+            repo_root = _repo_root_for_worktree_target(root_path)
+            root_repo_anchor = str(repo_root) if repo_root else None
     if child.get("workspace_path"):
         child_ws_path = child.get("workspace_path")
     elif child_ws_kind == "worktree":
-        child_ws_path = None
+        child_ws_path = root_repo_anchor
     elif child_ws_kind == root_ws_kind:
-        child_ws_path = root_row["workspace_path"]
+        child_ws_path = root_ws_path
     else:
         child_ws_path = None
     new_id = _new_task_id()
@@ -4180,8 +4191,11 @@ from hermes_cli.kanban_db_connect import (  # noqa: E402
 )
 from hermes_cli.kanban_db_workspace import (  # noqa: E402
     _cleanup_workspace,
+    _git_common_dir,
+    _is_linked_worktree_checkout,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
+    _repo_root_for_worktree_target,
     _scratch_workspace,
 )
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402

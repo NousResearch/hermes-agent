@@ -135,17 +135,24 @@ class CronScheduler(ABC):
         return provider_supports_force_fire(self)
 
     def fire_due(
-        self, job_id: str, *, adapters: Any = None, loop: Any = None, force: bool = False,
+        self, job_id: str, *, adapters: Any = None, loop: Any = None,
+        force: bool = False, allow_provider_backoff: bool = False,
     ) -> bool:
         """Run one job NOW (inbound fire webhook entry). Store CAS claim (multi-machine
         at-most-once) then shared ``run_one_job``. True if THIS caller claimed and processed the
         attempt (even if the job failed); False if the claim was lost or the job is gone."""
-        claimed_job = self.claim_fire(job_id, force=force)
+        claim_kwargs: dict[str, Any] = {"force": force}
+        if allow_provider_backoff and provider_supports_backoff_override(self):
+            claim_kwargs["allow_provider_backoff"] = True
+        claimed_job = self.claim_fire(job_id, **claim_kwargs)
         if claimed_job is None:
             return False
         return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
 
-    def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
+    def claim_fire(
+        self, job_id: str, *, force: bool = False,
+        allow_provider_backoff: bool = False,
+    ) -> dict | None:
         """Durably claim one fire + create its audit attempt. Transports call this synchronously
         before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread."""
         from cron.executions import create_execution, finish_execution
@@ -155,6 +162,8 @@ class CronScheduler(ABC):
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
+        if allow_provider_backoff:
+            claim_kwargs["allow_provider_backoff"] = True
         try:
             claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
         except BaseException as exc:
@@ -183,6 +192,35 @@ class CronScheduler(ABC):
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (desired state). Built-in: no-op."""
         return None
+
+
+def _callable_supports_keyword(callable_obj: Any, keyword: str) -> bool:
+    """Return whether a callable explicitly accepts a keyword or **kwargs."""
+    try:
+        parameters = inspect.signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == keyword
+            and parameter.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        )
+        for parameter in parameters
+    )
+
+
+def provider_supports_backoff_override(provider: Any) -> bool:
+    """Return whether a provider can safely bypass only provider backoff."""
+    if not _callable_supports_keyword(provider.fire_due, "allow_provider_backoff"):
+        return False
+    if type(provider).fire_due is CronScheduler.fire_due:
+        return _callable_supports_keyword(
+            provider.claim_fire, "allow_provider_backoff")
+    return True
 
 
 def provider_supports_force_fire(provider: Any) -> bool:

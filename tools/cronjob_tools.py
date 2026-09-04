@@ -182,7 +182,9 @@ def _claim_for_manual_run(job_id: str, log_label: str):
     ``(None, error_dict)`` in the ``_execute_job_now`` shape. A lost claim is labelled precisely —
     claim_job_for_fire also returns False for paused/disabled/missing jobs, not just in-flight ones."""
     try:
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        claimed_job = claim_job_for_fire(
+            job_id, allow_provider_backoff=True, return_job=True
+        )
         if isinstance(claimed_job, dict):
             return claimed_job, None
         refreshed = get_job(job_id)

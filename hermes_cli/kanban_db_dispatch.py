@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -717,6 +718,146 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+_PRODUCT_SIGNOFF_MARKER = "PRODUCT_SIGNOFF"
+
+
+def _is_product_signoff_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether the task durably requires explicit product sign-off."""
+    row = conn.execute(
+        "SELECT title, body FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    return any(
+        text and _PRODUCT_SIGNOFF_MARKER in text
+        for text in (row["title"], row["body"])
+    )
+
+
+def _account_protocol_violation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error_text: str,
+    *,
+    event_payload_extra: Optional[dict] = None,
+) -> bool:
+    """Apply the bounded clean-exit breaker, except for sign-off tasks."""
+    if _is_product_signoff_task(conn, task_id):
+        return False
+    streak = _protocol_violation_streak(conn, task_id)
+    row = conn.execute(
+        "SELECT max_retries FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    task_override = row["max_retries"]
+    violation_limit = (
+        int(task_override)
+        if task_override is not None
+        else _PROTOCOL_VIOLATION_FAILURE_LIMIT
+    )
+    if streak < violation_limit:
+        return False
+    extra = dict(event_payload_extra or {})
+    extra.update({
+        "protocol_violations": streak,
+        "protocol_violation_limit": violation_limit,
+    })
+    return _record_task_failure(
+        conn,
+        task_id,
+        error=error_text,
+        outcome="crashed",
+        failure_limit=violation_limit,
+        force_trip=True,
+        release_claim=False,
+        end_run=False,
+        event_payload_extra=extra,
+        _allow_nested_txn=conn.in_transaction,
+    )
+
+
+def finalize_clean_worker_exit(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_run_id: int,
+) -> str:
+    """Fail closed when a worker returns normally without a terminal handoff."""
+    error_text = (
+        "worker exited cleanly (rc=0) without a durable terminal lifecycle "
+        "transition — protocol violation. Verify prior work and call "
+        "kanban_complete, kanban_block, or kanban_request_review."
+    )
+    with _kb.write_txn(conn):
+        run = conn.execute(
+            "SELECT outcome, ended_at, metadata FROM task_runs "
+            "WHERE id = ? AND task_id = ?",
+            (int(expected_run_id), task_id),
+        ).fetchone()
+        if run is None:
+            return "superseded"
+        if run["outcome"] is not None or run["ended_at"] is not None:
+            try:
+                metadata = json.loads(run["metadata"]) if run["metadata"] else {}
+            except (TypeError, ValueError):
+                metadata = {}
+            if (
+                run["outcome"] == "crashed"
+                and isinstance(metadata, dict)
+                and metadata.get("protocol_violation") is True
+                and metadata.get("source") == "worker_exit_finalizer"
+            ):
+                return "protocol_violation"
+            return "already_finalized"
+
+        retry_status = _kb._retry_status_for_run(
+            conn, task_id, int(expected_run_id)
+        )
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_failure_error = ? "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (retry_status, error_text[:500], task_id, int(expected_run_id)),
+        )
+        if cur.rowcount != 1:
+            return "superseded"
+        payload = {
+            "exit_code": 0,
+            "protocol_violation": True,
+            "retry_status": retry_status,
+            "source": "worker_exit_finalizer",
+        }
+        run_id = _kb._end_run(
+            conn,
+            task_id,
+            outcome="crashed",
+            status="crashed",
+            error=error_text,
+            metadata=payload,
+        )
+        if run_id != int(expected_run_id):
+            raise RuntimeError(
+                f"worker finalizer closed run {run_id}, expected {expected_run_id}"
+            )
+        _kb._append_event(
+            conn,
+            task_id,
+            "protocol_violation",
+            payload,
+            run_id=run_id,
+        )
+        _account_protocol_violation(
+            conn,
+            task_id,
+            error_text,
+            event_payload_extra={
+                "protocol_violations": _protocol_violation_streak(conn, task_id),
+                "source": "worker_exit_finalizer",
+            },
+        )
+    return "protocol_violation"
+
+
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the work itself succeeded and only the
@@ -994,6 +1135,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    _allow_nested_txn: bool = False,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1010,7 +1152,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
-    with _kb.write_txn(conn):
+    with _kb.write_txn(conn, allow_nested=_allow_nested_txn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
@@ -1030,6 +1172,11 @@ def _record_task_failure(
             effective_limit, limit_source = int(task_override), "task"
         else:
             effective_limit, limit_source = int(failure_limit), "dispatcher"
+
+        if force_trip:
+            # Persist at least the exhausted policy's threshold so a later
+            # recompute cannot immediately undo the breaker transition.
+            failures = max(failures, effective_limit)
 
         if not (force_trip or failures >= effective_limit):
             if release_claim:

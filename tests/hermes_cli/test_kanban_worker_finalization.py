@@ -9,6 +9,8 @@ import pytest
 
 import cli
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -32,10 +34,10 @@ def _claimed(conn, *, assignee="coder", body=None):
 def test_clean_worker_exit_without_lifecycle_is_durably_failed_closed(
     kanban_home, assignee,
 ):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, run_id = _claimed(conn, assignee=assignee)
 
-        result = kb.finalize_clean_worker_exit(conn, task_id, run_id)
+        result = kbd.finalize_clean_worker_exit(conn, task_id, run_id)
 
         assert result == "protocol_violation"
         task = kb.get_task(conn, task_id)
@@ -59,21 +61,21 @@ def test_clean_worker_exit_without_lifecycle_is_durably_failed_closed(
 def test_successful_lifecycle_transition_is_preserved(
     kanban_home, transition, expected,
 ):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, run_id = _claimed(conn)
         assert transition(conn, task_id, run_id)
 
-        assert kb.finalize_clean_worker_exit(conn, task_id, run_id) == "already_finalized"
+        assert kbd.finalize_clean_worker_exit(conn, task_id, run_id) == "already_finalized"
         assert kb.get_run(conn, run_id).outcome == expected
 
 
 def test_transient_finalization_write_is_retried_and_verified(
     kanban_home, monkeypatch,
 ):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, run_id = _claimed(conn)
 
-    real_connect = kb.connect_closing
+    real_connect = kbc.connect_closing
     attempts = 0
 
     def flaky_connect():
@@ -83,54 +85,54 @@ def test_transient_finalization_write_is_retried_and_verified(
             raise OSError("temporary database failure")
         return real_connect()
 
-    monkeypatch.setattr(kb, "connect_closing", flaky_connect)
+    monkeypatch.setattr(kbc, "connect_closing", flaky_connect)
     assert cli._ensure_kanban_worker_lifecycle(
         task_id, run_id, clean_exit=True, retry_delays=(0, 0)
     ) is False
     # One failed open + one successful write + one fresh verification read.
     assert attempts == 3
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_run(conn, run_id).ended_at is not None
 
 
 def test_process_crash_does_not_fabricate_a_lifecycle_transition(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, run_id = _claimed(conn)
 
     assert cli._ensure_kanban_worker_lifecycle(
         task_id, run_id, clean_exit=False, retry_delays=(0,)
     ) is True
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, task_id).status == "running"
         assert kb.get_run(conn, run_id).ended_at is None
 
 
 def test_duplicate_finalization_is_idempotent(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, run_id = _claimed(conn)
-        assert kb.finalize_clean_worker_exit(conn, task_id, run_id) == "protocol_violation"
+        assert kbd.finalize_clean_worker_exit(conn, task_id, run_id) == "protocol_violation"
         event_ids = [e.id for e in kb.list_events(conn, task_id)]
 
-        assert kb.finalize_clean_worker_exit(conn, task_id, run_id) == "protocol_violation"
+        assert kbd.finalize_clean_worker_exit(conn, task_id, run_id) == "protocol_violation"
         assert [e.id for e in kb.list_events(conn, task_id)] == event_ids
 
 
 def test_product_signoff_task_is_never_auto_blocked_across_violation_limit(
     kanban_home,
 ):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(
             conn,
             title="ship release",
             body="PRODUCT_SIGNOFF required from owner",
             assignee="coder",
         )
-        for _ in range(kb._PROTOCOL_VIOLATION_FAILURE_LIMIT + 1):
+        for _ in range(kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT + 1):
             task = kb.claim_task(conn, task_id)
             assert task is not None and task.current_run_id is not None
 
             assert (
-                kb.finalize_clean_worker_exit(conn, task_id, task.current_run_id)
+                kbd.finalize_clean_worker_exit(conn, task_id, task.current_run_id)
                 == "protocol_violation"
             )
 
@@ -147,35 +149,35 @@ def test_product_signoff_task_is_never_auto_blocked_across_violation_limit(
 def test_finalization_and_breaker_accounting_share_one_transaction(
     kanban_home, monkeypatch,
 ):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, run_id = _claimed(conn)
         conn.execute("UPDATE tasks SET max_retries = 1 WHERE id = ?", (task_id,))
-        real_record_failure = kb._record_task_failure
+        real_record_failure = kbd._record_task_failure
 
         def require_active_transaction(inner_conn, *args, **kwargs):
             assert inner_conn.in_transaction
             return real_record_failure(inner_conn, *args, **kwargs)
 
-        monkeypatch.setattr(kb, "_record_task_failure", require_active_transaction)
+        monkeypatch.setattr(kbd, "_record_task_failure", require_active_transaction)
 
-        assert kb.finalize_clean_worker_exit(conn, task_id, run_id) == "protocol_violation"
+        assert kbd.finalize_clean_worker_exit(conn, task_id, run_id) == "protocol_violation"
         assert kb.get_task(conn, task_id).status == "blocked"
 
 
 def test_breaker_accounting_failure_rolls_back_run_finalization(
     kanban_home, monkeypatch,
 ):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, run_id = _claimed(conn)
         conn.execute("UPDATE tasks SET max_retries = 1 WHERE id = ?", (task_id,))
 
         def fail_accounting(*_args, **_kwargs):
             raise OSError("accounting write failed")
 
-        monkeypatch.setattr(kb, "_record_task_failure", fail_accounting)
+        monkeypatch.setattr(kbd, "_record_task_failure", fail_accounting)
 
         with pytest.raises(OSError, match="accounting write failed"):
-            kb.finalize_clean_worker_exit(conn, task_id, run_id)
+            kbd.finalize_clean_worker_exit(conn, task_id, run_id)
 
         assert kb.get_task(conn, task_id).status == "running"
         assert kb.get_run(conn, run_id).ended_at is None
@@ -186,12 +188,12 @@ def test_breaker_accounting_failure_rolls_back_run_finalization(
 
 
 def test_protocol_violation_limit_stays_blocked_after_recompute(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="repeated omission", assignee="qa")
-        for _ in range(kb._PROTOCOL_VIOLATION_FAILURE_LIMIT):
+        for _ in range(kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT):
             task = kb.claim_task(conn, task_id)
             assert task is not None and task.current_run_id is not None
-            kb.finalize_clean_worker_exit(conn, task_id, task.current_run_id)
+            kbd.finalize_clean_worker_exit(conn, task_id, task.current_run_id)
 
         assert kb.get_task(conn, task_id).status == "blocked"
         assert kb.recompute_ready(conn) == 0

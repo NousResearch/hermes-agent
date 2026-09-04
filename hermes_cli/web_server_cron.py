@@ -287,7 +287,9 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
                         f"Cron provider '{getattr(provider, 'name', 'custom')}' "
                         "does not support atomic forced firing of paused jobs"))
             return bool(provider.fire_due(job_id, adapters=None, loop=None, force=True))
-        return bool(provider.fire_due(job_id, adapters=None, loop=None))
+        return bool(provider.fire_due(
+            job_id, adapters=None, loop=None, allow_provider_backoff=True
+        ))
 
 
 def _profile_env_value(home: Path, key: str) -> str:

@@ -116,7 +116,7 @@ def test_decompose_worktree_children_inherit_root_repo_anchor(kanban_home, tmp_p
     repo = _make_repo(tmp_path)
     root_wt = _add_worktree(repo, repo / ".worktrees" / "rootx", "wt/rootx")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.create_task(conn, title="build the feature", triage=True)
         conn.execute(
             "UPDATE tasks SET workspace_kind='worktree', "
@@ -157,7 +157,7 @@ def test_decompose_worktree_children_inherit_root_repo_anchor(kanban_home, tmp_p
         for cid in child_ids:
             task = kb.get_task(conn, cid)
             assert task is not None
-            workspace, branch = kb._resolve_worktree_workspace(task)
+            workspace, branch = kbw._resolve_worktree_workspace(task)
             assert workspace == (repo / ".worktrees" / cid).resolve()
             assert branch == f"wt/{cid}"
         # Sibling isolation still holds: distinct paths, distinct branches.
@@ -169,7 +169,7 @@ def test_decompose_worktree_children_without_recoverable_root_stay_unset(kanban_
     """A root whose path points nowhere git-recognizable cannot supply an
     anchor; children keep the anchorless row (dispatch's board-default
     path) instead of storing a bogus path."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.create_task(conn, title="build the feature", triage=True)
         conn.execute(
             "UPDATE tasks SET workspace_kind='worktree', "
@@ -197,7 +197,7 @@ def test_decompose_worktree_children_without_recoverable_root_stay_unset(kanban_
 def test_decompose_scratch_root_children_stay_scratch(kanban_home):
     """Scratch-only decomposition is unchanged: no worktree kind or repo
     path leaks into children of a scratch root."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.create_task(conn, title="plan the offsite", triage=True)
         conn.commit()
 

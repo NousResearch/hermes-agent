@@ -114,6 +114,24 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
+function clarifyRequestMatchesArgs(request: ClarifyRequest | null, args: ClarifyArgs): boolean {
+  if (!request) {
+    return false
+  }
+
+  const requestQuestions = request.questions ?? []
+  const argQuestions = args.questions ?? []
+
+  if (requestQuestions.length > 0 || argQuestions.length > 0) {
+    return (
+      requestQuestions.length === argQuestions.length &&
+      requestQuestions.every((question, index) => question.question === argQuestions[index]?.question)
+    )
+  }
+
+  return !(args.question && request.question && args.question !== request.question)
+}
+
 interface ClarifyBatchResponse {
   id?: string
   question?: string
@@ -375,6 +393,7 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
   const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
+  const requestStillPending = clarifyRequestMatchesArgs(request, fromArgs)
   const messageRunning = useAuiState(selectMessageRunning)
   // Answering clears the request a beat before `tool.complete` swaps in the
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
@@ -385,7 +404,7 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // `session.info` reports running=false while clarify is blocking, so the
   // running flag alone would remount the question as a tool row. Keep the
   // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
+  if (!messageRunning && !requestStillPending && !answered) {
     return <ToolFallback {...props} />
   }
 

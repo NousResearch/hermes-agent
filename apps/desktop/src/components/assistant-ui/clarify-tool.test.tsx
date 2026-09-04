@@ -40,6 +40,7 @@ vi.mock('@assistant-ui/react', () => ({
 
 afterEach(() => {
   cleanup()
+  messageRunning = true
   clearClarifyRequest()
   $activeSessionId.set(null)
   $gateway.set(null)
@@ -583,6 +584,16 @@ function renderLiveBatch(lockedAnswers?: Record<string, string>, multiSelect = f
 
   return request
 }
+
+describe('ClarifyTool batch pending liveness', () => {
+  it('keeps a restored batch visible when its hydrated message is complete', () => {
+    messageRunning = false
+    renderLiveBatch()
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+  })
+})
 
 describe('readClarifyBatchResult', () => {
   it('parses responses with string and list answers plus timed_out', () => {

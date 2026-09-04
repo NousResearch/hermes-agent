@@ -253,6 +253,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 |-----|------|---------|-------------|
 | `sessionStrategy` | string | `"per-directory"` | `"per-directory"`, `"per-session"`, `"per-repo"` (git root), `"global"` |
 | `sessionPeerPrefix` | bool | `false` | Prepend peer name to session keys |
+| `a2aSessions` | bool | `true` | Write DMs from other bots into their own session per sender bot. `false` skips bot-authored turns |
 | `sessions` | object | `{}` | Manual directory-to-session-name mappings |
 
 #### Session Name Resolution
@@ -272,6 +273,10 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 Gateway platforms always resolve via priority 3 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting only affects CLI sessions.
 
 If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agent`.
+
+#### Bot DMs (`a2aSessions`)
+
+In bot mode another Hermes profile can DM this agent. The relay marks that turn with author `bot:<profile>`, and the turn never reaches the human's session. With `a2aSessions: true` (default) the turn is written into `<session>:a2a:<profile>`: the sender's message under the sender's peer, the reply under this agent's `aiPeer`. The sender's peer is the `userPeerAliases` entry for `bot:<profile>` if one exists, else the profile name, which is the sender's own default `aiPeer` in a shared workspace. `runtimePeerPrefix` is not applied to bot ids. `pinUserPeer: true` collapses bot authors onto `peerName` like every other author. With `a2aSessions: false` bot-authored turns are skipped. Recall still reads the human's session only.
 
 #### What each strategy produces
 

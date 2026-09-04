@@ -806,7 +806,12 @@ async def _handle_runs(
                             # background delegations stay forced-sync
                             # (no wake target).
                             chat_id=session_id or "",
-                            session_key=approval_session_key,
+                            # The tools identity is the key the client declared
+                            # (X-Hermes-Session-Key), exactly as _run_agent binds it
+                            # for chat completions. Binding the run id here left every
+                            # session-keyed tool with an unknown session on /v1/runs;
+                            # approvals still key on the run id.
+                            session_key=gateway_session_key or approval_session_key,
                             session_id=session_id or "",
                             browser_control_principal=(
                                 request_browser_control_principal

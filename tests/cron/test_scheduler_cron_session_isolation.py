@@ -45,6 +45,8 @@ class _FakeCronAgent:
         assert result["approved"] is False
         assert result["outcome"] == "blocked"
         assert get_session_env("HERMES_CRON_SESSION") == "1"
+        session_id = get_session_env("HERMES_SESSION_ID")
+        assert session_id.startswith("cron_ctx-isolation_")
         return {
             "completed": True,
             "failed": False,

@@ -6160,6 +6160,7 @@ def run_job(
         platform="",
         chat_id="",
         chat_name="",
+        session_id=_cron_session_id,
         # A cron job cannot receive a completion after its turn ends. We clear the
         # HERMES_SESSION_* routing keys just below, so an async delegation's
         # completion event carries session_key="" — _enrich_async_delegation_routing

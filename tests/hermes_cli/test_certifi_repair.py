@@ -192,6 +192,29 @@ class TestDoctorCertificates:
         out = capsys.readouterr().out
         assert "valid" in out.lower()
 
+    def test_emfile_does_not_reinstall_certifi(self, monkeypatch, capsys):
+        """`--fix` must not pip-install certifi when the failure is EMFILE."""
+        from agent.errors import SSLConfigurationError
+
+        def fake_verify():
+            raise SSLConfigurationError(
+                "SSL_CERT_FILE CA bundle at /venv/certifi/cacert.pem cannot be loaded: "
+                "[Errno 24] Too many open files"
+            )
+
+        def _fail_run(*a, **k):
+            raise AssertionError("EMFILE must not trigger a certifi reinstall")
+
+        monkeypatch.setattr("agent.ssl_guard.verify_ca_bundle", fake_verify)
+        monkeypatch.setattr(subprocess, "run", _fail_run)
+        issues = []
+        doctor_platform.check_certificates(should_fix=True, issues=issues)
+        out = capsys.readouterr().out
+        assert "file descriptor" in out.lower()
+        assert issues
+        assert any("serve --isolated" in i for i in issues)
+        assert not any("force-reinstall certifi" in i for i in issues)
+
 
 # =========================================================================
 # 3. Startup error message stays actionable

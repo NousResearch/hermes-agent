@@ -7,13 +7,15 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Streamdown } from 'streamdown'
+import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { defaultRehypePlugins, Streamdown } from 'streamdown'
+import type { PluggableList } from 'unified'
 
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
+import { MarkdownImage as SharedMarkdownImage } from '@/components/assistant-ui/markdown-text'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
@@ -33,6 +35,15 @@ import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import {
+  createMarkdownFileImageLoader,
+  createMarkdownFileImageScheduler,
+  FILE_PREVIEW_IMAGE_PATH_ATTR,
+  FILE_PREVIEW_IMAGE_SOURCE_ATTR,
+  filePreviewImageRehypePlugin,
+  type MarkdownFileImageLoader,
+  type MarkdownFileImageScheduler
+} from '@/lib/markdown-file-images'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
@@ -368,13 +379,68 @@ function MarkdownTable({ className, ...rest }: ComponentProps<'table'>) {
   )
 }
 
-function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
+type MarkdownPreviewImageProps = ComponentProps<'img'> & {
+  [FILE_PREVIEW_IMAGE_PATH_ATTR]?: unknown
+  [FILE_PREVIEW_IMAGE_SOURCE_ATTR]?: unknown
+}
+
+const MarkdownFileImageLoaderContext = createContext<MarkdownFileImageLoader | null>(null)
+
+function createMarkdownFileImageLoaderForScope(
+  _scope: { filePath?: string; fsCacheKey: string; text: string },
+  scheduler: MarkdownFileImageScheduler
+) {
+  return createMarkdownFileImageLoader(
+    (path, sourceFile, maxBytes) => readDesktopFileDataUrl(path, sourceFile, maxBytes),
+    {},
+    scheduler
+  )
+}
+
+function MarkdownImage({ alt, src, ...rest }: MarkdownPreviewImageProps) {
+  const {
+    [FILE_PREVIEW_IMAGE_PATH_ATTR]: trustedFilePath,
+    [FILE_PREVIEW_IMAGE_SOURCE_ATTR]: sourceFilePath,
+    ...imageProps
+  } = rest
+
+  const imageLoader = useContext(MarkdownFileImageLoaderContext)
+
+  const resolveRelativeImage = useCallback(
+    async (path: string) => {
+      if (!imageLoader || typeof sourceFilePath !== 'string') {
+        throw new Error('Relative image loader is unavailable')
+      }
+
+      const dataUrl = await imageLoader.load(path, sourceFilePath)
+
+      if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) {
+        throw new Error('Relative image resolver returned non-image data')
+      }
+
+      return dataUrl
+    },
+    [imageLoader, sourceFilePath]
+  )
+
+  if (typeof trustedFilePath === 'string' && typeof sourceFilePath === 'string') {
+    return (
+      <SharedMarkdownImage
+        allowOpenOnFailure={false}
+        alt={alt}
+        resolveSrc={resolveRelativeImage}
+        src={trustedFilePath}
+        {...imageProps}
+      />
+    )
+  }
+
   return (
     <img
       alt={alt ?? ''}
       className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
       src={src}
-      {...rest}
+      {...imageProps}
     />
   )
 }
@@ -416,20 +482,56 @@ const MARKDOWN_COMPONENTS = {
   a: MarkdownLink
 }
 
-export function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({
+  filePath,
+  fsCacheKey = '',
+  text
+}: {
+  filePath?: string
+  fsCacheKey?: string
+  text: string
+}) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+  const imageScheduler = useMemo(() => createMarkdownFileImageScheduler(), [])
+
+  const imageLoader = useMemo(
+    () => createMarkdownFileImageLoaderForScope({ filePath, fsCacheKey, text }, imageScheduler),
+    [filePath, fsCacheKey, imageScheduler, text]
+  )
+
+  useEffect(() => () => imageLoader.dispose(), [imageLoader])
+
+  const rehypePlugins = useMemo(() => {
+    if (!filePath) {
+      return undefined
+    }
+
+    // Source-authored data-* attributes are gone after sanitize. Add the
+    // trusted filesystem marker there, immediately before harden validates
+    // the placeholder src. The explicit markdownPath option also separates
+    // Streamdown's processor cache across files; a closure would not.
+    return Object.entries(defaultRehypePlugins).flatMap(([name, plugin]) =>
+      name === 'harden' ? [[filePreviewImageRehypePlugin, { markdownPath: filePath }], plugin] : [plugin]
+    ) as PluggableList
+  }, [filePath])
 
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown
-        components={MARKDOWN_COMPONENTS}
-        controls={false}
-        mode="static"
-        parseIncompleteMarkdown={false}
-        plugins={{ math: previewMathPlugin }}
-      >
-        {mathText}
-      </Streamdown>
+      <MarkdownFileImageLoaderContext.Provider value={imageLoader}>
+        <Streamdown
+          components={MARKDOWN_COMPONENTS}
+          controls={false}
+          // Same path can exist on two remote profiles. Remount media state when
+          // the filesystem authority changes so bytes cannot bleed across them.
+          key={fsCacheKey}
+          mode="static"
+          parseIncompleteMarkdown={false}
+          plugins={{ math: previewMathPlugin }}
+          rehypePlugins={rehypePlugins}
+        >
+          {mathText}
+        </Streamdown>
+      </MarkdownFileImageLoaderContext.Provider>
     </div>
   )
 }
@@ -1131,7 +1233,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         />
         <div className="min-h-0 flex-1 overflow-auto">
           {mode === 'rendered' ? (
-            <MarkdownPreview text={state.text} />
+            <MarkdownPreview filePath={filePath} fsCacheKey={fsCacheKey} text={state.text} />
           ) : mode === 'diff' ? (
             <FileDiffPanel
               className="mx-0 mb-0 h-full max-h-none"

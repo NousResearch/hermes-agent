@@ -84,7 +84,7 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         web_deps, "late",
-        lambda name: (lambda *a, **k: calls.append("assign")))
+        lambda name, module="hermes_cli.web_server": (lambda *a, **k: calls.append("assign")))
 
     r = client.post("/api/local-models/quickstart", json={})
     assert r.status_code == 200
@@ -137,7 +137,7 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
 
     monkeypatch.setattr(
         web_deps, "late",
-        lambda name: (lambda *a, **k: calls.append("assign")))
+        lambda name, module="hermes_cli.web_server": (lambda *a, **k: calls.append("assign")))
 
     r = client.post("/api/local-models/quickstart", json={})
     assert r.status_code == 200

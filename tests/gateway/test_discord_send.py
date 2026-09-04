@@ -418,3 +418,27 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_handoff_direct_create_requests_public_thread(tmp_path, monkeypatch):
+    """Direct handoff-thread creation must request a public thread (#95670).
+
+    discord.py normalizes an omitted ``type`` to ``private_thread``; the
+    handoff continuation must stay parent-channel-visible instead.
+    """
+    import discord
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    create_thread = AsyncMock(return_value=SimpleNamespace(id=9001))
+    parent = SimpleNamespace(create_thread=create_thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: parent,
+        fetch_channel=AsyncMock(),
+    )
+
+    thread_id = await adapter.create_handoff_thread("555", "Hermes — report")
+
+    assert thread_id == "9001"
+    assert create_thread.await_args.kwargs["type"] is discord.ChannelType.public_thread
+
+

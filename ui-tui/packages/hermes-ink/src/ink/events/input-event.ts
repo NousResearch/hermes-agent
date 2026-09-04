@@ -157,6 +157,21 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     key.shift = true
   }
 
+  // Reconstruct the shifted glyph for terminal protocols that report the base
+  // key plus a separate shift modifier — kitty keyboard protocol (CSI u) and
+  // xterm modifyOtherKeys (used by Ghostty). A plain terminal already sends
+  // the shifted character ('A' for Shift+A), but these protocols arrive as a
+  // lowercase key name with shift=true (keycodeToName lowercases the keycode
+  // so ctrl+letter matching stays case-insensitive), so the composer would
+  // otherwise insert the lowercase letter. Letters are the one
+  // layout-independent case — shift+symbol already arrives as the final
+  // character via modifyOtherKeys — so only a-z need restoring here.
+  // Ctrl+letter chords must stay lowercase so ctrl+a / ctrl+z matching keeps
+  // working (a plain terminal sends those as bare control bytes with no shift).
+  if (key.shift && !key.ctrl && input.length === 1 && input >= 'a' && input <= 'z') {
+    input = input.toUpperCase()
+  }
+
   return [key, input]
 }
 

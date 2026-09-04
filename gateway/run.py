@@ -19177,6 +19177,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and _clarify_mod is not None
         ):
             _clarify_has_audio = bool(self._pending_event_audio_paths(event))
+            _clarify_image_paths = self._pending_event_image_paths(event)
             _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
             if _clarify_has_audio and not _raw_clarify_reply:
                 logger.info(
@@ -19186,6 +19187,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pending_clarify.clarify_id,
                 )
                 return ""
+            # An image-only reply (no text, no audio) would produce an empty
+            # _raw_clarify_reply and silently fall through to the busy-session
+            # path, losing the attachment.  Resolve it with a descriptive
+            # placeholder so the agent receives both the image (via
+            # native_image_paths) and an informative text (#81117).
+            if not _raw_clarify_reply and _clarify_image_paths:
+                _raw_clarify_reply = _build_media_placeholder(event)
+            # Preserve image attachments for the agent's next turn so the
+            # clarify resolution carries the visual content alongside the
+            # text reply (#81117).
+            if _clarify_image_paths:
+                self._session_state(
+                    _quick_key
+                ).persistent.native_image_paths = list(_clarify_image_paths)
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
@@ -27968,6 +27983,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _event_media_is_stt_input(event, i):
                 audio_paths.append(path)
         return audio_paths
+
+    def _pending_event_image_paths(self, event) -> List[str]:
+        """Return image attachment paths from a pending event.
+
+        Mirrors ``_pending_event_audio_paths`` for images so that a media
+        reply during a pending clarify can preserve the attachment instead
+        of silently dropping it (#81117).
+        """
+        image_paths: List[str] = []
+        media_urls = getattr(event, "media_urls", None) or []
+        for i, path in enumerate(media_urls):
+            if _event_media_is_image(event, i):
+                image_paths.append(path)
+        return image_paths
 
     async def _transcribe_pending_audio_event_once(
         self,

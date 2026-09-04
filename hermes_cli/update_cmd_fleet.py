@@ -282,14 +282,52 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
-def _apply_pending_fleet_restart_catchup() -> None:
+def _defer_fleet_restart_after_update() -> None:
+    """Record a deliberately deferred fleet restart and return normally.
+
+    ``hermes update --no-gateway-restart`` (cron running inside the gateway's
+    own cgroup) updated code and dependencies but must not restart the fleet:
+    the SIGUSR1 drain + systemd restart would kill the updater itself. The
+    ``fleet_restart_pending`` marker written before the pull is KEPT so the
+    next normal update (or ``hermes gateway restart``) catches up. The update
+    itself exits 0 — "code updated" is success; the restart is a separate step.
+
+    The live interpreter still serves pre-update code here, so callers must
+    also skip stale-module purge/reload work: mutating this process's
+    sys.modules graph mid-flight risks breaking the serving gateway.
+    """
+    print()
+    print("→ Gateway restart skipped (--no-gateway-restart).")
+    print("  Code and dependencies are updated; gateways still serve pre-update code.")
+    print("  Restart them separately: `hermes gateway restart` or a daily-restart cron.")
+    print("  (fleet restart deferred — marker kept for catch-up)")
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+    with suppress(Exception):
+        from hermes_cli.update_receipt import finalize_update_receipt
+        finalize_update_receipt("success")
+
+
+def _apply_pending_fleet_restart_catchup(*, respect_no_gateway_restart: bool = False, no_gateway_restart: bool = False) -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
     No-op when nothing is pending; exits 1 on incomplete catch-up so automation
     does not treat the fleet as healthy.
+
+    When called from a cron's ``--no-gateway-restart`` flow (both flags true),
+    the pending restart is deferred instead of executed: running it here would
+    kill the cron's own gateway mid-flight. The marker is kept for a later
+    out-of-cron update.
     """
     from hermes_cli.update_cmd import _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
+        return
+    if respect_no_gateway_restart and no_gateway_restart:
+        print()
+        _warn_pending_fleet_restart()
+        print("  (fleet restart deferred — --no-gateway-restart; marker kept)")
+        print("  Restart separately: `hermes gateway restart` or next non-cron update.")
         return
     print()
     _warn_pending_fleet_restart()

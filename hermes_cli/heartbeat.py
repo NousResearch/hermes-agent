@@ -33,7 +33,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
+from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +142,11 @@ class HeartbeatState:
 # ──────────────────────────────────────────────────────────────────────
 
 
+_META_PREFIX = "heartbeat:"
+
+
 def _meta_key(session_id: str) -> str:
-    return f"heartbeat:{session_id}"
+    return f"{_META_PREFIX}{session_id}"
 
 
 def _get_session_db() -> Optional[Any]:
@@ -192,6 +195,41 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
         db.set_meta(_meta_key(session_id), state.to_json())
     except Exception as exc:
         logger.debug("HeartbeatManager: set_meta failed: %s", exc)
+
+
+def list_active_heartbeats() -> List[Tuple[str, HeartbeatState]]:
+    """Return ``[(session_id, HeartbeatState), ...]`` for every ACTIVE heartbeat.
+
+    Used by the gateway at startup to re-arm ``_heartbeat_watch`` from
+    persisted state — the in-memory watch is empty on every process boot,
+    so without this an active heartbeat is orphaned (state survives in the
+    DB, but nothing polls it) until the user runs /heartbeat again. The
+    gateway resolves routing for each session via the durable
+    ``SessionEntry.origin`` (see ``_gateway_session_origin_for_id``), so
+    this list only needs to report which sessions are active — not carry
+    routing of its own.
+    Best-effort: any DB error yields ``[]``.
+    """
+    db = _get_session_db()
+    if db is None:
+        return []
+    try:
+        rows = db.list_meta_prefix(_META_PREFIX)
+    except Exception as exc:
+        logger.debug("HeartbeatManager: list_meta_prefix failed: %s", exc)
+        return []
+    out: List[Tuple[str, HeartbeatState]] = []
+    for key, raw in rows:
+        session_id = key[len(_META_PREFIX):]
+        if not session_id or not raw:
+            continue
+        try:
+            state = HeartbeatState.from_json(raw)
+        except Exception:
+            continue
+        if state.status == "active":
+            out.append((session_id, state))
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -328,6 +366,7 @@ __all__ = [
     "format_interval",
     "load_heartbeat",
     "save_heartbeat",
+    "list_active_heartbeats",
     "migrate_heartbeat_to_session",
     "HEARTBEAT_PROMPT_TEMPLATE",
     "MIN_INTERVAL_SECONDS",

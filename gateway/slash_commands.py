@@ -3020,7 +3020,8 @@ class GatewaySlashCommandsMixin:
         return (
             f"♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}\n"
             "Fires as a normal turn whenever this session is idle and the interval has "
-            "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
+            "elapsed. Resumes automatically after a gateway restart — use `hermes cron` "
+            "for schedules that must survive anything."
         )
 
     async def _handle_refine_command(self, event: "MessageEvent") -> str:

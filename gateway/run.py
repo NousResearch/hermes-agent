@@ -14818,6 +14818,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # originating chats while the session is idle.
         self._spawn_supervised(self._loop_wakeup_watcher, "loop_wakeup_watcher")
 
+        # Re-arm heartbeat watches orphaned by this restart (the in-memory
+        # registry starts empty every boot; see _resume_heartbeat_watches).
+        # Like _loop_wakeup_watcher above, this ticks for the life of the
+        # process rather than scanning once, so a transient startup race
+        # (adapter not yet connected, session_store not yet warm) self-heals
+        # on the next tick instead of orphaning that heartbeat permanently.
+        self._spawn_supervised(self._resume_heartbeat_watches, "heartbeat_resume_watcher")
+
         # Start the scale-to-zero idle watcher ONLY when this instance is opted
         # in (the NAS "Labs" HERMES_SCALE_TO_ZERO stamp), messaging is
         # relay-only/absent, and a wakeUrl is registered (decisions.md D1/D11/
@@ -24361,8 +24369,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The registry maps ``quick_key`` → ``(source, session_id)`` so the
         poller can rebuild a MessageEvent and enqueue via the adapter FIFO.
         In-memory by design: heartbeat STATE survives restarts in SessionDB,
-        but firing resumes when the user touches /heartbeat again in the new
-        gateway process (documented; durable schedules belong to cron).
+        and firing resumes automatically once the new gateway process comes
+        back up — ``_resume_heartbeat_watches`` calls this same method for
+        every persisted heartbeat at startup, so no user action is required
+        (durable schedules that must survive anything still belong to cron).
         """
         watch = getattr(self, "_heartbeat_watch", None)
         if watch is None:
@@ -24821,6 +24831,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             pass
             except Exception as exc:
                 logger.debug("loop wakeup watcher error: %s", exc)
+            await asyncio.sleep(interval)
+
+    async def _resume_heartbeat_watches(self, interval: float = 15.0) -> None:
+        """Re-arm ``_heartbeat_watch`` from persisted state after a restart.
+
+        The watch dict is process-memory only and starts empty on every
+        gateway boot, so an active heartbeat set before a restart would
+        otherwise be orphaned — its state survives in SessionDB, but nothing
+        polls it — until the user ran /heartbeat again. Routing is resolved
+        through ``_gateway_session_origin_for_id``, the same durable,
+        fully-qualified ``SessionEntry.origin`` lookup ``/resume`` already
+        relies on, rather than a heartbeat-local routing snapshot — so this
+        also recovers heartbeats that predate this fix (nothing to persist
+        up front) and stays correct for profile/workspace-qualified
+        sessions.
+
+        Like ``_loop_wakeup_watcher``, this is a ``while self._running``
+        ticker rather than a one-shot scan: a transient failure on any
+        given tick (session_store not yet warm) would otherwise orphan that
+        heartbeat for the rest of the process's life, with nothing left to
+        retry it. Each tick only touches sessions not already present in
+        ``_heartbeat_watch``, so a heartbeat that's already re-armed is left
+        alone. A session with no persisted origin (CLI-only) is left to its
+        own watchdog thread instead.
+        """
+        await asyncio.sleep(5)  # let platforms finish connecting
+        while self._running:
+            try:
+                from hermes_cli.heartbeat import list_active_heartbeats
+
+                await self._warm_goals_session_db("heartbeat resume")
+                watch = getattr(self, "_heartbeat_watch", None) or {}
+                resumed_sids = {sid for _source, sid in watch.values()}
+                for sid, _state in list_active_heartbeats():
+                    if sid in resumed_sids:
+                        continue
+                    source = self._gateway_session_origin_for_id(sid)
+                    if source is None:
+                        continue
+                    try:
+                        quick_key = self._session_key_for_source(source)
+                    except Exception:
+                        continue
+                    if quick_key:
+                        self._register_heartbeat_watch(quick_key, source, sid)
+            except Exception:
+                logger.debug("heartbeat resume scan failed", exc_info=True)
             await asyncio.sleep(interval)
 
     @staticmethod

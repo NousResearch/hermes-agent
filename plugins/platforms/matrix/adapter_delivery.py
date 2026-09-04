@@ -1,7 +1,7 @@
 """Matrix delivery methods; runtime dependencies remain on the adapter facade."""
 
 from __future__ import annotations
-from gateway.native_document_guard import check_document_fallback
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 
 from typing import Any, Dict, Optional
 from gateway.platforms.base import SendResult
@@ -210,6 +210,7 @@ class MatrixDeliveryMixin:
             if not result.success:
                 _adapter.logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

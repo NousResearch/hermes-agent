@@ -1,12 +1,65 @@
 """Direct Slack/Matrix fallback markers share the parent's task-local guard."""
 
 from unittest.mock import AsyncMock
+from importlib import import_module
 
 import pytest
 
 from gateway.config import PlatformConfig
 from gateway.native_document_guard import NativeDocumentFallback, require_native_document
 from gateway.platforms.base import SendResult
+
+
+@pytest.mark.parametrize(
+    "module_name,class_name",
+    [
+        ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
+        ("plugins.platforms.discord.adapter", "DiscordAdapter"),
+        ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
+        ("plugins.platforms.slack.adapter", "SlackAdapter"),
+        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+        ("gateway.platforms.signal", "SignalAdapter"),
+        ("gateway.platforms.whatsapp_cloud", "WhatsAppCloudAdapter"),
+    ],
+)
+def test_supported_adapter_advertises_native_document_contract(module_name, class_name):
+    adapter = getattr(import_module(module_name), class_name)
+    assert adapter.send_document.strict_native_document_guard is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["telegram", "discord"])
+async def test_super_fallback_is_blocked_only_for_native_delivery(
+    tmp_path, monkeypatch, platform
+):
+    path = tmp_path / "brief.txt"
+    path.write_text("brief", encoding="utf-8")
+    notice = SendResult(success=True, message_id="notice-1")
+    if platform == "telegram":
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+        async def fail_upload(*args):
+            return await args[-1](RuntimeError("controlled upload failure"))
+
+        monkeypatch.setattr(adapter, "_send_local_file", fail_upload)
+    else:
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+        adapter._send_file_attachment = AsyncMock(
+            side_effect=RuntimeError("controlled upload failure")
+        )
+    adapter.send = AsyncMock(return_value=notice)
+
+    with require_native_document():
+        with pytest.raises(NativeDocumentFallback):
+            await adapter.send_document("D1", str(path), caption="Brief")
+    adapter.send.assert_not_awaited()
+
+    assert await adapter.send_document("D1", str(path), caption="Brief") is notice
+    adapter.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio

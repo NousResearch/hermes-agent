@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 from gateway.platforms.base import MessageEvent, ProcessingOutcome, SendResult
 try:
     import discord
@@ -622,6 +623,8 @@ class DiscordDeliveryMixin:
             return _adapter.SendResult(success=False, error=f"{not_found}: {path}")
         except Exception as e:  # pragma: no cover - defensive logging
             _adapter.logger.error("[%s] Failed to send %s, falling back to base adapter: %s", self.name, kind, e, exc_info=True)
+            if kind == "document":
+                check_document_fallback()
             return await fallback()
 
     async def send_image_file(
@@ -714,6 +717,7 @@ class DiscordDeliveryMixin:
             fallback=lambda: super(DiscordDeliveryMixin, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
         )
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,

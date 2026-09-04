@@ -1,6 +1,7 @@
 """Telegram media methods; runtime dependencies remain on the adapter facade."""
 
 from typing import Any, Dict, List, Optional
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 from gateway.platforms.base import SendResult
 try:
     from telegram import Message, Update
@@ -276,19 +277,23 @@ class TelegramMediaMixin:
         _adapter.logger.warning("[%s] Failed to send %s: %s", self.name, media_key, _adapter._redact_telegram_error_text(e))
         return await fallback
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
         from . import adapter as _adapter
 
+        async def fallback():
+            check_document_fallback()
+            return await super(TelegramMediaMixin, self).send_document(
+                chat_id, file_path, caption, file_name, reply_to, metadata=metadata
+            )
+
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
             lambda f: {"document": f, "filename": file_name or _adapter.os.path.basename(file_path), "caption": self._caption_1024(caption)},
-            lambda e: self._warn_then(
-                "document", e, super(
-                    TelegramMediaMixin, self,
-                ).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)))
+            lambda e: self._warn_then("document", e, fallback()))
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

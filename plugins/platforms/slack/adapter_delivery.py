@@ -1,7 +1,7 @@
 """Slack delivery methods; SDK and mutable dependencies remain on the facade."""
 
 import logging
-from gateway.native_document_guard import check_document_fallback
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from gateway.platforms.base import SendResult
@@ -1164,6 +1164,7 @@ class SlackDeliveryMixin:
             chat_id, video_path, caption, reply_to, metadata, "video", _adapter.os.path.basename(video_path),
             f"Video file not found: {video_path}", "⚠️ Couldn't deliver the video attachment.")
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,

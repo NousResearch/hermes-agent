@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from functools import wraps
 
 _required = ContextVar("native_document_required", default=False)
 
@@ -17,14 +16,10 @@ def check_document_fallback():
         raise NativeDocumentFallback("native document delivery was not confirmed")
 
 
-def guard_document_fallback(function):
-    @wraps(function)
-    async def guarded(*args, **kwargs):
-        check_document_fallback()
-        return await function(*args, **kwargs)
-
-    guarded.strict_native_document_guard = True
-    return guarded
+def mark_native_document_guard(function):
+    """Advertise a native-only contract without replacing its defining function."""
+    function.strict_native_document_guard = True
+    return function
 
 
 @contextmanager

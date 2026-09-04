@@ -2202,6 +2202,9 @@ def run_conversation(
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
+    logger.info(
+        "[TIMING] run_conversation body entered (session=%s)", agent.session_id,
+    )
     final_response = None
     interrupted = False
     failed = False
@@ -2326,6 +2329,11 @@ def run_conversation(
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
+        if api_call_count == 1:
+            logger.info(
+                "[TIMING] loop iteration 1 begin — building api_messages (session=%s)",
+                agent.session_id,
+            )
 
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
@@ -2510,6 +2518,8 @@ def run_conversation(
             )
 
         api_messages = []
+        if api_call_count == 1:
+            logger.info("[TIMING] p1: start building api_messages loop (msgs=%d)", len(messages))
         for idx, msg in enumerate(messages):
 
             # Structural clone, NOT msg.copy(): every in-place transform
@@ -2750,6 +2760,8 @@ def run_conversation(
         from agent.context_compressor import evict_stale_outbound_tool_images
 
         evict_stale_outbound_tool_images(api_messages)
+        if api_call_count == 1:
+            logger.info("[TIMING] p2: api_messages built + sanitized + evicted (n=%d)", len(api_messages))
 
         # One-time repeated-heal escalation notice (#96870): if the sanitizer
         # above just crossed the per-session heal threshold, deliver the
@@ -2969,6 +2981,8 @@ def run_conversation(
         # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
         # hard per-turn backstop shared with the overflow error handlers.
         _compressor = agent.context_compressor
+        if api_call_count == 1:
+            logger.info("[TIMING] p3: entering pre-API compression check")
         _preflight_threshold = int(
             getattr(_compressor, "threshold_tokens", 0) or 0
         )
@@ -3673,17 +3687,29 @@ def run_conversation(
                     _model_request_active.set()
                 _redirect_crossed_response = False
                 # Fire "thinking" signal so the stream consumer shows
-                # animation during TTFB.  Only on subsequent API calls
-                # (api_call_count > 1) — the first call is covered by
-                # the seed frame + platform typing indicator.
-                if api_call_count > 1 and agent.tool_progress_callback:
+                # animation during TTFB.  Fires on EVERY API call including
+                # the first: api_call_count resets per turn (line ~2204), so a
+                # ``> 1`` gate dropped every turn's first-call thinking timer,
+                # leaving the first request to hang behind only the static
+                # typing indicator (#342s hang).  The stream consumer latches a
+                # pre-seed first-call signal (see _pending_thinking) so it is
+                # not lost racing the native seed.
+                if api_call_count >= 1 and agent.tool_progress_callback:
                     try:
                         _thinking_preview = f"{agent.model or 'LLM'} (API call #{api_call_count})"
+                        logger.info(
+                            "[TIMING] fire llm.request_started (api_call #%d, session=%s)",
+                            api_call_count, agent.session_id,
+                        )
                         agent.tool_progress_callback(
                             "llm.request_started", "_thinking_timer", _thinking_preview, None,
                         )
                     except Exception:
                         pass
+                logger.info(
+                    "[TIMING] entering run_llm_execution_middleware (api_call #%d, in≈? session=%s)",
+                    api_call_count, agent.session_id,
+                )
                 try:
                     response = run_llm_execution_middleware(
                         api_kwargs,

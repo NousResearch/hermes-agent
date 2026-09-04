@@ -1568,8 +1568,10 @@ def build_turn_context(
     # Notify memory providers of the new turn (BEFORE prefetch_all).
     if agent._memory_manager:
         try:
+            logger.info("[TIMING] mem: on_turn_start begin")
             _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
             agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
+            logger.info("[TIMING] mem: on_turn_start done")
         except Exception:
             pass
 
@@ -1582,7 +1584,11 @@ def build_turn_context(
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             if not is_trivial_prompt(_query):
+                logger.info("[TIMING] mem: prefetch_all begin (query_len=%d)", len(_query))
                 ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+                logger.info("[TIMING] mem: prefetch_all done (result_len=%d)", len(ext_prefetch_cache))
+            else:
+                logger.info("[TIMING] mem: prefetch_all skipped (trivial prompt)")
         except Exception:
             pass
         # Deterministic, model-independent recall indicator: when memory was

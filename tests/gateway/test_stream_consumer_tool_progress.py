@@ -451,8 +451,14 @@ class TestToolStartedTimerOnlyPath:
             assert "call-1" in consumer._tool_start_times
             # Sanitized label = bare tool name.
             assert consumer._tool_timer_labels["call-1"] == "terminal"
-            # No overlay line pushed — the tick supplies frames.
-            assert consumer._queue.empty()
+            # on_tool_started pushes no overlay line of its OWN, but arming now
+            # fires the first tick immediately (no 1s delay), so a single
+            # _TIMER_TICK frame is enqueued right away — the fix that closes the
+            # seconds-long gap before the first status line reaches the bubble.
+            drained = []
+            while not consumer._queue.empty():
+                drained.append(consumer._queue.get_nowait())
+            assert drained == [_TIMER_TICK]
         finally:
             if consumer._tool_timer_handle:
                 consumer._tool_timer_handle.cancel()
@@ -803,6 +809,10 @@ class TestThreadSafeTimerArm:
         loop = asyncio.new_event_loop()
         consumer._tool_timer_loop = loop
         consumer._tool_timer_handle = None
+        # A real arm is always preceded by an entry in _tool_start_times
+        # (_start_tool_timer / on_llm_thinking insert before scheduling the
+        # arm).  _arm_tool_timer no-ops on empty state to avoid a zombie handle.
+        consumer._tool_start_times["terminal"] = time.monotonic()
         try:
             consumer._arm_tool_timer()
             assert consumer._tool_timer_handle is not None
@@ -815,6 +825,7 @@ class TestThreadSafeTimerArm:
         consumer = _make_consumer(native_streaming=True)
         loop = asyncio.new_event_loop()
         consumer._tool_timer_loop = loop
+        consumer._tool_start_times["terminal"] = time.monotonic()
         try:
             # First arm
             consumer._arm_tool_timer()

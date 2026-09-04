@@ -173,13 +173,21 @@ class ToolTimerMixin:
         """
         if not self._use_native_streaming:
             return
-        if not self._native_stream_opened:
-            return
         # Pure timer-animation feature — skip entirely unless the timer is
         # opted in.  (run.py also gates its call site on ``supports_tool_timer``;
-        # this is defense-in-depth for any other caller.)
+        # this is defense-in-depth for any other caller.)  Keep this BEFORE the
+        # pre-seed latch so a non-timer platform never sets _pending_thinking.
         if not getattr(self, "supports_tool_timer", False):
             return
+        # First-call race: the signal can arrive before run() has finished the
+        # seed round-trip, so the bubble is not open yet (or the timer loop is
+        # not captured).  Latch it instead of dropping — run() consumes the
+        # latch right after seeding so the first call still arms thinking.
+        if not self._native_stream_opened or self._tool_timer_loop is None:
+            self._pending_thinking = True
+            logger.info("[TIMING] on_llm_thinking: latched (pre-seed, opened=%s)", self._native_stream_opened)
+            return
+        logger.info("[TIMING] on_llm_thinking: arming now (stream open)")
         # LLM thinking means all tools are done — move remaining tool entries
         # to completed history, then start the thinking timer.
         with self._timer_lock:
@@ -194,15 +202,54 @@ class ToolTimerMixin:
             # Trim to max 5 completed entries
             if len(self._tool_completed_lines) > 5:
                 self._tool_completed_lines = self._tool_completed_lines[-5:]
-            if "_thinking" not in self._tool_start_times:
+            thinking_was_new = "_thinking" not in self._tool_start_times
+            if thinking_was_new:
                 self._tool_start_times["_thinking"] = time.monotonic()
             # Deliberately do NOT store *label* — it may carry model identity
             # / API-call count that must not be rendered over the transport.
-        # Arm the timer if not already running
+        # Arm the timer if not already running.
         with self._timer_lock:
-            need_arm = self._tool_timer_handle is None and self._tool_timer_loop is not None
-        if need_arm:
-            self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+            handle_present = self._tool_timer_handle is not None
+            loop_present = self._tool_timer_loop is not None
+        if loop_present:
+            if not handle_present:
+                # No live tick loop — arm normally (fires the synchronous first
+                # tick that renders "💭 Thinking (0s)" without a 1s delay).
+                self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+            elif thinking_was_new:
+                # Zombie handle: on_tool_completed pops the finished tool's
+                # _tool_start_times entry but never cancels _tool_timer_handle,
+                # so a periodic handle armed for the just-finished tool survives
+                # the tool boundary.  On the FIRST thinking of a continuation
+                # round the normal need_arm check (handle is None) is False, so
+                # _arm_tool_timer — the only place the synchronous first tick
+                # fires — would be skipped and the 💭 Thinking frame would stall
+                # until the next call_later(1.0) tick.  ``thinking_was_new``
+                # proves no live thinking loop owns the handle (a live one keeps
+                # _thinking in _tool_start_times), so the handle must be a stale
+                # tool handle: cancel it and re-arm so the continuation gets the
+                # same immediate first frame the first call gets.
+                self._tool_timer_loop.call_soon_threadsafe(self._rearm_after_tool)
+
+    def _consume_pending_thinking(self) -> None:
+        """Honour a pre-seed first-call thinking latch, if one is pending.
+
+        Called from ``run()`` right after the seed opens the native bubble and
+        the timer loop is captured — the point at which a first-call signal
+        that raced the seed (and set ``_pending_thinking``) can finally arm.
+        Only fires when the timer is still opted in and no model content has
+        streamed yet: content wins over the thinking animation.
+        """
+        if not self._pending_thinking:
+            return
+        self._pending_thinking = False
+        if not getattr(self, "supports_tool_timer", False):
+            return
+        if self._accumulated:
+            return
+        # Stream is open and the loop is captured now, so on_llm_thinking takes
+        # the arm path instead of re-latching.
+        self.on_llm_thinking()
 
     # ── Frame composition helper ─────────────────────────────────────────
 
@@ -244,13 +291,58 @@ class ToolTimerMixin:
             self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
 
     def _arm_tool_timer(self) -> None:
-        """Arm the 1s periodic tick.  Must run on the event loop thread."""
+        """Arm the periodic tick.  Must run on the event loop thread.
+
+        The FIRST tick fires immediately (synchronously here), not after a 1s
+        ``call_later`` delay: ``on_llm_thinking`` (unlike ``on_tool_progress``,
+        which synchronously enqueues a ``_TOOL_PROGRESS`` frame) pushes nothing
+        of its own, so without an immediate tick the "💭 Thinking (0s)" line
+        would not reach the bubble until a full second after the stream opened —
+        exactly the seconds-long typing gap this feature exists to close.  The
+        tick re-arms itself (``call_later`` at its tail) on the normal 1s
+        cadence and sets ``_tool_timer_handle`` there.
+        """
         with self._timer_lock:
-            if self._tool_timer_handle is None:
-                self._tool_timer_handle = self._tool_timer_loop.call_later(
-                    1.0, self._tool_timer_tick,
-                )
-                logger.debug("[timer] armed")
+            # Nothing to display (e.g. a deferred arm scheduled by
+            # on_llm_thinking got overtaken by a stop that cleared the state
+            # in the fast-first-call race) — don't arm a zombie handle.
+            if not self._tool_start_times:
+                return
+            # Already armed (running tick loop) — don't start a second one.
+            if self._tool_timer_handle is not None:
+                return
+        # Fire the first tick synchronously (we are on the event loop thread).
+        # NOT under _timer_lock: _tool_timer_tick acquires it itself, so calling
+        # it inside the lock would deadlock.  The tick emits the "Thinking (0s)"
+        # frame now and schedules the next tick via call_later, which populates
+        # _tool_timer_handle for the 1s cadence and the idempotency guard above.
+        logger.debug("[timer] armed (immediate first tick)")
+        self._tool_timer_tick()
+
+    def _rearm_after_tool(self) -> None:
+        """Cancel a stale post-tool handle, then arm.  Runs on the loop thread.
+
+        ``on_tool_completed`` pops the finished tool's ``_tool_start_times``
+        entry but never cancels ``_tool_timer_handle``, so a periodic handle
+        armed for that tool can outlive it (a "zombie" handle).  When the first
+        ``on_llm_thinking`` of a continuation round finds that zombie set, the
+        normal arm path is skipped (``need_arm = handle is None`` is False) and
+        the synchronous first tick in ``_arm_tool_timer`` never fires — the
+        ``💭 Thinking`` frame then waits for the next ``call_later(1.0)`` tick.
+
+        Cancel the zombie (killing its pending ``call_later`` so no second tick
+        loop is created) and clear the handle so ``_arm_tool_timer``'s
+        idempotency guard passes, then arm — delivering the immediate first
+        frame the first call also gets.  Scheduled via ``call_soon_threadsafe``
+        by ``on_llm_thinking``, so it runs on the event-loop thread where the
+        handle is owned; cancel/clear stay under ``_timer_lock`` for symmetry
+        with ``_stop_tool_timer``.
+        """
+        with self._timer_lock:
+            if self._tool_timer_handle is not None:
+                self._tool_timer_handle.cancel()
+                self._tool_timer_handle = None
+        self._arm_tool_timer()
 
     def _stop_tool_timer(self) -> None:
         """Cancel the tool-timer animation and clear associated state."""
@@ -263,6 +355,9 @@ class ToolTimerMixin:
             self._tool_timer_labels.clear()
             self._tool_completed_lines.clear()
             self._tool_timer_tick_count = 0
+        # Drop any un-consumed first-call thinking latch too, so got_done (which
+        # stops the timer) leaves nothing pending for a later reseed to arm.
+        self._pending_thinking = False
         logger.debug("[timer] stopped (was_running=%s)", was_running)
 
     def _tool_timer_tick(self) -> None:
@@ -277,6 +372,8 @@ class ToolTimerMixin:
                 return
 
             self._tool_timer_tick_count += 1
+            if self._tool_timer_tick_count == 1:
+                logger.info("[TIMING] first tick pushing frame (thinking/tool visible now)")
             logger.debug("[timer] tick #%d, entries=%d", self._tool_timer_tick_count, len(self._tool_start_times))
             now = time.monotonic()
             lines: list[str] = list(self._tool_completed_lines)  # completed history first

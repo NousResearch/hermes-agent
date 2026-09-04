@@ -403,6 +403,14 @@ class GatewayStreamConsumer(ToolTimerMixin):
         # falling back to send(). Set to True after seed frame succeeds, even though
         # seed has zero visible content.
         self._native_stream_opened = False
+        # First-call thinking latch.  A turn's FIRST llm.request_started can
+        # arrive while run() is still awaiting the seed round-trip — before
+        # _native_stream_opened / _tool_timer_loop are captured.  on_llm_thinking
+        # sets this instead of dropping the signal; run() consumes it right
+        # after the seed opens the bubble (if no content has streamed yet) so
+        # the thinking timer arms for the first call too.  Cleared by the first
+        # text delta and got_done so nothing lingers.
+        self._pending_thinking = False
         # Number of visible characters last successfully pushed to the
         # native stream. Used for "send only when enough new content has
         # accumulated" throttling so we don't spam frames at WeCom's
@@ -647,6 +655,10 @@ class GatewayStreamConsumer(ToolTimerMixin):
         if self._tool_progress_lines:
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
+        # Real content wins over the thinking animation: drop any pre-seed
+        # first-call latch so a signal that raced content never re-arms
+        # thinking after text has started.
+        self._pending_thinking = False
         # Keep _tool_completed_lines — they persist below the text until
         # finalize so the user sees tool history throughout the turn.
         # Stop the tool-timer animation — text means tools are done.
@@ -1356,6 +1368,7 @@ class GatewayStreamConsumer(ToolTimerMixin):
                 self.chat_id,
             )
             try:
+                logger.info("[TIMING] seed frame: sending (typing start, turn=%s)", self._turn_id)
                 seed_ok = await self.adapter.send_stream_frame(
                     "",
                     chat_id=self.chat_id,
@@ -1365,6 +1378,7 @@ class GatewayStreamConsumer(ToolTimerMixin):
                 if seed_ok:
                     # Mark stream as opened so fallback knows to finalize
                     self._native_stream_opened = True
+                    logger.info("[TIMING] seed frame: OK (typing shown, turn=%s)", self._turn_id)
             except Exception:
                 logger.debug(
                     "Native streaming seed frame raised; disabling native",
@@ -1391,6 +1405,13 @@ class GatewayStreamConsumer(ToolTimerMixin):
         # Capture the running event loop so the tool-timer can schedule ticks
         # via call_later (only meaningful when native streaming is active).
         self._tool_timer_loop = asyncio.get_event_loop()
+
+        # First-call thinking latch: a turn's first llm.request_started can have
+        # raced the seed above and set _pending_thinking while the bubble was
+        # still unopened / the loop uncaptured.  Now that the seed has opened
+        # the stream and the loop is captured, arm the thinking timer (unless
+        # content already streamed).
+        self._consume_pending_thinking()
 
         try:
             while True:
@@ -1587,6 +1608,10 @@ class GatewayStreamConsumer(ToolTimerMixin):
                                 "(typing bubble reopened immediately, turn=%s)",
                                 self._turn_id,
                             )
+                            # A first post-answer llm.request_started may have
+                            # raced this genuine reseed too — honour the latch
+                            # now that the bubble is open again.
+                            self._consume_pending_thinking()
                         else:
                             # Seed failed — degrade to a single buffered send()
                             # so the post-answer content still lands as one
@@ -3342,6 +3367,17 @@ class GatewayStreamConsumer(ToolTimerMixin):
                         # stream into it, so got_done no longer needs the
                         # lone-placeholder guard for this turn.
                         self._awaiting_reopen_after_boundary = False
+                        # A continuation llm.request_started may have raced this
+                        # boundary and latched _pending_thinking while the stream
+                        # was closed.  Honour it now that the bubble is open —
+                        # same as the initial seed (:1414) and the eager re-seed
+                        # (:1614).  Without this the latch is orphaned until real
+                        # content arrives (which clears it in _append_accumulated
+                        # instead of showing it), leaving the 💭 Thinking frame
+                        # dark for the whole post-boundary gap.  The consume
+                        # guards on _accumulated internally, so a content-driven
+                        # re-seed still lets content win over the animation.
+                        self._consume_pending_thinking()
                         # INFO (temporary latency probe): this is the moment the
                         # C bubble / typing animation first becomes visible after
                         # a clarify answer.  Comparing this timestamp to the

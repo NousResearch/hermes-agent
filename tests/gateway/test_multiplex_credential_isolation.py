@@ -88,6 +88,48 @@ class TestProfilePathResolutionUnderMultiplexScope:
         assert b_seen == prof_b / "skills"
 
 
+    def test_context_files_follow_profile_without_changing_execution_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.prompt_builder import build_context_files_prompt
+        from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
+        from gateway.run import _profile_runtime_scope
+
+        execution_cwd = tmp_path / "shared-workdir"
+        execution_cwd.mkdir()
+        (execution_cwd / "AGENTS.md").write_text(
+            "ROOT_EXECUTION_MARKER", encoding="utf-8"
+        )
+        # The execution cwd travels through each profile's OWN terminal policy,
+        # not ambient TERMINAL_CWD: since #68559 a routed turn installs the
+        # profile's complete terminal scope and never reads the launch
+        # process's TERMINAL_* vars. Every profile points at the same shared
+        # workdir, so execution stays put while instruction discovery follows
+        # the profile home.
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        profile_names = ("default", "alpha", "beta", "gamma", "delta", "epsilon")
+        profiles = {}
+        for name in profile_names:
+            home = tmp_path / "profiles" / name
+            home.mkdir(parents=True)
+            marker = f"PROFILE_MARKER_{name.upper()}"
+            (home / "AGENTS.md").write_text(marker, encoding="utf-8")
+            (home / "config.yaml").write_text(
+                f"terminal:\n  cwd: {execution_cwd}\n", encoding="utf-8"
+            )
+            profiles[name] = (home, marker)
+
+        for name, (home, marker) in profiles.items():
+            with _profile_runtime_scope(home):
+                prompt = build_context_files_prompt(cwd=resolve_context_cwd())
+                assert resolve_agent_cwd() == execution_cwd
+                assert marker in prompt
+                assert "ROOT_EXECUTION_MARKER" not in prompt
+                for other_name, (_, other_marker) in profiles.items():
+                    if other_name != name:
+                        assert other_marker not in prompt
+
 def test_turn_scoped_dotenv_reload_does_not_pollute_process_env(tmp_path, monkeypatch):
     """A routed profile reload must stay inside its context-local scope.
 
@@ -135,6 +177,38 @@ def test_turn_scoped_dotenv_reload_does_not_pollute_process_env(tmp_path, monkey
         assert "PROFILE_SCOPED_API_KEY" not in os.environ
         assert os.environ["DISCORD_ALLOWED_CHANNELS"] == "all-channels"
 
+def test_failing_turn_unwinds_every_profile_seam(tmp_path):
+    """A turn that raises must not leave a profile's scopes installed.
+
+    The three seams are entered in sequence, so an exception escaping the
+    ``yield`` has to unwind all of them.  Leaving the secret scope or the
+    HERMES_HOME override behind is exactly the cross-profile bleed this
+    context manager exists to prevent: the next routed turn would resolve
+    another profile's credentials and home.
+    """
+    from agent.runtime_cwd import is_context_file_cwd_scoped
+    from agent.secret_scope import get_secret
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import get_hermes_home
+
+    profile = tmp_path / "profiles" / "raiser"
+    profile.mkdir(parents=True)
+    (profile / ".env").write_text("PROFILE_SCOPED_API_KEY=secret-raiser\n", encoding="utf-8")
+    root_home = get_hermes_home()
+
+    ss.set_multiplex_active(True)
+    with pytest.raises(RuntimeError, match="turn exploded"):
+        with _profile_runtime_scope(profile):
+            assert get_secret("PROFILE_SCOPED_API_KEY") == "secret-raiser"
+            raise RuntimeError("turn exploded")
+
+    # With multiplexing on, an unscoped read fails closed — which is the
+    # strongest available proof that the profile's scope is gone rather than
+    # merely empty.
+    with pytest.raises(ss.UnscopedSecretError):
+        get_secret("PROFILE_SCOPED_API_KEY")
+    assert get_hermes_home() == root_home
+    assert is_context_file_cwd_scoped() is False
 
 def test_cold_profile_hydrates_external_source_without_global_env(
     tmp_path, monkeypatch

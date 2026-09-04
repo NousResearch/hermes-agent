@@ -102,16 +102,18 @@ If no route matches, the message uses the default/active profile.
 3. `_profile_name_for_source` runs the configured routes through `match_profile_route` and
    stamps `source.profile` with the winning route's profile (or leaves it unset).
 4. Downstream, `_resolve_profile_home_for_source` chooses the profile home directory
-   (`source.profile` → active profile → `default`) and the session is scoped per-profile, so
-   each routed community gets isolated memory and conversation state.
+   (`source.profile` → active profile → `default`). The per-profile runtime scope isolates
+   memory, conversation state, credentials, and context-file discovery. Tool execution keeps
+   the configured working directory; `AGENTS.md` and related instructions resolve from the
+   routed profile home instead.
 
 Because `gateway_runner` is injected for **all** adapters (declared on `BasePlatformAdapter`),
 every platform goes through this path — not just Discord.
 
 ## Relationship to multiplexing
 
-`profile_routes` requires `gateway.multiplex_profiles: true`. Multiplexing is what
-activates the per-profile runtime scope (per-profile `HERMES_HOME`, secret scope, and
-profile-namespaced session keys); routing is the decision layer that picks *which*
+`profile_routes` requires `gateway.multiplex_profiles: true`. Multiplexing activates the
+per-profile runtime scope: per-profile `HERMES_HOME`, secret scope, context-file directory,
+and profile-namespaced session keys. Routing is the decision layer that picks *which*
 profile a given guild/channel/thread lands in. With multiplexing off, `profile_routes`
 is ignored entirely — behavior is byte-identical to a single-profile gateway.

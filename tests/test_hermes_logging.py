@@ -686,3 +686,108 @@ class TestAsyncQueueLogging:
             for h in hermes_logging._queued_file_handlers
         )
 
+
+class TestMuteConsoleLogging:
+    """#103056: console handlers are muted without starving the file handlers.
+
+    ``logging.disable()`` (previously used by the one-shot CLI path) blocks record
+    creation at the root logger via ``Logger.manager.disable``, so the queued file
+    handlers never see a record either. ``mute_console_logging()`` must silence only
+    stdout/stderr-bound ``StreamHandler``s and leave file logging untouched.
+    """
+
+    def test_console_handler_muted_and_file_logging_kept(self, hermes_home, capsys):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        # Bound to sys.stderr like a real console handler (setup_verbose_logging uses
+        # _safe_stderr(); a plain StreamHandler() binds whatever sys.stderr was when
+        # created — which survives the CLI's runtime devnull redirect).
+        console = logging.StreamHandler()
+        console.setLevel(logging.DEBUG)
+        root = logging.getLogger()
+        root.addHandler(console)
+        try:
+            restore = hermes_logging.mute_console_logging()
+            # The console handler is pushed past CRITICAL...
+            assert console.level == logging.CRITICAL + 1
+            # ...while records still reach the queued file handlers.
+            logging.getLogger("test_mute_console.kept").info("console muted but file alive")
+            logging.getLogger("test_mute_console.kept").warning("console muted but errors alive")
+            hermes_logging.flush_log_queue()
+            assert (
+                "console muted but file alive"
+                in (hermes_home / "logs" / "agent.log").read_text()
+            )
+            assert (
+                "console muted but errors alive"
+                in (hermes_home / "logs" / "errors.log").read_text()
+            )
+            # Nothing reached the (muted) console handler.
+            assert capsys.readouterr().err == ""
+            # Restore brings the previous level back.
+            restore()
+            assert console.level == logging.DEBUG
+        finally:
+            root.removeHandler(console)
+            # Never close a handler bound to the real console streams — StreamHandler.close()
+            # would close sys.stderr/stdout for the rest of the process.
+            if console.stream not in (sys.stdout, sys.stderr):
+                console.close()
+
+    def test_queue_and_file_handlers_untouched(self, hermes_home):
+        """Only stdout/stderr handlers are muted — not the queue or file handlers."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        file_stream = hermes_home / "file-handler-stream.log"
+        file_handler = logging.FileHandler(file_stream, encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+        root = logging.getLogger()
+        root.addHandler(file_handler)
+        try:
+            queue_handlers = [
+                h for h in root.handlers if getattr(h, "_hermes_queue", False)
+            ]
+            assert len(queue_handlers) == 1
+            restore = hermes_logging.mute_console_logging()
+            try:
+                # Console-bound only: the queue handler and a file-stream handler keep
+                # their levels after mute_console_logging().
+                assert queue_handlers[0].level == logging.NOTSET
+                assert file_handler.level == logging.DEBUG
+            finally:
+                restore()
+            logging.getLogger("test_mute_console.file_stream").info(
+                "direct file handler still records"
+            )
+            file_handler.flush()
+            hermes_logging.flush_log_queue()
+            assert "direct file handler still records" in file_stream.read_text()
+        finally:
+            root.removeHandler(file_handler)
+            file_handler.close()
+
+    def test_mute_is_a_noop_without_console_handlers(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        restore = hermes_logging.mute_console_logging()
+        restore()  # must not raise
+        logging.getLogger("test_mute_console.noop").warning("no console handler present")
+        hermes_logging.flush_log_queue()
+        assert "no console handler present" in (
+            hermes_home / "logs" / "errors.log"
+        ).read_text()
+
+    def test_console_stream_detection(self, monkeypatch):
+        """_is_console_stream() recognizes raw, bound, and wrapped console streams."""
+        assert hermes_logging._is_console_stream(sys.stdout)
+        assert hermes_logging._is_console_stream(sys.stderr)
+        # A stream that resolved to sys.stderr at construction time.
+        bound = logging.StreamHandler().stream
+        assert hermes_logging._is_console_stream(bound)
+        # The UTF-8 wrapper _safe_stderr() builds over a non-UTF-8 console.
+        if not sys.platform.startswith("win"):
+            monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="ascii"))
+            wrapped = hermes_logging._safe_stderr()
+            assert hermes_logging._is_console_stream(wrapped)
+        # A plain file stream is not the console.
+        fake_file = io.StringIO("")
+        fake_file.name = "agent.log"  # type: ignore[attr-defined]
+        assert not hermes_logging._is_console_stream(fake_file)
+

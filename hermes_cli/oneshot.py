@@ -174,10 +174,6 @@ def run_oneshot(
     JSON usage report even when the run fails. Returns the exit code; the caller owns process
     termination.
     """
-    # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
-    # root logger. File handlers from setup_logging() keep working (level-independent).
-    logging.disable(logging.CRITICAL)
-
     # --provider without --model is ambiguous (the provider may not host the configured model, and
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.
     env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
@@ -208,24 +204,37 @@ def run_oneshot(
     real_stdout = sys.stdout
     real_stderr = sys.stderr
 
+    # Silence the console without starving file logging. ``logging.disable()`` (the old
+    # approach) sets ``Logger.manager.disable``, which blocks record creation at the root
+    # logger BEFORE handlers run — so the file handlers behind setup_logging() received
+    # nothing either and one-shot runs wrote neither agent.log nor errors.log (#103056).
+    # Mute only stdout/stderr-bound handlers for the (redirected) run instead, and restore
+    # them afterwards; placed after validation so early returns leave logging untouched.
+    from hermes_logging import mute_console_logging
+
+    _restore_console_logging = mute_console_logging()
+
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
-    with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
-        try:
-            response, result = _run_agent(
-                prompt,
-                model=model,
-                provider=provider,
-                toolsets=explicit_toolsets,
-                use_config_toolsets=use_config_toolsets,
-                skills=skills,
-            )
-        except BaseException as exc:  # noqa: BLE001
-            # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
-            # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
-            # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
-            failure = exc
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+            try:
+                response, result = _run_agent(
+                    prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                    skills=skills,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
+                # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
+                # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
+                failure = exc
+    finally:
+        _restore_console_logging()
 
     if failure is not None:
         # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.

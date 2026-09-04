@@ -16,7 +16,7 @@ import sys
 import threading
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 # Windows-ONLY swap (#44873): stdlib ``RotatingFileHandler.doRollover()`` calls
 # ``os.rename()``, which fails with ``PermissionError [WinError 32]`` whenever
@@ -236,6 +236,68 @@ def setup_verbose_logging() -> None:
     _quiet_noisy_loggers()
     # rex-deploy at INFO for sandbox status.
     logging.getLogger("rex-deploy").setLevel(logging.INFO)
+
+
+# CRITICAL + 1 rejects CRITICAL records too: the mute target for console handlers.
+_MUTED_CONSOLE_LEVEL = logging.CRITICAL + 1
+
+
+def _is_console_stream(stream) -> bool:
+    """True when *stream* writes to the process console (stdout/stderr).
+
+    Covers the raw streams, any stream that resolved to them at construction time
+    (a ``StreamHandler`` created without an explicit stream keeps the ``sys.stderr``
+    it bound then — even after the CLI redirects ``sys.stderr`` to ``devnull``), and
+    the UTF-8 wrapper ``_safe_stderr()`` builds over a non-UTF-8 console (its
+    ``buffer`` is the console's own).
+    """
+    if stream is sys.stdout or stream is sys.stderr:
+        return True
+    if getattr(stream, "name", None) in ("<stdout>", "<stderr>"):
+        return True
+    try:
+        buffer = getattr(stream, "buffer", None)
+        if buffer is not None and (buffer is sys.stdout.buffer or buffer is sys.stderr.buffer):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def mute_console_logging() -> Callable[[], None]:
+    """Raise every console-bound handler's level past CRITICAL; return the restore callable.
+
+    One-shot/quiet CLI paths want a silent terminal, but must not use
+    ``logging.disable()`` for it: that sets ``Logger.manager.disable``, which blocks
+    record creation at the root logger *before* any handler runs, so the queued file
+    handlers (agent.log / errors.log) starve too (#103056). This walks the whole
+    logger tree and mutes only stdout/stderr-bound ``StreamHandler``s — file handlers
+    live behind the async ``QueueListener``, off the loggers, and keep receiving
+    records. Call the returned function to restore the previous levels. Safe when no
+    console handler exists (no-op).
+    """
+    loggers = [logging.getLogger()]
+    for candidate in logging.Logger.manager.loggerDict.values():
+        if isinstance(candidate, logging.Logger):
+            loggers.append(candidate)
+
+    previously: list[tuple[logging.Handler, int]] = []
+    for logger in loggers:
+        for handler in list(logger.handlers):
+            if not isinstance(handler, logging.StreamHandler):
+                continue
+            stream = getattr(handler, "stream", None)
+            if stream is None or not _is_console_stream(stream):
+                continue
+            if handler.level < _MUTED_CONSOLE_LEVEL:
+                previously.append((handler, handler.level))
+                handler.setLevel(_MUTED_CONSOLE_LEVEL)
+
+    def _restore() -> None:
+        for handler, level in previously:
+            handler.setLevel(level)
+
+    return _restore
 
 
 def _quietly(fn) -> None:

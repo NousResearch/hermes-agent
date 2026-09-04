@@ -494,7 +494,7 @@ class TestContentBearingProgress:
         any kind (transport liveness), not only on the first token."""
         from agent.auxiliary_client import (
             _aux_provider_response,
-            _aux_timing_hook,
+            _aux_thread_local_hook,
             _notify_aux_timing_response,
         )
 
@@ -507,7 +507,7 @@ class TestContentBearingProgress:
         accumulator = _ChatStreamAccumulator()
 
         with (
-            _aux_timing_hook(_aux_provider_response, _timed_response),
+            _aux_thread_local_hook(_aux_provider_response, _timed_response),
             aux_progress_hook(lambda: None),
         ):
             accumulator.feed(keepalive)

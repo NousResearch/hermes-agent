@@ -171,7 +171,6 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer = StreamingTTSConsumer.__new__(StreamingTTSConsumer)
     consumer._adapter = adapter
     consumer._chat_id = chat_id
-    consumer._tts_config = {}
     consumer._loop = loop
     consumer._metadata = None
     consumer._audio_format = AudioFormat(
@@ -183,7 +182,6 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer._chunker = SentenceChunker()
     consumer._queue = queue.Queue(maxsize=256)
     consumer._handle = None
-    consumer._started = False
     consumer._completed = False
     consumer._partial = False
     consumer._aborted = False

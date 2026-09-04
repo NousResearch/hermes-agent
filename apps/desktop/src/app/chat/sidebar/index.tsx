@@ -272,11 +272,12 @@ export function stripFtsMarkers(snippet: string): string {
   return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
 }
 
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
+export function searchResultToSession(result: SessionSearchResult): SessionInfo {
   const ts = result.session_started ?? Date.now() / 1000
 
   return {
     archived: false,
+    ...(result.connection_id ? { connection_id: result.connection_id } : {}),
     cwd: null,
     ended_at: null,
     id: result.session_id,
@@ -288,6 +289,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     model: result.model ?? null,
     output_tokens: 0,
     preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
+    ...(result.profile ? { profile: result.profile } : {}),
     source: result.source ?? null,
     started_at: ts,
     title: null,

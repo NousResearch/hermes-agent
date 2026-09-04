@@ -333,6 +333,46 @@ test('registry-pinned session responses retain their owning connection', () => {
   assert.equal(single.connection_id, 'test-amnezia')
 })
 
+test('registry-pinned session search results retain their owning connection', () => {
+  const search = tagRegistrySessionResponse(
+    '/api/sessions/search?q=archived%20project',
+    {
+      results: [
+        {
+          session_id: 'remote-chat',
+          snippet: 'Archived project notes'
+        }
+      ]
+    },
+    'registry-remote',
+    'default'
+  ) as any
+
+  assert.equal(search.results[0].connection_id, 'registry-remote')
+  assert.equal(search.results[0].profile, 'default')
+})
+
+test('aggregate session search does not stamp all as a concrete owner profile', () => {
+  const search = tagRegistrySessionResponse(
+    '/api/sessions/search?q=project',
+    {
+      results: [
+        { profile: 'research', session_id: 'research-chat' },
+        { session_id: 'legacy-chat' }
+      ]
+    },
+    'registry-remote',
+    'all'
+  ) as {
+    results: Array<{ connection_id?: string; profile?: string; session_id: string }>
+  }
+
+  assert.deepEqual(search.results, [
+    { connection_id: 'registry-remote', profile: 'research', session_id: 'research-chat' },
+    { connection_id: 'registry-remote', session_id: 'legacy-chat' }
+  ])
+})
+
 test('registry response ownership tagging ignores non-session payloads and transcript messages', () => {
   const status = { ok: true }
   const messages = { messages: [{ id: 'message-1' }], session_id: 'remote-chat' }

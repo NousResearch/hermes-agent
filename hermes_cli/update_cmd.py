@@ -10320,6 +10320,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         # the restart idempotent.  Mirrors the recovery
                         # path in `hermes gateway restart`
                         # (`systemd_restart()`) as of PR #20949.
+                        _blunt_restart_timeout = _blunt_restart_subprocess_timeout(
+                            _drain_budget
+                        )
                         subprocess.run(
                             _manage_cmd + ["reset-failed", svc_name],
                             capture_output=True,
@@ -10330,7 +10333,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             _manage_cmd + ["restart", svc_name],
                             capture_output=True,
                             text=True, encoding="utf-8", errors="replace",
-                            timeout=15,
+                            timeout=_blunt_restart_timeout,
                         )
                         if restart.returncode == 0:
                             # Verify the service actually survived the
@@ -10362,7 +10365,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     _manage_cmd + ["restart", svc_name],
                                     capture_output=True,
                                     text=True, encoding="utf-8", errors="replace",
-                                    timeout=15,
+                                    timeout=_blunt_restart_timeout,
                                 )
                                 if _wait_for_service_active(
                                     scope_cmd,
@@ -11171,6 +11174,38 @@ def _print_items(items, label, key, fallback_key=None):
     extra = len(items) - len(shown)
     if extra > 0:
         print(f"      … and {extra} more")
+
+def _blunt_restart_subprocess_timeout(drain_budget: float) -> float:
+    """Timeout for the blunt ``systemctl restart`` subprocess call itself.
+
+    ``systemctl restart`` blocks until the stop+start transaction
+    completes. The unit's ``TimeoutStopSec`` is pinned to
+    ``agent.restart_drain_timeout`` plus slack (see
+    ``55-drain-timeout.conf``) so a gateway draining an in-flight turn
+    can legitimately take that long to stop. A subprocess timeout
+    shorter than the drain budget kills the ``systemctl`` CLI client
+    (not the transaction already queued with the systemd manager, which
+    keeps running) and makes the caller wrongly report a unit that was
+    still draining as "not restarted".
+    """
+    return max(15.0, drain_budget + 30.0)
+
+
+def _blunt_restart_subprocess_timeout(drain_budget: float) -> float:
+    """Timeout for the blunt ``systemctl restart`` subprocess call itself.
+
+    ``systemctl restart`` blocks until the stop+start transaction
+    completes. The unit's ``TimeoutStopSec`` is pinned to
+    ``agent.restart_drain_timeout`` plus slack (see
+    ``55-drain-timeout.conf``) so a gateway draining an in-flight turn
+    can legitimately take that long to stop. A subprocess timeout
+    shorter than the drain budget kills the ``systemctl`` CLI client
+    (not the transaction already queued with the systemd manager, which
+    keeps running) and makes the caller wrongly report a unit that was
+    still draining as "not restarted".
+    """
+    return max(15.0, drain_budget + 30.0)
+
 
 def _wait_for_service_active(
     scope_cmd_: list,

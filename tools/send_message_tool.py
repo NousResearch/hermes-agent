@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlsplit
 
 
 from agent.redact import redact_sensitive_text
@@ -211,6 +212,81 @@ async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs)
             await asyncio.sleep(delay)
 
 
+def _telegram_buttons_to_markup(buttons):
+    """Validate bounded Telegram inline-keyboard rows and build markup."""
+    if buttons is None or buttons == "":
+        return None
+    if isinstance(buttons, str):
+        if len(buttons.encode("utf-8")) > 32768:
+            raise ValueError("buttons JSON exceeds 32768 bytes")
+        try:
+            parsed = json.loads(buttons)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"buttons must be valid JSON: {exc}") from exc
+    else:
+        parsed = buttons
+
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("buttons must be a non-empty JSON array")
+    rows = parsed if isinstance(parsed[0], list) else [parsed]
+    if len(rows) > 8:
+        raise ValueError("buttons must contain at most 8 rows")
+
+    try:
+        from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
+    except ImportError as exc:
+        raise ValueError("Telegram inline buttons require python-telegram-bot") from exc
+
+    keyboard = []
+    for row in rows:
+        if not isinstance(row, list) or not row or len(row) > 8:
+            raise ValueError("each button row must contain 1 to 8 buttons")
+        rendered_row = []
+        for button in row:
+            if not isinstance(button, dict):
+                raise ValueError("each button must be an object")
+            unknown = set(button) - {
+                "label", "text", "callback_data", "url", "copy_text",
+            }
+            if unknown:
+                raise ValueError(
+                    "unsupported button fields: " + ", ".join(sorted(unknown))
+                )
+            label = button.get("text") or button.get("label")
+            if not isinstance(label, str) or not label.strip() or len(label) > 64:
+                raise ValueError("each button label/text must be 1 to 64 characters")
+            actions = [
+                name for name in ("callback_data", "url", "copy_text")
+                if button.get(name) is not None
+            ]
+            if len(actions) != 1:
+                raise ValueError(
+                    "each button needs exactly one of callback_data, url, or copy_text"
+                )
+            action = actions[0]
+            value = button[action]
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"button {action} must be a non-empty string")
+            if action == "callback_data":
+                if len(value.encode("utf-8")) > 64:
+                    raise ValueError("callback_data must be 1 to 64 UTF-8 bytes")
+                rendered = InlineKeyboardButton(text=label, callback_data=value)
+            elif action == "url":
+                parsed_url = urlsplit(value)
+                if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
+                    raise ValueError("button url must be an absolute HTTP(S) URL")
+                rendered = InlineKeyboardButton(text=label, url=value)
+            else:
+                if len(value) > 256:
+                    raise ValueError("copy_text must be 1 to 256 characters")
+                rendered = InlineKeyboardButton(
+                    text=label, copy_text=CopyTextButton(value),
+                )
+            rendered_row.append(rendered)
+        keyboard.append(rendered_row)
+    return InlineKeyboardMarkup(keyboard)
+
+
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
@@ -244,6 +320,17 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "silent": {
+                "type": "boolean",
+                "description": "For Telegram send: disable the push notification."
+            },
+            "buttons": {
+                "description": "For Telegram send: JSON or decoded inline-keyboard rows. Each button needs label/text and exactly one of callback_data, url, or copy_text."
+            },
+            "edit_message_id": {
+                "type": "string",
+                "description": "For Telegram send: replace this existing text message and its inline keyboard."
             }
         },
         "required": []
@@ -379,6 +466,15 @@ def _handle_send(args):
     chat_id = None
     thread_id = None
 
+    structured = any(
+        args.get(name) not in (None, False, "")
+        for name in ("silent", "buttons", "edit_message_id")
+    )
+    if structured and platform_name != "telegram":
+        return tool_error(
+            "silent, buttons, and edit_message_id are supported only for Telegram"
+        )
+
     prepare_send_message_platforms()
     if target_ref:
         chat_id, thread_id, resolution_error = resolve_send_target(
@@ -443,6 +539,8 @@ def _handle_send(args):
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    if args.get("edit_message_id") is not None and media_files:
+        return tool_error("Telegram edit_message_id cannot be combined with media")
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -494,6 +592,12 @@ def _handle_send(args):
             "media_files": media_files,
             "force_document": force_document_attachments,
         }
+        if structured:
+            send_kwargs.update({
+                "silent": bool(args.get("silent")),
+                "buttons": args.get("buttons"),
+                "edit_message_id": args.get("edit_message_id"),
+            })
         # Preserve the exact built-in call contract; only custom handlers need
         # the complete typed request.
         if entry is not None and entry.send_message_handler is not None:
@@ -1109,7 +1213,9 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
+                            media_files=None, force_document=False, args=None,
+                            silent=False, buttons=None, edit_message_id=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1203,6 +1309,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            silent=silent,
+            buttons=buttons,
+            edit_message_id=edit_message_id,
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1556,7 +1665,9 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None,
+                         disable_link_previews=False, force_document=False,
+                         silent=False, buttons=None, edit_message_id=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1647,9 +1758,65 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+        if silent:
+            text_kwargs["disable_notification"] = True
+        markup = _telegram_buttons_to_markup(buttons)
+        if markup is not None:
+            text_kwargs["reply_markup"] = markup
 
         last_msg = None
         warnings = []
+
+        if edit_message_id is not None:
+            try:
+                normalized_edit_id = int(str(edit_message_id))
+            except (TypeError, ValueError) as exc:
+                return _error(f"Telegram edit message id must be an integer: {exc}")
+            if normalized_edit_id <= 0:
+                return _error("Telegram edit message id must be positive")
+            edit_kwargs = {}
+            if disable_link_previews:
+                edit_kwargs["disable_web_page_preview"] = True
+            if markup is not None:
+                edit_kwargs["reply_markup"] = markup
+            try:
+                last_msg = await bot.edit_message_text(
+                    chat_id=int_chat_id,
+                    message_id=normalized_edit_id,
+                    text=formatted,
+                    parse_mode=send_parse_mode,
+                    **edit_kwargs,
+                )
+            except Exception as edit_error:
+                if any(
+                    marker in str(edit_error).lower()
+                    for marker in ("parse", "markdown", "html")
+                ):
+                    plain = formatted
+                    if not _has_html:
+                        try:
+                            from plugins.platforms.telegram.adapter import _strip_mdv2
+                            plain = _strip_mdv2(formatted)
+                        except Exception:
+                            pass
+                    last_msg = await bot.edit_message_text(
+                        chat_id=int_chat_id,
+                        message_id=normalized_edit_id,
+                        text=plain,
+                        parse_mode=None,
+                        **edit_kwargs,
+                    )
+                else:
+                    return _error(f"Telegram edit failed: {edit_error}")
+            if last_msg is None:
+                return {"error": "Telegram edit produced no message"}
+            return {
+                "success": True,
+                "platform": "telegram",
+                "chat_id": chat_id,
+                "message_id": str(last_msg.message_id),
+                "edited": True,
+            }
 
         # MEDIA:<path> caption: when a single captionable file is accompanied
         # by short text, attach the text to the media bubble as its native
@@ -1750,6 +1917,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 with open(media_path, "rb") as f:
                     media_kwargs = dict(thread_kwargs)
+                    if silent:
+                        media_kwargs["disable_notification"] = True
+                    if markup is not None:
+                        media_kwargs["reply_markup"] = markup
                     # Attach the MEDIA:<path> caption to the bubble itself for
                     # captionable kinds (photo/video/document). _tg_caption is
                     # only set for a single captionable file, so this never

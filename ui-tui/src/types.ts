@@ -171,6 +171,11 @@ export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
 export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
+// `display.tool_trail_position` — whether a message's reasoning/tool trail
+// renders before ('above', the default) or after ('below') the text it
+// belongs to.  Orthogonal to SectionVisibility: see domain/toolTrail.ts.
+export type ToolTrailPosition = 'above' | 'below'
+
 export interface McpServerStatus {
   connected: boolean
   disabled?: boolean

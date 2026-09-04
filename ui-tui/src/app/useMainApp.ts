@@ -367,7 +367,11 @@ export function useMainApp(gw: GatewayClient) {
 
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  // `toolTrailPosition` participates in the bucket key because flipping it at
+  // runtime (/trail) changes the measured height of every detailed assistant
+  // row by the separator's 2 rows. Without it the old bucket's Yoga
+  // measurements would be replayed against the new layout.
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}:${ui.toolTrailPosition}`
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -405,6 +409,7 @@ export function useMainApp(gw: GatewayClient) {
         thinkingExpanded: historyThinkingExpanded,
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
+        toolTrailPosition: ui.toolTrailPosition,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
@@ -420,6 +425,7 @@ export function useMainApp(gw: GatewayClient) {
       ui.detailsModeCommandOverride,
       ui.sections,
       ui.theme.brand.prompt,
+      ui.toolTrailPosition,
       virtualRows
     ]
   )

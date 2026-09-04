@@ -29,6 +29,7 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
+  ToolTrailPosition,
   Usage
 } from '../types.js'
 
@@ -355,6 +356,10 @@ export interface UiState {
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
+  // `display.tool_trail_position` — 'above' (default) keeps today's shape;
+  // 'below' renders each message's trail after its text. Position only;
+  // section visibility stays with `sections`.
+  toolTrailPosition: ToolTrailPosition
   usage: Usage
 }
 

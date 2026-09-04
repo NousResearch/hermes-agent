@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
+import { DEFAULT_TOOL_TRAIL_POSITION } from '../domain/toolTrail.js'
 import { ZERO } from '../domain/usage.js'
 import { bootTheme } from '../lib/themeBoot.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -36,6 +37,7 @@ const buildUiState = (): UiState => ({
   statusBarFields: null,
   streaming: true,
   timestamps: false,
+  toolTrailPosition: DEFAULT_TOOL_TRAIL_POSITION,
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,

@@ -15211,6 +15211,15 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"key": key, "value": nv})
 
+    if key == "tool_trail_position":
+        # Where a message's reasoning/tool trail renders relative to its own
+        # text. Position only — section visibility stays with details_mode.
+        raw = str(value or "").strip().lower()
+        if raw not in {"above", "below"}:
+            return _err(rid, 4002, f"unknown tool_trail_position: {value}")
+        _write_config_key("display.tool_trail_position", raw)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key == "density":
         raw = str(value or "").strip().lower()
         cfg0 = _load_cfg()

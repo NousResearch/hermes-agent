@@ -1818,6 +1818,21 @@ display:
   # Show [HH:MM] timestamps on user input and assistant response labels.
   # timestamps: false
 
+  # TUI only. Where a response's reasoning/tool trail is drawn relative to the
+  # response text itself. Purely positional — it does not change what the trail
+  # contains or whether it is shown; that stays with details_mode and
+  # display.sections.
+  #   above: Trail first, then a "Response" rule, then the answer (default —
+  #          the turn reads in the order it happened)
+  #   below: Answer first, trail underneath. A long tool trail no longer sits
+  #          between your prompt and its answer, which makes scrolling back
+  #          through a finished session much faster. Trade-off: a settled
+  #          turn's trail moves under the text, so you read the answer before
+  #          the steps that produced it. In-flight tool calls are unaffected —
+  #          live tool progress still streams above the answer in both modes.
+  # Toggle at runtime with /trail [above|below|toggle].
+  # tool_trail_position: above
+
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme
   # ───────────────────────────────────────────────────────────────────────────

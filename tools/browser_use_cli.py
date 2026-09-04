@@ -37,11 +37,55 @@ _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 # sessions from clobbering each other before their first new_tab(). Runs
 # once per daemon (marker file keyed by BU_NAME under the harness runtime
 # state), costs one IPC round-trip on later calls.
+#
+# browser-harness 0.1.9+ isolates named daemons on their own tab natively
+# (browser-use/browser-harness#618), so the preamble detects that at runtime
+# and stands down — otherwise every named session leaks a redundant second
+# target (one extra Chrome renderer, ~8-11 cgroup tasks; #91522). The
+# threshold below must stay in sync with the gate embedded in the preamble.
+_NATIVE_TAB_ISOLATION_SINCE = (0, 1, 9)
+
+
+def _parse_version_prefix(version: str) -> tuple:
+    """Best-effort leading-numeric triple, e.g. '0.1.9rc1' -> (0, 1, 9)."""
+    parts = []
+    for p in version.split(".")[:3]:
+        digits = ""
+        for ch in p:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits or 0))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
 _OWN_TAB_PREAMBLE = """\
 # hermes: pin this named session to its own tab (once per daemon process)
 def _hermes_ensure_own_tab():
     import os as _os, tempfile as _tf
     _name = _os.environ.get("BU_NAME", "default")
+    # browser-harness 0.1.9+ isolates named daemons on their own tab
+    # natively (browser-use/browser-harness#618). Running the preamble on
+    # top of that creates a redundant second target per named session —
+    # one extra Chrome renderer and ~8-11 cgroup tasks each (#91522) —
+    # so detect the native isolation and stand down. Pre-0.1.9 harnesses
+    # keep the compatibility pin below.
+    try:
+        from importlib.metadata import version as _bhver
+        _parts = []
+        for _p in _bhver("browser-harness").split(".")[:3]:
+            _digits = ""
+            for _ch in _p:
+                if _ch.isdigit():
+                    _digits += _ch
+                else:
+                    break
+            _parts.append(int(_digits or 0))
+        if tuple(_parts) >= (0, 1, 9):
+            return
+    except Exception:
+        pass  # unresolvable version: run the pin (pre-fix behavior is safe)
     try:
         # Key the marker by the daemon's pid so a daemon restart (which
         # re-attaches to the first shared page) re-pins automatically,

@@ -573,6 +573,80 @@ class TestOwnTabPreamble:
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
 
+    def test_preamble_stands_down_on_native_tab_isolation(self):
+        """browser-harness 0.1.9+ isolates named daemons on their own tab
+        natively (browser-harness#618); the preamble must detect it and
+        return BEFORE creating any target, or every named session leaks a
+        redundant second tab (#91522). Verified structurally: the version
+        gate's `return` must precede the Target.createTarget call."""
+        import ast
+
+        tree = ast.parse(bu_cli._OWN_TAB_PREAMBLE)
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                  and n.name == "_hermes_ensure_own_tab")
+
+        # Collect the line numbers of every return and of the createTarget
+        # call. ast.walk is breadth-first (NOT source order), so ordering is
+        # decided from line numbers: the earliest return is the version
+        # gate's stand-down (the gate sits at the top of the function body),
+        # and it must precede any target creation.
+        return_lines = []
+        create_target_line = None
+
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Return):
+                return_lines.append(node.lineno)
+            if isinstance(node, ast.Call):
+                func = node.func
+                # cdp("Target.createTarget", ...).get("targetId") — match the
+                # inner cdp() call by its first positional arg.
+                if isinstance(func, ast.Name) and func.id == "cdp":
+                    for arg in node.args:
+                        if (isinstance(arg, ast.Constant)
+                                and arg.value == "Target.createTarget"):
+                            create_target_line = node.lineno
+        assert return_lines, "no returns found in preamble function"
+        assert create_target_line is not None, "createTarget call missing"
+        assert min(return_lines) < create_target_line, (
+            "the native-isolation stand-down must run before any target is "
+            "created, else harness 0.1.9+ gets a redundant tab (#91522)"
+        )
+        # The threshold tuple embedded in the preamble's version gate must
+        # equal the module-level constant — extracted from the AST so the
+        # two implementations can't drift apart silently (editing the
+        # preamble's literal without the constant now fails this test).
+        embedded = None
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                continue
+            if not isinstance(node.ops[0], ast.GtE):
+                continue
+            comparator = node.comparators[0]
+            if not (isinstance(comparator, ast.Tuple)
+                    and all(isinstance(e, ast.Constant) for e in comparator.elts)):
+                continue
+            embedded = tuple(e.value for e in comparator.elts)
+        assert embedded is not None, "version-gate tuple comparison missing"
+        assert embedded == bu_cli._NATIVE_TAB_ISOLATION_SINCE, (
+            "preamble's embedded threshold drifted from "
+            "_NATIVE_TAB_ISOLATION_SINCE"
+        )
+
+    def test_version_prefix_parser(self):
+        """The leading-numeric parser mirrors the preamble's inline parse
+        (same digits-until-nondigit algorithm on the first 3 components)."""
+        parse = bu_cli._parse_version_prefix
+        assert parse("0.1.9") == (0, 1, 9)
+        assert parse("0.1.9rc1") == (0, 1, 9)
+        assert parse("0.2.0") == (0, 2, 0)
+        assert parse("0.1.8") == (0, 1, 8)
+        assert parse("1.0") == (1, 0, 0)
+        assert parse("0.1.8.post1") == (0, 1, 8)
+        # 0.1.9 and above cross the isolation threshold; below does not
+        threshold = bu_cli._NATIVE_TAB_ISOLATION_SINCE
+        assert parse("0.1.9") >= threshold
+        assert parse("0.1.8") < threshold
+
 
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker row (browser_backend

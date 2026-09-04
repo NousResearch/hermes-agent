@@ -152,27 +152,24 @@ async def test_subprotocol_key_accept_full_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_turn_runs_under_voice_session_source(monkeypatch):
-    # The converse turn must persist as source="voice" (a chat sub-kind), so the
-    # agent runs inside session_source_scope("voice"). Record what
-    # _session_source_for_agent("api_server") resolves to when _run_agent fires:
-    # inside the scope it is "voice"; the platform ("api_server") is unchanged.
-    from run_agent import _session_source_for_agent
-
+async def test_turn_persists_voice_session_source(monkeypatch):
+    # The converse handler must PRE-CREATE the session row as source="voice" (a chat
+    # sub-kind the dashboard files under Chats/"Voice", not "Automations"). The agent's
+    # later create_session upsert preserves an existing row's source, and the agent
+    # PLATFORM stays "api_server" (HA tools). Spy on the pre-create's create_session.
     adapter = _adapter()
     streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
     _patch_converse(monkeypatch, streamer, transcript="turn it on")
+    _patch_run_agent(adapter, monkeypatch)
 
-    seen: dict = {}
+    created: dict = {}
 
-    async def _fake_run_agent(user_message, conversation_history, *,
-                              stream_delta_callback=None, session_id=None, **_):
-        seen["source"] = _session_source_for_agent("api_server")
-        if stream_delta_callback is not None:
-            stream_delta_callback("ok.")
-        return {"final_response": "ok."}, {"input_tokens": 0, "output_tokens": 0}
+    class _SpyDB:
+        def create_session(self, session_id, source, **kwargs):
+            created["id"], created["source"] = session_id, source
+            return session_id
 
-    monkeypatch.setattr(adapter, "_run_agent", _fake_run_agent)
+    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: _SpyDB())
 
     async with TestClient(TestServer(_app(adapter))) as client:
         ws = await client.ws_connect(
@@ -194,7 +191,8 @@ async def test_turn_runs_under_voice_session_source(monkeypatch):
             await ws.send_str(json.dumps({"stop": True}))
             await ws.close()
 
-    assert seen.get("source") == "voice"
+    assert created.get("source") == "voice"
+    assert created.get("id", "").startswith("voice_")
 
 
 def _write_tone_wav(path, *, rate=24000, ms=40, freq=440.0):

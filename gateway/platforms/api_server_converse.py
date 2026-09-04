@@ -230,6 +230,18 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
     # carries across turns, exactly like the dashboard's ephemeral session).
     session_id = f"voice_{uuid.uuid4().hex}"
     conversation_history: List[Dict[str, str]] = []
+    # Pre-create the session row as source="voice" (a chat sub-kind the dashboard files
+    # under Chats/"Voice", not "Automations"). The agent's later create_session upsert
+    # PRESERVES an existing row's source (it is absent from ON CONFLICT DO UPDATE), so
+    # this sticks — while the agent PLATFORM stays "api_server", leaving HA toolset
+    # resolution untouched. Off-loop: create_session is a blocking SQLite write.
+    def _precreate_voice_session() -> None:
+        db = self._ensure_session_db()
+        if db is not None:
+            db.create_session(session_id=session_id, source="voice", title="Voice conversation")
+
+    with contextlib.suppress(Exception):
+        await loop.run_in_executor(None, _precreate_voice_session)
 
     async def _pump_client() -> None:
         # Binary frames feed the mic shim; {"stop"}/disconnect ends; {"commit"}
@@ -286,17 +298,13 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
             async def _run_turn(t=transcript, history=list(conversation_history)) -> None:
                 # The real agent turn on the main loop (preserving the request's profile
                 # scope); deltas stream out via _on_delta as they land, then the None
-                # sentinel closes the synthesis pipeline when the turn ends. The turn runs
-                # under session_source_scope("voice") so the persisted session row is
-                # source="voice" (a chat sub-kind the dashboard labels "Voice"); the agent
-                # PLATFORM stays "api_server", so HA toolset resolution is unaffected.
-                from gateway.session_context import session_source_scope
-
+                # sentinel closes the synthesis pipeline when the turn ends. The session
+                # row was pre-created source="voice"; the agent appends turns and its
+                # create_session upsert preserves that source.
                 try:
-                    with session_source_scope("voice"):
-                        result, _usage = await self._run_agent(
-                            user_message=t, conversation_history=history,
-                            stream_delta_callback=_on_delta, session_id=session_id)
+                    result, _usage = await self._run_agent(
+                        user_message=t, conversation_history=history,
+                        stream_delta_callback=_on_delta, session_id=session_id)
                     if isinstance(result, dict) and result.get("failed"):
                         turn_err["err"] = str(result.get("error") or "agent run failed")
                     elif isinstance(result, dict):

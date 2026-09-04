@@ -841,6 +841,13 @@ pub(crate) async fn submit_line(
     if text.starts_with('/') {
         let (name, arg) = parse_slash(&text);
         let full = format!("/{name}");
+        let (home, cwd) = {
+            let s = state.lock().await;
+            (s.hermes_home.clone(), s.metrics.cwd.clone())
+        };
+        if let Some(line) = crate::skill_md::expand_nested_slash(&full, &arg, &home, &cwd) {
+            return gateway_slash(state, client, textarea, &line).await;
+        }
         let catalog = state.lock().await.slash_catalog.clone();
         if let Some(cmd) = catalog.iter().find(|c| c.name.eq_ignore_ascii_case(&full)) {
             if cmd.kind == SlashKind::Local {

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use crate::slash::{SlashEntry, SlashKind};
 use crate::state::SkillCard;
 
 const MAX_FILES: usize = 400;
@@ -17,6 +18,66 @@ pub struct SkillDoc {
     pub name: String,
     pub description: String,
     pub preview: String,
+}
+
+/// A `commands/<name>.md` file next to SKILL.md (Cursor/Grok slash files).
+#[derive(Debug, Clone)]
+pub struct NestedSkillCmd {
+    pub slash: String,
+    pub skill_slash: String,
+    pub description: String,
+    pub body: String,
+}
+
+pub fn nested_skill_commands(hermes_home: &Path, cwd: &str) -> Vec<NestedSkillCmd> {
+    let mut out = Vec::new();
+    let mut roots = vec![hermes_home.join("skills")];
+    if !cwd.is_empty() {
+        roots.push(Path::new(cwd).join(".hermes").join("skills"));
+        roots.push(Path::new(cwd).join("skills"));
+    }
+    for root in roots {
+        if root.is_dir() {
+            scan_nested_cmds(&root, &mut out, 0);
+        }
+    }
+    out
+}
+
+pub fn nested_slash_entries(hermes_home: &Path, cwd: &str) -> Vec<SlashEntry> {
+    nested_skill_commands(hermes_home, cwd)
+        .into_iter()
+        .map(|c| SlashEntry {
+            name: c.slash,
+            args_hint: String::new(),
+            description: if c.description.is_empty() {
+                format!("skill · {}", c.skill_slash)
+            } else {
+                format!("skill · {}", c.description)
+            },
+            kind: SlashKind::Skill,
+        })
+        .collect()
+}
+
+/// Rewrite `/devgod-audit target` into `/devgod <command body>\n\ntarget`.
+pub fn expand_nested_slash(
+    slash: &str,
+    arg: &str,
+    hermes_home: &Path,
+    cwd: &str,
+) -> Option<String> {
+    let want = slash.trim().to_ascii_lowercase();
+    let cmd = nested_skill_commands(hermes_home, cwd)
+        .into_iter()
+        .find(|c| c.slash.eq_ignore_ascii_case(&want))?;
+    let mut line = format!("{} {}", cmd.skill_slash, cmd.body.trim());
+    let arg = arg.trim();
+    if !arg.is_empty() {
+        line.push_str("\n\n");
+        line.push_str(arg);
+    }
+    Some(line)
 }
 
 pub fn enrich_skill_cards(cards: &mut [SkillCard], hermes_home: &Path, cwd: &str) {
@@ -187,6 +248,76 @@ fn scan_into(dir: &Path, docs: &mut HashMap<String, SkillDoc>, depth: usize) {
     }
 }
 
+fn scan_nested_cmds(dir: &Path, out: &mut Vec<NestedSkillCmd>, depth: usize) {
+    if depth > MAX_DEPTH || out.len() >= MAX_FILES {
+        return;
+    }
+    let skill_md = dir.join("SKILL.md");
+    if skill_md.is_file() {
+        let fallback = dir.file_name().and_then(|s| s.to_str()).unwrap_or("skill");
+        let parent = if let Ok(raw) = fs::read_to_string(&skill_md) {
+            parse_skill_md(&raw, fallback).name
+        } else {
+            fallback.to_string()
+        };
+        let skill_slash = format!("/{}", parent.to_ascii_lowercase().replace([' ', '_'], "-"));
+        let cmds = dir.join("commands");
+        if cmds.is_dir() {
+            if let Ok(entries) = fs::read_dir(&cmds) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                        continue;
+                    }
+                    let stem = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if stem.is_empty() {
+                        continue;
+                    }
+                    let slash = format!("/{stem}");
+                    if slash.eq_ignore_ascii_case(&skill_slash) {
+                        continue;
+                    }
+                    let Ok(raw) = fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    let doc = parse_skill_md(&raw, &stem);
+                    out.push(NestedSkillCmd {
+                        slash,
+                        skill_slash: skill_slash.clone(),
+                        description: doc.description,
+                        body: preview_body_full(&raw),
+                    });
+                }
+            }
+        }
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || name == "node_modules" || name == "target" {
+            continue;
+        }
+        scan_nested_cmds(&path, out, depth + 1);
+    }
+}
+
+fn preview_body_full(raw: &str) -> String {
+    let (_, _, body) = split_frontmatter(raw, "");
+    body.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +367,40 @@ mod tests {
         enrich_skill_cards(&mut cards, &root, "");
         assert_eq!(cards[0].description, "Local key agent");
         assert!(cards[0].preview.contains("Preview body here"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nested_commands_expand_to_parent_skill() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-tui-skcmd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let skill = root.join("skills").join("devgod");
+        fs::create_dir_all(skill.join("commands")).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: devgod\ndescription: Engineering OS\n---\n\n# devgod\n",
+        )
+        .unwrap();
+        fs::write(
+            skill.join("commands").join("devgod-audit.md"),
+            "---\ndescription: Audit only, no edits\n---\n\n# /devgod-audit\n\nMode: audit.\n",
+        )
+        .unwrap();
+        let cmds = nested_skill_commands(&root, "");
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].slash, "/devgod-audit");
+        assert_eq!(cmds[0].skill_slash, "/devgod");
+        assert!(cmds[0].description.contains("Audit"));
+        let line = expand_nested_slash("/devgod-audit", "crates/tui", &root, "").unwrap();
+        assert!(line.starts_with("/devgod "));
+        assert!(line.contains("Mode: audit"));
+        assert!(line.contains("crates/tui"));
         let _ = fs::remove_dir_all(&root);
     }
 }

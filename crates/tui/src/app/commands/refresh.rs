@@ -181,7 +181,13 @@ pub(crate) async fn apply_detect_drop(
 pub(crate) async fn refresh_catalog(state: &Mutex<AppState>, client: &Arc<GatewayClient>) {
     match client.commands_catalog().await {
         Ok(v) => {
-            let merged = merge_entries(parse_catalog(&v));
+            let mut extra = parse_catalog(&v);
+            let (home, cwd) = {
+                let s = state.lock().await;
+                (s.hermes_home.clone(), s.metrics.cwd.clone())
+            };
+            extra.extend(crate::skill_md::nested_slash_entries(&home, &cwd));
+            let merged = merge_entries(extra);
             let mut s = state.lock().await;
             s.slash_catalog = merged;
             s.mark_dirty();

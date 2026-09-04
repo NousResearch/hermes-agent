@@ -2685,7 +2685,10 @@ def _reap_orphaned_browser_sessions():
         try:
             daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            # Ambiguous: the daemon may be in a truncate-then-write startup
+            # window, or the file may be temporarily unreadable. Keep the PID
+            # and endpoint evidence so a later periodic sweep can retry; only a
+            # confirmed-dead daemon permits directory removal.
             continue
 
         # Check if the daemon is still alive. ``os.kill(pid, 0)`` on Windows

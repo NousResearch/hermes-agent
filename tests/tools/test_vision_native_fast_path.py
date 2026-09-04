@@ -85,6 +85,41 @@ class TestSupportsMediaInToolResults:
     def test_openrouter_yes(self):
         assert _supports_media_in_tool_results("openrouter", "anthropic/claude-opus-4.6") is True
 
+    def test_nous_yes(self):
+        assert _supports_media_in_tool_results("nous", "anthropic/claude-sonnet-4.6") is True
+
+    def test_opencode_go_anthropic_surface_yes(self):
+        # opencode-go routes MiniMax/Qwen via anthropic_messages; that surface
+        # accepts image content inside tool-result messages. Users on this
+        # provider were previously falling through to aux vision because
+        # opencode-go was missing from both the _AGGREGATORS whitelist and
+        # the OpenCodeGoProfile.supports_vision flag.
+        assert _supports_media_in_tool_results("opencode-go", "minimax-m3") is True
+
+    def test_opencode_go_chat_completions_surface_yes(self):
+        # opencode-go routes GLM/Kimi via chat_completions; that surface
+        # also accepts image content inside tool-result messages.
+        assert _supports_media_in_tool_results("opencode-go", "glm-5") is True
+
+    def test_opencode_zen_yes(self):
+        # opencode-zen fronts Claude / GPT / Gemini / Qwen via the same
+        # vision-capable wire shapes; treat it as an aggregator.
+        assert _supports_media_in_tool_results("opencode-zen", "claude-sonnet-4-6") is True
+
+    def test_openai_chat_yes(self):
+        assert _supports_media_in_tool_results("openai", "gpt-5.4") is True
+
+    def test_openai_codex_yes(self):
+        assert _supports_media_in_tool_results("openai-codex", "gpt-5-codex") is True
+
+    def test_gemini_3_yes(self):
+        assert _supports_media_in_tool_results("google", "gemini-3-flash-preview") is True
+
+    def test_gemini_2_no(self):
+        assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is False
+
+    def test_unknown_provider_conservative_no(self):
+        assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False
 
     def test_empty_provider_no(self):
         assert _supports_media_in_tool_results("", "anything") is False

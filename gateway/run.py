@@ -25071,6 +25071,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if callable(resolver):
             try:
                 resolved = resolver(str(text_ch_id))
+                # Some adapters may expose an async resolver; awaiting here also
+                # keeps test doubles from leaking un-awaited coroutine objects.
+                import inspect
+                if inspect.isawaitable(resolved):
+                    resolved = await resolved
                 channel_prompt = resolved if isinstance(resolved, str) else None
             except Exception:
                 channel_prompt = None

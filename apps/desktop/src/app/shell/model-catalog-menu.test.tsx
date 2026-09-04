@@ -120,6 +120,20 @@ describe('the catalog owns model curation', () => {
 
     expect($modelVisibilityOpen.get()).toBe(true)
   })
+
+  it('keeps a base model and its -thinking variant distinguishable in the row label', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['claude-opus-4.8', 'claude-opus-4.8-thinking'], name: 'Anthropic', slug: 'anthropic' }]
+    })
+
+    renderMenu()
+
+    const rows = await screen.findAllByRole('menuitem', { name: /Opus 4\.8/i })
+    const labels = rows.map(row => row.textContent)
+
+    expect(labels).toHaveLength(2)
+    expect(new Set(labels).size).toBe(2)
+  })
 })
 
 describe('in-flight local downloads', () => {

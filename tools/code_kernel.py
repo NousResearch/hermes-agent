@@ -323,7 +323,10 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            dispatch_kwargs: Dict[str, Any] = {"task_id": self.task_id}
+            if tool_name == "read_file":
+                dispatch_kwargs["suppress_read_dedup"] = True
+            return handle_function_call(tool_name, tool_args, **dispatch_kwargs)
         finally:
             if previous is not None and self._callback_setters is not None:
                 set_approval, set_sudo = self._callback_setters

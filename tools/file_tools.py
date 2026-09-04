@@ -1654,7 +1654,13 @@ def _special_file_kind(path) -> str | None:
     return "a special (non-regular) file"
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 2000,
+    task_id: str = "default",
+    suppress_dedup: bool = False,
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -1843,7 +1849,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
             content_served_in_generation = dedup_key in generation_reads
 
-        if cached_mtime is not None:
+        if cached_mtime is not None and not suppress_dedup:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime and content_served_in_generation:
@@ -1972,12 +1978,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             task_data["dedup_hits"].pop(dedup_key, None)
             task_data.setdefault("dedup_generation_reads", set()).add(dedup_key)
             task_data["read_history"].add((path, offset, limit))
-            if task_data["last_key"] == read_key:
+            if suppress_dedup:
+                count = 1
+            elif task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
+                count = task_data["consecutive"]
             else:
                 task_data["last_key"] = read_key
                 task_data["consecutive"] = 1
-            count = task_data["consecutive"]
+                count = task_data["consecutive"]
 
             # Store mtime at read time for two purposes:
             # 1. Dedup: skip identical re-reads of unchanged files.
@@ -1985,7 +1994,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             #    the agent last read it (external edit, concurrent agent, etc.).
             try:
                 _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
+                if not suppress_dedup:
+                    task_data["dedup"][dedup_key] = _mtime_now
                 task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
@@ -2864,7 +2874,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+        suppress_dedup=bool(kw.get("suppress_dedup", False)),
+    )
 
 
 def _handle_write_file(args, **kw):

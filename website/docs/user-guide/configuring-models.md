@@ -57,7 +57,7 @@ Prompt caches are keyed to the model serving the request, so any mid-conversatio
 
 ### Unattended data-training tiers
 
-Models such as `muse-spark-1.2-contributor` are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.
+Models with a `-contributor` suffix (e.g. `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor`) are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.
 
 If training on the unattended workload's data is acceptable, record a persistent acknowledgement:
 

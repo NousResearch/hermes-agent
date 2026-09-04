@@ -31,6 +31,11 @@ class _FakeModelInfo:
 
 class _StubCLI:
     """Minimum attrs ``_apply_model_switch_result`` reads on ``self``."""
+    def _stage_and_swap_model(self, result, old_model):
+        # Staging + in-place swap lives in a helper; run the real one on this stub.
+        import cli as _cli_mod
+        return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
+
     agent = None
     model = ""
     provider = ""

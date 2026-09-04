@@ -254,7 +254,8 @@ class TestThresholdGate:
 class TestRetrieval:
     def _fake_catalog(self):
         """Build a catalog directly without touching the registry."""
-        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        from tools.tool_search import CatalogEntry
+        from tools.tool_search_catalog import _tokenize, _entry_search_text
         defs = [
             _td("github_create_issue", "Open a new issue in a GitHub repository",
                 {"title": {"type": "string"}, "body": {"type": "string"}}),
@@ -644,7 +645,7 @@ class TestCatalogListing:
         assert result.listing_form in {"names", "groups", "mixed"}
 
     def test_short_desc_first_sentence_and_clip(self):
-        from tools.tool_search import _short_desc
+        from tools.tool_search_catalog import _short_desc
         assert _short_desc("Open an issue. Second sentence dropped.") == "Open an issue."
         long = "word " * 40
         s = _short_desc(long)

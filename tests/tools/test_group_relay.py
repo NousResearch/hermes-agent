@@ -149,11 +149,31 @@ def test_event_key_is_idempotent_and_conflict_checked(root):
     assert [e["id"] for e in gr.claim_pending(root)] == [first["id"]]
     assert gr.enqueue(root, **kw)["id"] == first["id"]
     assert gr.pending_count(root) == 0
-    # Same key after claimed/ was swept but the reply file exists: still no re-queue.
+    # Same key after claimed/ was swept: the receipt at the head of the reply
+    # file still answers — same content → same id, nothing re-queued.
     (gr.relay_root(root) / gr.CLAIMED_DIR / f"{first['id']}.json").unlink()
     gr.append_reply_line(root, first["id"], {"kind": "done", "status": "settled", "replies": 0})
     assert gr.enqueue(root, **kw)["id"] == first["id"]
     assert gr.pending_count(root) == 0
+
+
+@pytest.mark.parametrize("field,value", [("text", "twice"), ("room_id", "r2"), ("room_name", "n2"), ("thread", "other")])
+def test_event_key_conflict_survives_sweep_of_claimed_envelope(root, field, value):
+    kw = dict(room_id="r", room_name="n", text="once", from_profile="p", label="l", event_key="k1", thread=None)
+    first = gr.enqueue(root, **kw)
+    lines, _ = gr.read_reply_lines(root, first["id"])
+    assert lines[0] == {**lines[0], "kind": "receipt", "room_id": "r", "room_name": "n", "thread": None, "text": "once"}
+    gr.claim_pending(root)
+    (gr.relay_root(root) / gr.CLAIMED_DIR / f"{first['id']}.json").unlink()
+    gr.append_reply_line(root, first["id"], {"kind": "done", "status": "settled", "replies": 0})
+    with pytest.raises(gr.GroupRelayConflictError, match="different content"):
+        gr.enqueue(root, **{**kw, field: value})
+    assert gr.pending_count(root) == 0
+
+
+def test_receipt_is_ignored_by_readers_without_a_key(root):
+    env = gr.enqueue(root, room_id="r", room_name="n", text="x", from_profile="p", label="l")
+    assert gr.read_reply_lines(root, env["id"]) == ([], 0)  # no receipt without a key
 
 
 def test_no_event_key_means_fresh_envelope_each_time(root):

@@ -55,7 +55,8 @@ MAX_TEXT_CHARS = 64 * 1024
 MAX_LABEL_CHARS = 200
 
 _ID_RE = re.compile(r"^[0-9a-f]{32}$")
-_LINE_KINDS = frozenset({"accepted", "reply", "done", "error"})
+_LINE_KINDS = frozenset({"receipt", "accepted", "reply", "done", "error"})
+_IDEMPOTENCY_FIELDS = ("room_id", "room_name", "thread", "text")
 DONE_STATUSES = frozenset({"settled", "capped", "cancelled", "timeout"})
 
 
@@ -70,6 +71,22 @@ class GroupRelayConflictError(GroupRelayError):
 def envelope_id_for_key(event_key: str) -> str:
     """Deterministic 32-hex envelope id for a caller retry key."""
     return hashlib.sha256(f"group-relay:{event_key}".encode("utf-8")).hexdigest()[:32]
+
+
+def _receipt_from_replies(base: Path, envelope_id: str) -> dict[str, Any] | None:
+    """The immutable idempotency receipt recorded as the reply file's first line."""
+    path = base / REPLIES_DIR / f"{envelope_id}.jsonl"
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline()
+        parsed = json.loads(first.decode("utf-8")) if first.strip() else None
+    except (OSError, ValueError):
+        return None
+    if isinstance(parsed, dict) and parsed.get("kind") == "receipt":
+        return parsed
+    return None
 
 
 def _find_envelope(base: Path, envelope_id: str) -> dict[str, Any] | None:
@@ -161,17 +178,28 @@ def enqueue(
         **({"event_key": key} if key else {}),
     }
     if key:
+        conflict = GroupRelayConflictError(
+            f"event key {key!r} was already used with different content; pick a new key"
+        )
         existing = _find_envelope(base, envelope["id"])
         if existing is not None:
-            same = all(existing.get(field) == envelope[field] for field in ("room_id", "room_name", "thread", "text"))
-            if not same:
-                raise GroupRelayConflictError(
-                    f"event key {key!r} was already used with different content; pick a new key"
-                )
+            if any(existing.get(field) != envelope[field] for field in _IDEMPOTENCY_FIELDS):
+                raise conflict
             return existing
-        if (base / REPLIES_DIR / f"{envelope['id']}.jsonl").is_file():
-            # Claimed, acted on, and already swept from claimed/ — still the same request.
+        receipt = _receipt_from_replies(base, envelope["id"])
+        if receipt is not None:
+            # Claimed, acted on, and swept from claimed/ — the receipt line at
+            # the head of the reply file is the durable record of what was sent.
+            if any(receipt.get(field) != envelope[field] for field in _IDEMPOTENCY_FIELDS):
+                raise conflict
             return envelope
+        # First enqueue for this key: pin the receipt BEFORE the envelope is
+        # visible, so conflict detection survives every later sweep.
+        append_reply_line(
+            root,
+            envelope["id"],
+            {"kind": "receipt", **{field: envelope[field] for field in _IDEMPOTENCY_FIELDS}},
+        )
     _atomic_write_json(base / OUTBOX_DIR, f"{envelope['id']}.json", envelope, prefix=".env-")
     return envelope
 

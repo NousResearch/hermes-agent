@@ -245,3 +245,15 @@ def test_send_event_id_is_idempotent_for_desktop_rooms(home, capsys):
     assert _run(["send", "Launchpad", "different", "--event-id", "k1"]) == 1
     assert "different content" in capsys.readouterr().err
     assert gr.pending_count(home) == 1
+
+
+def test_wait_with_event_id_skips_the_receipt_line(home):
+    ref = g.resolve_room("Launchpad", kind="desktop")
+    t = gd.DesktopTransport()
+    sent = t.send(ref, text="go", thread="cli", label="Ada", event_key="keyed")
+    gr.append_reply_line(home, sent.message_id, {"kind": "accepted", "thread": "t", "group": "Launchpad"})
+    gr.append_reply_line(home, sent.message_id, {"kind": "reply", "member": "helper", "text": "ok", "thread": "t"})
+    gr.append_reply_line(home, sent.message_id, {"kind": "done", "status": "settled", "replies": 1})
+    got = []
+    rc, summary = t.wait(sent, timeout=5, poll_seconds=0.01, on_reply=lambda s, x: got.append(x))
+    assert rc == 0 and got == ["ok"] and summary["thread"] == "t"

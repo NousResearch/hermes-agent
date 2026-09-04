@@ -446,6 +446,56 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_prompt_survives_interrupted_turn_with_none_final_response(
+        self, agent, mock_manager
+    ):
+        """Regression (#87387): an interrupted turn can come back from
+        ``run_conversation`` with a present-but-None ``final_response`` (e.g.
+        the truncation-continuation path returns ``partial_response or None``).
+        The post-turn tail used to call ``final_response.startswith(...)``
+        whenever ``interrupted`` was set, raising AttributeError — surfaced to
+        the ACP host as a JSON-RPC -32603 internal error, with the session left
+        ``is_running`` and queued follow-ups wedged forever. The tail must
+        tolerate None: end the turn, return the session to idle, and drain the
+        queued follow-up.
+        """
+        import threading
+
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+
+        calls: list[str] = []
+
+        def _run(*args, **kwargs):
+            calls.append(str(kwargs.get("user_message", "")))
+            state.cancel_event.set()
+            return {"final_response": None, "messages": [], "interrupted": True}
+
+        state.agent.run_conversation = _run
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        # prompt() clears the cancel event on entry, so the cancel has to
+        # land mid-turn (as a real SIGINT-driven session/cancel does).
+        state.cancel_event = threading.Event()
+        state.queued_prompts.append("follow-up after interrupt")
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        result = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=resp.session_id,
+        )
+
+        assert isinstance(result, PromptResponse)
+        assert result.stop_reason == "cancelled"
+        assert state.is_running is False
+        # The queued follow-up must drain instead of wedging: the initial
+        # turn plus the drained follow-up both reached run_conversation.
+        assert len(calls) == 2
+
 
 
 

@@ -1722,6 +1722,15 @@ display:
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
   # display.platforms.telegram.
 
+  # Per-platform display and delivery behavior.
+  platforms:
+    discord:
+      # Native Discord push notifications:
+      #   all:       Legacy behavior; every message can notify (default)
+      #   important: Keep intermediate activity visible but silent; only the
+      #              last Discord message of notification-worthy output notifies
+      notifications: all
+
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and

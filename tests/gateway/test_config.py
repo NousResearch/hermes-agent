@@ -912,6 +912,28 @@ class TestLoadGatewayConfig:
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
 
+    def test_discord_plugin_resolves_display_notifications(self, tmp_path, monkeypatch):
+        """The Discord factory owns its display-only notification setting."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "display:\n"
+            "  platforms:\n"
+            "    discord:\n"
+            "      notifications: important\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from plugins.platforms.discord.adapter import _build_adapter
+
+        adapter = _build_adapter(PlatformConfig(enabled=True, token="test"))
+
+        assert adapter._notifications_mode == "important"
+        assert adapter.REQUIRES_EDIT_FINALIZE is True
+
+
     def test_bridges_nested_gateway_platforms_dingtalk_allowed_users_to_env(self, tmp_path, monkeypatch):
         """gateway.platforms.dingtalk.extra.allowed_users must reach
         DINGTALK_ALLOWED_USERS — it's the documented config.yaml alternative

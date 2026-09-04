@@ -22,17 +22,30 @@ class StreamTransportMixin:
 
     _MIN_NEW_MSG_CHARS = 4
 
-    async def _edit_message(self, *, message_id: str, content: str, finalize: bool = False):
+    async def _edit_message(
+        self, *, message_id: str, content: str, finalize: bool = False,
+        notify: bool = False,
+    ):
         """Edit via the adapter, passing routing metadata when supported."""
         # Contract: adapters must accept finalize= even when False (test-guarded).
-        kwargs = dict(chat_id=self.chat_id, message_id=message_id, content=content,
-                      finalize=finalize)
-        if self.metadata:
+        kwargs: dict[str, Any] = dict(
+            chat_id=getattr(self, "chat_id"),
+            message_id=message_id,
+            content=content,
+            finalize=finalize,
+        )
+        metadata_for_send = getattr(self, "_metadata_for_send", None)
+        send_metadata = (
+            metadata_for_send(final=True)
+            if notify and callable(metadata_for_send)
+            else getattr(self, "metadata", None)
+        )
+        if send_metadata:
             try:
                 params = inspect.signature(self.adapter.edit_message).parameters
                 if "metadata" in params or any(
                     param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()):
-                    kwargs["metadata"] = self.metadata
+                    kwargs["metadata"] = send_metadata
             except (TypeError, ValueError):
                 pass
         return await self.adapter.edit_message(**kwargs)
@@ -247,7 +260,13 @@ class StreamTransportMixin:
         # ``is True`` keeps MagicMock auto-children from enabling fresh-final.
         return result is True
 
-    async def _try_fresh_final(self, text: str, *, is_turn_final: bool = True) -> bool:
+    async def _try_fresh_final(
+        self,
+        text: str,
+        *,
+        is_turn_final: bool = True,
+        replace_split_tail: bool = False,
+    ) -> bool:
         """Send ``text`` fresh and best-effort delete the preview(s); False on any failure so
         the caller falls back to edit.  ``is_turn_final=False`` leaves the delivery flag unset.
 
@@ -256,14 +275,22 @@ class StreamTransportMixin:
         the real answer from the next API call (#29346).
         Ported from openclaw/openclaw#72038.
         """
-        # Replacing every preview is only sound while ``text`` holds the whole answer;
-        # after a split, deleting sealed heads would erase delivered text.
-        if self._turn_split_delivery:
+        # Generic fresh-final replacement is unsafe after an overflow split: sealed
+        # heads contain earlier portions of the answer while ``text`` is only the
+        # active tail. An adapter that explicitly requires a fresh turn-final send
+        # (Discord important notifications) may replace only that active tail.
+        if self._turn_split_delivery and not replace_split_tail:
             return False
-        stale_ids = self._stale_preview_ids()
+        if self._turn_split_delivery:
+            stale_ids = {str(self._message_id)} if self._has_real_preview() else set()
+        else:
+            stale_ids = self._stale_preview_ids()
         try:
             result = await self.adapter.send(
-                chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
+                chat_id=getattr(self, "chat_id"),
+                content=text,
+                metadata=getattr(self, "_metadata_for_send")(final=is_turn_final),
+            )
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
             return False
@@ -273,6 +300,7 @@ class StreamTransportMixin:
         # Best-effort preview cleanup; never delete the message just sent.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
         self._preview_message_ids = set()
+        self._segment_preview_message_ids = set()
         self._adopt_message_id(new_message_id)
         self._already_sent = True
         self._last_sent_text = text
@@ -331,7 +359,9 @@ class StreamTransportMixin:
         self._last_edit_overflowed = False
         try:
             if self._message_id is None:
-                return await self._first_send(text, finalize=finalize)
+                return await self._first_send(
+                    text, finalize=finalize, is_turn_final=is_turn_final
+                )
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
@@ -415,16 +445,32 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
+    async def _first_send(
+        self, text: str, *, finalize: bool, is_turn_final: bool
+    ) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""
+        turn_final = finalize and is_turn_final
         result = await self.adapter.send(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+            metadata=self._metadata_for_send(
+                final=turn_final, expect_edits=not finalize
+            ))
         if not result.success:
             self._edit_supported = False
             return False
         self._already_sent = True
         self._last_sent_text = text
+        if (
+            turn_final
+            and getattr(
+                getattr(self, "adapter"), "notify_only_last_final_delivery", False
+            )
+            is True
+        ):
+            # This was already a fresh notification-capable final send. Do not
+            # run a second fresh-final pass merely because the adapter requires
+            # finalization when the active transport is an edit.
+            self._final_response_sent = True
         if result.message_id:
             self._adopt_message_id(result.message_id)
             self._track_preview_ids_from_result(result)
@@ -450,12 +496,30 @@ class StreamTransportMixin:
             hasattr(type(self.adapter), "prefers_fresh_final_streaming")
             or "prefers_fresh_final_streaming" in getattr(self.adapter, "__dict__", {}))
         prefers_fresh = self._adapter_prefers_fresh_final(text)  # probed every edit (hook contract)
-        if finalize and (
+        fresh_final_requested = finalize and (
             prefers_fresh or (not has_prefers_hook and self._should_send_fresh_final())
-        ) and await self._try_fresh_final(text, is_turn_final=is_turn_final):
-            return True
-        result = await self._edit_message(message_id=self._message_id, content=text,
-                                          finalize=finalize)
+        )
+        if fresh_final_requested:
+            if await self._try_fresh_final(
+                text,
+                is_turn_final=is_turn_final,
+                replace_split_tail=(
+                    self._turn_split_delivery and prefers_fresh and is_turn_final
+                ),
+            ):
+                return True
+            if prefers_fresh and is_turn_final:
+                # The adapter requires a fresh message because an edit cannot
+                # create the intended final notification. Do not silently
+                # downgrade to an edit and mark the turn complete.
+                self._enter_fallback_mode(self._visible_prefix())
+                return False
+        result = await self._edit_message(
+            message_id=self._message_id,
+            content=text,
+            finalize=finalize,
+            notify=finalize and is_turn_final,
+        )
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)

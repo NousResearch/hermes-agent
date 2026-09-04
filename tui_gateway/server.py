@@ -7766,6 +7766,52 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_switch = (session or {}).get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
+    display_model = pending_model or mirror.get(
+        "model", getattr(agent, "model", "")
+    )
+    display_provider = pending_provider or mirror.get(
+        "provider", getattr(agent, "provider", "")
+    )
+    if str(display_provider or "").strip().lower() == "custom":
+        override = (session or {}).get("model_override") or {}
+        override = override if isinstance(override, dict) else {}
+        requested_provider = str(override.get("provider") or "").strip()
+        if requested_provider.lower() in {"", "custom"}:
+            requested_provider = str(
+                getattr(agent, "requested_provider", "") or ""
+            ).strip()
+        if requested_provider.lower() == "custom":
+            requested_provider = ""
+        try:
+            from hermes_cli.runtime_provider import (
+                canonical_custom_identity,
+                find_custom_provider_identity,
+            )
+
+            base_url = str(
+                getattr(agent, "base_url", "")
+                or mirror.get("base_url")
+                or override.get("base_url")
+                or ""
+            ).strip()
+            if base_url:
+                recovered_provider = find_custom_provider_identity(base_url)
+            elif pending_provider:
+                recovered_provider = None
+            elif requested_provider:
+                recovered_provider = canonical_custom_identity(
+                    config_provider=requested_provider
+                )
+            else:
+                recovered_provider = canonical_custom_identity(
+                    model=display_model or None,
+                )
+            display_provider = recovered_provider or display_provider
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed (session info)",
+                exc_info=True,
+            )
     # Epoch seconds the current turn started, or None when idle. Lets the
     # desktop preserve the turn-elapsed timer across session switches (cold
     # resume path) instead of resetting it to 0:00.
@@ -7777,9 +7823,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     )
 
     info: dict = {
-        "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
-        "provider": pending_provider
-        or mirror.get("provider", getattr(agent, "provider", "")),
+        "model": display_model,
+        "provider": display_provider,
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",

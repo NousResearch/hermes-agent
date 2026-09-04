@@ -216,28 +216,6 @@ def _draw_radio_item(stdscr, y: int, x: int, item: RadioItem, max_x: int, *, is_
         col += len(chunk)
 
 
-def _query_matches(label: str, query: str) -> bool:
-    """Return True when every query token is a case-insensitive subsequence."""
-    normalized = label.lower()
-    tokens = query.lower().split()
-
-    if not tokens:
-        return True
-
-    for token in tokens:
-        pos = 0
-
-        for ch in token:
-            pos = normalized.find(ch, pos)
-
-            if pos < 0:
-                return False
-
-            pos += 1
-
-    return True
-
-
 _WORD_BOUNDARY = frozenset("-_/. ")
 
 

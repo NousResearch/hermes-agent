@@ -2257,17 +2257,6 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
     return not suffix or suffix not in MEDIA_DELIVERY_EXTS
 
 
-def _resolve_extensionless_candidate(path: str) -> Optional[str]:
-    """Validate a bare extensionless-branch path (no forward extension).
-
-    Thin wrapper kept for call sites that only have the normalized path
-    (no scan-text context for spaced-path recovery).
-    """
-    if not path:
-        return None
-    return validate_media_delivery_path(path)
-
-
 def _strip_media_tag_directives(text: str) -> str:
     """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers.
 

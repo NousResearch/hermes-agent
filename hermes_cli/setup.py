@@ -50,27 +50,6 @@ def _get_credential_pool_strategies(config: Dict[str, Any]) -> Dict[str, str]:
     return dict(strategies) if isinstance(strategies, dict) else {}
 
 
-def _set_credential_pool_strategy(config: Dict[str, Any], provider: str, strategy: str) -> None:
-    if not provider:
-        return
-    strategies = _get_credential_pool_strategies(config)
-    strategies[provider] = strategy
-    config["credential_pool_strategies"] = strategies
-
-
-def _supports_same_provider_pool_setup(provider: str) -> bool:
-    if not provider or provider == "custom":
-        return False
-    if provider == "openrouter":
-        return True
-    from hermes_cli.auth import PROVIDER_REGISTRY
-
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    if not pconfig:
-        return False
-    return pconfig.auth_type in {"api_key", "oauth_device_code"}
-
-
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {

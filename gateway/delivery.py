@@ -176,15 +176,6 @@ def _is_thread_not_found_delivery_error(result: Any) -> bool:
     return bool(error and "thread not found" in error.lower())
 
 
-def _send_result_error_kind(result: Any) -> Optional[str]:
-    """Return the machine-readable error_kind from a SendResult/dict, if any."""
-    if isinstance(result, dict):
-        kind = result.get("error_kind")
-    else:
-        kind = getattr(result, "error_kind", None)
-    return str(kind) if kind else None
-
-
 def _classify_dead_from_error_text(error_text: Optional[str]) -> Optional[str]:
     """Best-effort dead-target classification from a raised error's text.
 

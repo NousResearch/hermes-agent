@@ -2618,15 +2618,6 @@ def _path_text(raw_path: str | None) -> str:
     return text
 
 
-def _local_dashboard_request(request: Request) -> bool:
-    if getattr(request.app.state, "auth_required", False):
-        return False
-    host = (request.url.hostname or "").lower()
-    client_host = (request.client.host if request.client else "").lower()
-    local_hosts = {"", "localhost", "127.0.0.1", "::1", "testserver", "testclient"}
-    return host in local_hosts or client_host in local_hosts
-
-
 def _default_hermes_root_is_opt_data() -> bool:
     raw = os.environ.get("HERMES_HOME", "").strip()
     if not raw:
@@ -13930,12 +13921,6 @@ def _gc_mcp_oauth_flows() -> None:
             _mcp_oauth_flows.pop(flow_id, None)
 
 
-def _mcp_oauth_callback_url_from_base(base_url: str, server_name: str) -> str:
-    from urllib.parse import quote
-
-    return f"{base_url.rstrip('/')}/api/mcp/oauth/callback/{quote(server_name, safe='')}"
-
-
 def _mcp_oauth_callback_url(request: Request, server_name: str) -> str:
     """Build the externally reachable callback URL for a dashboard flow."""
     from urllib.parse import urlparse, urlunparse
@@ -16576,11 +16561,6 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
     same bound dashboard host.
     """
     return _ws_host_origin_reason(ws) is None
-
-
-def _ws_request_reason(ws: "WebSocket") -> Optional[str]:
-    """First Host/Origin or peer-IP rejection reason, or None when allowed."""
-    return _ws_host_origin_reason(ws) or _ws_client_reason(ws)
 
 
 def _ws_request_is_allowed(ws: "WebSocket") -> bool:

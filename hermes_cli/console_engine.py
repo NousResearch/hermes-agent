@@ -299,12 +299,6 @@ def _invoke_namespace(args: argparse.Namespace) -> object:
     return func(args)
 
 
-def _set_attrs(args: argparse.Namespace, **attrs: object) -> argparse.Namespace:
-    for name, value in attrs.items():
-        setattr(args, name, value)
-    return args
-
-
 def _dispatch_extracted_subcommand(
     *,
     root: str,

@@ -56,20 +56,6 @@ _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 _SCOPED_SKIP_LOGGED: set[str] = set()
 
 
-def _known_hermes_env_keys() -> set[str]:
-    """Return the combined set of known Hermes env-var keys.
-
-    Includes both ``OPTIONAL_ENV_VARS`` (setup-flow vars with metadata) and
-    ``_EXTRA_ENV_KEYS`` (provider/platform keys managed outside the setup
-    wizard).  Lazy-imported to avoid circular-dependency during early-bootstrap
-    ``load_hermes_dotenv()`` calls.
-    """
-    from hermes_cli.config import _EXTRA_ENV_KEYS
-    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
-
-    return set(OPTIONAL_ENV_VARS.keys()) | set(_EXTRA_ENV_KEYS)
-
-
 # Behavioral routing keys a parent Hermes process injects into child env and
 # that silently redirect a profile onto the wrong provider path (ACP auth
 # method, copilot-ACP endpoints). These — and ONLY these — are scrubbed from

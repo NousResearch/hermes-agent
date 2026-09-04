@@ -36,10 +36,9 @@ def _split_paragraphs(text: str) -> List[str]:
 
 def _generate_silence_pcm(duration_ms: int, sample_rate: int, channels: int = 1) -> bytes:
     """Return 16-bit PCM data for *duration_ms* milliseconds of silence."""
-    import numpy as np
     frames = int(sample_rate * duration_ms / 1000.0)
-    silence = np.zeros((frames, channels), dtype=np.int16)
-    return silence.tobytes()
+    # 16-bit signed zero samples: b"\x00\x00" per sample per channel
+    return b"\x00\x00" * frames * channels
 
 # --- Bounded model caches ---
 # Each entry is a whole loaded model (tens of MB); unbounded, one would be pinned per distinct

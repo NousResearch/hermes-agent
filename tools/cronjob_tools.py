@@ -1533,6 +1533,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    resnapshot: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1887,6 +1888,26 @@ def cronjob(
                 # CLI-only lane (see create above): update_job validates
                 # against the canonical grammar; empty string clears the pin.
                 updates["reasoning_effort"] = reasoning_effort
+            if resnapshot:
+                if updates.get("model") or updates.get("provider"):
+                    return tool_error(
+                        "resnapshot=true and an explicit provider/model pin are "
+                        "mutually exclusive — a pin already replaces the snapshot.",
+                        success=False,
+                    )
+                if job.get("model") or job.get("provider"):
+                    return tool_error(
+                        "resnapshot has no effect on a pinned job; pinned axes "
+                        "are exempt from the drift guard.",
+                        success=False,
+                    )
+                if job.get("no_agent"):
+                    return tool_error(
+                        "resnapshot has no effect on a no_agent job (script-only "
+                        "jobs carry no inference snapshot).",
+                        success=False,
+                    )
+                updates["resnapshot"] = True
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may
@@ -2102,6 +2123,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
             },
+            "resnapshot": {
+                "type": "boolean",
+                "description": "For update: re-capture the CURRENT global inference config as the job's drift-guard snapshot. Use this after a job was skipped with 'global inference config drifted' and the user confirms the new config is intended. Does not pin a model; pins are user-owned (hermes cron edit --model)."
+            },
             "attach_to_session": {
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
@@ -2165,6 +2190,8 @@ def _cronjob_handler(args, **kw):
         # `hermes cron create/edit --model`, or hand-edited jobs). The agent
         # must not be able to point unattended spend at a different model.
         # Programmatic callers of cronjob() itself retain the parameters.
+        # resnapshot only re-adopts the config the operator already chose.
+        resnapshot=args.get("resnapshot"),
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),

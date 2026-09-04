@@ -2722,6 +2722,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                         "completed": (job.get("repeat") or {}).get("completed", 0),
                     }
 
+            # ``resnapshot`` is a one-shot instruction, not a stored field:
+            # re-capture the CURRENT global inference config for every
+            # unpinned axis so the drift guard passes again after an
+            # operator-approved config change. Explicit pins in the same
+            # update already recompute snapshots below, so the flag only
+            # matters when no pin is supplied.
+            resnapshot = bool(updates.pop("resnapshot", False))
+
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
 
@@ -2806,7 +2814,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                         )
                     updated["next_run_at"] = updated_next_run
 
-            if inference_fields_changed:
+            if inference_fields_changed or resnapshot:
                 provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
                     provider=updated.get("provider"),
                     model=updated.get("model"),

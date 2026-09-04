@@ -6623,11 +6623,12 @@ def run_job(
                     )
                 else:
                     _remediation = (
-                        "To run on the new config, on the host running Hermes "
-                        "pin it explicitly: "
+                        "To run on the new config, re-snapshot it: "
+                        f"`cronjob_manage action=update job_id={job_id} "
+                        "resnapshot=true`. To keep the original values, on the "
+                        "host running Hermes pin them explicitly: "
                         f"`hermes cron edit {job_id} --provider <provider> "
-                        "--model <model>` (or pin the original values to keep "
-                        "them)."
+                        "--model <model>`."
                     )
                 logger.warning(
                     "Job '%s': SKIPPED — global inference config drifted since "

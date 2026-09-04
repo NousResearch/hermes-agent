@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +22,7 @@ def _build_board_db(db_path: Path, tasks: int = 12) -> None:
     """Create a real board DB with data so indexes have entries."""
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
     kb.init_db(db_path=db_path)
-    with kb.connect(db_path=db_path) as conn:
+    with kbc.connect(db_path=db_path) as conn:
         for i in range(tasks):
             kb.create_task(conn, title=f"task-{i}")
     conn.close()
@@ -102,10 +104,10 @@ def test_connect_auto_repairs_index_only_corruption(tmp_path, caplog):
     # Precondition: the fixture really produced the index-scoped class.
     messages = _integrity_messages(db_path)
     assert any(m.startswith("wrong # of entries in index") for m in messages)
-    assert kb._repairable_index_names(messages) == ["idx_tasks_status"]
+    assert kbc._repairable_index_names(messages) == ["idx_tasks_status"]
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
-        conn = kb.connect(db_path=db_path)
+        conn = kbc.connect(db_path=db_path)
     try:
         # DB is clean again and data survived.
         row = conn.execute("PRAGMA integrity_check").fetchone()
@@ -143,7 +145,7 @@ def test_corrupt_backup_retention_cap_prunes_oldest(tmp_path, monkeypatch):
     board whose file keeps changing between failures grows one backup per
     mutation. The cap keeps only the newest ``_CORRUPT_BACKUP_RETENTION``.
     """
-    monkeypatch.setattr(kb, "_CORRUPT_BACKUP_RETENTION", 3)
+    monkeypatch.setattr(kbc, "_CORRUPT_BACKUP_RETENTION", 3)
     db_path = tmp_path / "kanban.db"
     _write_page_corrupt_db(db_path)
 
@@ -154,8 +156,8 @@ def test_corrupt_backup_retention_cap_prunes_oldest(tmp_path, monkeypatch):
             fh.seek(200)
             fh.write(bytes([i]) * 16)
         kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
-            kb.connect(db_path=db_path)
+        with pytest.raises(kbc.KanbanDbCorruptError) as excinfo:
+            kbc.connect(db_path=db_path)
         assert excinfo.value.backup_path is not None
         minted.append(excinfo.value.backup_path)
         # The just-created backup always survives its own prune pass.
@@ -207,25 +209,25 @@ def test_dispatch_tick_runs_wal_checkpoint_at_interval(tmp_path, monkeypatch):
     _build_board_db(db_path, tasks=1)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     # Fresh per-path clock so previous tests can't have claimed the slot.
-    monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
+    monkeypatch.setattr(kbc, "_LAST_WAL_CHECKPOINT", {})
 
     executed: list[str] = []
-    conn = kb.connect(db_path=db_path)
+    conn = kbc.connect(db_path=db_path)
     proxy = _ConnProxy(conn, executed)
     try:
-        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        kbd.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
         assert len(executed) == 1, "first tick should checkpoint"
 
-        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
-        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        kbd.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        kbd.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
         assert len(executed) == 1, "ticks inside the interval must not checkpoint"
 
         # Age the per-path timestamp past the interval → next tick fires.
         key = str(db_path.resolve())
-        kb._LAST_WAL_CHECKPOINT[key] -= (
-            kb._WAL_CHECKPOINT_INTERVAL_SECONDS + 1.0
+        kbc._LAST_WAL_CHECKPOINT[key] -= (
+            kbc._WAL_CHECKPOINT_INTERVAL_SECONDS + 1.0
         )
-        kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
+        kbd.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
         assert len(executed) == 2, "tick after the interval should checkpoint"
         # PASSIVE, not TRUNCATE: CLI kanban commands in other processes write
         # to the same board without holding the dispatch flock, so a TRUNCATE

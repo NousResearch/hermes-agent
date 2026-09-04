@@ -139,7 +139,7 @@ class TestConcurrentReadersDoNotRaceTheWriter:
         ALLOWED_FUNCS = {
             # Lifecycle: run before the instance is shared / after readers
             # are drained. Not reachable concurrently with writers.
-            "__init__", "_connect_and_init",
+            "__init__", "_open_writer", "_connect_and_init",
             "_connect_and_init_with_lock_patience", "close",
         }
 

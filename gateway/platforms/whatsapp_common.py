@@ -1,32 +1,12 @@
 """
-Transport-agnostic WhatsApp behavior shared by the Baileys bridge adapter
-and the official WhatsApp Cloud API adapter.
+Transport-agnostic WhatsApp behavior shared by the Baileys bridge adapter and the
+Cloud API adapter: allow-list / DM / group gating, mention detection, quoted-reply-
+to-bot detection, broadcast filtering, WhatsApp markdown conversion, chunk budgeting.
 
-The mixin provides:
-- Allow-list / DM / group gating
-- Mention detection (explicit @-mentions + configurable regex patterns)
-- Quoted-reply-to-bot detection
-- Broadcast / Channel / Newsletter filtering
-- WhatsApp-flavored markdown conversion
-- Outgoing chunk length budgeting
-
-It is the *behavior layer*. Transport-specific concerns (subprocess management,
-HTTP webhooks, Graph API calls, media upload protocols) live in each adapter.
-
-Mixin contract — the adapter must set these on ``self`` before any of the
-mixin's methods are called (typically in ``__init__``):
-
-    self.config        # gateway.config.PlatformConfig
-    self.name          # str — adapter name (used in log lines)
-    self._dm_policy             # str: "open" | "allowlist" | "disabled"
-    self._allow_from            # set[str]
-    self._group_policy          # str: "open" | "allowlist" | "disabled"
-    self._group_allow_from      # set[str]
-    self._mention_patterns      # list[re.Pattern]
-    self._reply_prefix          # Optional[str]
-
-Class attributes ``MAX_MESSAGE_LENGTH`` and ``DEFAULT_REPLY_PREFIX`` are
-defined on the mixin and may be overridden per-adapter if needed.
+Mixin contract — the host adapter sets these on ``self`` before calling any mixin
+method: ``config`` (PlatformConfig), ``name``, ``_dm_policy`` / ``_group_policy``
+("open" | "allowlist" | "disabled"), ``_allow_from`` / ``_group_allow_from`` (set[str]),
+``_mention_patterns`` (list[re.Pattern]), ``_reply_prefix`` (Optional[str]).
 """
 
 from __future__ import annotations
@@ -37,40 +17,40 @@ import os
 import re
 from typing import Any, Dict, Optional
 
-from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
-from agent.secret_scope import get_secret as _scoped_get_secret
+from gateway.platforms._shared import get_scoped_secret as _get_wsecret
 
-
-def _get_wsecret(name, default=None):
-    """Scope-aware WHATSAPP_* read with the default-profile startup fallback.
-
-    Secondary profiles run under ``_profile_runtime_scope`` -- the scope is
-    authoritative and a scoped miss returns ``default`` (no cross-profile
-    borrow). The DEFAULT profile's adapter constructs and sends *unscoped*
-    under multiplexing, where a bare ``get_secret`` would raise
-    ``UnscopedSecretError`` and crash its WhatsApp path; there ``os.environ``
-    is that profile's own value, so fall back to it. Same pattern as the
-    Slack ``SLACK_APP_TOKEN`` read (#59739).
-    """
-    try:
-        val = _scoped_get_secret(name, default)
-    except _UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
 
 logger = logging.getLogger(__name__)
 
+_TRUTHY = {"true", "1", "yes", "on"}
+_OPTIN_TRUTHY = {"true", "1", "yes"}
+
+
+def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
+    """Replace every ``pattern`` match with a ``\\x00<tag><n>\\x00`` placeholder."""
+    saved: list[str] = []
+
+    def keep(m: re.Match) -> str:
+        saved.append(m.group(0))
+        return f"\x00{tag}{len(saved) - 1}\x00"
+
+    return re.sub(pattern, keep, text), saved
+
+
+def _header_to_bold(m: re.Match) -> str:
+    """``# Header`` → ``*Header*``, stripping already-bolded ``*...*`` so ``# **Title**``
+    doesn't render with literal asterisks."""
+    inner = m.group(1).strip()
+    while len(inner) > 1 and inner.startswith("*") and inner.endswith("*"):
+        inner = inner[1:-1].strip()
+    return f"*{inner}*"
+
 
 class WhatsAppBehaviorMixin:
-    """Shared behavior for all WhatsApp adapters (Baileys + Cloud API).
+    """Shared behavior for all WhatsApp adapters (Baileys + Cloud API); owns no state
+    of its own — see the module docstring for the host adapter's attribute contract."""
 
-    See module docstring for the attribute contract the host adapter must
-    satisfy. This mixin owns no state of its own — every value it touches
-    is either a class attribute or set by the adapter's ``__init__``.
-    """
-
-    # WhatsApp message limits — practical UX limit, not protocol max.
-    # WhatsApp allows ~65K but long messages are unreadable on mobile.
+    # Practical UX limit, not the ~65K protocol max (long messages are unreadable on mobile).
     MAX_MESSAGE_LENGTH: int = 4096
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
@@ -81,34 +61,20 @@ class WhatsAppBehaviorMixin:
 
     @classmethod
     def _sanitize_outbound_text(cls, content: str) -> str:
-        """Remove invisible formatting chars that leak badly in WhatsApp.
-
-        Some provider/gateway formatting paths can emit unicode like WORD
-        JOINER (U+2060) plus NARROW NO-BREAK SPACE (U+202F). WhatsApp may
-        render those as mojibake-looking prefixes (``⁠ text``) instead of
-        invisible spacing. Keep normal text and emoji joiners intact, but
-        strip known zero-width format chars and normalize odd unicode spaces.
-        """
+        """Strip zero-width format chars (WORD JOINER etc.) and normalize odd unicode
+        spaces — WhatsApp renders them as mojibake prefixes. Emoji joiners are kept."""
         if not content:
             return content
-        content = cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content)
-        return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", content)
+        return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content))
 
     @property
     def enforces_own_access_policy(self) -> bool:
         """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
         return True
 
-    # ------------------------------------------------------------------ config
     def _effective_reply_prefix(self) -> str:
-        """Return the prefix to add to outgoing replies in self-chat mode.
-
-        Subclasses that don't have a self-chat concept (the Cloud API
-        adapter) can override this to always return ``""`` or apply a
-        different policy.
-        """
-        whatsapp_mode = _get_wsecret("WHATSAPP_MODE", default="self-chat") or "self-chat"
-        if whatsapp_mode != "self-chat":
+        """Prefix for outgoing replies in self-chat mode (Cloud API overrides to ``""``)."""
+        if (_get_wsecret("WHATSAPP_MODE", default="self-chat") or "self-chat") != "self-chat":
             return ""
         if self._reply_prefix is not None:
             return self._reply_prefix.replace("\\n", "\n")
@@ -118,62 +84,54 @@ class WhatsAppBehaviorMixin:
         return self.DEFAULT_REPLY_PREFIX
 
     def _outgoing_chunk_limit(self) -> int:
-        """Reserve room for the reply prefix so the final message fits."""
-        prefix_len = len(self._effective_reply_prefix())
-        # Keep enough space for truncate_message's pagination indicator and
-        # code-fence repair even if a user configures a very long prefix.
-        return max(1024, self.MAX_MESSAGE_LENGTH - prefix_len)
+        """Reserve room for the reply prefix; floor keeps space for pagination/fence repair."""
+        return max(1024, self.MAX_MESSAGE_LENGTH - len(self._effective_reply_prefix()))
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() in {"true", "1", "yes", "on"}
-            return bool(configured)
-        return (_get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false").lower() in {
-            "true",
-            "1",
-            "yes",
-            "on",
-        }
+        if configured is None:
+            configured = _get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false"
+        if isinstance(configured, str):
+            return configured.lower() in _TRUTHY
+        return bool(configured)
 
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
             raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+        return self._coerce_allow_list(raw)
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
-        """Parse allow_from / group_allow_from from config or env var."""
+        """Parse allow_from / group_allow_from from config (list) or env var (CSV)."""
         if raw is None:
             return set()
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+        parts = raw if isinstance(raw, list) else str(raw).split(",")
+        return {str(part).strip() for part in parts if str(part).strip()}
+
+    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
+        """Pick the raw DM allowlist by key *presence*: ``allow_from``/``allowFrom`` in config (an
+        explicit empty list stays authoritative), then the first truthy env carrier. Records the
+        winning source in ``_dm_allowlist_source`` so live DM checks keep the same precedence."""
+        for key in ("allow_from", "allowFrom"):
+            if key in extra:
+                self._dm_allowlist_source = "config"
+                return extra.get(key)
+        for env in env_keys:
+            if read_env(env):
+                self._dm_allowlist_source = env
+                return read_env(env)
+        self._dm_allowlist_source = None
+        return None
 
     def _live_dm_allow_from(self) -> set[str]:
-        """Allowlist currently enforced for DM intake / strict DM auth.
-
-        Source precedence matches construction: explicit config wins over any
-        env carrier. When the adapter was seeded from an env var, re-read that
-        same key so pairing approve/revoke takes effect without restart
-        (including an empty value while the key is still present). When the key
-        is absent — sole-entry revoke calls ``remove_env_value`` — treat the
-        allowlist as empty instead of falling back to the construction-time
-        snapshot. Config-seeded adapters keep the in-memory snapshot, which
-        pairing revoke purges in place — a lower-precedence or stale env value
-        must not broaden access.
-        """
+        """Allowlist currently enforced for DM intake / strict DM auth. Env-seeded adapters re-read
+        the same key so pairing approve/revoke takes effect without restart; a removed key (sole-entry
+        revoke) means empty, not the construction snapshot. Config-seeded adapters keep the in-memory
+        set (pairing revoke purges it in place) — a stale env value must not broaden access."""
         source = getattr(self, "_dm_allowlist_source", None)
         if isinstance(source, str) and source != "config":
-            if source in os.environ:
-                return self._coerce_allow_list(os.environ.get(source, ""))
-            # Key removed (e.g. sole-entry pairing revoke) — do not revive the
-            # stale construction snapshot.
-            return set()
+            return self._coerce_allow_list(os.environ[source]) if source in os.environ else set()
         return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers
@@ -188,105 +146,59 @@ class WhatsAppBehaviorMixin:
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:
-        """True for WhatsApp pseudo-chats that aren't real conversations.
-
-        Covers Status updates (Stories) and Channel/Newsletter broadcasts.
-        These show up as inbound messages on Baileys but the agent should
-        never reply — answering a Story update spams the contact's status
-        feed, and Channel posts aren't addressable in the first place.
-        """
-        if not chat_id:
-            return False
-        cid = chat_id.strip().lower()
-        if cid == "status@broadcast":
-            return True
-        # @broadcast suffix covers status@broadcast plus any future
-        # broadcast-list variants. @newsletter is the Channel JID suffix.
-        if cid.endswith("@broadcast") or cid.endswith("@newsletter"):
-            return True
-        return False
+        """Status updates (Stories) and Channel/Newsletter broadcasts — never reply
+        (answering a Story spams the status feed; Channel posts aren't addressable)."""
+        cid = (chat_id or "").strip().lower()
+        return cid == "status@broadcast" or cid.endswith(("@broadcast", "@newsletter"))
 
     # ------------------------------------------------------------------ gating
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in _OPTIN_TRUTHY:
             return True
-        return (_get_wsecret("WHATSAPP_ALLOW_ALL_USERS", default="") or "").lower() in {"true", "1", "yes"}
+        return (_get_wsecret("WHATSAPP_ALLOW_ALL_USERS", default="") or "").lower() in _OPTIN_TRUTHY
 
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
-        """Match a WhatsApp identifier against an allowlist across phone/LID forms.
-
-        WhatsApp delivers inbound senders in LID form (``<id>@lid``) while
-        operators usually configure allowlists with phone numbers, and vice
-        versa. A raw set-membership check therefore never matches a known
-        contact. Resolve both the candidate and each allowlist entry through
-        the bridge's ``lid-mapping-*.json`` files (the shared
-        ``gateway.whatsapp_identity`` helper that the gateway authz and
-        session-key paths already use) so either configured form resolves to
-        the inbound form.
-        """
+        """Match a WhatsApp identifier against an allowlist across phone/LID forms. Inbound senders
+        arrive as ``<id>@lid`` while allowlists hold phone numbers (or vice versa), so resolve both
+        sides through the bridge's lid-mapping files via ``gateway.whatsapp_identity``."""
         if not allow_from:
             return False
-        # Fast path: exact match against the raw configured value (e.g. a full
-        # ``@g.us`` group JID or an entry that already matches verbatim).
         if candidate in allow_from:
             return True
-
-        from gateway.whatsapp_identity import (
-            expand_whatsapp_aliases,
-            normalize_whatsapp_identifier,
-        )
-
+        from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
         candidate_aliases = expand_whatsapp_aliases(candidate)
         if not candidate_aliases:
             return False
-        for entry in allow_from:
-            if entry == "*":
-                return True
-            if normalize_whatsapp_identifier(entry) in candidate_aliases:
-                return True
-            # Entry may itself be an unmapped form; expand it too so a phone
-            # allowlist entry resolves when the inbound sender arrived as a LID.
-            if expand_whatsapp_aliases(entry) & candidate_aliases:
-                return True
-        return False
+        return any(
+            entry == "*"
+            or normalize_whatsapp_identifier(entry) in candidate_aliases
+            or expand_whatsapp_aliases(entry) & candidate_aliases
+            for entry in allow_from
+        )
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
-        if self._dm_policy == "disabled":
-            return False
         if self._dm_policy == "allowlist":
             return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
+        return self._dm_policy == "open" and self._open_dm_opted_in()
 
     def _is_dm_intake_allowed(self, sender_id: str) -> bool:
         """Whether a DM may reach the gateway intake (pairing handshake path)."""
         principal = str(sender_id or "").strip()
         if not principal:
             return False
-        if self._dm_policy == "disabled":
-            return False
         if self._dm_policy == "allowlist":
             return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
         if self._dm_policy == "pairing":
             return True
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
+        return self._dm_policy == "open" and self._open_dm_opted_in()
 
     def _is_group_allowed(self, chat_id: str) -> bool:
         """Check whether a group chat should be processed."""
-        if self._group_policy == "disabled":
-            return False
         if self._group_policy == "allowlist":
             return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
-        if self._group_policy == "pairing":
-            return False
-        if self._group_policy == "open":
-            return True
-        return False
+        return self._group_policy == "open"
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
@@ -296,25 +208,16 @@ class WhatsAppBehaviorMixin:
                 try:
                     patterns = json.loads(raw)
                 except Exception:
-                    patterns = [
-                        part.strip() for part in raw.splitlines() if part.strip()
-                    ]
-                    if not patterns:
-                        patterns = [
-                            part.strip() for part in raw.split(",") if part.strip()
-                        ]
+                    # Plain text: one pattern per line, else comma-separated.
+                    patterns = [p.strip() for p in raw.splitlines() if p.strip()]
+                    patterns = patterns or [p.strip() for p in raw.split(",") if p.strip()]
         if patterns is None:
             return []
         if isinstance(patterns, str):
             patterns = [patterns]
         if not isinstance(patterns, list):
-            logger.warning(
-                "[%s] whatsapp mention_patterns must be a list or string; got %s",
-                self.name,
-                type(patterns).__name__,
-            )
+            logger.warning("[%s] whatsapp mention_patterns must be a list or string; got %s", self.name, type(patterns).__name__)
             return []
-
         compiled = []
         for pattern in patterns:
             if not isinstance(pattern, str) or not pattern.strip():
@@ -322,231 +225,106 @@ class WhatsAppBehaviorMixin:
             try:
                 compiled.append(re.compile(pattern, re.IGNORECASE))
             except re.error as exc:
-                logger.warning(
-                    "[%s] Invalid WhatsApp mention pattern %r: %s",
-                    self.name,
-                    pattern,
-                    exc,
-                )
+                logger.warning("[%s] Invalid WhatsApp mention pattern %r: %s", self.name, pattern, exc)
         if compiled:
-            logger.info(
-                "[%s] Loaded %d WhatsApp mention pattern(s)", self.name, len(compiled)
-            )
+            logger.info("[%s] Loaded %d WhatsApp mention pattern(s)", self.name, len(compiled))
         return compiled
 
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
-        bot_ids = set()
-        for candidate in data.get("botIds") or []:
-            normalized = self._normalize_whatsapp_id(candidate)
-            if normalized:
-                bot_ids.add(normalized)
-        return bot_ids
+        return {nid for c in (data.get("botIds") or []) if (nid := self._normalize_whatsapp_id(c))}
 
     def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:
         quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))
-        if not quoted_participant:
-            return False
-        return quoted_participant in self._bot_ids_from_message(data)
+        return bool(quoted_participant) and quoted_participant in self._bot_ids_from_message(data)
 
     def _message_mentions_bot(self, data: Dict[str, Any]) -> bool:
         bot_ids = self._bot_ids_from_message(data)
         if not bot_ids:
             return False
-        mentioned_ids = {
-            nid
-            for candidate in (data.get("mentionedIds") or [])
-            if (nid := self._normalize_whatsapp_id(candidate))
-        }
-        if mentioned_ids & bot_ids:
+        mentioned = {nid for c in (data.get("mentionedIds") or []) if (nid := self._normalize_whatsapp_id(c))}
+        if mentioned & bot_ids:
             return True
-
-        body = str(data.get("body") or "")
-        lower_body = body.lower()
-        for bot_id in bot_ids:
-            bare_id = bot_id.split("@", 1)[0].lower()
-            if bare_id and (f"@{bare_id}" in lower_body or bare_id in lower_body):
-                return True
-        return False
+        lower_body = str(data.get("body") or "").lower()
+        return any(
+            bare and (f"@{bare}" in lower_body or bare in lower_body)
+            for bare in (bot_id.split("@", 1)[0].lower() for bot_id in bot_ids)
+        )
 
     def _message_matches_mention_patterns(self, data: Dict[str, Any]) -> bool:
-        if not self._mention_patterns:
-            return False
         body = str(data.get("body") or "")
-        return any(pattern.search(body) for pattern in self._mention_patterns)
+        return any(pattern.search(body) for pattern in self._mention_patterns or ())
 
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:
             return text
-        bot_ids = self._bot_ids_from_message(data)
         cleaned = text
-        for bot_id in bot_ids:
+        for bot_id in self._bot_ids_from_message(data):
             bare_id = bot_id.split("@", 1)[0]
             if bare_id:
-                cleaned = re.sub(
-                    rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned
-                )
+                cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
-        chat_id_raw = str(data.get("chatId") or "")
-        # WhatsApp uses pseudo-chats for Status updates (Stories) and
-        # Channel/Newsletter broadcasts. These are not real conversations
-        # and the agent should never reply to them — even in self-chat mode
-        # where the bridge may surface them as "fromMe" events.
-        if self._is_broadcast_chat(chat_id_raw):
-            return False
-        is_group = data.get("isGroup", False)
-        if is_group:
-            chat_id = chat_id_raw
-            if not self._is_group_allowed(chat_id):
-                return False
-        else:
-            sender_id = str(data.get("senderId") or data.get("from") or "")
-            if not self._is_dm_intake_allowed(sender_id):
-                return False
-            # DMs that pass the policy gate are always processed
-            return True
-        # Group messages: check mention / free-response settings
         chat_id = str(data.get("chatId") or "")
-        if chat_id in self._whatsapp_free_response_chats():
+        # Broadcast pseudo-chats are filtered even in self-chat mode (fromMe events).
+        if self._is_broadcast_chat(chat_id):
+            return False
+        if not data.get("isGroup", False):
+            # DMs that pass the policy gate are always processed
+            return self._is_dm_intake_allowed(str(data.get("senderId") or data.get("from") or ""))
+        if not self._is_group_allowed(chat_id):
+            return False
+        # Group messages: check mention / free-response settings
+        if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
             return True
-        if not self._whatsapp_require_mention():
-            return True
-        body = str(data.get("body") or "").strip()
-        if body.startswith("/"):
-            return True
-        if self._message_is_reply_to_bot(data):
-            return True
-        if self._message_mentions_bot(data):
-            return True
-        return self._message_matches_mention_patterns(data)
+        return (
+            str(data.get("body") or "").strip().startswith("/")
+            or self._message_is_reply_to_bot(data)
+            or self._message_mentions_bot(data)
+            or self._message_matches_mention_patterns(data)
+        )
 
     # ------------------------------------------------------------------ formatting
     def format_message(self, content: str) -> str:
-        """Convert standard markdown to WhatsApp-compatible formatting.
-
-        WhatsApp supports: *bold*, _italic_, ~strikethrough~, ```code```,
-        and monospaced `inline`. Standard markdown uses different syntax
-        for bold/italic/strikethrough, so we convert here.
-
-        Code blocks (``` fenced) and inline code (`) are protected from
-        conversion via placeholder substitution.
-        """
+        """Convert markdown to WhatsApp syntax (*bold*, _italic_, ~strike~); fenced and
+        inline code are protected via placeholder substitution."""
         if not content:
             return content
-
-        content = self._sanitize_outbound_text(content)
-
-        # --- 1. Protect fenced code blocks from formatting changes ---
-        _FENCE_PH = "\x00FENCE"
-        fences: list[str] = []
-
-        def _save_fence(m: re.Match) -> str:
-            fences.append(m.group(0))
-            return f"{_FENCE_PH}{len(fences) - 1}\x00"
-
-        result = re.sub(r"```[\s\S]*?```", _save_fence, content)
-
-        # --- 2. Protect inline code ---
-        _CODE_PH = "\x00CODE"
-        codes: list[str] = []
-
-        def _save_code(m: re.Match) -> str:
-            codes.append(m.group(0))
-            return f"{_CODE_PH}{len(codes) - 1}\x00"
-
-        result = re.sub(r"`[^`\n]+`", _save_code, result)
-
-        # --- 3. Convert markdown formatting to WhatsApp syntax ---
-        # Italic: standard Markdown *text* → WhatsApp _text_.  Do this before
-        # bold conversion so **bold** does not become italic by accident.  The
-        # lookarounds avoid list bullets and bold delimiters.
-        result = re.sub(
-            r"(?<!\*)\*(?!\s|\*)([^*\n]*?\S[^*\n]*?)\*(?!\*)",
-            r"_\1_",
-            result,
-        )
-        # Bold: **text** or __text__ → *text*
+        result, fences = _stash(r"```[\s\S]*?```", self._sanitize_outbound_text(content), "FENCE")
+        result, codes = _stash(r"`[^`\n]+`", result, "CODE")
+        # Italic *text* → _text_ BEFORE bold so **bold** doesn't become italic;
+        # lookarounds skip list bullets and bold delimiters.
+        result = re.sub(r"(?<!\*)\*(?!\s|\*)([^*\n]*?\S[^*\n]*?)\*(?!\*)", r"_\1_", result)
         result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
         result = re.sub(r"__(.+?)__", r"*\1*", result)
-        # Strikethrough: ~~text~~ → ~text~
         result = re.sub(r"~~(.+?)~~", r"~\1~", result)
-        # _text_ is already WhatsApp italic — leave as-is
-
-        # --- 4. Convert markdown headers to bold text ---
-        # # Header → *Header*. Strip any *...* wrapping already produced
-        # by step 3 (e.g. "# **Title**" → "*Title*", not "**Title**",
-        # which WhatsApp renders with literal asterisks).
-        def _header_to_bold(m: re.Match) -> str:
-            inner = m.group(1).strip()
-            while len(inner) > 1 and inner.startswith("*") and inner.endswith("*"):
-                inner = inner[1:-1].strip()
-            return f"*{inner}*"
-
-        result = re.sub(
-            r"^#{1,6}\s+(.+)$", _header_to_bold, result, flags=re.MULTILINE
-        )
-
-        # --- 5. Convert markdown links: [text](url) → text (url) ---
-        result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)
-
-        # --- 6. Restore protected sections ---
-        for i, fence in enumerate(fences):
-            result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
-        for i, code in enumerate(codes):
-            result = result.replace(f"{_CODE_PH}{i}\x00", code)
-
+        result = re.sub(r"^#{1,6}\s+(.+)$", _header_to_bold, result, flags=re.MULTILINE)
+        result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)  # [text](url) → text (url)
+        for tag, saved in (("FENCE", fences), ("CODE", codes)):
+            for i, original in enumerate(saved):
+                result = result.replace(f"\x00{tag}{i}\x00", original)
         return result
 
 
-# ---------------------------------------------------------------------------
-# Shared bridge directory resolution for CLI and adapter
-# ---------------------------------------------------------------------------
-
 def resolve_whatsapp_bridge_dir() -> Path:
-    """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.
-
-    When the install tree is read-only (e.g., Docker /opt/hermes), this function
-    mirrors the bridge source to a writable HERMES_HOME location and returns that
-    path. This ensures npm install works in Docker environments.
-
-    Returns the resolved bridge directory path.
-    """
+    """Bridge directory for CLI and adapter. A read-only install tree (e.g. Docker
+    /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
     import shutil
     from pathlib import Path as _Path
-
-    # Default location in install tree (may be read-only)
     from hermes_constants import get_hermes_home
     install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
-
-    # Try HERMES_HOME location first
-    hermes_home = get_hermes_home()
-    hermes_home_bridge = hermes_home / "scripts" / "whatsapp-bridge"
-
-    # Check if install dir is writable
+    hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"
     try:
-        test_file = install_bridge / ".write_test"
-        test_file.touch()
-        test_file.unlink()
-        install_writable = True
-    except (OSError, PermissionError):
-        install_writable = False
-
-    if install_writable:
+        (install_bridge / ".write_test").touch()
+        (install_bridge / ".write_test").unlink()
         return install_bridge
-
-    # Install dir is read-only, mirror to HERMES_HOME if needed
+    except OSError:
+        pass
     if hermes_home_bridge.exists():
         return hermes_home_bridge
-
-    # Mirror the bridge source to HERMES_HOME
     try:
         hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
-            install_bridge,
-            hermes_home_bridge,
-            dirs_exist_ok=False,
-        )
+        shutil.copytree(install_bridge, hermes_home_bridge, dirs_exist_ok=False)
         return hermes_home_bridge
     except Exception:
         return install_bridge

@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { host } from '@/sdk'
+import { CONNECTION_HEALTH_AREA, connectionHealthProviders, host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+
+describe('connection health SDK contract', () => {
+  it('exports the shared contribution area and resolver', () => {
+    expect(CONNECTION_HEALTH_AREA).toBe('connections.health')
+    expect(connectionHealthProviders([])).toEqual([])
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {

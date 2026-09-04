@@ -748,12 +748,20 @@ class TaskStore:
             return page, next_offset, total
         return page, next_offset
 
-    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+    def fail_orphans(self, timeout_seconds: int = 300,
+                     skip: Optional[set[str]] = None) -> list[str]:
+        """Fail old non-terminal tasks that have no live waiter.
+
+        ``skip`` is task ids whose gateway turn is still running. Those must
+        not be failed just because they have been working for a long time.
+        """
+        skip = skip or set()
         with self._lock:
             now = time.time()
             stale = [
                 tid for tid, rec in self._tasks.items()
-                if rec["state"] not in TERMINAL_STATES
+                if tid not in skip
+                and rec["state"] not in TERMINAL_STATES
                 and now - rec["created_at"] > timeout_seconds
             ]
         failed = []

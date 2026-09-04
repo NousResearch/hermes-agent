@@ -46,7 +46,8 @@ With the `a2a` toolset enabled, the agent gets:
 | Tool | What it does |
 |---|---|
 | `a2a_discover(url)` | Fetch and summarize a peer's Agent Card |
-| `a2a_call(agent, message, context_id?)` | Send a task, get the reply; multi-turn via `context_id` |
+| `a2a_call(agent, message, context_id?, return_immediately?)` | Send a task, get the reply. Multi-turn via `context_id`. Set `return_immediately` for long jobs to get a `task_id` back at once. |
+| `a2a_get_task(agent, task_id)` | Poll a running task. Returns state and, when done, the reply. |
 | `a2a_list()` | Configured peers, saved conversations, metrics |
 | `a2a_history(context_id)` | Recall a persisted A2A conversation |
 | `a2a_orchestrate(capability, message, mode?)` | Fan a task out to every peer advertising a capability (`all` / `first` / `best`) |
@@ -62,14 +63,16 @@ a2a_agents:
     capabilities: [web_search, research]
 ```
 
-Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."* Direct URLs work too — `a2a_call` accepts any A2A endpoint.
+Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."* Direct URLs work too. `a2a_call` accepts any A2A endpoint.
+
+For a job that may run a long time (a build, a synth, a big test run), call with `return_immediately: true`. You get a `task_id` back right away. Poll with `a2a_get_task` until the state is completed, failed, canceled, or input-required.
 
 ## Inbound: being callable
 
 With the platform enabled, Hermes serves:
 
 - **Agent Card** at `GET /.well-known/agent-card.json` (canonical v1.0 path; the legacy `agent.json` also answers) — advertises your agent's name, skills (derived from enabled toolsets), and auth requirements.
-- **JSON-RPC 2.0** at `POST /` — canonical v1.0 methods (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, push-notification config CRUD) plus the pre-1.0 path-style aliases (`message/send`, …).
+- **JSON-RPC 2.0** at `POST /` — canonical v1.0 methods (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, push-notification config CRUD) plus the pre-1.0 path-style aliases (`message/send`, …). `SendMessage` honors `configuration.returnImmediately` (returns a working Task and a `task_id` without waiting for the agent).
 - **SSE streaming** for `SendStreamingMessage`, with spec-correct JSON-RPC-enveloped frames.
 - **Push notifications** (webhooks) for long-running tasks, HMAC-SHA256 signed.
 
@@ -127,4 +130,4 @@ curl -X POST http://your-host:9900/ \
 - **Peers can't reach the card URL** — the card was advertising your bind address; set `A2A_PUBLIC_URL` to the externally routable URL.
 - **`401 Unauthorized`** — token mismatch; check `A2A_PEER_TOKENS`/`A2A_BEARER_TOKEN` on the server and the peer's `auth:` block.
 - **Server won't bind non-localhost** — by design: set a bearer token first, then `A2A_HOST=0.0.0.0`.
-- **Replies time out on long tasks** — raise `A2A_REPLY_TIMEOUT`, or have the caller register a push-notification config and poll `GetTask`.
+- **Replies time out on long tasks.** From Hermes, call `a2a_call` with `return_immediately: true` and poll `a2a_get_task`. Other A2A clients should send `configuration.returnImmediately: true` and poll `GetTask`. Raising `A2A_REPLY_TIMEOUT` only helps the blocking path. Inbound background waiters still stop after 24 hours if the agent never replies.

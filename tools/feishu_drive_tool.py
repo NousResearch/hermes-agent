@@ -7,24 +7,25 @@ The lark client is injected per-thread by the comment event handler.
 
 import json
 import logging
-import threading
+import contextvars
 
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
-# Thread-local storage for the lark client injected by feishu_comment handler.
-_local = threading.local()
+# See ``tools.feishu_doc_tool``: comment-agent tool calls may run on a worker
+# thread, so the scoped client must follow Hermes' ContextVar propagation path.
+_client_context = contextvars.ContextVar("feishu_drive_tool_client", default=None)
 
 
 def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
-    _local.client = client
+    """Store the comment-context lark client for this agent execution."""
+    _client_context.set(client)
 
 
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return the lark client for this execution context, or None."""
+    return _client_context.get()
 
 
 def _check_feishu():

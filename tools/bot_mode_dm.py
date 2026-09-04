@@ -359,6 +359,24 @@ def message_agent_tool(
             return relayed
         return _err("You can't message yourself. Pick a teammate from the roster.")
 
+    # A Desktop-owned Bot Chat cannot be opened by the CLI subprocess below:
+    # the single-owner lease correctly fences it out. When Desktop has
+    # recently advertised this gateway's connection id, ride the existing
+    # relay instead; bot_relay.deliver queues the DM through prompt.submit on
+    # the live session. No fresh Desktop heartbeat means headless/CLI-only
+    # installs keep the direct subprocess path unchanged.
+    desktop_delivery = _try_local_desktop_delivery(
+        root,
+        resolved,
+        body,
+        me,
+        sender_handle,
+        task_id=task_id,
+        agent=agent,
+    )
+    if desktop_delivery is not None:
+        return desktop_delivery
+
     return _start_delivery(
         [
             "hermes",
@@ -378,6 +396,54 @@ def message_agent_tool(
         task_id=task_id,
         agent=agent,
     )
+
+
+def _try_local_desktop_delivery(
+    root: Path,
+    profile: str,
+    body: str,
+    me: str,
+    sender_handle: str,
+    *,
+    task_id: Optional[str],
+    agent: Any,
+) -> Optional[str]:
+    """Queue a same-install DM through a live Desktop relay when available."""
+    try:
+        from tools.bot_relay import (
+            enqueue_envelope,
+            read_local_connection_id,
+            waiter_command,
+        )
+
+        connection_id = read_local_connection_id(root)
+        if not connection_id:
+            return None
+        handle = _handle(profile)
+        target = {
+            "profile": profile,
+            "handle": handle,
+            "connection_id": connection_id,
+            "connection_label": "this Desktop connection",
+        }
+        envelope = enqueue_envelope(
+            root,
+            target=target,
+            message=f"Message from 🤖 {sender_handle} (@{sender_handle}): {body}",
+            sender_profile=me,
+            sender_handle=sender_handle,
+        )
+        return _spawn_delivery(
+            waiter_command(root, envelope),
+            f"@{handle}",
+            task_id=task_id,
+            agent=agent,
+        )
+    except Exception:
+        # A disappearing/stale Desktop route is not a delivery failure yet:
+        # preserve the proven local subprocess as the next resolver rung.
+        logger.debug("local Desktop relay delivery unavailable", exc_info=True)
+        return None
 
 
 def _try_relay_delivery(

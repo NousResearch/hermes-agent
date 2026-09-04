@@ -456,16 +456,26 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
-  it('stays quiet with a single connection — there is no peer to relay to', async () => {
+  it('publishes and drains a single connection for same-install Bot Mode DMs', async () => {
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
 
-    const calls = respondWith(() => ({}))
+    const calls = respondWith(call =>
+      call.method === 'profiles.list' ? { profiles: [{ name: 'default' }] } : { envelopes: [] }
+    )
+
     const { startBotRelay, stopBotRelay } = await loadRelay()
 
     startBotRelay()
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(calls).toHaveLength(0)
+    expect(calls.find(call => call.method === 'bot_relay.roster.sync')).toMatchObject({
+      connectionId: 'a',
+      params: { agents: [], local_connection_id: 'a' }
+    })
+
+    calls.length = 0
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(1)
 
     stopBotRelay()
   })
@@ -507,6 +517,93 @@ describe('the drain loop wires drain → deliver → reply', () => {
     })
     // A delivered background DM is this bot's "good turn".
     expect(clearBotAttentionMock).toHaveBeenCalledWith('b::ops')
+
+    stopBotRelay()
+  })
+
+  it('delivers an envelope back into the sender connection itself', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+
+    const localEnvelope = { ...envelope, target_connection: 'a', target_profile: 'default' }
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: [localEnvelope] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'queued into live Bot Chat' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'a',
+      params: { message: 'status?', profile: 'default' }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
+      connectionId: 'a',
+      params: { id: 'env-1', reply: 'queued into live Bot Chat' }
+    })
+
+    stopBotRelay()
+  })
+
+  it('keeps draining while a delivered turn waits for a nested agent reply', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+
+    let releaseDelivery!: () => void
+
+    const heldDelivery = new Promise<{ reply: string }>(resolve => {
+      releaseDelivery = () => resolve({ reply: 'outer turn finished' })
+    })
+
+    let drains = 0
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        drains += 1
+
+        return {
+          envelopes: drains === 1 ? [{ ...envelope, target_connection: 'a', target_profile: 'alien-child' }] : []
+        }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return heldDelivery
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    drains = 0
+
+    await pushAndSettle()
+    expect(calls.some(call => call.method === 'bot_relay.deliver')).toBe(true)
+
+    // This push represents the nested message_agent call from the target
+    // turn. It must claim immediately, before that outer delivery resolves.
+    await pushAndSettle()
+    expect(drains).toBeGreaterThan(1)
+    expect(calls.some(call => call.method === 'bot_relay.reply')).toBe(false)
+
+    releaseDelivery()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: 'env-1',
+      reply: 'outer turn finished'
+    })
 
     stopBotRelay()
   })

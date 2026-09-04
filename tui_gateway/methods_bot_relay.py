@@ -46,7 +46,11 @@ def _(rid, params: dict) -> dict:
 
         home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
         root = home.parent.parent if home.parent.name == "profiles" else home
-        count = write_remote_roster(root, params.get("agents"))
+        count = write_remote_roster(
+            root,
+            params.get("agents"),
+            local_connection_id=params.get("local_connection_id") or "",
+        )
         return _ok(rid, {"count": count})
     except Exception as e:
         return _err(rid, 5090, str(e))

@@ -268,6 +268,43 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+def test_local_delivery_uses_fresh_desktop_relay(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    from tools import bot_relay
+
+    bot_relay.write_remote_roster(home, [], local_connection_id="local-1")
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="status?", agent=agent)
+    )
+
+    assert result["status"] == "sent"
+    command = calls[0]["command"]
+    assert "--run-delivery" not in command
+    assert "local-1" in command
+    envelopes = bot_relay.claim_pending_envelopes(home)
+    assert len(envelopes) == 1
+    assert envelopes[0]["target_connection"] == "local-1"
+    assert envelopes[0]["target_profile"] == "researcher"
+
+
+def test_local_delivery_keeps_subprocess_fallback_without_desktop(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="status?", agent=agent)
+    )
+
+    assert result["status"] == "sent"
+    mode, _dm_file, argv = _runner_parts(calls[0]["command"])
+    assert mode == "query-file"
+    assert argv[1:3] == ["-p", "researcher"]
+
+
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tmp_path, monkeypatch
 ):

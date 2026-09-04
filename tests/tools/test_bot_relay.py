@@ -67,6 +67,21 @@ def test_roster_roundtrip_and_validation(root):
     assert back[0]["title"] == "Moxie"
 
 
+def test_roster_persists_fresh_local_desktop_connection(root, monkeypatch):
+    bot_relay.write_remote_roster(root, [], local_connection_id="local-1")
+    assert bot_relay.read_local_connection_id(root) == "local-1"
+
+    roster_path = bot_relay.relay_root(root) / bot_relay.ROSTER_FILE
+    stale_now = roster_path.stat().st_mtime + bot_relay.ROSTER_FRESH_SECONDS + 1
+    monkeypatch.setattr(bot_relay.time, "time", lambda: stale_now)
+    assert bot_relay.read_local_connection_id(root) == ""
+
+
+def test_roster_rejects_invalid_local_desktop_connection(root):
+    bot_relay.write_remote_roster(root, [], local_connection_id="not a route")
+    assert bot_relay.read_local_connection_id(root) == ""
+
+
 def test_roster_read_missing_and_corrupt(root):
     assert bot_relay.read_remote_roster(root) == []
     base = bot_relay.relay_root(root)

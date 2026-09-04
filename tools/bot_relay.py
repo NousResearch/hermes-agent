@@ -9,8 +9,9 @@ itself the bug).
 
 How the relay works (three files under ``<root>/bot_relay/``):
 
-- ``roster.json`` — the union roster of agents on OTHER connections, pushed
-  by the Desktop over each connection's WebSocket (``bot_relay.roster.sync``).
+- ``roster.json`` — the union roster of agents on OTHER connections plus the
+  receiving gateway's own Desktop connection id, pushed over each connection's
+  WebSocket (``bot_relay.roster.sync``).
   ``tools/bot_mode_probe.py`` folds it into the Bot Chat protocol section so
   every bot knows every reachable teammate, and ``message_agent`` resolves
   cross-connection targets against it.
@@ -147,8 +148,19 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
     return out
 
 
-def write_remote_roster(root: Path | str, rows: Any) -> int:
-    """Atomically persist the Desktop-pushed remote roster. Returns count."""
+def write_remote_roster(
+    root: Path | str,
+    rows: Any,
+    *,
+    local_connection_id: str = "",
+) -> int:
+    """Atomically persist the Desktop-pushed remote roster and local route id.
+
+    ``local_connection_id`` is the connection through which this gateway is
+    attached to Desktop. A fresh value lets same-install DMs use the Desktop
+    relay and enter a live Bot Chat through ``prompt.submit``; older Desktop
+    clients omit it and retain the subprocess fallback.
+    """
     base = _ensure_dirs(root)
     cleaned: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -162,7 +174,14 @@ def write_remote_roster(root: Path | str, rows: Any) -> int:
         seen.add(key)
         cleaned.append(norm)
     cleaned.sort(key=lambda r: (r["connection_id"], r["profile"]))
-    payload = {"updated_at": int(time.time()), "agents": cleaned}
+    local_connection_id = str(local_connection_id or "").strip()
+    if not _HANDLE_RE.match(local_connection_id):
+        local_connection_id = ""
+    payload = {
+        "updated_at": int(time.time()),
+        "local_connection_id": local_connection_id,
+        "agents": cleaned,
+    }
     target = base / ROSTER_FILE
     fd, tmp = tempfile.mkstemp(dir=str(base), prefix=".roster-", suffix=".tmp")
     try:
@@ -192,6 +211,23 @@ def read_remote_roster(root: Path | str) -> list[dict]:
     except Exception:
         logger.debug("bot_relay roster read failed", exc_info=True)
         return []
+
+
+def read_local_connection_id(root: Path | str) -> str:
+    """Return Desktop's fresh route id for this gateway, else ``""``.
+
+    A stale Desktop must not steal local DMs from the CLI subprocess fallback
+    and leave them in an outbox no renderer is present to drain.
+    """
+    try:
+        path = relay_root(root) / ROSTER_FILE
+        if time.time() - path.stat().st_mtime > ROSTER_FRESH_SECONDS:
+            return ""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        connection_id = str(data.get("local_connection_id") or "").strip()
+        return connection_id if _HANDLE_RE.match(connection_id) else ""
+    except Exception:
+        return ""
 
 
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
@@ -282,6 +318,11 @@ def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
     roster proves nothing → None, and callers fail open. Never raises.
     """
     try:
+        # Local profiles are intentionally absent from the remote-agent roster.
+        # For them the fresh Desktop route is itself the liveness signal.
+        target_connection = str(target.get("connection_id") or "")
+        if target_connection and target_connection == read_local_connection_id(root):
+            return True
         roster_path = relay_root(root) / ROSTER_FILE
         try:
             age = time.time() - roster_path.stat().st_mtime

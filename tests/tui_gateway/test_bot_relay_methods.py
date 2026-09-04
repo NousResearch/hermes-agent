@@ -37,6 +37,7 @@ def test_roster_sync_persists_and_counts(home):
         srv._methods["bot_relay.roster.sync"](
             1,
             {
+                "local_connection_id": "local-1",
                 "agents": [
                     {"profile": "scout", "handle": "scout", "connection_id": "cloud-1"},
                     {"profile": "", "connection_id": "cloud-1"},  # dropped
@@ -46,6 +47,7 @@ def test_roster_sync_persists_and_counts(home):
     )
     assert out["count"] == 1
     assert [r["profile"] for r in bot_relay.read_remote_roster(home)] == ["scout"]
+    assert bot_relay.read_local_connection_id(home) == "local-1"
 
 
 def test_outbox_drain_returns_each_envelope_once(home):

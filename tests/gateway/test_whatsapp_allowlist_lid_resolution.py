@@ -147,6 +147,16 @@ class TestJsonArrayStringAllowlist:
 
         assert WhatsAppAdapter._coerce_allow_list("['15551234567']") == {"15551234567"}
 
+    def test_malformed_bracket_string_warns(self, caplog):
+        """A `[`-leading value that parses as neither JSON nor Python literal
+        falls back to comma-split (matching nobody) and must log, so the
+        next silent-deaf report starts from the value."""
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        with caplog.at_level("WARNING"):
+            assert WhatsAppAdapter._coerce_allow_list("[1555") == {"[1555"}
+        assert "parses as neither JSON nor Python literal" in caplog.text
+
     def test_intake_accepts_json_array_string_allowlist(self):
         """End to end: the reported deaf-bot scenario now processes."""
         _write_lid_mapping()

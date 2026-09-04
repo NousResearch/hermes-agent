@@ -90,6 +90,9 @@ def _normalize_allow_list_value(raw: Any) -> str:
             if isinstance(parsed, list):
                 parts = [str(part).strip() for part in parsed]
             else:
+                # Bracket-polluted entries match nobody: log so the next
+                # silent-deaf report starts from the value, not from zero.
+                logger.warning("allowlist value looks like a list but parses as neither JSON nor Python literal: %r", text)
                 parts = [part.strip() for part in text.split(",")]
         else:
             parts = [part.strip() for part in text.split(",")]

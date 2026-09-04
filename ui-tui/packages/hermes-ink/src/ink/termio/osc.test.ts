@@ -58,22 +58,28 @@ describe('supportsOsc52Clipboard', () => {
   // the terminal's own clipboard write. Values must match what
   // detectTerminal() in utils/env.ts returns — TERM=xterm-ghostty normalises
   // to 'ghostty', TERM_PROGRAM=WezTerm stays 'WezTerm', etc.
-  it.each(['ghostty', 'kitty', 'WezTerm', 'windows-terminal', 'vscode'])(
-    'returns true for allowlisted terminal %s',
-    terminal => {
-      expect(supportsOsc52Clipboard(terminal)).toBe(true)
-    }
-  )
+  it.each(['ghostty', 'kitty', 'WezTerm', 'windows-terminal'])('returns true for allowlisted terminal %s', terminal => {
+    expect(supportsOsc52Clipboard(terminal)).toBe(true)
+  })
 
   // Intentionally conservative — iTerm2 disables OSC 52 by default; Alacritty
   // and GNOME Terminal detection is unreliable; xterm/Terminal.app lack
-  // reliable OSC 52. These keep the existing native-safety-net behaviour.
-  it.each(['iTerm.app', 'alacritty', 'Apple_Terminal', 'xterm', 'tmux', 'screen', 'cursor', 'WarpTerminal', ''])(
-    'returns false for non-allowlisted terminal %s',
-    terminal => {
-      expect(supportsOsc52Clipboard(terminal)).toBe(false)
-    }
-  )
+  // reliable OSC 52; xterm.js hosts (vscode/cursor) corrupt multi-byte UTF-8.
+  // These keep the existing native-safety-net behaviour.
+  it.each([
+    'iTerm.app',
+    'alacritty',
+    'Apple_Terminal',
+    'xterm',
+    'tmux',
+    'screen',
+    'vscode',
+    'cursor',
+    'WarpTerminal',
+    ''
+  ])('returns false for non-allowlisted terminal %s', terminal => {
+    expect(supportsOsc52Clipboard(terminal)).toBe(false)
+  })
 
   it('returns false when terminal is null (detection failed)', () => {
     expect(supportsOsc52Clipboard(null)).toBe(false)
@@ -116,14 +122,13 @@ describe('shouldUseNativeClipboard', () => {
   })
 
   it('returns false on allowlisted local terminals (the race-fix case)', () => {
-    // Ghostty / kitty / WezTerm / Windows Terminal / VS Code — OSC 52
-    // alone is reliable, native fallback racing it can corrupt the
-    // clipboard (the wl-copy on Wayland symptom this PR fixes).
+    // Ghostty / kitty / WezTerm / Windows Terminal — OSC 52 alone is
+    // reliable, native fallback racing it can corrupt the clipboard (the
+    // wl-copy on Wayland symptom this PR fixes).
     expect(shouldUseNativeClipboard({} as NodeJS.ProcessEnv, 'ghostty')).toBe(false)
     expect(shouldUseNativeClipboard({} as NodeJS.ProcessEnv, 'kitty')).toBe(false)
     expect(shouldUseNativeClipboard({} as NodeJS.ProcessEnv, 'WezTerm')).toBe(false)
     expect(shouldUseNativeClipboard({} as NodeJS.ProcessEnv, 'windows-terminal')).toBe(false)
-    expect(shouldUseNativeClipboard({} as NodeJS.ProcessEnv, 'vscode')).toBe(false)
   })
 
   it('returns true inside tmux even on allowlisted outer terminal', () => {

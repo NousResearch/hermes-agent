@@ -2018,10 +2018,14 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
+    # Resolve the child's fallback provider chain.  A delegation-scoped
+    # ``fallback_providers`` (or legacy ``fallback_model``) entry is the most
+    # specific fallback intent for children and wins over everything else
+    # (#65038).  When no delegation-scoped chain is configured we inherit the
+    # parent's resolved chain so subagents recover from rate-limits and
+    # credential exhaustion exactly like the top-level agent does.
+    # _fallback_chain is a list accepted by AIAgent's fallback_model
+    # parameter (which handles both list and dict forms).
     #
     # EXCEPT when the user pinned delegation.provider: an explicit pin means
     # "children run on THIS provider".  Inheriting the parent chain would let
@@ -2030,7 +2034,10 @@ def _build_child_agent(
     # same class of silent-drag the override_provider filter-clearing below
     # already prevents for OpenRouter routing preferences.  Predictability >
     # liveness for explicit pins: the pinned child fails loudly instead.
-    parent_fallback = (
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    delegation_fallback = get_fallback_chain(delegation_cfg) or None
+    parent_fallback = delegation_fallback or (
         None
         if override_provider
         else (getattr(parent_agent, "_fallback_chain", None) or None)

@@ -2233,5 +2233,67 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
 
+class TestDelegationFallbackProviders(unittest.TestCase):
+    """#65038: delegation.fallback_providers must be consulted for children.
+
+    A delegated child with its own ``delegation.fallback_providers`` chain must
+    use that chain, not silently inherit the parent's resolved fallback chain.
+    """
+
+    @patch("tools.delegate_tool._load_config")
+    def test_child_uses_delegation_fallback_over_parent_chain(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent._fallback_chain = [{"provider": "nous", "model": "hermes-4"}]
+        mock_cfg.return_value = {
+            "fallback_providers": [{"provider": "openrouter", "model": "minimax/minimax-m2.7"}],
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Run on a cheap fallback",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(
+            kwargs["fallback_model"],
+            [{"provider": "openrouter", "model": "minimax/minimax-m2.7"}],
+        )
+
+    @patch("tools.delegate_tool._load_config")
+    def test_child_inherits_parent_chain_when_no_delegation_fallback(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent._fallback_chain = [{"provider": "nous", "model": "hermes-4"}]
+        mock_cfg.return_value = {}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Inherit parent fallback",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(
+            kwargs["fallback_model"],
+            [{"provider": "nous", "model": "hermes-4"}],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

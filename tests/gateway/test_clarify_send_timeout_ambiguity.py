@@ -154,6 +154,22 @@ def test_no_response_returns_timeout_sentinel():
     )
 
 
+def test_interrupted_wait_returns_interrupt_sentinel(monkeypatch):
+    fut = MagicMock()
+    fut.result.return_value = _Result(True)
+    clarify_mod = MagicMock()
+    clarify_mod.get_clarify_timeout.return_value = 600
+    clarify_mod.wait_for_response.return_value = None
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: True)
+
+    assert (
+        _clarify_send_then_wait(
+            fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
+        )
+        == "[interrupted by user]"
+    )
+
+
 # --- Definitive failures keep their diagnostic detail in the log ----------
 
 

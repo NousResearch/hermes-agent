@@ -1181,7 +1181,16 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     if response is None or response == "":
-        # Timeout or session-boundary cancellation
+        # wait_for_response also returns on the thread-scoped interrupt
+        # (#83889). Report that outcome before treating the empty response as
+        # a timeout or session-boundary cancellation.
+        try:
+            from tools.interrupt import is_interrupted
+
+            if is_interrupted():
+                return "[interrupted by user]"
+        except Exception:
+            pass
         return f"[user did not respond within {int(timeout / 60)}m]"
     return response
 

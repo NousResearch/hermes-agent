@@ -105,7 +105,7 @@ def register(
 
 
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
-    """Block on the entry's event until resolved or timeout fires.
+    """Block on the entry's event until resolved, timeout, or interrupt.
 
     Polls in 1-second slices so the agent's inactivity heartbeat keeps
     firing — without this, ``Event.wait(timeout=600)`` blocks the thread
@@ -116,7 +116,17 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     heartbeat still fires each slice so inactivity watchdogs don't kill a live
     prompt.
 
-    Returns the resolved response string, or ``None`` on timeout.
+    The thread-scoped interrupt flag (``tools.interrupt.is_interrupted``) is
+    checked once per slice. This is how ``/stop`` / an interrupt-mode message
+    unblocks a waiting agent thread: ``AIAgent.interrupt()`` propagates the
+    thread-scoped signal to active tool workers, but the session-boundary
+    ``clear_session`` cleanup only runs after the turn ends — which never
+    happens while this wait is blocked (#83889). Without the check, an
+    interrupted agent sits here until the full clarify timeout, or forever
+    in unlimited mode.
+
+    Returns the resolved response string, or ``None`` on timeout/interrupt.
+    A response that raced the interrupt and resolved first still wins.
     """
     with _lock:
         entry = _entries.get(clarify_id)
@@ -128,11 +138,27 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
 
+    try:
+        from tools.interrupt import is_interrupted as _is_interrupted
+    except Exception:  # pragma: no cover - defensive: never re-wedge the wait
+        _is_interrupted = None
+
     # 0 / negative → unlimited: no deadline, poll forever in 1s slices.
     unlimited = timeout is None or float(timeout) <= 0.0
     deadline = None if unlimited else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
+        # A response that completed before the interrupt wins. Besides being
+        # the least surprising user-visible result, checking the event first
+        # makes the interrupt-vs-resolve contract deterministic.
+        if entry.event.is_set():
+            break
+        if _is_interrupted is not None:
+            try:
+                if _is_interrupted():
+                    break
+            except Exception:  # pragma: no cover - defensive
+                pass
         if deadline is None:
             slice_s = 1.0
         else:

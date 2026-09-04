@@ -19,6 +19,7 @@ from agent.transports.codex_app_server_session import (
     TurnResult,
 )
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect as connect_kanban_db
 from tools import kanban_tools
 
 
@@ -57,7 +58,7 @@ def _make_terminal_board(
     terminal_tool: str,
 ) -> tuple[Path, str, int]:
     db_path = tmp_path / "kanban.db"
-    conn = kb.connect(db_path)
+    conn = connect_kanban_db(db_path)
     try:
         task_id, run_id = _create_claimed_task(conn, terminal_tool)
         if terminal_tool == "kanban_complete":
@@ -227,7 +228,7 @@ def test_terminal_event_for_another_run_does_not_interrupt(
     monkeypatch,
 ):
     db_path, _, _ = _make_terminal_board(tmp_path, "kanban_complete")
-    conn = kb.connect(db_path)
+    conn = connect_kanban_db(db_path)
     try:
         active_task_id, active_run_id = _create_claimed_task(conn, "still active")
     finally:
@@ -473,7 +474,7 @@ def test_real_terminal_callback_commits_and_fences_entire_turn(
     monkeypatch,
 ):
     db_path = tmp_path / "kanban.db"
-    conn = kb.connect(db_path)
+    conn = connect_kanban_db(db_path)
     try:
         task_id, run_id = _create_claimed_task(conn, "integrated terminal fence")
         assert kb.get_task(conn, task_id).status == "running"
@@ -513,7 +514,7 @@ def test_real_terminal_callback_commits_and_fences_entire_turn(
     )
 
     assert json.loads(client.callback_result)["ok"] is True
-    conn = kb.connect(db_path)
+    conn = connect_kanban_db(db_path)
     try:
         task = kb.get_task(conn, task_id)
         run = kb.latest_run(conn, task_id)

@@ -593,6 +593,11 @@ def _collect_pre_llm_call_context(
             conversation_history=list(messages),
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,
+            # Virtual providers (MoA) put a PRESET name in agent.model, not a
+            # real model identity. A hook that classifies the host model by
+            # name cannot distinguish "MoA preset named default" from an
+            # ordinary model named "default" without knowing the provider.
+            provider=getattr(agent, "provider", None) or "",
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",

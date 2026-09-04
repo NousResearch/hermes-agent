@@ -19,6 +19,11 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, NamedTuple, Optional
 
+from agent.context_freshness import (
+    DEFAULT_REASONING_REPLAY_KEEP_LAST,
+    clamp_reasoning_replay_keep_last,
+    reasoning_replay_keep_indices,
+)
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -486,6 +491,7 @@ def _chat_messages_to_responses_input(
     replay_encrypted_reasoning: bool = True,
     current_issuer_kind: Optional[str] = None,
     native_compaction_eligible: bool = False,
+    reasoning_replay_keep_last: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -548,6 +554,13 @@ def _chat_messages_to_responses_input(
     ``convert_messages``). Dropping the checkpoint costs nothing: Hermes'
     local history is never truncated by native compaction, so the full
     conversation is still on the wire.
+
+    ``reasoning_replay_keep_last`` bounds *which* assistant turns still
+    replay encrypted reasoning between compactions. Reasoning on turns at
+    or before the latest compaction summary is always dropped; among the
+    remaining reasoning-bearing assistant turns only the last N are
+    replayed (default 8; ``0`` = no extra turn cap). Persisted history is
+    not mutated — this is request-assembly only.
     """
     items: List[Dict[str, Any]] = []
     # Parallel to `items`: the raw chat message each converted item came
@@ -557,8 +570,18 @@ def _chat_messages_to_responses_input(
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
+    keep_last = clamp_reasoning_replay_keep_last(
+        DEFAULT_REASONING_REPLAY_KEEP_LAST
+        if reasoning_replay_keep_last is None
+        else reasoning_replay_keep_last
+    )
+    keep_reasoning_at = (
+        reasoning_replay_keep_indices(messages, keep_last=keep_last)
+        if replay_encrypted_reasoning
+        else frozenset()
+    )
 
-    for msg in messages:
+    for msg_index, msg in enumerate(messages):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
@@ -607,6 +630,15 @@ def _chat_messages_to_responses_input(
                             if (
                                 ri.get("type") == "compaction"
                                 and not native_compaction_eligible
+                            ):
+                                continue
+                            # Freshness bound: drop ordinary encrypted
+                            # reasoning outside the keep window. Native
+                            # compaction checkpoints are not a stale
+                            # interpretation — leave them to the gate above.
+                            if (
+                                ri.get("type") != "compaction"
+                                and msg_index not in keep_reasoning_at
                             ):
                                 continue
                             # Cross-issuer guard: drop reasoning blocks that

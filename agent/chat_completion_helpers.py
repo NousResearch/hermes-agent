@@ -2146,6 +2146,11 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
             ),
             context_management=_context_management,
+            reasoning_replay_keep_last=getattr(
+                getattr(agent, "context_compressor", None),
+                "reasoning_replay_keep_last",
+                None,
+            ),
         )
 
     # ── chat_completions (default) ─────────────────────────────────────

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from agent.context_freshness import PREVIOUS_SUMMARY_UNVERIFIED_GUIDANCE
 
 
 def _make_compressor():
@@ -91,6 +92,7 @@ def test_memory_context_injected_into_iterative_summary_prompt():
 
     assert len(prompts) == 1
     assert "PREVIOUS SUMMARY:\nPrevious checkpoint." in prompts[0]
+    assert PREVIOUS_SUMMARY_UNVERIFIED_GUIDANCE in prompts[0]
     assert "MEMORY PROVIDER CONTEXT" in prompts[0]
     assert "Checkpoint id: ctx-123" in prompts[0]
 

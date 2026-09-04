@@ -497,6 +497,7 @@ class ResponsesApiTransport(ProviderTransport):
             native_compaction_eligible=_native_compaction_active(
                 kwargs.get("context_management")
             ),
+            reasoning_replay_keep_last=kwargs.get("reasoning_replay_keep_last"),
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -739,6 +740,7 @@ class ResponsesApiTransport(ProviderTransport):
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
                 current_issuer_kind=issuer_kind,
                 native_compaction_eligible=native_compaction_active,
+                reasoning_replay_keep_last=params.get("reasoning_replay_keep_last"),
             ),
             "store": False,
         }

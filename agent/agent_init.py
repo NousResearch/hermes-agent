@@ -2288,6 +2288,19 @@ def init_agent(
             _compression_cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096
         ),
     )
+    from agent.context_freshness import (
+        DEFAULT_REASONING_REPLAY_KEEP_LAST,
+        clamp_reasoning_replay_keep_last,
+    )
+
+    compression_reasoning_replay_keep_last = clamp_reasoning_replay_keep_last(
+        _parse_prune_int(
+            _compression_cfg.get(
+                "reasoning_replay_keep_last", DEFAULT_REASONING_REPLAY_KEEP_LAST
+            ),
+            DEFAULT_REASONING_REPLAY_KEEP_LAST,
+        )
+    )
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
@@ -2903,6 +2916,8 @@ def init_agent(
         _cc._micro_compact_defrag_threshold_tokens = (
             compression_micro_compact_defrag_tokens
         )
+    if _cc is not None:
+        _cc.reasoning_replay_keep_last = compression_reasoning_replay_keep_last
     agent.compression_checkpoint_required = compression_checkpoint_required
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.codex_responses_native_compaction = codex_responses_native_compaction

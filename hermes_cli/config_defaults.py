@@ -895,6 +895,12 @@ DEFAULT_CONFIG = {
                                       #              tail (100-240K tokens on big-window
                                       #              or raised-threshold setups).
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "reasoning_replay_keep_last": 8,  # encrypted Codex reasoning replayed on
+                                      # later Requests: keep only the last N
+                                      # post-compaction assistant turns that
+                                      # carry reasoning. 0 = no extra turn cap
+                                      # (still drop reasoning older than the
+                                      # most recent compaction summary).
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
                                       # survive in the uncompressed tail. 1 = existing
                                       # single last-user anchor (default, behavior-

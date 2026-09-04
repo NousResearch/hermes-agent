@@ -640,6 +640,12 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
+  # Encrypted Codex reasoning replayed on later Requests: keep only the last N
+  # post-compaction assistant turns that carry reasoning (default: 8). 0 means
+  # no extra turn cap (still drop reasoning older than the most recent
+  # compaction summary). Reasoning at or before that summary is never replayed.
+  reasoning_replay_keep_last: 8
+
   # Minimum number of REAL (actionable) user messages guaranteed to survive in
   # the uncompressed tail (default: 1 = the existing single last-user anchor,
   # behavior-preserving). Raise to e.g. 3 to keep the last 3 real user turns

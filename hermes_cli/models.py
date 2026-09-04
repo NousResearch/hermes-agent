@@ -3837,6 +3837,69 @@ def _resolve_static_model_alias(
     return None
 
 
+def _has_usable_codex_oauth() -> bool:
+    """Whether the user holds a usable openai-codex OAuth grant.
+
+    Checks the same two stores the runtime resolver consults: the singleton
+    ``providers.openai-codex.tokens`` entry and the ``credential_pool``
+    fallback. Never raises and never touches the network — an unreadable
+    store simply does not steer provider inference.
+    """
+    try:
+        from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+        store = _load_auth_store()
+        state = _load_provider_state(store, "openai-codex")
+        tokens = state.get("tokens") if isinstance(state, dict) else None
+        if isinstance(tokens, dict):
+            access = tokens.get("access_token")
+            refresh = tokens.get("refresh_token")
+            if (
+                isinstance(access, str)
+                and access.strip()
+                and isinstance(refresh, str)
+                and refresh.strip()
+            ):
+                return True
+        pool = store.get("credential_pool")
+        entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+        if isinstance(entries, list):
+            for entry in entries:
+                token = entry.get("access_token") if isinstance(entry, dict) else None
+                if isinstance(token, str) and token.strip():
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _prefer_openai_codex_when_unkeyed(
+    detected: tuple[str, str],
+) -> tuple[str, str]:
+    """Break the openai-api/openai-codex catalog tie toward usable credentials.
+
+    The ``gpt-5.6-*`` family lives in both the ``openai-api`` and
+    ``openai-codex`` catalogs, and ``openai-api`` wins purely by dict order —
+    so a user with no usable ``OPENAI_API_KEY`` but a valid Codex OAuth grant
+    is routed to a guaranteed auth failure while their grant is ignored.
+    Flip only this pair, only on that credential combination; every other
+    detection keeps today's routing.
+    """
+    provider, model = detected
+    if provider != "openai-api":
+        return detected
+    if not any(m.lower() == model.lower() for m in _provider_catalog_names("openai-codex")):
+        return detected
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    from hermes_cli.auth import has_usable_secret
+
+    if has_usable_secret(api_key):
+        return detected
+    if _has_usable_codex_oauth():
+        return ("openai-codex", model)
+    return detected
+
+
 def detect_static_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -3908,7 +3971,7 @@ def detect_static_provider_for_model(
         if _is_custom_current:
             continue
         if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
-            return (pid, name)
+            return _prefer_openai_codex_when_unkeyed((pid, name))
 
     # Borrow-list providers (re-expose other vendors' models) only after every
     # native-vendor catalog, and only when one is the current provider.

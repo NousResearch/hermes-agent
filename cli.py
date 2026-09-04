@@ -17215,6 +17215,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         task_id=self.session_id,
                         persist_user_message=_persist_clean_user_message,
                         moa_config=_moa_cfg,
+                        current_turn_attachments=images,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
                         _restore = getattr(self, "_pending_moa_restore_model", None) or {}

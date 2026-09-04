@@ -13213,6 +13213,7 @@ def _run_prompt_submit(
                 "persist_user_message": (
                     _build_persist_user_message(prompt, images, run_message) if images else prompt
                 ),
+                "current_turn_attachments": list(images),
             }
             # Type a synthesized turn at turn START so the crash persist writes
             # its row as a timeline event, instead of leaving a raw user bubble

@@ -9183,6 +9183,7 @@ class AIAgent:
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         persist_user_platform_id: Optional[str] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        current_turn_attachments: Optional[list[Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review deliberately shares this agent's session_id for prompt-cache
@@ -9219,6 +9220,7 @@ class AIAgent:
             start_task_run,
         )
         from agent.subagent_lifecycle import bind_subagent_parent
+        from agent.attachment_context import bind_current_turn_attachments
         effective_task_id = task_id or str(uuid.uuid4())
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
@@ -9703,7 +9705,13 @@ class AIAgent:
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            with bind_current_turn_attachments(
+                current_turn_attachments,
+                session_id=session_id,
+                task_id=effective_task_id,
+                turn_id=relay_turn_id,
+                surface=getattr(self, "platform", "") or "",
+            ), bind_subagent_parent(self), scoped_runtime_main({}):
                 try:
                     if durable_turn_lease_thread is not None:
                         with durable_turn_lease_activity_lock:

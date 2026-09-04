@@ -6971,7 +6971,18 @@ class TurnRunner:
             # inbound id (NOT event_message_id, which is the reply anchor).
             if ctx.inbound_message_id is not None:
                 _conversation_kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+
+            try:
+                _run_params = inspect.signature(agent.run_conversation).parameters
+            except (TypeError, ValueError):
+                _run_params = {}
+            if "current_turn_attachments" in _run_params:
+                _conversation_kwargs["current_turn_attachments"] = _native_imgs
+
+            result = agent.run_conversation(
+                _api_run_message,
+                **_conversation_kwargs,
+            )
         finally:
             unregister_gateway_notify(_approval_session_key)
             # Cancel any pending clarify entries so blocked agent

@@ -12,6 +12,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools import browser_tool as bt
+from tools import browser_tool_cdp as bt_cdp
+from tools import browser_tool_cloud as bt_cloud
+from tools import browser_tool_eval_policy as bt_eval_policy
+from tools import browser_tool_install as bt_install
+from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_tool_session as bt_session
 
 
 @pytest.fixture(autouse=True)
@@ -25,8 +31,8 @@ def _isolated_browser_lifecycle(monkeypatch):
     monkeypatch.setattr(bt, "_browser_task_cleanup_reasons", {})
     monkeypatch.setattr(bt, "_browser_task_cleanup_locks", {})
     monkeypatch.setattr(bt, "_pending_provider_cleanups", {})
-    monkeypatch.setattr(bt, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(bt, "_stop_cdp_supervisor", lambda _task: None)
+    monkeypatch.setattr(bt_lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bt_cdp, "_stop_cdp_supervisor", lambda _task: None)
     monkeypatch.setattr(bt, "_maybe_stop_recording", lambda _task: None)
     monkeypatch.setattr(bt, "_maybe_start_recording", lambda _task: None)
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
@@ -34,7 +40,7 @@ def _isolated_browser_lifecycle(monkeypatch):
 
 def _observe_cleanup_lock_request(monkeypatch, requested: threading.Event) -> None:
     """Signal when the named cleanup thread requests the task operation lock."""
-    original = bt._task_cleanup_operation_lock
+    original = bt_lifecycle._task_cleanup_operation_lock
 
     def _wrapped(bare_task_id):
         lock = original(bare_task_id)
@@ -42,7 +48,7 @@ def _observe_cleanup_lock_request(monkeypatch, requested: threading.Event) -> No
             requested.set()
         return lock
 
-    monkeypatch.setattr(bt, "_task_cleanup_operation_lock", _wrapped)
+    monkeypatch.setattr(bt_lifecycle, "_task_cleanup_operation_lock", _wrapped)
 
 
 @pytest.mark.parametrize("backend", ["local", "provider"])
@@ -80,36 +86,36 @@ def test_real_inactivity_cleanup_is_nonterminal_and_normal_command_recreates(
     bt._active_sessions[task_id] = old_session
     bt._session_last_activity[task_id] = now - 100
     monkeypatch.setattr(bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 10)
-    monkeypatch.setattr(bt.time, "time", lambda: now)
-    monkeypatch.setattr(bt.os.path, "exists", lambda _path: False)
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_lifecycle.time, "time", lambda: now)
+    monkeypatch.setattr(bt_lifecycle.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "")
     monkeypatch.setattr(
-        bt,
+        bt_cloud,
         "_get_cloud_provider",
         (lambda: provider) if backend == "provider" else (lambda: None),
     )
-    monkeypatch.setattr(bt, "_resolve_cdp_override", lambda value: value)
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda value: value)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
 
-    with patch.object(bt, "_run_browser_command", return_value={"success": True}):
-        bt._cleanup_inactive_browser_sessions()
+    with patch.object(bt_session, "_run_browser_command", return_value={"success": True}):
+        bt_lifecycle._cleanup_inactive_browser_sessions()
 
     assert task_id not in bt._active_sessions
     assert task_id not in bt._retired_browser_tasks
-    assert bt._browser_task_states[task_id] is bt.BrowserTaskState.ACTIVE
+    assert bt._browser_task_states[task_id] is bt_lifecycle.BrowserTaskState.ACTIVE
 
     # Drive the same implicit session lookup used by a normal snapshot command.
-    monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
 
     def _normal_snapshot(session_key, command, args, **_kwargs):
         assert command == "snapshot"
-        session = bt._get_session_info(session_key)
+        session = bt_session._get_session_info(session_key)
         return {
             "success": True,
             "data": {"snapshot": session["session_name"], "refs": {}},
         }
 
-    monkeypatch.setattr(bt, "_run_browser_command", _normal_snapshot)
+    monkeypatch.setattr(bt_session, "_run_browser_command", _normal_snapshot)
     result = json.loads(bt.browser_snapshot(task_id=task_id))
 
     assert result["success"] is True
@@ -143,7 +149,7 @@ def test_provider_cdp_uses_generic_node22_path_and_provider_cleanup(
     def _resolver(*, require_pin_tab: bool = False):
         resolver_calls.append(require_pin_tab)
         if require_pin_tab:
-            raise bt.AgentBrowserCapabilityError("Node >=24 required")
+            raise bt_install.AgentBrowserCapabilityError("Node >=24 required")
         return "/tmp/agent-browser-node22"
 
     class _Proc:
@@ -159,19 +165,19 @@ def test_provider_cdp_uses_generic_node22_path_and_provider_cleanup(
         def kill(self):
             self.returncode = -9
 
-    monkeypatch.setattr(bt, "_find_agent_browser", _resolver)
-    monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _cmd: False)
-    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", _resolver)
+    monkeypatch.setattr(bt_install, "_requires_real_termux_browser_install", lambda _cmd: False)
+    monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
     monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
-    monkeypatch.setattr(bt, "_write_owner_pid", lambda *_a: None)
+    monkeypatch.setattr(bt_lifecycle, "_write_owner_pid", lambda *_a: None)
     monkeypatch.setattr(bt, "_build_browser_env", lambda: {"PATH": "/usr/bin"})
-    monkeypatch.setattr(bt, "_merge_browser_path", lambda value: value)
-    monkeypatch.setattr(bt, "_needs_chromium_sandbox_bypass", lambda: False)
-    monkeypatch.setattr(bt.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(bt_install, "_merge_browser_path", lambda value: value)
+    monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr(bt_session.subprocess, "Popen", _Proc)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
 
-    command_result = bt._run_browser_command(task_id, "snapshot", ["-c"])
-    cleanup_result = bt.cleanup_browser(task_id)
+    command_result = bt_session._run_browser_command(task_id, "snapshot", ["-c"])
+    cleanup_result = bt_lifecycle.cleanup_browser(task_id)
 
     assert command_result["success"] is True
     assert cleanup_result is True
@@ -201,7 +207,7 @@ def test_real_profile_cdp_keeps_generic_node22_and_local_headed_semantics(
     def _resolver(*, require_pin_tab: bool = False):
         resolver_calls.append(require_pin_tab)
         if require_pin_tab:
-            raise bt.AgentBrowserCapabilityError("Node >=24 required")
+            raise bt_install.AgentBrowserCapabilityError("Node >=24 required")
         return "/tmp/agent-browser-node22"
 
     class _Proc:
@@ -217,21 +223,21 @@ def test_real_profile_cdp_keeps_generic_node22_and_local_headed_semantics(
         def kill(self):
             self.returncode = -9
 
-    monkeypatch.setattr(bt, "_find_agent_browser", _resolver)
-    monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _cmd: False)
-    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", _resolver)
+    monkeypatch.setattr(bt_install, "_requires_real_termux_browser_install", lambda _cmd: False)
+    monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
     monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
-    monkeypatch.setattr(bt, "_write_owner_pid", lambda *_a: None)
+    monkeypatch.setattr(bt_lifecycle, "_write_owner_pid", lambda *_a: None)
     monkeypatch.setattr(bt, "_build_browser_env", lambda: {"PATH": "/usr/bin"})
-    monkeypatch.setattr(bt, "_merge_browser_path", lambda value: value)
-    monkeypatch.setattr(bt, "_needs_chromium_sandbox_bypass", lambda: False)
-    monkeypatch.setattr(bt.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(bt_install, "_merge_browser_path", lambda value: value)
+    monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr(bt_session.subprocess, "Popen", _Proc)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
 
-    assert bt._is_task_owned_shared_cdp_session(session) is False
-    assert bt._is_hermes_owned_local_browser_session(session) is True
-    result = bt._run_browser_command(task_id, "snapshot", ["-c"])
+    assert bt_lifecycle._is_task_owned_shared_cdp_session(session) is False
+    assert bt_lifecycle._is_hermes_owned_local_browser_session(session) is True
+    result = bt_session._run_browser_command(task_id, "snapshot", ["-c"])
 
     assert result["success"] is True
     assert resolver_calls == [False]
@@ -250,10 +256,10 @@ def test_provider_api_close_is_not_blocked_by_local_tab_capability(monkeypatch):
         "features": {},
         "_provider_cleanup_owner": provider,
     }
-    monkeypatch.setattr(bt.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(bt_lifecycle.os.path, "exists", lambda _path: False)
 
     with patch.object(
-        bt,
+        bt_session,
         "_run_browser_command",
         return_value={
             "success": False,
@@ -261,7 +267,7 @@ def test_provider_api_close_is_not_blocked_by_local_tab_capability(monkeypatch):
             "error": "Node >=24 required",
         },
     ) as command:
-        assert bt.cleanup_browser(task_id) is True
+        assert bt_lifecycle.cleanup_browser(task_id) is True
 
     command.assert_called_once_with(
         task_id,
@@ -285,15 +291,15 @@ def test_shared_cdp_timeout_enters_exact_nonterminal_cleanup(monkeypatch):
     bt._active_sessions[task_id] = session
     cleanup = MagicMock(return_value=True)
     discard = MagicMock()
-    monkeypatch.setattr(bt, "_cleanup_browser_session_keys", cleanup)
-    monkeypatch.setattr(bt, "_discard_timed_out_browser_session", discard)
+    monkeypatch.setattr(bt_lifecycle, "_cleanup_browser_session_keys", cleanup)
+    monkeypatch.setattr(bt_session, "_discard_timed_out_browser_session", discard)
 
-    bt._handle_browser_command_timeout(task_id, session, "/tmp/not-used")
+    bt_session._handle_browser_command_timeout(task_id, session, "/tmp/not-used")
 
     cleanup.assert_called_once_with(
         task_id,
         [task_id],
-        reason=bt.BrowserCleanupReason.INACTIVITY,
+        reason=bt_lifecycle.BrowserCleanupReason.INACTIVITY,
     )
     discard.assert_not_called()
 
@@ -308,12 +314,12 @@ def test_shared_cdp_timeout_without_exact_target_stays_fail_closed():
     }
     bt._active_sessions[task_id] = session
 
-    bt._handle_browser_command_timeout(task_id, session, "/tmp/not-used")
+    bt_session._handle_browser_command_timeout(task_id, session, "/tmp/not-used")
 
     assert bt._active_sessions[task_id] is session
     assert session["_cleanup_retry_pending"] is True
-    assert bt._browser_task_states[task_id] is bt.BrowserTaskState.RETIRING
-    assert bt._is_browser_task_unavailable(task_id) is True
+    assert bt._browser_task_states[task_id] is bt_lifecycle.BrowserTaskState.RETIRING
+    assert bt_lifecycle._is_browser_task_unavailable(task_id) is True
 
 
 def test_cleanup_command_ignores_turn_interrupt(monkeypatch, tmp_path):
@@ -340,19 +346,19 @@ def test_cleanup_command_ignores_turn_interrupt(monkeypatch, tmp_path):
             self.returncode = -9
 
     monkeypatch.setattr(
-        bt, "_find_agent_browser", lambda **_kwargs: "/tmp/agent-browser"
+        bt_install, "_find_agent_browser", lambda **_kwargs: "/tmp/agent-browser"
     )
-    monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _cmd: False)
-    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(bt_install, "_requires_real_termux_browser_install", lambda _cmd: False)
+    monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
     monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
-    monkeypatch.setattr(bt, "_write_owner_pid", lambda *_a: None)
+    monkeypatch.setattr(bt_lifecycle, "_write_owner_pid", lambda *_a: None)
     monkeypatch.setattr(bt, "_build_browser_env", lambda: {"PATH": "/usr/bin"})
-    monkeypatch.setattr(bt, "_merge_browser_path", lambda value: value)
-    monkeypatch.setattr(bt, "_needs_chromium_sandbox_bypass", lambda: False)
-    monkeypatch.setattr(bt.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(bt_install, "_merge_browser_path", lambda value: value)
+    monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr(bt_session.subprocess, "Popen", _Proc)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: True)
 
-    result = bt._run_browser_command(
+    result = bt_session._run_browser_command(
         task_id,
         "close",
         [],
@@ -388,20 +394,20 @@ def test_provider_close_failure_retains_retry_identity_until_success(
         "features": {},
         "_provider_cleanup_owner": provider,
     }
-    monkeypatch.setattr(bt.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(bt_lifecycle.os.path, "exists", lambda _path: False)
 
-    with patch.object(bt, "_run_browser_command", return_value={"success": True}):
-        assert bt.cleanup_browser(task_id) is False
+    with patch.object(bt_session, "_run_browser_command", return_value={"success": True}):
+        assert bt_lifecycle.cleanup_browser(task_id) is False
 
     assert task_id not in bt._active_sessions
     pending = list(bt._pending_provider_cleanups.values())
     assert [(item.provider, item.session_id) for item in pending] == [
         (provider, "provider-retry-id")
     ]
-    assert bt._browser_task_states[task_id] is bt.BrowserTaskState.RETIRING
+    assert bt._browser_task_states[task_id] is bt_lifecycle.BrowserTaskState.RETIRING
 
     find_browser = MagicMock()
-    monkeypatch.setattr(bt, "_find_agent_browser", find_browser)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", find_browser)
     blocked = json.loads(bt.browser_snapshot(task_id=task_id))
     assert blocked["code"] == "browser_session_retired"
     assert blocked["data"]["cleanup_pending"] is True
@@ -409,8 +415,8 @@ def test_provider_close_failure_retains_retry_identity_until_success(
 
     # Retry only the retained provider identity. No page lookup/adoption occurs.
     get_session = MagicMock()
-    monkeypatch.setattr(bt, "_get_session_info", get_session)
-    assert bt.cleanup_browser(task_id) is True
+    monkeypatch.setattr(bt_session, "_get_session_info", get_session)
+    assert bt_lifecycle.cleanup_browser(task_id) is True
     assert calls == ["provider-retry-id", "provider-retry-id"]
     assert bt._pending_provider_cleanups == {}
     assert task_id in bt._retired_browser_tasks
@@ -431,16 +437,16 @@ def test_cleanup_pending_blocks_all_business_commands_and_supervisor_eval(monkey
     bt._last_active_session_key[task_id] = task_id
 
     with patch.object(
-        bt,
+        bt_session,
         "_run_browser_command",
         return_value={"success": False, "error": "exact close unavailable"},
     ):
-        assert bt.cleanup_browser(task_id) is False
+        assert bt_lifecycle.cleanup_browser(task_id) is False
 
-    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda _task: False)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda _task: False)
     find_browser = MagicMock()
     supervisor_get = MagicMock()
-    monkeypatch.setattr(bt, "_find_agent_browser", find_browser)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", find_browser)
     monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", supervisor_get)
 
     results = [
@@ -462,18 +468,18 @@ def test_failed_restart_blanking_and_exact_close_stays_fail_closed(monkeypatch):
     task_id = "failed-restart-three-stage"
     bt._retired_browser_tasks.add(task_id)
     monkeypatch.setattr(bt, "_navigation_session_key", lambda task, _url: task)
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "ws://shared")
-    monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
     monkeypatch.setattr(
         bt,
         "_is_always_blocked_url",
         lambda url: url == "http://blocked.internal/",
     )
     monkeypatch.setattr(bt, "check_website_access", lambda _url: None)
-    monkeypatch.setattr(bt, "_pinned_cdp_target_id", lambda _task: "TARGET")
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(bt_cdp, "_pinned_cdp_target_id", lambda _task: "TARGET")
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        bt,
+        bt_cdp,
         "_close_shared_cdp_target_confirmed",
         lambda _cdp_url, _target_id: False,
     )
@@ -494,12 +500,12 @@ def test_failed_restart_blanking_and_exact_close_stays_fail_closed(monkeypatch):
             return {"success": False, "error": "blanking failed"}
         raise AssertionError((command, args))
 
-    monkeypatch.setattr(bt, "_run_browser_command", _command)
+    monkeypatch.setattr(bt_session, "_run_browser_command", _command)
 
     result = json.loads(bt.browser_navigate("https://example.com", task_id=task_id))
 
     assert result["success"] is False
-    assert bt._browser_task_states[task_id] is bt.BrowserTaskState.RETIRING
+    assert bt._browser_task_states[task_id] is bt_lifecycle.BrowserTaskState.RETIRING
     assert bt._active_sessions[task_id]["_cleanup_retry_pending"] is True
     assert command_calls == [
         ("open", ["https://example.com"]),
@@ -539,14 +545,14 @@ def test_two_provider_creators_close_the_loser(monkeypatch):
             return True
 
     provider = _Provider()
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: provider)
-    monkeypatch.setattr(bt, "_resolve_cdp_override", lambda value: value)
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
+    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda value: value)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
 
     results: list[dict] = []
     threads = [
-        threading.Thread(target=lambda: results.append(bt._get_session_info(task_id)))
+        threading.Thread(target=lambda: results.append(bt_session._get_session_info(task_id)))
         for _ in range(2)
     ]
     for thread in threads:
@@ -585,16 +591,16 @@ def test_terminal_cleanup_fences_inflight_provider_creator(monkeypatch):
             return True
 
     provider = _Provider()
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: provider)
-    monkeypatch.setattr(bt, "_resolve_cdp_override", lambda value: value)
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
+    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda value: value)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
 
     errors: list[BaseException] = []
 
     def _create():
         try:
-            bt._get_session_info(task_id)
+            bt_session._get_session_info(task_id)
         except BaseException as exc:
             errors.append(exc)
 
@@ -602,8 +608,8 @@ def test_terminal_cleanup_fences_inflight_provider_creator(monkeypatch):
     thread.start()
     assert entered.wait(timeout=3)
 
-    assert bt.cleanup_browser(task_id) is True
-    assert bt._browser_task_states[task_id] is bt.BrowserTaskState.RETIRED
+    assert bt_lifecycle.cleanup_browser(task_id) is True
+    assert bt._browser_task_states[task_id] is bt_lifecycle.BrowserTaskState.RETIRED
     release.set()
     thread.join(timeout=4)
 
@@ -611,7 +617,7 @@ def test_terminal_cleanup_fences_inflight_provider_creator(monkeypatch):
     assert task_id not in bt._active_sessions
     assert closed == ["late-provider-id"]
     assert len(errors) == 1
-    assert isinstance(errors[0], bt._BrowserSessionRetiredError)
+    assert isinstance(errors[0], bt_lifecycle._BrowserSessionRetiredError)
 
 
 def test_late_stale_creator_close_failure_reopens_only_cleanup_state(monkeypatch):
@@ -636,16 +642,16 @@ def test_late_stale_creator_close_failure_reopens_only_cleanup_state(monkeypatch
             return len(close_calls) > 1
 
     provider = _Provider()
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: provider)
-    monkeypatch.setattr(bt, "_resolve_cdp_override", lambda value: value)
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
+    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda value: value)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
 
     errors: list[BaseException] = []
 
     def _create():
         try:
-            bt._get_session_info(task_id)
+            bt_session._get_session_info(task_id)
         except BaseException as exc:
             errors.append(exc)
 
@@ -653,30 +659,30 @@ def test_late_stale_creator_close_failure_reopens_only_cleanup_state(monkeypatch
     thread.start()
     assert entered.wait(timeout=3)
 
-    assert bt.cleanup_browser(task_id) is True
+    assert bt_lifecycle.cleanup_browser(task_id) is True
     release.set()
     thread.join(timeout=4)
 
     assert not thread.is_alive()
     assert len(errors) == 1
-    assert isinstance(errors[0], bt._BrowserSessionRetiredError)
+    assert isinstance(errors[0], bt_lifecycle._BrowserSessionRetiredError)
     assert task_id not in bt._active_sessions
     assert len(bt._pending_provider_cleanups) == 1
-    assert bt._browser_task_states[task_id] is bt.BrowserTaskState.RETIRING
+    assert bt._browser_task_states[task_id] is bt_lifecycle.BrowserTaskState.RETIRING
 
     blocked = json.loads(bt.browser_snapshot(task_id=task_id))
     assert blocked["code"] == "browser_session_retired"
     assert blocked["data"]["cleanup_pending"] is True
 
-    assert bt.cleanup_browser(task_id) is True
+    assert bt_lifecycle.cleanup_browser(task_id) is True
     assert close_calls == ["late-provider-retry-id", "late-provider-retry-id"]
     assert bt._pending_provider_cleanups == {}
     assert task_id in bt._retired_browser_tasks
 
 
 def test_headed_turn_retains_local_but_cleans_shared_external_cdp(monkeypatch):
-    monkeypatch.setattr(bt, "_is_headed_mode", lambda: True)
-    monkeypatch.setattr(bt.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(bt_cloud, "_is_headed_mode", lambda: True)
+    monkeypatch.setattr(bt_lifecycle.os.path, "exists", lambda _path: False)
 
     local_task = "headed-local"
     real_profile_task = "headed-real-profile"
@@ -710,17 +716,17 @@ def test_headed_turn_retains_local_but_cleans_shared_external_cdp(monkeypatch):
 
     with (
         patch.object(
-            bt,
+            bt_cdp,
             "_close_shared_cdp_target_confirmed",
             return_value=True,
         ),
         patch.object(
-            bt, "_run_browser_command", return_value={"success": True}
+            bt_session, "_run_browser_command", return_value={"success": True}
         ) as command,
     ):
-        assert bt.cleanup_browser_for_turn(local_task) is True
-        assert bt.cleanup_browser_for_turn(real_profile_task) is True
-        assert bt.cleanup_browser_for_turn(shared_task) is True
+        assert bt_lifecycle.cleanup_browser_for_turn(local_task) is True
+        assert bt_lifecycle.cleanup_browser_for_turn(real_profile_task) is True
+        assert bt_lifecycle.cleanup_browser_for_turn(shared_task) is True
 
     assert bt._active_sessions[local_task] is local
     assert bt._active_sessions[real_profile_task] is real_profile
@@ -740,7 +746,7 @@ def test_hard_cleanup_still_closes_untracked_camofox_task(monkeypatch):
     )
     monkeypatch.setattr("tools.browser_camofox.camofox_close", close)
 
-    assert bt.cleanup_browser(task_id) is True
+    assert bt_lifecycle.cleanup_browser(task_id) is True
 
     soft_cleanup.assert_called_once_with(task_id)
     close.assert_called_once_with(task_id)
@@ -749,7 +755,7 @@ def test_hard_cleanup_still_closes_untracked_camofox_task(monkeypatch):
 
 def test_headed_turn_preserves_untracked_camofox_task(monkeypatch):
     task_id = "camofox-headed-boundary"
-    monkeypatch.setattr(bt, "_is_headed_mode", lambda: True)
+    monkeypatch.setattr(bt_cloud, "_is_headed_mode", lambda: True)
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: True)
     soft_cleanup = MagicMock()
     monkeypatch.setattr(
@@ -757,7 +763,7 @@ def test_headed_turn_preserves_untracked_camofox_task(monkeypatch):
         soft_cleanup,
     )
 
-    assert bt.cleanup_browser_for_turn(task_id) is True
+    assert bt_lifecycle.cleanup_browser_for_turn(task_id) is True
 
     soft_cleanup.assert_not_called()
     assert task_id not in bt._browser_task_states
@@ -766,7 +772,7 @@ def test_headed_turn_preserves_untracked_camofox_task(monkeypatch):
 
 def test_browser_free_camofox_turn_does_not_allocate_lifecycle_rows(monkeypatch):
     task_id = "camofox-browser-free"
-    monkeypatch.setattr(bt, "_is_headed_mode", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_is_headed_mode", lambda: False)
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: True)
     monkeypatch.setattr(
         "tools.browser_camofox.camofox_has_session",
@@ -775,7 +781,7 @@ def test_browser_free_camofox_turn_does_not_allocate_lifecycle_rows(monkeypatch)
     soft_cleanup = MagicMock()
     monkeypatch.setattr("tools.browser_camofox.camofox_soft_cleanup", soft_cleanup)
 
-    assert bt.cleanup_browser_for_turn(task_id) is True
+    assert bt_lifecycle.cleanup_browser_for_turn(task_id) is True
 
     soft_cleanup.assert_not_called()
     assert task_id not in bt._browser_task_states
@@ -791,10 +797,10 @@ def test_browser_free_camofox_fast_path_waits_for_inflight_navigation(monkeypatc
     cleanup_done = threading.Event()
     events: list[str] = []
 
-    monkeypatch.setattr(bt, "_is_headed_mode", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_is_headed_mode", lambda: False)
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: True)
     monkeypatch.setattr(bt, "_is_always_blocked_url", lambda _url: False)
-    monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
     monkeypatch.setattr(bt, "check_website_access", lambda _url: None)
     monkeypatch.setattr(
         "tools.browser_camofox.camofox_has_session",
@@ -823,7 +829,7 @@ def test_browser_free_camofox_fast_path_waits_for_inflight_navigation(monkeypatc
         )
     )
     cleanup_thread = threading.Thread(
-        target=lambda: (bt.cleanup_browser_for_turn(task_id), cleanup_done.set()),
+        target=lambda: (bt_lifecycle.cleanup_browser_for_turn(task_id), cleanup_done.set()),
         name="browser-cleanup-test",
     )
 
@@ -846,7 +852,7 @@ def test_browser_free_camofox_fast_path_waits_for_inflight_navigation(monkeypatc
 def test_browser_free_turn_cleanup_does_not_allocate_lifecycle_rows():
     """Per-turn finalization is a no-op when the task never used a browser."""
     for index in range(100):
-        assert bt.cleanup_browser_for_turn(f"browser-free-{index}") is True
+        assert bt_lifecycle.cleanup_browser_for_turn(f"browser-free-{index}") is True
 
     assert bt._browser_task_states == {}
     assert bt._browser_task_generations == {}
@@ -872,10 +878,10 @@ def test_navigation_holds_task_lifecycle_lock_through_snapshot(monkeypatch):
 
     monkeypatch.setattr(bt, "_navigation_session_key", lambda _task, _url: task_id)
     monkeypatch.setattr(bt, "_is_always_blocked_url", lambda _url: False)
-    monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
     monkeypatch.setattr(bt, "check_website_access", lambda _url: None)
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(bt, "_clear_retired_browser_task_for_navigation", lambda _task: False)
+    monkeypatch.setattr(bt_lifecycle, "_clear_retired_browser_task_for_navigation", lambda _task: False)
     monkeypatch.setattr(bt, "_get_open_command_timeout", lambda **_kwargs: 10)
     monkeypatch.setattr(bt, "_maybe_start_recording", lambda _task: None)
 
@@ -887,7 +893,7 @@ def test_navigation_holds_task_lifecycle_lock_through_snapshot(monkeypatch):
         events.append("session-end")
         return session
 
-    monkeypatch.setattr(bt, "_get_session_info", _get_session_info)
+    monkeypatch.setattr(bt_session, "_get_session_info", _get_session_info)
 
     def _run(_session_key, command, _args, **_kwargs):
         if command == "open":
@@ -896,14 +902,14 @@ def test_navigation_holds_task_lifecycle_lock_through_snapshot(monkeypatch):
         events.append(command)
         return {"success": True, "data": {"snapshot": "ok", "refs": {}}}
 
-    monkeypatch.setattr(bt, "_run_browser_command", _run)
+    monkeypatch.setattr(bt_session, "_run_browser_command", _run)
     _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
     nav_result: list[str] = []
     nav_thread = threading.Thread(
         target=lambda: nav_result.append(bt.browser_navigate("https://example.com", task_id))
     )
     cleanup_thread = threading.Thread(
-        target=lambda: (bt.cleanup_browser(task_id), cleanup_done.set()),
+        target=lambda: (bt_lifecycle.cleanup_browser(task_id), cleanup_done.set()),
         name="browser-cleanup-test",
     )
 
@@ -964,8 +970,8 @@ def test_browser_dialog_waits_for_terminal_cleanup(monkeypatch):
 
     supervisor.respond_to_dialog.side_effect = _respond
     monkeypatch.setattr(browser_dialog_tool.SUPERVISOR_REGISTRY, "get", lambda _task: supervisor)
-    monkeypatch.setattr(bt, "_run_browser_command", lambda *_args, **_kwargs: {"success": True})
-    monkeypatch.setattr(bt.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(bt_session, "_run_browser_command", lambda *_args, **_kwargs: {"success": True})
+    monkeypatch.setattr(bt_lifecycle.os.path, "exists", lambda _path: False)
     _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
 
     dialog_result: list[str] = []
@@ -975,7 +981,7 @@ def test_browser_dialog_waits_for_terminal_cleanup(monkeypatch):
         )
     )
     cleanup_thread = threading.Thread(
-        target=lambda: (bt.cleanup_browser(task_id), cleanup_done.set()),
+        target=lambda: (bt_lifecycle.cleanup_browser(task_id), cleanup_done.set()),
         name="browser-cleanup-test",
     )
     dialog_thread.start()
@@ -1109,22 +1115,22 @@ def test_terminal_cleanup_waits_for_inflight_subprocess_command(monkeypatch):
         def wait(self, timeout=None):
             return self.returncode
 
-    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kwargs: "/tmp/fake-agent-browser")
-    monkeypatch.setattr(bt.subprocess, "Popen", _Popen)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kwargs: "/tmp/fake-agent-browser")
+    monkeypatch.setattr(bt_session.subprocess, "Popen", _Popen)
     # The local-Chromium fast-fail gate must not short-circuit this test's
     # fake Popen path: this host may have no real Chromium installed.
-    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
     _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
     command_result: list[dict] = []
     cleanup_result: list[bool] = []
     command_thread = threading.Thread(
         target=lambda: command_result.append(
-            bt._run_browser_command(task_id, "snapshot", ["-c"])
+            bt_session._run_browser_command(task_id, "snapshot", ["-c"])
         )
     )
 
     def _cleanup():
-        cleanup_result.append(bt.cleanup_browser(task_id))
+        cleanup_result.append(bt_lifecycle.cleanup_browser(task_id))
         cleanup_done.set()
 
     cleanup_thread = threading.Thread(target=_cleanup, name="browser-cleanup-test")
@@ -1171,7 +1177,7 @@ def test_terminal_cleanup_waits_for_inflight_supervisor_eval(monkeypatch):
             return {"ok": True, "result": 1}
 
     monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda _task: _Supervisor())
-    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda _task: False)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda _task: False)
 
     class _Popen:
         def __init__(self, cmd, *, stdout, **_kwargs):
@@ -1183,11 +1189,11 @@ def test_terminal_cleanup_waits_for_inflight_supervisor_eval(monkeypatch):
         def wait(self, timeout=None):
             return self.returncode
 
-    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kwargs: "/tmp/fake-agent-browser")
-    monkeypatch.setattr(bt.subprocess, "Popen", _Popen)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kwargs: "/tmp/fake-agent-browser")
+    monkeypatch.setattr(bt_session.subprocess, "Popen", _Popen)
     # The local-Chromium fast-fail gate must not short-circuit this test's
     # fake close Popen: this host may have no real Chromium installed.
-    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
     _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
     eval_result: list[dict] = []
     cleanup_result: list[bool] = []
@@ -1198,7 +1204,7 @@ def test_terminal_cleanup_waits_for_inflight_supervisor_eval(monkeypatch):
     )
 
     def _cleanup():
-        cleanup_result.append(bt.cleanup_browser(task_id))
+        cleanup_result.append(bt_lifecycle.cleanup_browser(task_id))
         cleanup_done.set()
 
     cleanup_thread = threading.Thread(target=_cleanup, name="browser-cleanup-test")

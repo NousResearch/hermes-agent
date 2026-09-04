@@ -8,6 +8,12 @@ from typing import Any
 from unittest.mock import ANY, MagicMock
 
 from tools import browser_tool
+from tools import browser_tool_cdp as browser_cdp
+from tools import browser_tool_cloud as browser_cloud
+from tools import browser_tool_eval_policy as browser_eval_policy
+from tools import browser_tool_install as browser_install
+from tools import browser_tool_lifecycle as browser_lifecycle
+from tools import browser_tool_session as browser_session
 
 
 TAB_GONE_RESULT = {
@@ -45,25 +51,25 @@ def _run_commands(
         return proc
 
     monkeypatch.setattr(
-        browser_tool,
+        browser_install,
         "_find_agent_browser",
         lambda **_kwargs: browser_cmd,
     )
-    monkeypatch.setattr(browser_tool, "_requires_real_termux_browser_install", lambda _cmd: False)
-    monkeypatch.setattr(browser_tool, "_is_local_mode", lambda: False)
-    monkeypatch.setattr(browser_tool, "_get_session_info", sessions.__getitem__)
-    monkeypatch.setattr(browser_tool, "_get_browser_engine", lambda: "auto")
-    monkeypatch.setattr(browser_tool, "_is_headed_mode", lambda: False)
+    monkeypatch.setattr(browser_install, "_requires_real_termux_browser_install", lambda _cmd: False)
+    monkeypatch.setattr(browser_cloud, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(browser_session, "_get_session_info", sessions.__getitem__)
+    monkeypatch.setattr(browser_cloud, "_get_browser_engine", lambda: "auto")
+    monkeypatch.setattr(browser_cloud, "_is_headed_mode", lambda: False)
     monkeypatch.setattr(browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
-    monkeypatch.setattr(browser_tool, "_write_owner_pid", lambda *_args: None)
+    monkeypatch.setattr(browser_lifecycle, "_write_owner_pid", lambda *_args: None)
     monkeypatch.setattr(browser_tool, "_build_browser_env", lambda: {"PATH": "/usr/bin"})
-    monkeypatch.setattr(browser_tool, "_merge_browser_path", lambda path: path)
-    monkeypatch.setattr(browser_tool, "_needs_chromium_sandbox_bypass", lambda: False)
-    monkeypatch.setattr(browser_tool.subprocess, "Popen", capture_popen)
+    monkeypatch.setattr(browser_install, "_merge_browser_path", lambda path: path)
+    monkeypatch.setattr(browser_session, "_needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr(browser_session.subprocess, "Popen", capture_popen)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
 
     for task_id, command, args in calls:
-        results.append(browser_tool._run_browser_command(task_id, command, args))
+        results.append(browser_session._run_browser_command(task_id, command, args))
 
     return commands, results
 
@@ -190,7 +196,7 @@ def test_cdp_npx_command_uses_pin_spec_and_npm_policy(monkeypatch, tmp_path):
         }
     }
     environments: list[dict[str, str]] = []
-    monkeypatch.setattr(browser_tool, "_resolve_npx_bin", lambda: "/managed/bin/npx")
+    monkeypatch.setattr(browser_install, "_resolve_npx_bin", lambda: "/managed/bin/npx")
 
     commands, results = _run_commands(
         monkeypatch,
@@ -279,7 +285,7 @@ def test_high_level_snapshot_preserves_structured_tab_gone(monkeypatch):
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
     monkeypatch.setattr(
-        browser_tool,
+        browser_session,
         "_run_browser_command",
         lambda *_args, **_kwargs: dict(TAB_GONE_RESULT),
     )
@@ -292,9 +298,9 @@ def test_high_level_snapshot_preserves_structured_tab_gone(monkeypatch):
 def test_high_level_console_does_not_mask_structured_tab_gone(monkeypatch):
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
-    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda _task_id: False)
+    monkeypatch.setattr(browser_eval_policy, "_eval_ssrf_guard_active", lambda _task_id: False)
     monkeypatch.setattr(
-        browser_tool,
+        browser_session,
         "_run_browser_command",
         lambda *_args, **_kwargs: dict(TAB_GONE_RESULT),
     )
@@ -308,10 +314,10 @@ def test_fixed_cdp_supervisor_waits_for_pinned_target(monkeypatch):
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     start = MagicMock()
-    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(browser_cdp, "_get_cdp_override", lambda: "ws://shared")
     monkeypatch.setattr(SUPERVISOR_REGISTRY, "get_or_start", start)
 
-    browser_tool._ensure_cdp_supervisor("task-a")
+    browser_cdp._ensure_cdp_supervisor("task-a")
 
     start.assert_not_called()
 
@@ -320,11 +326,11 @@ def test_fixed_cdp_supervisor_receives_pinned_target(monkeypatch):
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     start = MagicMock()
-    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://shared")
-    monkeypatch.setattr(browser_tool, "_get_dialog_policy_config", lambda: ("must_respond", 300.0))
+    monkeypatch.setattr(browser_cdp, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(browser_cdp, "_get_dialog_policy_config", lambda: ("must_respond", 300.0))
     monkeypatch.setattr(SUPERVISOR_REGISTRY, "get_or_start", start)
 
-    browser_tool._ensure_cdp_supervisor("task-a", target_id="TARGET-A")
+    browser_cdp._ensure_cdp_supervisor("task-a", target_id="TARGET-A")
 
     start.assert_called_once_with(
         task_id="task-a",
@@ -339,7 +345,7 @@ def test_fixed_cdp_supervisor_receives_pinned_target(monkeypatch):
 
 def test_pinned_cdp_target_id_uses_agent_browser_active_page(monkeypatch):
     monkeypatch.setattr(
-        browser_tool,
+        browser_session,
         "_run_browser_command",
         lambda *_args, **_kwargs: {
             "success": True,
@@ -352,7 +358,7 @@ def test_pinned_cdp_target_id_uses_agent_browser_active_page(monkeypatch):
         },
     )
 
-    assert browser_tool._pinned_cdp_target_id("task-a") == "TARGET-A"
+    assert browser_cdp._pinned_cdp_target_id("task-a") == "TARGET-A"
 
 
 def test_navigate_fails_if_auto_snapshot_reports_tab_gone(monkeypatch):
@@ -381,15 +387,15 @@ def test_navigate_fails_if_auto_snapshot_reports_tab_gone(monkeypatch):
         "_navigation_session_key",
         lambda task_id, _url: task_id,
     )
-    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(browser_cloud, "_is_local_backend", lambda: True)
     monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda _url: False)
     monkeypatch.setattr(browser_tool, "check_website_access", lambda _url: None)
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(browser_tool, "_get_session_info", lambda _task: session)
-    monkeypatch.setattr(browser_tool, "_pinned_cdp_target_id", lambda _task: "TARGET-A")
-    monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(browser_session, "_get_session_info", lambda _task: session)
+    monkeypatch.setattr(browser_cdp, "_pinned_cdp_target_id", lambda _task: "TARGET-A")
+    monkeypatch.setattr(browser_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        browser_tool,
+        browser_session,
         "_run_browser_command",
         lambda *_args, **_kwargs: next(command_results),
     )
@@ -411,7 +417,7 @@ def test_navigate_fails_if_auto_snapshot_reports_tab_gone(monkeypatch):
 def test_explicit_navigation_after_cleanup_creates_fresh_owned_session(monkeypatch):
     task_id = "task-retired"
     monkeypatch.setattr(
-        browser_tool,
+        browser_cdp,
         "_close_shared_cdp_target_confirmed",
         lambda _cdp_url, _target_id: True,
     )
@@ -429,25 +435,25 @@ def test_explicit_navigation_after_cleanup_creates_fresh_owned_session(monkeypat
     monkeypatch.setattr(browser_tool, "_last_active_session_key", {task_id: task_id})
     monkeypatch.setattr(browser_tool, "_retired_browser_tasks", set(), raising=False)
     monkeypatch.setattr(browser_tool, "_maybe_stop_recording", lambda _task: None)
-    monkeypatch.setattr(browser_tool.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(browser_lifecycle.os.path, "exists", lambda _path: False)
     monkeypatch.setattr(
-        browser_tool,
+        browser_session,
         "_run_browser_command",
         lambda *_args, **_kwargs: {"success": True},
     )
 
-    assert browser_tool.cleanup_browser(task_id) is True
+    assert browser_lifecycle.cleanup_browser(task_id) is True
     assert task_id in browser_tool._retired_browser_tasks
 
-    monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(browser_lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(browser_cdp, "_get_cdp_override", lambda: "ws://shared")
     monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda _url: False)
-    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(browser_cloud, "_is_local_backend", lambda: True)
     monkeypatch.setattr(browser_tool, "check_website_access", lambda _url: None)
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(browser_tool, "_maybe_start_recording", lambda _task: None)
-    monkeypatch.setattr(browser_tool, "_pinned_cdp_target_id", lambda _task: None)
-    monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(browser_cdp, "_pinned_cdp_target_id", lambda _task: None)
+    monkeypatch.setattr(browser_cdp, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
     command_calls: list[tuple[str, str, list[str]]] = []
 
     def run_command(session_key, command, args, **_kwargs):
@@ -459,7 +465,7 @@ def test_explicit_navigation_after_cleanup_creates_fresh_owned_session(monkeypat
             }
         return {"success": True, "data": {"snapshot": "fresh", "refs": {}}}
 
-    monkeypatch.setattr(browser_tool, "_run_browser_command", run_command)
+    monkeypatch.setattr(browser_session, "_run_browser_command", run_command)
 
     result = json.loads(
         browser_tool.browser_navigate("https://example.com", task_id=task_id)
@@ -482,7 +488,7 @@ def test_explicit_navigation_after_cleanup_creates_fresh_owned_session(monkeypat
 def test_failed_explicit_restart_restores_retired_boundary(monkeypatch):
     task_id = "task-retired-failed-restart"
     monkeypatch.setattr(
-        browser_tool,
+        browser_cdp,
         "_close_shared_cdp_target_confirmed",
         lambda _cdp_url, _target_id: True,
     )
@@ -490,10 +496,10 @@ def test_failed_explicit_restart_restores_retired_boundary(monkeypatch):
     monkeypatch.setattr(browser_tool, "_session_last_activity", {})
     monkeypatch.setattr(browser_tool, "_last_active_session_key", {})
     monkeypatch.setattr(browser_tool, "_retired_browser_tasks", {task_id}, raising=False)
-    monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(browser_lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(browser_cdp, "_get_cdp_override", lambda: "ws://shared")
     monkeypatch.setattr(
-        browser_tool,
+        browser_session,
         "_create_cdp_session",
         lambda task, cdp_url: {
             "session_name": f"cdp_{task}",
@@ -504,12 +510,12 @@ def test_failed_explicit_restart_restores_retired_boundary(monkeypatch):
         },
     )
     monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda _url: False)
-    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(browser_cloud, "_is_local_backend", lambda: True)
     monkeypatch.setattr(browser_tool, "check_website_access", lambda _url: None)
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(browser_tool, "_maybe_start_recording", lambda _task: None)
     monkeypatch.setattr(browser_tool, "_maybe_stop_recording", lambda _task: None)
-    monkeypatch.setattr(browser_tool.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(browser_lifecycle.os.path, "exists", lambda _path: False)
     command_calls: list[tuple[str, str, list[str]]] = []
 
     def run_command(session_key, command, args, **_kwargs):
@@ -518,7 +524,7 @@ def test_failed_explicit_restart_restores_retired_boundary(monkeypatch):
             return {"success": False, "error": "navigation failed"}
         return {"success": True}
 
-    monkeypatch.setattr(browser_tool, "_run_browser_command", run_command)
+    monkeypatch.setattr(browser_session, "_run_browser_command", run_command)
 
     result = json.loads(
         browser_tool.browser_navigate("https://example.com", task_id=task_id)

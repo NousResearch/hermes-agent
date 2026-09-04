@@ -2330,29 +2330,44 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
 
 def cleanup_task_resources(agent, task_id: str) -> None:
-    """Per-turn VM + browser cleanup for a task. Skips ``cleanup_vm`` for persistent
-    terminal envs (``_cleanup_inactive_envs`` reaps them after ``terminal.lifetime_seconds``)
-    and ``cleanup_browser`` in headed mode (the inactivity reaper handles idle sessions)."""
-    def _headed() -> bool:
-        try:
-            from tools.browser_tool_cloud import _is_headed_mode
-            return _is_headed_mode()
-        except Exception:
-            return bool(os.environ.get("AGENT_BROWSER_HEADED"))
+    """Per-turn VM cleanup plus ownership-aware browser finalization.
 
-    for label, skip, skip_what, cleanup in (
-        ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id)),
-        ("browser", lambda _tid: _headed(), "cleanup_browser for headed session", lambda: _ra().cleanup_browser(task_id)),
-    ):
-        try:
-            if skip(task_id):
-                if agent.verbose_logging:
-                    logging.debug(f"Skipping per-turn {skip_what} {task_id}; idle reaper will handle it.")
-            else:
-                cleanup()
-        except Exception as e:
+    Persistent terminal backends retain their VM. Browser finalization keeps
+    only Hermes-owned local headed state; provider/shared-CDP ownership always
+    crosses the terminal boundary.
+    """
+    try:
+        if is_persistent_env(task_id):
             if agent.verbose_logging:
-                logger.warning("Failed to cleanup %s for task %s: %s", label, task_id, e)
+                logging.debug(
+                    "Skipping per-turn cleanup_vm for persistent env %s; "
+                    "idle reaper will handle it.",
+                    task_id,
+                )
+        else:
+            _ra().cleanup_vm(task_id)
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)
+
+    browser_boundary_completed = False
+    try:
+        cleanup_for_turn = getattr(_ra(), "cleanup_browser_for_turn", None)
+        if callable(cleanup_for_turn):
+            cleanup_result = cleanup_for_turn(task_id)
+        else:
+            cleanup_result = _ra().cleanup_browser(task_id)
+        # False means exact ownership is still pending; keep the outer turn
+        # boundary armed for one immediate retry. None is legacy success.
+        browser_boundary_completed = cleanup_result is not False
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning("Failed to cleanup browser for task %s: %s", task_id, e)
+    finally:
+        if browser_boundary_completed:
+            mark_complete = getattr(_ra(), "_mark_browser_turn_cleanup_complete", None)
+            if callable(mark_complete):
+                mark_complete()
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,

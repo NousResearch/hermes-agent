@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from tools import browser_tool_session as bt_session
+from tools import browser_tool_cdp as bt_cdp
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +130,9 @@ class TestBrowserEvalSupervisorPath:
         }
         _patch_supervisor(monkeypatch, sup)
         stop = MagicMock()
-        monkeypatch.setattr(bt, "_stop_cdp_supervisor", stop)
+        monkeypatch.setattr(bt_cdp, "_stop_cdp_supervisor", stop)
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: {
                 "success": False,
@@ -168,8 +169,8 @@ class TestBrowserEvalSupervisorPath:
         _patch_supervisor(monkeypatch, sup)
         stop = MagicMock()
         subprocess_run = MagicMock(side_effect=AssertionError("must not replay"))
-        monkeypatch.setattr(bt, "_stop_cdp_supervisor", stop)
-        monkeypatch.setattr(bt, "_run_browser_command", subprocess_run)
+        monkeypatch.setattr(bt_cdp, "_stop_cdp_supervisor", stop)
+        monkeypatch.setattr(bt_session, "_run_browser_command", subprocess_run)
 
         out = json.loads(bt._browser_eval("window.sideEffectCount++"))
 
@@ -186,7 +187,7 @@ class TestBrowserEvalSupervisorPath:
         sup.evaluate_runtime.side_effect = TimeoutError("response lost")
         _patch_supervisor(monkeypatch, sup)
         subprocess_run = MagicMock(side_effect=AssertionError("must not replay"))
-        monkeypatch.setattr(bt, "_run_browser_command", subprocess_run)
+        monkeypatch.setattr(bt_session, "_run_browser_command", subprocess_run)
 
         out = json.loads(bt._browser_eval("window.sideEffectCount++"))
 

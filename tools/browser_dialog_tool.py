@@ -8,10 +8,13 @@ appears together with ``browser_cdp``. Design: ``website/docs/developer-guide/br
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, Optional
 
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry
+
+logger = logging.getLogger(__name__)
 
 BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
     "name": "browser_dialog",
@@ -74,18 +77,36 @@ def browser_dialog(
     task_id: Optional[str] = None,
 ) -> str:
     """Respond to a pending dialog on the active task's CDP supervisor."""
-    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
-    if supervisor is None:
-        return json.dumps({
-            "success": False,
-            "error": (
-                "No CDP supervisor is attached to this task. Either the "
-                "browser backend doesn't expose CDP (Camofox, default "
-                "Playwright) or no browser session has been started yet. "
-                "Call browser_navigate or /browser connect first."
-            ),
-        })
-    result = supervisor.respond_to_dialog(action=action, prompt_text=prompt_text, dialog_id=dialog_id)
+    effective_task_id = task_id or "default"
+    try:
+        from tools import browser_tool
+        from tools import browser_tool_lifecycle as lifecycle
+
+        bare_task_id = browser_tool._bare_task_id_for_session_key(effective_task_id)
+        with lifecycle._task_cleanup_operation_lock(bare_task_id):
+            if lifecycle._is_browser_task_unavailable(effective_task_id):
+                return json.dumps(
+                    lifecycle._browser_session_retired_result(effective_task_id),
+                    ensure_ascii=False,
+                )
+            session_key = browser_tool._last_session_key(effective_task_id)
+            supervisor = SUPERVISOR_REGISTRY.get(session_key)
+            if supervisor is None:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "No CDP supervisor is attached to this task. Either the "
+                        "browser backend doesn't expose CDP (Camofox, default "
+                        "Playwright) or no browser session has been started yet. "
+                        "Call browser_navigate or /browser connect first."
+                    ),
+                })
+            result = supervisor.respond_to_dialog(
+                action=action, prompt_text=prompt_text, dialog_id=dialog_id
+            )
+    except Exception as exc:
+        logger.debug("browser_dialog lifecycle guard failed: %s", exc)
+        return json.dumps({"success": False, "error": str(exc)})
     if result.get("ok"):
         return json.dumps({"success": True, "action": action, "dialog": result.get("dialog", {})})
     return json.dumps({"success": False, "error": result.get("error", "unknown error")})
@@ -113,9 +134,6 @@ registry.register(
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-import logging  # noqa: F401,E402
-
-
 _PLUGIN_COMPAT_LAZY = {
     'logger': ('tools.approval', 'logger'),
 }

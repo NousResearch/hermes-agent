@@ -4,7 +4,11 @@ import json
 import time
 
 from unittest.mock import MagicMock, patch
+from tools import browser_tool_cdp as bt_cdp
+from tools import browser_tool_cloud as bt_cloud
+from tools import browser_tool_install as bt_install
 from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_tool_session as bt_session
 
 
 class TestScreenshotPathRecovery:
@@ -45,7 +49,7 @@ class TestBrowserCleanup:
         self.orig_recording_sessions = browser_tool._recording_sessions.copy()
         self.orig_cleanup_done = browser_tool._cleanup_done
         self.close_target_patch = patch(
-            "tools.browser_tool._close_shared_cdp_target_confirmed",
+            "tools.browser_tool_cdp._close_shared_cdp_target_confirmed",
             return_value=True,
         )
         self.close_target_mock = self.close_target_patch.start()
@@ -95,7 +99,7 @@ class TestBrowserCleanup:
                 "tools.browser_tool_session._run_browser_command",
                 return_value={"success": True},
             ) as mock_run,
-            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_lifecycle.os.path.exists", return_value=False),
         ):
             cleaned = bt_lifecycle.cleanup_browser("task-1")
 
@@ -120,12 +124,12 @@ class TestBrowserCleanup:
         with (
             patch("tools.browser_tool._maybe_stop_recording"),
             patch(
-                "tools.browser_tool._run_browser_command",
+                "tools.browser_tool_session._run_browser_command",
                 return_value={"success": True},
             ) as mock_run,
-            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_lifecycle.os.path.exists", return_value=False),
         ):
-            cleaned = browser_tool.cleanup_browser("task-cdp")
+            cleaned = bt_lifecycle.cleanup_browser("task-cdp")
 
         assert cleaned is True
         assert "task-cdp" not in browser_tool._active_sessions
@@ -147,12 +151,12 @@ class TestBrowserCleanup:
         with (
             patch("tools.browser_tool._maybe_stop_recording"),
             patch(
-                "tools.browser_tool._run_browser_command",
+                "tools.browser_tool_session._run_browser_command",
                 return_value={"success": True},
             ) as mock_run,
-            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_lifecycle.os.path.exists", return_value=False),
         ):
-            cleaned = browser_tool.cleanup_browser("task-gone")
+            cleaned = bt_lifecycle.cleanup_browser("task-gone")
 
         assert cleaned is True
         assert "task-gone" not in browser_tool._active_sessions
@@ -175,7 +179,7 @@ class TestBrowserCleanup:
         browser_tool._last_active_session_key["task-retry"] = "task-retry"
 
         self.close_target_mock.return_value = False
-        cleaned = browser_tool.cleanup_browser("task-retry")
+        cleaned = bt_lifecycle.cleanup_browser("task-retry")
 
         assert cleaned is False
         assert browser_tool._active_sessions["task-retry"] is session
@@ -200,15 +204,15 @@ class TestBrowserCleanup:
         with (
             patch("tools.browser_tool._maybe_stop_recording"),
             patch(
-                "tools.browser_tool._run_browser_command",
+                "tools.browser_tool_session._run_browser_command",
                 return_value={"success": True},
             ) as mock_run,
-            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_lifecycle.os.path.exists", return_value=False),
         ):
-            assert browser_tool.cleanup_browser("task-repeat") is False
+            assert bt_lifecycle.cleanup_browser("task-repeat") is False
             assert "task-repeat" in browser_tool._active_sessions
-            assert browser_tool.cleanup_browser("task-repeat") is True
-            assert browser_tool.cleanup_browser("task-repeat") is True
+            assert bt_lifecycle.cleanup_browser("task-repeat") is True
+            assert bt_lifecycle.cleanup_browser("task-repeat") is True
 
         assert "task-repeat" not in browser_tool._active_sessions
         assert mock_run.call_args_list == [
@@ -227,12 +231,12 @@ class TestBrowserCleanup:
         with (
             patch("tools.browser_tool._maybe_stop_recording"),
             patch(
-                "tools.browser_tool._run_browser_command",
+                "tools.browser_tool_session._run_browser_command",
                 return_value={"success": True},
             ),
-            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_lifecycle.os.path.exists", return_value=False),
         ):
-            assert browser_tool.cleanup_browser(sidecar) is True
+            assert bt_lifecycle.cleanup_browser(sidecar) is True
 
         assert browser_tool._last_active_session_key["task-sidecar"] == "task-sidecar"
 
@@ -298,7 +302,7 @@ class TestInactivityJanitorMultiplex:
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
         p1 = tmp_path / "profiles" / "p1"
         p1.mkdir(parents=True)
-        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n")
+        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n", encoding="utf-8")
 
         # Profile p1's turn opens the session; the janitor later runs unscoped.
         home_tok = set_hermes_home_override(str(p1))
@@ -321,7 +325,7 @@ class TestInactivityJanitorMultiplex:
         with (
             patch("tools.browser_tool_session._run_browser_command", side_effect=fake_close),
             patch("tools.browser_camofox._delete", return_value={}),
-            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_lifecycle.os.path.exists", return_value=False),
         ):
             bt_lifecycle._cleanup_inactive_browser_sessions()
 
@@ -340,7 +344,7 @@ class TestInactivityJanitorMultiplex:
         with (
             patch("tools.browser_tool_lifecycle.cleanup_browser", side_effect=RuntimeError("boom")),
             patch("tools.browser_tool_cloud._get_cloud_provider", return_value=provider),
-            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_lifecycle.os.path.exists", return_value=False),
         ):
             for _ in range(self.bt.MAX_INACTIVITY_CLEANUP_FAILURES - 1):
                 bt_lifecycle._cleanup_inactive_browser_sessions()
@@ -382,10 +386,10 @@ def test_inactivity_reaper_spares_task_owned_shared_cdp(monkeypatch):
         {task_id: now - browser_tool.BROWSER_SESSION_INACTIVITY_TIMEOUT - 1},
     )
     cleanup = MagicMock(return_value=True)
-    monkeypatch.setattr(browser_tool, "cleanup_browser", cleanup)
-    monkeypatch.setattr(browser_tool.time, "time", lambda: now)
+    monkeypatch.setattr(bt_lifecycle, "cleanup_browser", cleanup)
+    monkeypatch.setattr(bt_lifecycle.time, "time", lambda: now)
 
-    browser_tool._cleanup_inactive_browser_sessions()
+    bt_lifecycle._cleanup_inactive_browser_sessions()
 
     cleanup.assert_not_called()
     assert task_id in browser_tool._active_sessions
@@ -396,11 +400,11 @@ def test_inactivity_reaper_spares_task_owned_shared_cdp(monkeypatch):
     browser_tool._active_sessions[task_id]["_cleanup_retry_pending"] = True
     cleanup.reset_mock()
 
-    browser_tool._cleanup_inactive_browser_sessions()
+    bt_lifecycle._cleanup_inactive_browser_sessions()
 
     cleanup.assert_called_once_with(
         task_id,
-        reason=browser_tool.BrowserCleanupReason.INACTIVITY,
+        reason=bt_lifecycle.BrowserCleanupReason.INACTIVITY,
     )
 
 
@@ -427,14 +431,14 @@ def test_inactivity_reaper_still_cleans_local_session(monkeypatch):
         {task_id: now - browser_tool.BROWSER_SESSION_INACTIVITY_TIMEOUT - 1},
     )
     cleanup = MagicMock(return_value=True)
-    monkeypatch.setattr(browser_tool, "cleanup_browser", cleanup)
-    monkeypatch.setattr(browser_tool.time, "time", lambda: now)
+    monkeypatch.setattr(bt_lifecycle, "cleanup_browser", cleanup)
+    monkeypatch.setattr(bt_lifecycle.time, "time", lambda: now)
 
-    browser_tool._cleanup_inactive_browser_sessions()
+    bt_lifecycle._cleanup_inactive_browser_sessions()
 
     cleanup.assert_called_once_with(
         task_id,
-        reason=browser_tool.BrowserCleanupReason.INACTIVITY,
+        reason=bt_lifecycle.BrowserCleanupReason.INACTIVITY,
     )
     assert task_id not in browser_tool._session_last_activity
 
@@ -446,7 +450,7 @@ def test_successful_cleanup_tombstones_non_navigation_without_recreation(
 
     task_id = "task-terminal"
     monkeypatch.setattr(
-        browser_tool,
+        bt_cdp,
         "_close_shared_cdp_target_confirmed",
         lambda _cdp_url, _target_id: True,
     )
@@ -467,12 +471,12 @@ def test_successful_cleanup_tombstones_non_navigation_without_recreation(
     monkeypatch.setattr(browser_tool, "_last_active_session_key", {task_id: task_id})
     monkeypatch.setattr(browser_tool, "_retired_browser_tasks", set(), raising=False)
     monkeypatch.setattr(browser_tool, "_maybe_stop_recording", lambda _task: None)
-    monkeypatch.setattr(browser_tool.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(bt_lifecycle.os.path, "exists", lambda _path: False)
     with patch(
-        "tools.browser_tool._run_browser_command",
+        "tools.browser_tool_session._run_browser_command",
         return_value={"success": True},
     ):
-        assert browser_tool.cleanup_browser(task_id) is True
+        assert bt_lifecycle.cleanup_browser(task_id) is True
     assert task_id in browser_tool._retired_browser_tasks
 
     get_session = MagicMock(
@@ -487,10 +491,10 @@ def test_successful_cleanup_tombstones_non_navigation_without_recreation(
     find_browser = MagicMock(return_value="/usr/bin/agent-browser")
     popen = MagicMock()
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(browser_tool, "_is_local_mode", lambda: False)
-    monkeypatch.setattr(browser_tool, "_get_session_info", get_session)
-    monkeypatch.setattr(browser_tool, "_find_agent_browser", find_browser)
-    monkeypatch.setattr(browser_tool.subprocess, "Popen", popen)
+    monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(bt_session, "_get_session_info", get_session)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", find_browser)
+    monkeypatch.setattr(bt_session.subprocess, "Popen", popen)
 
     result = json.loads(browser_tool.browser_snapshot(task_id=task_id))
 
@@ -512,7 +516,7 @@ def test_retired_eval_does_not_use_stale_supervisor_or_subprocess(monkeypatch):
     supervisor_get = MagicMock()
     run_command = MagicMock()
     monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", supervisor_get)
-    monkeypatch.setattr(browser_tool, "_run_browser_command", run_command)
+    monkeypatch.setattr(bt_session, "_run_browser_command", run_command)
 
     result = json.loads(
         browser_tool.browser_console(expression="1 + 1", task_id=task_id)

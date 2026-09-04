@@ -102,7 +102,7 @@ if not _loaded_env_paths:
 from model_tools import get_toolset_for_tool
 from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool_lifecycle import cleanup_browser
+from tools.browser_tool_lifecycle import cleanup_browser, cleanup_browser_for_turn
 
 from agent.memory_provider import is_trivial_prompt
 from agent.client_lifecycle import ClientLifecycleMixin
@@ -116,7 +116,11 @@ from agent.activity_tracking import ActivityTrackingMixin
 from agent.rate_limit_credits import RateLimitCreditsMixin
 from agent.session_persistence import SessionPersistenceMixin
 from agent.compression_facade import CompressionFacadeMixin
-from agent.turn_facade import TurnFacadeMixin
+from agent.turn_facade import (
+    TurnFacadeMixin,
+    _browser_turn_cleanup_boundary,
+    _mark_browser_turn_cleanup_complete,
+)
 from agent.vision_message_prep import VisionMessagePrepMixin
 from agent.reasoning_params import ReasoningParamsMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static

@@ -5,11 +5,13 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 import contextlib
 import functools
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import agent_browser_runnable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
@@ -55,7 +57,31 @@ def _merge_browser_path(existing_path: str = "") -> str:
 
 
 def _browser_install_hint() -> str:
-    return "npm install -g agent-browser && agent-browser install" + ("" if _is_termux_environment() else " --with-deps")
+    package = f"'{_origin().AGENT_BROWSER_NPX_SPEC}'"
+    if _is_termux_environment():
+        return f"npm install -g {package} && agent-browser install"
+    return f"npm install -g {package} && agent-browser install --with-deps"
+
+
+class AgentBrowserCapabilityError(RuntimeError):
+    """The discovered CLI/runtime cannot provide strict shared-CDP pinning."""
+
+
+def _apply_agent_browser_npm_policy(
+    env: Dict[str, str], *, pin_tab_acquisition: bool = False
+) -> Dict[str, str]:
+    """Apply the release-age/engine policy to one agent-browser npx process.
+
+    Ordinary acquisition keeps the 14-day quarantine. The exact reviewed
+    pin-tab package gets a scoped zero-day exception so an empty cache can
+    acquire the security capability immediately.
+    """
+    _bt = _origin()
+    env["npm_config_engine_strict"] = "true"
+    env["npm_config_min_release_age"] = str(
+        0 if pin_tab_acquisition else _bt.AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS
+    )
+    return env
 
 
 def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
@@ -106,7 +132,100 @@ def _agent_browser_candidates(extended_path: str):
         yield shutil.which("agent-browser", path=str(local_bin_dir))
 
 
-def _find_agent_browser(*, validate: bool = True) -> str:
+_SEMVER_TRIPLE_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?![\d-])")
+_NODE_MAJOR_RE = re.compile(r"(?m)^\s*v?(\d+)(?:\.\d+){1,2}\s*$")
+
+
+def _version_probe_env() -> Dict[str, str]:
+    _bt = _origin()
+    env = _bt._build_browser_env()
+    _apply_agent_browser_npm_policy(env)
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+    return env
+
+
+def _probe_agent_browser_version(path: str) -> Optional[tuple[int, int, int]]:
+    """Run a concrete CLI's real ``--version`` entrypoint and parse semver."""
+    if not os.path.exists(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
+        return None
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=_version_probe_env(),
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = _SEMVER_TRIPLE_RE.search(f"{result.stdout}\n{result.stderr}")
+    return tuple(int(part) for part in match.groups()) if match is not None else None
+
+
+def _effective_node_major(executable: str) -> Optional[int]:
+    """Return the Node major the browser subprocess PATH would resolve."""
+    env = _version_probe_env()
+    search_parts = [str(Path(executable).parent)]
+    search_parts.extend(part for part in env.get("PATH", "").split(os.pathsep) if part)
+    node_bin = shutil.which("node", path=os.pathsep.join(dict.fromkeys(search_parts)))
+    if not node_bin:
+        return None
+    try:
+        result = subprocess.run(
+            [node_bin, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=env,
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = _NODE_MAJOR_RE.search(f"{result.stdout}\n{result.stderr}")
+    return int(match.group(1)) if match is not None else None
+
+
+def _pin_tab_candidate_status(
+    path: str,
+) -> tuple[bool, Optional[tuple[int, int, int]], Optional[int]]:
+    """Compatibility plus observed CLI/Node versions for one candidate."""
+    _bt = _origin()
+    version = _probe_agent_browser_version(path)
+    if version is None or version < _bt.AGENT_BROWSER_PIN_TAB_MIN_VERSION:
+        return False, version, None
+    node_major = _effective_node_major(path)
+    return (
+        node_major is not None
+        and node_major >= _bt.AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR,
+        version,
+        node_major,
+    )
+
+
+def _pin_tab_capability_error(node_major: Optional[int] = None) -> str:
+    _bt = _origin()
+    detected = f" Detected Node.js {node_major}." if node_major is not None else ""
+    return (
+        "Shared-CDP page isolation requires agent-browser >=0.34.0 and "
+        f"Node.js >={_bt.AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR}.{detected} "
+        "Hermes and ordinary non-CDP browser commands remain supported on "
+        "Node.js >=22.22. Use Node.js 24+ (Node.js 26 also qualifies) and "
+        "install agent-browser >=0.34.0, then retry."
+    )
+
+
+def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False) -> str:
     """Find the agent-browser CLI: PATH, Homebrew/managed dirs, local node_modules/.bin, npx fallback, lazy install.
 
     A bare ``shutil.which`` hit is NOT trusted: agent-browser's npm postinstall re-points a global symlink at our
@@ -124,23 +243,67 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     def _accept(candidate: str) -> str:
         # Set resolved at each accept site (not before the search) so a concurrent reader never sees
         # resolved=True with a None cache.
-        if validate:
+        if validate and require_pin_tab:
+            _bt._cached_pin_tab_agent_browser = candidate
+            _bt._pin_tab_agent_browser_resolved = True
+            _bt._pin_tab_failure_cache = None
+            if not _bt._agent_browser_resolved:
+                _bt._cached_agent_browser = candidate
+                _bt._agent_browser_resolved = True
+        elif validate:
             _bt._cached_agent_browser = candidate
             _bt._agent_browser_resolved = True
         return candidate
 
-    if _bt._agent_browser_resolved:
+    if (
+        require_pin_tab
+        and _bt._pin_tab_agent_browser_resolved
+        and _bt._cached_pin_tab_agent_browser is not None
+    ):
+        return _bt._cached_pin_tab_agent_browser
+    if require_pin_tab and _bt._pin_tab_failure_cache is not None:
+        retry_at, message = _bt._pin_tab_failure_cache
+        if time.monotonic() < retry_at:
+            raise AgentBrowserCapabilityError(message)
+        _bt._pin_tab_failure_cache = None
+    if _bt._agent_browser_resolved and not require_pin_tab:
         if _bt._cached_agent_browser is None:
             raise _not_found(cached=True)
         return _bt._cached_agent_browser
-    ok = agent_browser_runnable if validate else _agent_browser_candidate_present
+
+    detected_node_major: Optional[int] = None
+
+    def candidate_usable(path: str) -> bool:
+        nonlocal detected_node_major
+        if require_pin_tab:
+            usable, _version, node_major = _pin_tab_candidate_status(path)
+            if node_major is not None:
+                detected_node_major = node_major
+            return usable
+        return agent_browser_runnable(path) if validate else _agent_browser_candidate_present(path)
+
     extended_path = _merge_browser_path("")
     for candidate in _agent_browser_candidates(extended_path):
-        if candidate and ok(candidate):
+        if candidate and candidate_usable(candidate):
             return _accept(candidate)
     # npx fallback (also searches the extended PATH)
-    if _resolve_npx_bin():
-        return _accept(_bt.NPX_AGENT_BROWSER_SENTINEL)
+    if npx_path := _resolve_npx_bin():
+        if require_pin_tab:
+            detected_node_major = _effective_node_major(npx_path)
+            if (
+                detected_node_major is not None
+                and detected_node_major >= _bt.AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR
+            ):
+                return _accept(_bt.NPX_AGENT_BROWSER_SENTINEL)
+        else:
+            return _accept(_bt.NPX_AGENT_BROWSER_SENTINEL)
+    if require_pin_tab:
+        message = _pin_tab_capability_error(detected_node_major)
+        _bt._pin_tab_failure_cache = (
+            time.monotonic() + _bt.AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS,
+            message,
+        )
+        raise AgentBrowserCapabilityError(message)
     if not validate:
         raise FileNotFoundError("agent-browser CLI not found")
     try:  # Nothing found — try lazy installation before giving up.
@@ -178,6 +341,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     if not npx_bin:
         return False
     env = _bt._build_browser_env()
+    _apply_agent_browser_npm_policy(env)
     env["PATH"] = _merge_browser_path(env.get("PATH", ""))
     popen_kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "env": env}
     if os.name == "posix":

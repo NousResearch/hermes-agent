@@ -1,6 +1,9 @@
 """Exact shared-CDP target close regression tests."""
 
 from tools import browser_cdp_tool, browser_tool
+from tools import browser_tool_cdp as browser_cdp
+from tools import browser_tool_lifecycle as browser_lifecycle
+from tools import browser_tool_session as browser_session
 
 
 def _install_fake_cdp(monkeypatch, responses):
@@ -31,7 +34,7 @@ def test_exact_close_succeeds_only_after_target_disappears(monkeypatch):
         ],
     )
 
-    assert browser_tool._close_shared_cdp_target_confirmed(
+    assert browser_cdp._close_shared_cdp_target_confirmed(
         "ws://shared", "TARGET-OWNED"
     ) is True
     assert [call[0] for call in calls] == ["Target.closeTarget", "Target.getTargets"]
@@ -48,9 +51,9 @@ def test_exact_close_rejects_surface_success_while_target_remains(monkeypatch):
         ],
     )
     ticks = iter([10.0, 13.0])
-    monkeypatch.setattr(browser_tool.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(browser_cdp.time, "monotonic", lambda: next(ticks))
 
-    assert browser_tool._close_shared_cdp_target_confirmed(
+    assert browser_cdp._close_shared_cdp_target_confirmed(
         "ws://shared", "TARGET-OWNED"
     ) is False
     assert [call[0] for call in calls] == ["Target.closeTarget", "Target.getTargets"]
@@ -65,7 +68,7 @@ def test_exact_close_accepts_lost_response_only_after_absence_proof(monkeypatch)
         ],
     )
 
-    assert browser_tool._close_shared_cdp_target_confirmed(
+    assert browser_cdp._close_shared_cdp_target_confirmed(
         "ws://shared", "TARGET-OWNED"
     ) is True
     assert [call[0] for call in calls] == ["Target.closeTarget", "Target.getTargets"]
@@ -80,9 +83,9 @@ def test_exact_close_fails_when_target_list_cannot_be_verified(monkeypatch):
         ],
     )
     ticks = iter([20.0, 23.0])
-    monkeypatch.setattr(browser_tool.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(browser_cdp.time, "monotonic", lambda: next(ticks))
 
-    assert browser_tool._close_shared_cdp_target_confirmed(
+    assert browser_cdp._close_shared_cdp_target_confirmed(
         "ws://shared", "TARGET-OWNED"
     ) is False
     assert [call[0] for call in calls] == ["Target.closeTarget", "Target.getTargets"]
@@ -106,22 +109,22 @@ def test_cleanup_recovers_exact_target_from_daemon_metadata(monkeypatch, tmp_pat
     monkeypatch.setattr(browser_tool, "_active_sessions", {task_id: session})
     monkeypatch.setattr(browser_tool, "_session_last_activity", {task_id: 1.0})
     monkeypatch.setattr(browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
-    monkeypatch.setattr(browser_tool, "_stop_cdp_supervisor", lambda _task: None)
+    monkeypatch.setattr(browser_cdp, "_stop_cdp_supervisor", lambda _task: None)
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(browser_tool, "_maybe_stop_recording", lambda _task: None)
     monkeypatch.setattr(
-        browser_tool,
+        browser_session,
         "_run_browser_command",
         lambda *_args, **_kwargs: {"success": True},
     )
     close_calls = []
     monkeypatch.setattr(
-        browser_tool,
+        browser_cdp,
         "_close_shared_cdp_target_confirmed",
         lambda cdp_url, target_id: close_calls.append((cdp_url, target_id)) or True,
     )
 
-    assert browser_tool._cleanup_single_browser_session(task_id) is True
+    assert browser_lifecycle._cleanup_single_browser_session(task_id) is True
 
     assert close_calls == [("ws://shared", "TARGET-FROM-DISK")]
     assert session["target_id"] == "TARGET-FROM-DISK"

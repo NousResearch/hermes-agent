@@ -807,3 +807,78 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+# --- Windows bash resolution for .sh cron scripts (#46332) ---------------------------------
+
+
+def test_cron_bash_script_arg_windows_has_no_backslash():
+    from cron.scheduler_script import _cron_bash_script_arg
+
+    arg = _cron_bash_script_arg(Path("D:/Hermes/scripts/watchdog.sh"), is_windows=True)
+    assert "\\" not in arg
+    assert arg.lower().endswith("/hermes/scripts/watchdog.sh")
+
+
+def test_cron_bash_script_arg_posix_keeps_native():
+    from cron.scheduler_script import _cron_bash_script_arg
+
+    path = Path("/home/user/.hermes/scripts/watch.sh")
+    assert _cron_bash_script_arg(path, is_windows=False) == str(path)
+
+
+def test_is_wsl_bash_detects_system32_and_windowsapps():
+    from cron.scheduler_script import _is_wsl_bash
+
+    assert _is_wsl_bash(r"C:\Windows\System32\bash.exe") is True
+    assert _is_wsl_bash(r"C:\Windows\Sysnative\bash.exe") is True
+    assert _is_wsl_bash(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\bash.exe") is True
+    assert _is_wsl_bash(r"C:\Program Files\Git\usr\bin\bash.exe") is False
+    assert _is_wsl_bash("/usr/bin/bash") is False
+    assert _is_wsl_bash(None) is False
+
+
+def test_resolve_cron_bash_refuses_wsl_shim(monkeypatch):
+    from cron import scheduler_script as mod
+
+    monkeypatch.setattr("tools.environments.local._find_bash", lambda: r"C:\Windows\System32\bash.exe")
+    assert mod._resolve_cron_bash() is None
+
+
+def test_resolve_cron_bash_runtime_error_is_none(monkeypatch):
+    from cron import scheduler_script as mod
+
+    def _boom():
+        raise RuntimeError("Git Bash not found")
+
+    monkeypatch.setattr("tools.environments.local._find_bash", _boom)
+    assert mod._resolve_cron_bash() is None
+
+
+def test_script_argv_uses_git_bash_and_posix_path(cron_env, monkeypatch):
+    from cron import scheduler_script as mod
+
+    script = cron_env / "scripts" / "probe.sh"
+    script.write_text("echo ok\n", encoding="utf-8")
+    git_bash = r"C:\Program Files\Git\usr\bin\bash.EXE"
+    monkeypatch.setattr("tools.environments.local._find_bash", lambda: git_bash)
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+
+    argv, env_overlay, err = mod._script_argv(script)
+    assert err is None
+    assert argv[0] == git_bash
+    assert mod._is_wsl_bash(argv[0]) is False
+    assert "\\" not in argv[1]
+    assert env_overlay == {}
+
+
+def test_script_argv_fails_closed_when_only_wsl_bash(cron_env, monkeypatch):
+    from cron import scheduler_script as mod
+
+    script = cron_env / "scripts" / "probe.sh"
+    script.write_text("echo ok\n", encoding="utf-8")
+    monkeypatch.setattr("tools.environments.local._find_bash", lambda: r"C:\Windows\System32\bash.exe")
+
+    argv, _, err = mod._script_argv(script)
+    assert argv is None
+    assert "no usable bash" in err

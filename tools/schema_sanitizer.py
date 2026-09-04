@@ -13,6 +13,8 @@ The failure modes we've seen in the wild:
 
 * ``{"type": "object"}`` with no ``properties`` — rejected as a node the
   grammar generator can't constrain.
+* Annotated object schemas that acquire ``properties: {}`` during sanitation —
+  rejected by Bedrock's strict tool-schema validator.
 * A schema value that is the bare string ``"object"`` instead of a dict
   (malformed MCP server output, e.g. ``additionalProperties: "object"``).
 * ``"type": ["string", "null"]`` array types — many converters only accept
@@ -403,7 +405,8 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
     - Replaces bare-string schema values ("object", "string", ...) with
       ``{"type": <value>}`` so downstream consumers see a dict.
-    - Injects ``properties: {}`` into object-typed nodes missing it.
+    - Injects ``properties: {}`` into bare object-typed nodes missing it, but
+      leaves described free-form objects alone for Bedrock compatibility.
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping
       ``nullable: true`` as a hint), and multi-type arrays like
       ``["number", "string"]`` to an ``anyOf`` of single-type schemas so no
@@ -521,10 +524,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 
-    # Object nodes without properties: inject empty properties dict.
-    # llama.cpp's grammar generator can't constrain a free-form object.
+    # Bare object nodes without properties need an empty properties dict for
+    # llama.cpp.  Do not manufacture that shape for described free-form
+    # objects: Bedrock rejects ``description`` combined with empty
+    # ``properties``.  Explicit (including malformed) properties still take
+    # the normalization path below rather than being silently discarded.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
-        out["properties"] = {}
+        if "properties" in out or "description" not in out:
+            out["properties"] = {}
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

@@ -26,7 +26,7 @@ def test_object_without_properties_gets_empty_properties():
     assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
 
-def test_nested_object_without_properties_gets_empty_properties():
+def test_annotated_nested_object_does_not_get_empty_properties():
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -37,9 +37,17 @@ def test_nested_object_without_properties_gets_empty_properties():
     })]
     out = sanitize_tool_schemas(tools)
     args = out[0]["function"]["parameters"]["properties"]["arguments"]
-    assert args["type"] == "object"
-    assert args["properties"] == {}
-    assert args["description"] == "free-form"
+    assert args == {"type": "object", "description": "free-form"}
+
+
+def test_bare_nested_object_still_gets_empty_properties():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"arguments": {"type": "object"}},
+    })]
+    out = sanitize_tool_schemas(tools)
+    args = out[0]["function"]["parameters"]["properties"]["arguments"]
+    assert args == {"type": "object", "properties": {}}
 
 
 def test_bare_string_object_value_replaced_with_schema_dict():

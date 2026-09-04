@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_audit,
+    do_check,
+    do_install,
+    do_list,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -184,6 +191,84 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries():
         "reporting update_available here is the cross-registry hijack"
     )
     assert "bundle" not in results[0], "must not carry a foreign registry's bundle"
+
+
+def test_do_audit_replays_official_lock_entries_with_source_provenance(
+    monkeypatch, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skill_dir = hub.SKILLS_DIR / "autonomous-ai-agents" / "honcho"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# Honcho\nRun `hermes honcho setup`.\n",
+        encoding="utf-8",
+    )
+
+    entry = {
+        "name": "honcho",
+        "source": "official",
+        "identifier": "official/autonomous-ai-agents/honcho",
+        "trust_level": "builtin",
+        "install_path": "autonomous-ai-agents/honcho",
+    }
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community"):
+        scanned["source"] = source
+        return guard.ScanResult(
+            skill_name=skill_path.name,
+            source=source,
+            trust_level="builtin" if source == "official" else "community",
+            verdict="dangerous",
+        )
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(
+        guard,
+        "format_scan_report",
+        lambda result: f"source={result.source} trust={result.trust_level}",
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_audit("honcho", console=console)
+
+    assert scanned["source"] == "official"
+    assert "trust=builtin" in sink.getvalue()
+
+
+_OFFICIAL_AUDIT_IDENTIFIER = "official/autonomous-ai-agents/honcho"
+
+
+@pytest.mark.parametrize(
+    ("source", "identifier", "trust_level", "expected_source"),
+    [
+        ("official", _OFFICIAL_AUDIT_IDENTIFIER, "community", _OFFICIAL_AUDIT_IDENTIFIER),
+        ("github", _OFFICIAL_AUDIT_IDENTIFIER, "builtin", _OFFICIAL_AUDIT_IDENTIFIER),
+        ("official", None, "community", "community"),
+        ("github", "official", "builtin", "community"),
+        ("community", "skills-sh/official", "community", "community"),
+        ("community", "skills.sh/official", "community", "community"),
+        ("community", "skils-sh/official", "community", "community"),
+        ("community", "skils.sh/official", "community", "community"),
+    ],
+)
+def test_audit_source_requires_matching_official_provenance(
+    source, identifier, trust_level, expected_source
+):
+    from hermes_cli.skills_hub import _audit_scan_source_for_lock_entry
+    from tools.skills_guard import _resolve_trust_level
+
+    entry = {"source": source, "trust_level": trust_level}
+    if identifier is not None:
+        entry["identifier"] = identifier
+
+    scan_source = _audit_scan_source_for_lock_entry(entry)
+    assert scan_source == expected_source
+    assert _resolve_trust_level(scan_source) == "community"
 
 
 def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():

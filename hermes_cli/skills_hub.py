@@ -46,6 +46,25 @@ def _display_source(r) -> str:
 # Shared do_* functions
 # ---------------------------------------------------------------------------
 
+def _audit_scan_source_for_lock_entry(entry: Dict[str, Any]) -> str:
+    """Return the trust-bearing scanner source for an installed hub skill.
+
+    Official optional skills use multi-segment identifiers such as
+    ``official/devops/foo`` for updates, while the scanner intentionally trusts
+    only the exact provenance marker ``official``. Replay that marker only when
+    both lockfile provenance fields agree; identifier text alone must not grant
+    builtin trust.
+    """
+    if entry.get("source") == "official" and entry.get("trust_level") == "builtin":
+        return "official"
+    candidate = str(entry.get("identifier") or entry.get("source") or "community")
+    from tools.skills_guard import _resolve_trust_level
+
+    if _resolve_trust_level(candidate) == "builtin":
+        return "community"
+    return candidate
+
+
 def _resolve_short_name(name: str, sources, console: Console) -> str:
     """
     Resolve a short skill name (e.g. 'pptx') to a full identifier by searching
@@ -1217,7 +1236,10 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
 
-        result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
+        result = scan_skill(
+            skill_path,
+            source=_audit_scan_source_for_lock_entry(entry),
+        )
         c.print(format_scan_report(result))
 
         if deep:

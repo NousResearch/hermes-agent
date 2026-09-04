@@ -299,6 +299,24 @@ def _(rid, params: dict) -> dict:
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
+    copy_parent_history = _flag(params, "copy_parent_history")
+    omit_messages = _flag(params, "omit_messages")
+    if copy_parent_history:
+        if not parent_session_id:
+            return _err(rid, 4008, "parent_session_id is required when copying parent history")
+        # Whole-session desktop branches must not serialize the parent's transcript
+        # through the renderer. Read the durable display projection here, where the
+        # owning state.db already lives, and keep the full copy server-side.
+        with _profile_db(params) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5008)
+            try:
+                _, display_history = db.get_resume_conversations(parent_session_id)
+            except Exception as exc:
+                return _err(rid, 4008, f"nothing to branch — {exc}")
+        history = _visible_branch_history(display_history)
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
     # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
     explicit_cwd = False
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
@@ -351,7 +369,7 @@ def _(rid, params: dict) -> dict:
     override = session_model_override or {}
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(history),
-        "messages": _history_to_messages(history),
+        **({"messages": _history_to_messages(history)} if not omit_messages else {"messages_omitted": True}),
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _resolve_model(),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
@@ -1913,9 +1931,13 @@ def _(rid, params: dict, session: dict) -> dict:
         agent = _build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
-    return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
-                     "message_count": len(history), "messages": _history_to_messages(history),
-                     "info": _session_info(agent, _sessions.get(new_sid))})
+    response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
+                "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
+    if _flag(params, "omit_messages"):
+        response["messages_omitted"] = True
+    else:
+        response["messages"] = _history_to_messages(history)
+    return _ok(rid, response)
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────

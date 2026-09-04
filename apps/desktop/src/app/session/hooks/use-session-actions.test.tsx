@@ -238,14 +238,14 @@ describe('desktop branch creation idempotency', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'session.create',
       expect.objectContaining({
-        messages: [
-          { content: 'question', role: 'user' },
-          { content: 'answer', role: 'assistant' }
-        ],
+        copy_parent_history: true,
+        omit_messages: true,
         parent_session_id: 'parent',
         source: 'desktop'
       })
     )
+    expect(requestGateway.mock.calls[0]?.[1]).not.toHaveProperty('messages')
+    expect(getAllSessionMessages).not.toHaveBeenCalled()
     expect($sessions.get().filter(session => session.id === 'stored-branch')).toHaveLength(1)
   })
 
@@ -2030,10 +2030,7 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(ambientRequest).not.toHaveBeenCalledWith('session.create', expect.anything())
   })
 
-  // The parent transcript read must land on the owning backend too: reading it
-  // from the ambient socket returns nothing for a foreign-owned parent, which
-  // aborts the branch as "nothing to branch" before any create is attempted.
-  it('reads a connection-tagged parent transcript from its owning connection', async () => {
+  it('does not materialize a connection-tagged parent transcript in the renderer', async () => {
     const ambientRequest = vi.fn(async () => ({}) as never)
 
     vi.mocked(requestGatewayForAgent).mockImplementation((async (
@@ -2051,25 +2048,26 @@ describe('branchStoredSession desktop source tagging', () => {
     setSessions([
       storedSession({ connection_id: 'pandora', id: 'stored-parent', message_count: 1, profile: 'default' })
     ])
-    vi.mocked(getAllSessionMessages).mockResolvedValue({
-      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
-      session_id: 'stored-parent'
-    } as never)
-
     let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
     render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={ambientRequest} />)
     await waitFor(() => expect(branchStoredSession).not.toBeNull())
 
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
-    expect(getAllSessionMessages).toHaveBeenCalledWith('stored-parent', {
-      connectionId: 'pandora',
-      profile: 'default'
-    })
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'pandora',
+      'default',
+      'session.create',
+      expect.objectContaining({
+        copy_parent_history: true,
+        omit_messages: true,
+        parent_session_id: 'stored-parent',
+        source: 'desktop'
+      })
+    )
+    expect(getAllSessionMessages).not.toHaveBeenCalled()
   })
-
-  // The create landing on the right backend is only half the job: the sidebar
-  // row must be TAGGED with that owner too. An untagged optimistic row inherits
+  // The row must be TAGGED with that owner too. An untagged optimistic row inherits
   // the ambient profile, so every later owner lookup (resume/hydrate/prompt)
   // routes to the wrong backend and the chat pane spins forever on a session
   // that backend never had.
@@ -2185,12 +2183,13 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'live-parent',
-      count: 2
+      count: 2,
+      omit_messages: true
     })
-    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2, omit_messages: true })
   })
 
-  it('hydrates the complete persisted display transcript before branching a compacted live chat', async () => {
+  it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -2202,7 +2201,7 @@ describe('branchStoredSession desktop source tagging', () => {
           stored_session_id: 'branch-stored',
           title: 'Branch',
           message_count: 4,
-          messages: [],
+          messages_omitted: true,
           info: {}
         } as never
       }
@@ -2216,16 +2215,6 @@ describe('branchStoredSession desktop source tagging', () => {
       { id: 'tail-user', role: 'user', parts: [{ type: 'text', text: 'second question' }] },
       { id: 'tail-assistant', role: 'assistant', parts: [{ type: 'text', text: 'second answer' }] }
     ])
-    vi.mocked(getAllSessionMessages).mockResolvedValue({
-      messages: [
-        { content: 'first question', role: 'user', timestamp: 1 },
-        { content: 'first answer', role: 'assistant', timestamp: 2 },
-        { content: 'second question', role: 'user', timestamp: 3 },
-        { content: 'second answer', role: 'assistant', timestamp: 4 }
-      ],
-      session_id: 'stored-parent'
-    } as never)
-
     let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
     render(
       <BranchHarness
@@ -2240,8 +2229,8 @@ describe('branchStoredSession desktop source tagging', () => {
 
     await expect(branchCurrentSession!()).resolves.toBe(true)
 
-    expect(getAllSessionMessages).toHaveBeenCalledWith('stored-parent', undefined)
-    expect(branchParams).toEqual({ session_id: 'live-parent' })
+    expect(getAllSessionMessages).not.toHaveBeenCalled()
+    expect(branchParams).toEqual({ session_id: 'live-parent', omit_messages: true })
   })
 
   it('aborts if the active runtime changes while the branch transcript is hydrating', async () => {
@@ -2275,16 +2264,17 @@ describe('branchStoredSession desktop source tagging', () => {
     )
     await waitFor(() => expect(branchCurrentSession).not.toBeNull())
 
-    await expect(branchCurrentSession!()).resolves.toBe(false)
+    await expect(branchCurrentSession!('q1')).resolves.toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('session.branch', expect.anything())
   })
 
   // #67603: right-clicking a session outside the paginated sidebar window is a
   // cache miss. Resolve its owning profile (cache → active → cross-profile) and
-  // swap to it before reading the transcript / creating the branch, so the fork
-  // is not created on whichever profile happens to be live.
+  // swap to it before asking the backend to copy the transcript, so the fork is
+  // not created on whichever profile happens to be live.
   it('resolves and swaps to the parent profile when the branched session is not cached', async () => {
     setSessions([])
+    vi.mocked(getAllSessionMessages).mockClear()
     vi.mocked(getSession).mockResolvedValue(storedSession({ id: 'stored-parent', message_count: 1, profile: 'work' }))
     vi.mocked(getAllSessionMessages).mockResolvedValue({
       messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
@@ -2312,7 +2302,7 @@ describe('branchStoredSession desktop source tagging', () => {
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
     expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
-    expect(getAllSessionMessages).toHaveBeenCalledWith('stored-parent', 'work')
+    expect(getAllSessionMessages).not.toHaveBeenCalled()
     // The create itself must carry the owning profile: in app-global remote
     // mode the soft gateway swap alone is not enough — an omitted profile
     // lands the branch on the launch (default) profile's state.db.

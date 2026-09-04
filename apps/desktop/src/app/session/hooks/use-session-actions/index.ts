@@ -2101,6 +2101,7 @@ export function useSessionActions({
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>('session.branch', {
                   session_id: sourceSessionId,
+                  omit_messages: true,
                   ...(branchCount !== undefined ? { count: branchCount } : {})
                 })
               : requestBranchGateway<SessionCreateResponse>('session.create', {
@@ -2108,7 +2109,9 @@ export function useSessionActions({
                   source: 'desktop',
                   ...(cwd && { cwd }),
                   ...(profile ? { profile } : {}),
-                  messages: branchMessages.map(({ content, role }) => ({ content, role })),
+                  ...(branchMessages.length
+                    ? { messages: branchMessages.map(({ content, role }) => ({ content, role })) }
+                    : { copy_parent_history: true, omit_messages: true }),
                   ...(parentStoredId && { parent_session_id: parentStoredId })
                 })
           ).catch(err => {
@@ -2260,11 +2263,10 @@ export function useSessionActions({
       const startingRouteToken = getRouteToken()
       const startingCwd = $currentCwd.get().trim()
 
-      // The live atom may be a compacted model projection. Read the durable
-      // display projection before choosing the branch prefix so a whole-chat
-      // branch does not inherit only the summary/tail. If the backend is
-      // temporarily unavailable, retain the local snapshot and let the branch
-      // RPC make its own authoritative read.
+      // Message-level branches still need the local message id to choose their
+      // prefix. Whole-chat branches send only the parent identity below; the
+      // backend reads the durable display projection without materializing it in
+      // the renderer.
       let authoritativeMessages: ChatMessage[] | null = null
       const profile = await resolveSessionProfile(storedSessionId)
 
@@ -2274,7 +2276,7 @@ export function useSessionActions({
       // whichever socket is active.
       const ownerRoute = storedSessionId ? sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId)) : undefined
 
-      if (storedSessionId) {
+      if (messageId && storedSessionId) {
         try {
           const persisted = await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)
           const hydrated = toChatMessages(persisted.messages)
@@ -2305,9 +2307,9 @@ export function useSessionActions({
         return false
       }
 
-      const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
+      const branchMessages = messageId ? selectBranchMessages(messages, authoritativeMessages, messageId) : []
 
-      if (!branchMessages.length) {
+      if (messageId && !branchMessages.length) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
 
         return false
@@ -2360,21 +2362,10 @@ export function useSessionActions({
           await ensureGatewayProfile(profile)
         }
 
-        // Read the parent transcript from the backend that OWNS it. A bare
-        // profile scope resolves against the active connection, which for a
-        // foreign-owned parent holds no such session: the read comes back empty
-        // and the branch aborts as "nothing to branch" before any create.
-        const { messages } = await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)
-        const branchMessages = toBranchMessages(toChatMessages(messages))
-
-        if (!branchMessages.length) {
-          notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
-
-          return false
-        }
-
+        // Ask the owning backend to read and copy the parent transcript. The
+        // renderer deliberately does not materialize the complete history.
         return await forkBranch(
-          branchMessages,
+          [],
           null,
           stored?.id ?? storedSessionId,
           stored?.cwd?.trim(),

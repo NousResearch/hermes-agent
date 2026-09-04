@@ -15533,7 +15533,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             {
                 "id": "1",
                 "method": "session.branch",
-                "params": {"session_id": "parent", "name": "forked"},
+                "params": {"session_id": "parent", "name": "forked", "omit_messages": True},
             }
         )
         assert "result" in resp, resp
@@ -15542,6 +15542,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # The branch row is self-describing: stamped with the parent's owning
         # profile, not left NULL for aggregators to mis-tag as "default".
         assert seen.get("profile_name") == "mlperf"
+        assert resp["result"].get("messages_omitted") is True
+        assert "messages" not in resp["result"]
         assert seen.get("title") == (seen["created"], "forked")
         assert len(seen["msgs"]) == 1
         assert seen.get("launch") is None
@@ -15644,6 +15646,63 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert server._sessions[runtime_sid]["pending_title"] is None
 
     server._sessions.pop(runtime_sid, None)
+
+
+def test_session_create_copies_parent_history_without_returning_transcript(monkeypatch):
+    """Whole-session desktop branches read the parent in the gateway, not in the renderer."""
+
+    class _Scope:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeDB:
+        def get_resume_conversations(self, key):
+            assert key == "parent"
+            return [], [
+                {"role": "user", "content": "first question", "timestamp": 1},
+                {"role": "assistant", "content": "first answer", "timestamp": 2},
+            ]
+
+    class _FakeAgent:
+        model = "test-model"
+
+    seen: dict = {}
+    db = _FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(db))
+    monkeypatch.setattr(
+        server,
+        "_seed_branch_row",
+        lambda _record, _key, _parent, history, *_args: seen.update(history=list(history)),
+    )
+    monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: _FakeAgent())
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {"model": "test-model"})
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "cols": 96,
+                "copy_parent_history": True,
+                "omit_messages": True,
+                "parent_session_id": "parent",
+                "source": "desktop",
+            },
+        }
+    )
+
+    assert "result" in resp, resp
+    assert [message["content"] for message in seen["history"]] == ["first question", "first answer"]
+    assert resp["result"]["message_count"] == 2
+    assert resp["result"].get("messages_omitted") is True
+    assert "messages" not in resp["result"]
 
 
 def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):

@@ -53,7 +53,10 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     // Cross-connection members are also addressable by their @name-device
     // handle (the roster's disambiguated form) — same-named agents on two
     // machines resolve to the right one.
-    const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+    // Always go through botHandle — a persisted/union handle of "default"
+    // must not shadow the user-facing @hermes alias (member.handle ||
+    // botHandle(...) short-circuits when handle === name === "default").
+    const handle = String(botHandle(member.name, member) || '').trim()
 
     const forms = new Set([
       member.name.toLowerCase(),
@@ -63,6 +66,13 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
         ? [title.toLowerCase(), title.toLowerCase().replace(/[\s_-]+/g, ''), title.split(/\s+/)[0].toLowerCase()]
         : [])
     ])
+
+    // The primary profile stays callable as @hermes even when a device-
+    // qualified handle is precomputed (default-vera) or a stale persist
+    // stamped handle: "default".
+    if ((member.name || '').trim().toLowerCase() === 'default') {
+      forms.add('hermes')
+    }
 
     // Renamed members answer to their friendly names too (profile
     // display_name and Bot Mode title), in slugged and collapsed forms —

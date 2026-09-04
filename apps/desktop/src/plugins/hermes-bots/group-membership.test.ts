@@ -240,6 +240,16 @@ describe('seating a room', () => {
     expect(members[0].handle).toBe('spark-work')
   })
 
+  it('durableGroupChatMembers stores the primary profile as handle hermes, not default', () => {
+    const [primary, farmer] = modules.membership.durableGroupChatMembers([
+      { name: 'default', title: '主要助理／任務協調者' },
+      { name: 'code-farmer', title: 'Code Farmer' }
+    ])
+
+    expect(primary.handle).toBe('hermes')
+    expect(farmer.handle).toBe('code-farmer')
+  })
+
   it('durableGroupChatMembers retains active and remote source identities', () => {
     const members = modules.membership.durableGroupChatMembers([
       {

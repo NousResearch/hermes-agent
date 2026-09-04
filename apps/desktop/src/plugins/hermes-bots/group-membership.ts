@@ -4,7 +4,7 @@
  * the roster UI both read.
  */
 
-import { $botMeta, botFriendlyNames, botMetaKey, botRosterKey } from './data'
+import { $botMeta, botFriendlyNames, botHandle, botMetaKey, botRosterKey } from './data'
 import { $groupChats, groupChatRoomKey } from './group-chat'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
 import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
@@ -316,7 +316,7 @@ export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
 
     return {
       name: bot.name,
-      handle: bot.handle || bot.name,
+      handle: botHandle(bot.name, bot) || bot.handle || bot.name,
       ...(title
         ? {
             title

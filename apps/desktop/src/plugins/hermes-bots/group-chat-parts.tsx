@@ -193,7 +193,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
     }
 
     for (const member of members) {
-      const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+      const handle = String(botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
       const tag = String(botMentionTag(member) || handle).trim()

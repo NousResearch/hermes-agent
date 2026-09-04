@@ -6701,9 +6701,11 @@ def run_job(
                 # `custom:<name>` key, so the bare name reads an empty pool and
                 # the agent gets nothing to rotate through on a later 429. This
                 # helper prefers the pool resolution already attached to the
-                # runtime and otherwise resolves the scoped key. Pre-existing
-                # for any custom-provider job; a demotion to a named custom
-                # fallback makes it reachable far more often.
+                # runtime -- the one selection actually drew from, rather than
+                # a second read of the same store -- and otherwise resolves the
+                # scoped key. Pre-existing for any custom-provider job; a
+                # demotion to a named custom fallback makes it reachable far
+                # more often.
                 from hermes_cli.runtime_provider import pool_for_runtime
                 pool = pool_for_runtime(runtime)
                 if pool is not None and pool.has_credentials():

@@ -2107,7 +2107,7 @@ def pool_for_runtime(runtime: Optional[Dict[str, Any]]) -> Optional[CredentialPo
             # base_url match -- which resolves to a SIBLING's pool when two
             # endpoints share a URL, the exact collision the name-first rule
             # exists to prevent.
-            requested = str(runtime.get("requested_provider") or "")
+            requested = str(runtime.get("requested_provider") or "").strip()
             if requested.lower().startswith(CUSTOM_POOL_PREFIX):
                 requested = requested[len(CUSTOM_POOL_PREFIX):]
             pool_key = get_custom_provider_pool_key(

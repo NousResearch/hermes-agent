@@ -201,9 +201,11 @@ def demote_if_rate_limited(
       Provider and model move together: swapping one while keeping the other
       would send e.g. a Gemini model id to OpenRouter.
 
-    *chain* is a callable, not a list: the healthy path is the common one and
-    reading the chain there costs a config load per call for no reason. It is
-    invoked only once the primary is known to be benched.
+    *chain* is a callable so the gateway's argument is not evaluated on the
+    healthy path: it loads and expands the managed config on every agent
+    build, and the gateway builds one per message. Cron and one-shot pass a
+    config dict they already hold, and read the chain elsewhere anyway, so for
+    them this is shape rather than saving. A plain list is tolerated.
 
     *is_rate_limited* governs the CHAIN ENTRIES only; whether the primary
     itself is benched is always asked of
@@ -219,8 +221,17 @@ def demote_if_rate_limited(
         return Demotion(runtime)  # nothing benched, nothing to decide
 
     try:
-        entries = chain()
+        # Tolerating a plain list matters more than it looks: the broad except
+        # below would otherwise swallow the TypeError from calling one into
+        # "no fallback available", turning a caller's mistake into a silent
+        # loss of the whole chain.
+        entries = chain() if callable(chain) else chain
     except Exception:
+        # Fail open, as everywhere else here: an unreadable chain leaves the
+        # primary in place rather than taking the turn down with it. This is
+        # newly true for cron and one-shot, where a config error used to
+        # propagate -- deliberate, since a job that can still run on its
+        # primary should.
         logger.debug("Could not read the fallback chain", exc_info=True)
         entries = None
     fb_runtime, fb_model = resolve_non_cooling_fallback_runtime(

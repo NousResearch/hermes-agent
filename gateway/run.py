@@ -3358,8 +3358,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
     # anyway: a cooldown DEMOTES the primary, it does not disqualify it, and
     # the real upstream 429 is better than refusing to run.
     # One owner for the decision, shared with the cron and one-shot callers --
-    # this used to be a fourth hand-rolled copy of the same shape, down to its
-    # own timestamp degrade path. This module's own
+    # this used to be a per-caller copy of the same shape, down to its own
+    # timestamp degrade path. This module's own
     # `_fallback_runtime_is_rate_limited` / `_resolve_fallback_entry_runtime`
     # are handed over so they stay the seam for anything that swaps them here;
     # note they govern the CHAIN ENTRIES, not the primary check above them.

@@ -3410,6 +3410,8 @@ export const en: Translations = {
       expandMessage: 'Expand message',
       scrollToBottom: 'Scroll to bottom',
       stop: 'Stop',
+      jumpToPrompt: 'Jump to prompt',
+      scrollToTop: 'Scroll to top',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',
       restoreFromHere: 'Restore checkpoint — rerun from this prompt',

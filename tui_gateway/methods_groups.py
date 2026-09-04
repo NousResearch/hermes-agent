@@ -478,11 +478,11 @@ def _(rid, params: dict, service) -> dict:
         local_gateway_id = local_authority_gateway_id()
         if state is not None and str(state["authority_gateway_id"]) != local_gateway_id:
             raise AuthorityConflictError("This Group Chat is managed by another gateway.")
+        hosted_room_controls.revoke_home_control_tokens(service.db_path, room_id=room_id)
         tombstone = service.retire_and_disband_room(
             room_id,
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1))
-        hosted_room_controls.revoke_home_control_tokens(service.db_path, room_id=room_id)
         service.attachments.mark_room_disbanded(params.get("room_id"))
         service.attachments.prune()
         return _ok(rid, {"tombstone": tombstone})

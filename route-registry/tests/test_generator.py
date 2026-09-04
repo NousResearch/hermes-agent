@@ -343,10 +343,10 @@ class TestRegistry:
     def test_env_bypass_keys_declared(self, registry):
         assert registry["env_bypass"]["ollama-cloud"] == ["OLLAMA_API_KEY"]
 
-    def test_surfaces_cover_all_64(self, surfaces):
-        assert len(surfaces) == 64
+    def test_surfaces_cover_all_65(self, surfaces):
+        assert len(surfaces) == 65
         names = [s["surface"] for s in surfaces]
-        assert len(names) == 64
+        assert len(names) == 65
 
     def test_surfaces_match_live_profile_names(self, surfaces):
         live = {p.name for p in (LIVE_HERMES_HOME / "profiles").iterdir() if p.is_dir()}
@@ -529,8 +529,8 @@ class TestPlan:
     def test_plan_against_full_live_copy(self, tmp_hermes_home):
         plan = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
         assert plan["target_root"] == str(tmp_hermes_home)
-        # 64 surfaces: 63 profiles + root
-        assert len(plan["entries"]) == 64
+        # 65 surfaces: 64 profiles + root
+        assert len(plan["entries"]) == 65
 
     def test_dry_run_default_changes_nothing(self, tmp_hermes_home):
         before = {}
@@ -624,7 +624,7 @@ class TestPlan:
                 f"{entry['surface']}: registry says {entry['main_model']}, live is {main}"
             )
             checked += 1
-        assert checked == 63
+        assert checked == 64
 
     def test_content_primary_is_excluded_and_fallback_order_is_preserved(
             self, tmp_hermes_home, by_id, surfaces, registry):
@@ -1010,7 +1010,7 @@ class TestApplyGate:
         assert r.returncode == 0, r.stderr
         data = json.loads(out_json.read_text())
         assert data["mode"] == "dry-run"
-        assert len(data["plan"]["entries"]) == 64
+        assert len(data["plan"]["entries"]) == 65
         assert data["plan"]["env_key_bypass"]["blockers"], \
             "dry-run must report env-bypass blockers"
         assert data["apply_blockers"], "dry-run must surface apply_blockers list"
@@ -1039,7 +1039,7 @@ class TestCLI:
         assert r.returncode == 0, r.stderr
         data = json.loads((tmp_path / "dryrun.json").read_text())
         assert data["mode"] == "dry-run"
-        assert len(data["plan"]["entries"]) == 64
+        assert len(data["plan"]["entries"]) == 65
 
     def test_apply_without_confirm_refused(self, run_cli, tmp_hermes_home):
         before = (tmp_hermes_home / "profiles" / "denji" / "config.yaml").read_bytes()

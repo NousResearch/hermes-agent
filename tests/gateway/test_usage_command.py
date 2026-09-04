@@ -93,6 +93,34 @@ class TestUsageCachedAgent:
         assert "Cost" not in result
 
     @pytest.mark.asyncio
+    async def test_usage_command_has_readable_fallback_when_catalog_missing(self, tmp_path, monkeypatch):
+        from agent import i18n
+
+        fake_locales = tmp_path / "empty-locales"
+        fake_locales.mkdir()
+        monkeypatch.setattr(i18n, "_locales_dir", lambda: fake_locales)
+        i18n.reset_language_cache()
+
+        agent = _make_mock_agent()
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+        monkeypatch.setattr("gateway.run.fetch_account_usage", lambda *args, **kwargs: None)
+
+        try:
+            with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+                 patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+                mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
+                result = await runner._handle_usage_command(event)
+        finally:
+            i18n.reset_language_cache()
+
+        assert "gateway.usage." not in result
+        assert "Session Token Usage" in result
+        assert "Rate Limits: RPM: 50/60" in result
+        assert "Input tokens: 35,000" in result
+        assert "API calls: 5" in result
+
+    @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
         """When agent is in both dicts, the running one wins."""
         running = _make_mock_agent(session_api_calls=10, session_total_tokens=80_000)

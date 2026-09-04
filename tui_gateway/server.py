@@ -10300,6 +10300,43 @@ def _auto_continue_note(prompt: str) -> str:
     )
 
 
+def _turn_boundary_continue_note() -> str:
+    return (
+        "[System note: The previous turn reached its model-call limit before "
+        "the task was complete. Continue the unfinished work now. Check the "
+        "current state before repeating any action, and do not wait for another "
+        "user message.]"
+    )
+
+
+_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY = "_turn_boundary_continue_attempts"
+
+
+def _plan_turn_boundary_continue(session: dict, result: object) -> str | None:
+    reason = (
+        str(result.get("turn_exit_reason") or "")
+        if isinstance(result, dict)
+        else ""
+    )
+    reached_limit = (
+        isinstance(result, dict)
+        and result.get("completed") is False
+        and reason.startswith("max_iterations_reached")
+    )
+    if not reached_limit:
+        session.pop(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, None)
+        return None
+
+    enabled, _freshness_secs, max_attempts = _auto_continue_config()
+    attempts = int(session.get(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, 0) or 0)
+    if not enabled or attempts >= max_attempts:
+        session.pop(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, None)
+        return None
+
+    session[_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY] = attempts + 1
+    return _turn_boundary_continue_note()
+
+
 def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
     """Kick off a continuation turn for a crash-interrupted session.
 
@@ -13214,6 +13251,9 @@ def _run_prompt_submit(
         ):
             session["running"] = False
             return False
+        if display_kind != "auto_continue":
+            # A real user turn starts a fresh bounded continuation chain.
+            session.pop(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, None)
         if image_paths is None:
             images = list(session.get("attached_images", []))
             session["attached_images"] = []
@@ -14182,6 +14222,40 @@ def _run_prompt_submit(
             with session["history_lock"]:
                 _enqueue_prompt(session, _leftover_steer, session.get("transport"))
         if _drain_queued_prompt(rid, sid, session):
+            return
+
+        # A model-call limit is a turn boundary, not task completion. Continue
+        # through the normal synthesized-turn path instead of waiting for the
+        # user to send a nudge (which previously became the turn that finally
+        # triggered preflight compression).
+        _turn_boundary_followup = _plan_turn_boundary_continue(session, result)
+        if _turn_boundary_followup:
+            with session["history_lock"]:
+                if session.get("running"):
+                    return
+                session["running"] = True
+            try:
+                _emit(
+                    "status.update",
+                    sid,
+                    {"kind": "process", "text": "Continuing unfinished turn…"},
+                )
+                _emit("message.start", sid)
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    _turn_boundary_followup,
+                    display_kind="auto_continue",
+                )
+            except Exception as _cont_exc:
+                print(
+                    f"[tui_gateway] turn-boundary continuation failed: "
+                    f"{type(_cont_exc).__name__}: {_cont_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
             return
 
         # Chain a goal-continuation turn if the judge said so. We do

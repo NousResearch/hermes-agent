@@ -73,6 +73,15 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_BASE_URL"
 
+    def test_minimax_oauth_env_vars(self):
+        """The OAuth provider's literal-key fallback is the plain-api-key
+        sibling's env var (#89516): auxiliary failure hints compose
+        "<PROVIDER>_API_KEY" from the provider id, which would name the
+        nonexistent MINIMAX-OAUTH_API_KEY."""
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.api_key_env_vars == ("MINIMAX_API_KEY",)
+        assert pconfig.auth_type == "oauth_minimax"
+
     def test_stepfun_env_vars(self):
         pconfig = PROVIDER_REGISTRY["stepfun"]
         assert pconfig.api_key_env_vars == ("STEPFUN_API_KEY",)

@@ -387,6 +387,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
         client_id=MINIMAX_OAUTH_CLIENT_ID,
         scope=MINIMAX_OAUTH_SCOPE,
+        # Credential resolution is OAuth (auth.json) — but when it fails and
+        # auxiliary tasks compose the "set <PROVIDER>_API_KEY" fallback hint,
+        # the provider-id-derived name would be MINIMAX-OAUTH_API_KEY, an env
+        # var that exists nowhere. The literal-key fallback for this provider
+        # is the plain-api-key sibling's MINIMAX_API_KEY (#89516).
+        api_key_env_vars=("MINIMAX_API_KEY",),
         extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
                "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE},
     ),

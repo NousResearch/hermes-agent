@@ -114,9 +114,13 @@ def resolve_executable(name: str, *, fallback: str | None = None) -> str | None:
     if resolved:
         return resolved
 
-    resolved = shutil.which(name, path=_platform_search_path())
-    if resolved:
-        return resolved
+    platform_dirs = _platform_bin_dirs()
+    if platform_dirs:
+        search_path = _platform_search_path()
+        if search_path != os.environ.get("PATH", ""):
+            resolved = shutil.which(name, path=search_path)
+            if resolved:
+                return resolved
 
     if fallback and os.path.isfile(fallback) and os.access(fallback, os.X_OK):
         return fallback

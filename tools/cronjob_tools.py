@@ -730,6 +730,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
+        "last_delivery_unverified": job.get("last_delivery_unverified"),
         "last_fire_error": job.get("last_fire_error"),
         "enabled": job.get("enabled", True),
         # Derive from enabled so half-paused records never render as paused.
@@ -880,6 +881,30 @@ def _forward_relay_fronted_run(
     )
 
 
+def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
+    """Parenthetical delivery note for a manual run's completion summary.
+
+    Follows the refreshed job record (#83993): ``run_one_job`` writes
+    ``last_delivery_error`` via ``mark_job_run`` when the post-run delivery
+    (telegram/discord/…) failed, and the summary must not claim success over
+    that record — the calling agent relays this line to the user. Local jobs
+    never deliver; an empty/missing error keeps the legacy wording
+    byte-for-byte.
+    """
+    # Falsy deliver ("", stored JSON null) means no delivery target — the
+    # fire-time path normalizes it to "local" (no delivery, output persisted
+    # in last_output, no delivery error), so it must read as saved-locally,
+    # not as a delivered remote target. Whitespace-only values are NOT folded
+    # in here: they keep falling through to the error check, where the
+    # fire-time "no delivery target resolved" error gets surfaced.
+    if not deliver or deliver == "local":
+        return " (output saved locally only)"
+    err = str(refreshed.get("last_delivery_error") or "").strip()
+    if not err:
+        return " (output was delivered there by the job itself)"
+    return f" (⚠ delivery FAILED: {err[:200]})"
+
+
 def _execute_job_now(
     job: Dict[str, Any], extra_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1025,6 +1050,30 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         execution_id = job.get("execution_id")
         if execution_id:
             from cron.executions import get_execution
+
+            execution = get_execution(str(execution_id))
+        last_status = refreshed.get("last_status")
+        # "delivery_failed" (#83993): the agent run itself succeeded but the
+        # output never reached the user. That is NOT a success for the caller
+        # — the calling agent relays this result — so report it as failed
+        # and surface the delivery error, which lives in last_delivery_error
+        # (last_error is None for these runs, and a bare success=False with
+        # error=None reads as an unexplained failure).
+        ok = last_status == "ok"
+        run_error = refreshed.get("last_error")
+        if last_status == "delivery_failed" and not run_error:
+            run_error = refreshed.get("last_delivery_error")
+        if execution is not None and execution.get("status") != "completed":
+            ok = False
+            run_error = (
+                execution.get("error")
+                or f"execution ended in {execution.get('status') or 'unknown'} state"
+            )
+        return {
+            "claimed": True,
+            "success": bool(processed and ok),
+            "error": run_error,
+        }
 
             execution = get_execution(str(execution_id))
         last_status = refreshed.get("last_status")
@@ -1229,13 +1278,39 @@ def _try_dispatch_background_run(
         max_async = 3
 
     started_at = time.time()
-    # Scheduler's own normalizer (falsy -> "local", list -> comma string) on the claimed snapshot.
+    # Canonicalize with the scheduler's own normalizer so the summary states
+    # the same target fire time will use: falsy ("", stored JSON null) reads
+    # "local", legacy list-form deliver flattens to its comma string. Read
+    # from the claimed snapshot — the owner-bearing record the run actually
+    # executes — not the pre-claim `job` the tool loaded.
     from cron.scheduler import _normalize_deliver_value
+
     deliver = _normalize_deliver_value(claimed_job.get("deliver", "local"))
 
     def _runner() -> Dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
-        return _manual_run_completion(res, job_id, job_name, deliver, started_at)
+        duration = round(time.time() - started_at, 2)
+        refreshed = get_job(job_id) or {}
+        lines = [
+            f"Cron job '{job_name}' ({job_id}) finished its manual run.",
+            f"Result: {'ok' if res.get('success') else 'FAILED'}"
+            + (f" — {res.get('error')}" if res.get("error") else ""),
+            f"Delivery target: {deliver}"
+            + _manual_run_delivery_note(deliver, refreshed),
+        ]
+        if refreshed.get("next_run_at"):
+            lines.append(f"Next scheduled run: {refreshed['next_run_at']}")
+        excerpt = _latest_job_output_excerpt(job_id)
+        if excerpt:
+            lines.append("--- JOB OUTPUT ---")
+            lines.append(excerpt)
+        return {
+            "status": "completed" if res.get("success") else "error",
+            "summary": "\n".join(lines),
+            "error": res.get("error"),
+            "api_calls": 0,
+            "duration_seconds": duration,
+        }
 
     dispatch = dispatch_async_delegation(
         goal=f"Manual run of cron job '{job_name}' ({job_id})",
@@ -1700,6 +1775,7 @@ def cronjob(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    failure_deliver: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
@@ -1761,6 +1837,12 @@ def cronjob(
             bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
             if bot_chat_error:
                 return tool_error(bot_chat_error, success=False)
+            # failure_deliver shares deliver's grammar and validators (NS-788).
+            bot_chat_error = _validate_bot_chat_deliver(
+                _normalize_deliver_param(failure_deliver)
+            )
+            if bot_chat_error:
+                return tool_error(bot_chat_error, success=False)
 
             # Validate context_from references existing jobs
             if context_from:
@@ -1817,6 +1899,9 @@ def cronjob(
                     # dispatch below: models do not make model-config
                     # decisions (standing policy).
                     reasoning_effort=reasoning_effort,
+                    failure_deliver=_resolve_cron_context_deliver(
+                        _normalize_deliver_param(failure_deliver)
+                    ),
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -2019,6 +2104,19 @@ def cronjob(
                 updates["deliver"] = _resolve_cron_context_deliver(
                     _normalize_deliver_param(deliver)
                 )
+            if failure_deliver is not None:
+                # '' clears the override (job falls back to deliver on
+                # failures); non-empty values share deliver's validation
+                # AND its cron-context origin resolution (a job created
+                # from inside a cron run must never store literal
+                # 'origin' — same rule as deliver).
+                _norm_fd = _normalize_deliver_param(failure_deliver)
+                if _norm_fd:
+                    bot_chat_error = _validate_bot_chat_deliver(_norm_fd)
+                    if bot_chat_error:
+                        return tool_error(bot_chat_error, success=False)
+                    _norm_fd = _resolve_cron_context_deliver(_norm_fd)
+                updates["failure_deliver"] = _norm_fd
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -2186,7 +2284,7 @@ def _cronjob_schema_overrides() -> dict:
 
 
 CRONJOB_SCHEMA = {
-    "name": "cronjob",
+    "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
@@ -2227,6 +2325,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "deliver": {
                 "type": "string",
                 "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
+            },
+            "failure_deliver": {
+                "type": "string",
+                "description": "Optional override target for FAILURE notices only (same grammar as deliver). When set, engine failure/interruption notices go here instead of the deliver target; 'local' suppresses them entirely (state still recorded in cron list/run history). Use for jobs delivering into shared channels where failure noise is unwanted. Omit = failures follow deliver (default). On update, '' clears."
             },
             "skills": {
                 "type": "array",
@@ -2311,6 +2413,13 @@ def _cronjob_handler(args, **kw):
     )
     return cronjob(
         action=args.get("action", ""),
+        job_id=args.get("job_id"),
+        prompt=args.get("prompt"),
+        schedule=args.get("schedule"),
+        name=args.get("name"),
+        repeat=args.get("repeat"),
+        deliver=args.get("deliver"),
+        failure_deliver=args.get("failure_deliver"),
         include_disabled=args.get("include_disabled", True),
         skill=args.get("skill"),
         skills=args.get("skills"),
@@ -2335,7 +2444,7 @@ def _cronjob_handler(args, **kw):
 
 
 registry.register(
-    name="cronjob",
+    name="cronjob_manage",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
     handler=_cronjob_handler,

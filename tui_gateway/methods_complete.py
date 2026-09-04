@@ -277,7 +277,6 @@ def _session_agent(params: dict):
 
 @method("model.options")
 @_profile_scoped
-@_catch(5033)
 def _(rid, params: dict) -> dict:
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must

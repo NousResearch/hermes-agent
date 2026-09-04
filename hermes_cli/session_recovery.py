@@ -29,22 +29,36 @@ _CANONICAL_TABLES = (
 _TOPIC_TABLES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
 
 
+
+
 def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
     from gateway.delivery_ledger import _initialize_schema
+
     _initialize_schema(conn)
 
 
-# state.db tables created lazily by a gateway module (base ``SessionDB`` never creates them on a fresh
-# destination) -> the initializer owning their DDL. Recovery creates them before copying so owed rows
-# don't silently vanish from a "complete" salvage. Register new lazy tables HERE, not as ``if table ==``.
-# See #100313, #86236.
+# Tables that live in state.db but are created lazily by a gateway module on
+# first use, so base ``SessionDB`` never creates them on a fresh destination.
+# Every entry maps the table to the initializer that owns its DDL; recovery
+# creates the table on the destination before copying, so owed rows survive
+# instead of silently vanishing from a "complete" salvage (#100313, #86236).
+# Add new lazily-created state.db tables HERE, never as one-off ``if table ==``
+# branches.
 _AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
     "delivery_obligations": _init_delivery_ledger_schema,
 }
-_AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
-_INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES)
 
-# Derived-index / optional-schema markers: a fresh destination regenerates these, never copies them.
+_AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
+
+_INVENTORY_TABLES = (
+    *_CANONICAL_TABLES,
+    "state_meta",
+    *_TOPIC_TABLES,
+    *_AUXILIARY_TABLES,
+)
+
+# These values describe derived indexes or the schema that owns an optional
+# table. A fresh destination must generate them from its own current schema.
 _GENERATED_META_KEYS = frozenset({
     "fts_storage_version", "fts_optimize_available", "fts_rebuild_high_water", "fts_rebuild_progress",
     "fts_cjk_stale", "fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress", "telegram_dm_topic_schema_version",
@@ -308,7 +322,10 @@ def _inspect_connection(conn: sqlite3.Connection) -> dict[str, Any]:
         report["journal_mode"] = None
         # Journal metadata is context, not canonical data: a damaged pragma must not block readable rows.
         report["warnings"].append(f"journal mode: {exc}")
-    report["tables"] = {table: _table_inventory(conn, table) for table in _INVENTORY_TABLES}
+
+    for table in _INVENTORY_TABLES:
+        report["tables"][table] = _table_inventory(conn, table)
+
     for required in ("sessions", "messages"):
         table_report = report["tables"][required]
         if not table_report.get("available") or table_report.get("rows") is None:
@@ -359,14 +376,23 @@ def inspect_session_database(source_path: Path, *, work_dir: Optional[Path] = No
         temp_dir.cleanup()
 
 
-def _fresh_destination(output: Path, *, topic_tables: bool = False) -> sqlite3.Connection:
-    """Initialize a current-schema database at ``output`` and open it with foreign keys off."""
-    with SessionDB(db_path=output) as destination_db:
-        if topic_tables:
-            destination_db.apply_telegram_topic_migration()
-    conn = _connect(output)
-    conn.execute("PRAGMA foreign_keys=OFF")
-    return conn
+def _ensure_auxiliary_destination_schema(
+    destination: sqlite3.Connection,
+    table: str,
+) -> None:
+    """Create a lazy auxiliary table on the recovered destination.
+
+    Recovery initializes the destination through base ``SessionDB``, which
+    does not create gateway-owned tables. Copying into a missing dest table
+    would report ``missing`` / ``no compatible columns`` and drop the rows.
+    """
+
+    initialize = _AUXILIARY_TABLE_SCHEMAS.get(table)
+    if initialize is None:
+        raise SessionRecoverySafetyError(
+            f"no destination schema initializer registered for table {table!r}"
+        )
+    initialize(destination)
 
 
 def _copy_table(
@@ -897,7 +923,140 @@ def _verify_recovered_database(
             conn, verification, expected_counts=expected_counts, copy_report=copy_report, allow_partial=allow_partial,
             orphan_cleanup=orphan_cleanup,
         )
-        _verify_fts_indexes(conn, verification)
+
+        schema_row = conn.execute(
+            "SELECT version FROM schema_version LIMIT 1"
+        ).fetchone()
+        verification["schema_version"] = int(schema_row[0]) if schema_row else None
+        if verification["schema_version"] != SCHEMA_VERSION:
+            verification["errors"].append(
+                f"schema version is {verification['schema_version']}, "
+                f"expected {SCHEMA_VERSION}"
+            )
+
+        meta = {
+            str(row[0]): row[1]
+            for row in conn.execute(
+                "SELECT key, value FROM state_meta WHERE key LIKE 'fts_%'"
+            ).fetchall()
+        }
+        verification["fts_meta"] = meta
+        if meta.get("fts_storage_version") != str(FTS_STORAGE_VERSION):
+            verification["errors"].append(
+                "fresh FTS storage version was not established"
+            )
+        pending_keys = sorted(
+            key
+            for key in (
+                "fts_optimize_available",
+                "fts_rebuild_high_water",
+                "fts_rebuild_progress",
+                "fts_cjk_stale",
+                "fts_cjk_rebuild_high_water",
+                "fts_cjk_rebuild_progress",
+            )
+            if key in meta
+        )
+        verification["pending_fts_keys"] = pending_keys
+        if pending_keys:
+            verification["errors"].append(
+                "derived FTS transition markers remain in the recovered database"
+            )
+
+        counts: dict[str, int] = {}
+        for table in _INVENTORY_TABLES:
+            columns = _table_columns(conn, table)
+            if columns:
+                counts[table] = int(
+                    conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                )
+        verification["table_counts"] = counts
+
+        for table in ("sessions", "messages", *_AUXILIARY_TABLES):
+            expected = expected_counts.get(table)
+            if expected is not None and counts.get(table) != expected:
+                message = (
+                    f"{table} count is {counts.get(table)}, expected {expected}"
+                )
+                if allow_partial:
+                    verification["warnings"].append(message)
+                    verification["loss_detected"] = True
+                else:
+                    verification["errors"].append(message)
+
+        cleanup = orphan_cleanup or {}
+        rebuilt_sessions = int(cleanup.get("sessions_reconstructed") or 0)
+        retained_messages = int(cleanup.get("messages_retained") or 0)
+        removed_messages = int(cleanup.get("messages_removed") or 0)
+        # A wholly unreadable sessions b-tree is recoverable when every output
+        # parent was rebuilt from the surviving messages and none were dropped.
+        # This is still data loss, but it is not structural verification failure.
+        sessions_fully_reconstructed = bool(
+            rebuilt_sessions > 0
+            and counts.get("sessions") == rebuilt_sessions
+            and counts.get("messages") == retained_messages
+            and removed_messages == 0
+        )
+
+        for table, table_report in copy_report.items():
+            status = table_report.get("status")
+            if status not in {"failed", "partial"}:
+                continue
+            message = f"{table} copy status is {status}"
+            if allow_partial and (
+                status == "partial"
+                or table not in {"sessions", "messages"}
+                or (
+                    table == "sessions"
+                    and status == "failed"
+                    and sessions_fully_reconstructed
+                )
+            ):
+                verification["warnings"].append(message)
+                verification["loss_detected"] = True
+            else:
+                verification["errors"].append(message)
+
+        if orphan_cleanup:
+            orphan_count = int(
+                orphan_cleanup.get("total_removed_or_relinked") or 0
+            )
+            if orphan_count:
+                verification["warnings"].append(
+                    f"{orphan_count} orphaned reference(s) were removed or relinked"
+                )
+                verification["loss_detected"] = True
+            rebuilt_sessions = int(
+                orphan_cleanup.get("sessions_reconstructed") or 0
+            )
+            if rebuilt_sessions:
+                retained = int(orphan_cleanup.get("messages_retained") or 0)
+                # Not a clean recovery: the conversation text survived but its
+                # session metadata did not, so these rows are placeholders.
+                verification["warnings"].append(
+                    f"{rebuilt_sessions} session(s) could not be salvaged and "
+                    f"were reconstructed as placeholders to retain "
+                    f"{retained} message(s); their metadata (title, model, "
+                    "timestamps, cost) is lost"
+                )
+                verification["loss_detected"] = True
+
+        fts_checks: dict[str, str] = {}
+        for table in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"):
+            if not _table_columns(conn, table):
+                continue
+            try:
+                conn.execute(
+                    f'INSERT INTO "{table}" ("{table}") VALUES (\'integrity-check\')'
+                )
+                conn.execute(
+                    f'SELECT 1 FROM "{table}" WHERE "{table}" MATCH \'""\' LIMIT 1'
+                ).fetchone()
+                fts_checks[table] = "ok"
+            except sqlite3.DatabaseError as exc:
+                fts_checks[table] = str(exc)
+                verification["errors"].append(f"{table} integrity check failed: {exc}")
+        verification["fts_checks"] = fts_checks
     except sqlite3.DatabaseError as exc:
         verification["errors"].append(f"verification query failed: {exc}")
     finally:
@@ -954,6 +1113,61 @@ def _lost_and_found_plausibility_errors(
     checks = (
         ("sessions", "started_at", f"WHERE COALESCE(title, '') NOT LIKE '{STUB_TITLE_PREFIX}%'"),
         ("messages", "timestamp", ""),
+    )
+    for table, column, mapped_filter in checks:
+        (total,) = conn.execute(f"SELECT COUNT(*) FROM {table} {mapped_filter}").fetchone()
+        if not total:
+            continue
+        (implausible,) = conn.execute(
+            f"SELECT COUNT(*) FROM {table} {mapped_filter} "
+            f"{'AND' if mapped_filter else 'WHERE'} ({column} IS NULL OR {column} < ?)",
+            (_EPOCH_LOW,),
+        ).fetchone()
+        if implausible == total:
+            errors.append(
+                f"{table}.{column} is implausible in all {total} salvaged row(s) "
+                "(NULL or before 2001-09): the source's physical column order "
+                "did not match the destination template, so cells were mapped "
+                "onto the wrong columns"
+            )
+    return errors
+
+
+def _recover_via_lost_and_found(
+    *,
+    source: Path,
+    snapshot_source: Path,
+    snapshot_dir: Path,
+    output: Path,
+    inspection: dict[str, Any],
+    disk_space: dict[str, Any],
+    missing_required: list[str],
+) -> dict[str, Any]:
+    """Best-effort page-level salvage when table schemas are unreadable.
+
+    Structural checks (integrity, FK, FTS, row counts) pass on mis-mapped
+    salvage because every row still inserts. Only semantics give it away:
+    the physical column order of a source upgraded via ALTER TABLE differs
+    from the destination template's declared order, so positional cell
+    mapping lands counters/strings where ``started_at``/``timestamp``
+    belong — and the NOT NULL substitutes turn gaps into 0.0. When every
+    mapped row violates the epoch floor, the mapping was wrong.
+
+    Stub rows written by ``stub_missing_parent_sessions`` legitimately carry
+    ``started_at = 0.0`` when no timestamped message survived, so they are
+    excluded from the denominator.
+    """
+    from hermes_cli.session_lost_and_found import _EPOCH_LOW, STUB_TITLE_PREFIX
+
+    from hermes_cli.session_lost_and_found import (
+        SQLITE3_CLI_GUIDANCE,
+        LostAndFoundError,
+        find_sqlite3_cli,
+        find_sqlite3_cli_refusal,
+        map_lost_and_found_rows,
+        rebuild_fts_indexes,
+        run_cli_lost_and_found_recover,
+        stub_missing_parent_sessions,
     )
     for table, column, mapped_filter in checks:
         (total,) = conn.execute(f"SELECT COUNT(*) FROM {table} {mapped_filter}").fetchone()
@@ -1040,11 +1254,29 @@ def _recover_via_lost_and_found(
         "BEST-EFFORT page-level salvage: the source table schemas were unreadable, so rows were rebuilt from raw "
         "pages and mapped heuristically. Review every count before trusting this output."
     )
-    if cli_report.get("header_zeroed"):
-        verification["warnings"].append(
-            "header salvage: SQLite refused the source outright (page-1 header damaged, 'file is not a "
-            "database'); the header of the private snapshot copy was zeroed so .recover could walk the "
-            "surviving pages. Rows written only to a -wal after the last checkpoint are not included."
+    verification["complete"] = False
+
+    # Structural checks cannot see a positional mis-mapping (#101409):
+    # every row still inserts, so integrity/FK/FTS stay green. A
+    # systematic timestamp violation is the semantic tell — surface it
+    # so a mis-mapped salvage is never reported as verified.
+    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        plausibility_errors = _lost_and_found_plausibility_errors(
+            plausibility_conn
+        )
+    finally:
+        plausibility_conn.close()
+    if plausibility_errors:
+        verification["errors"].extend(plausibility_errors)
+        verification["healthy"] = False
+
+    source_unchanged = (
+        _source_fingerprint(source) == inspection["source_fingerprint"]
+    )
+    if not source_unchanged:
+        verification["errors"].append(
+            "the source database bundle changed during recovery"
         )
     verification.update(loss_detected=True, complete=False)
     # Structural checks cannot see a positional mis-mapping: every row still inserts, so integrity/FK/FTS
@@ -1153,7 +1385,40 @@ def recover_session_database(
                     source_conn, destination_conn, table, salvage=allow_partial, chunk_size=chunk_size,
                     progress_cb=progress_cb, source_rows=inspection["tables"][table].get("rows"),
                 )
-            orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
+                copy_report[table] = copy_function(
+                    source_conn,
+                    destination_conn,
+                    table,
+                    chunk_size=chunk_size,
+                    progress_cb=progress_cb,
+                    source_rows=table_inspection.get("rows"),
+                )
+
+            for table in _AUXILIARY_TABLES:
+                table_inspection = inspection["tables"][table]
+                if not table_inspection.get("available"):
+                    copy_report[table] = {
+                        "status": "missing",
+                        "copied_rows": 0,
+                    }
+                    continue
+                _ensure_auxiliary_destination_schema(destination_conn, table)
+                copy_function = (
+                    _copy_table_salvage if allow_partial else _copy_table
+                )
+                copy_report[table] = copy_function(
+                    source_conn,
+                    destination_conn,
+                    table,
+                    chunk_size=chunk_size,
+                    progress_cb=progress_cb,
+                    source_rows=table_inspection.get("rows"),
+                )
+            orphan_cleanup = (
+                _cleanup_partial_orphans(destination_conn)
+                if allow_partial
+                else None
+            )
             derived_metadata = _finalize_derived_metadata(destination_conn)
         finally:
             source_conn.close()
@@ -1165,7 +1430,20 @@ def recover_session_database(
             if table in _CANONICAL_TABLES or inspection["tables"].get(table, {}).get("available")
         }
         verification = _verify_recovered_database(
-            output, expected_counts=expected_counts, copy_report=copy_report, allow_partial=allow_partial,
+            output,
+            expected_counts={
+                **{
+                    table: inspection["tables"][table].get("rows")
+                    for table in _CANONICAL_TABLES
+                },
+                **{
+                    table: inspection["tables"][table].get("rows")
+                    for table in _AUXILIARY_TABLES
+                    if inspection["tables"].get(table, {}).get("available")
+                },
+            },
+            copy_report=copy_report,
+            allow_partial=allow_partial,
             orphan_cleanup=orphan_cleanup,
         )
         return _recovery_report(

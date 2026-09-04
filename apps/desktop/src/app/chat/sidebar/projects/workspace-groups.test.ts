@@ -14,7 +14,6 @@ import {
   overlayLiveLanes,
   overlayLivePreviews,
   reconcileEnteredProjectSessions,
-  sessionMatchesProjectFilter,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,

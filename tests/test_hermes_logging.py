@@ -138,9 +138,10 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
+        base_log = hermes_home / "logs" / "agent.log"
         assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+            base_log.read_text() if base_log.exists() else ""
+        )
 
     def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
         """A dashboard or serve backend builds agents for several profiles in ONE process, and each
@@ -481,6 +482,15 @@ class TestAddRotatingHandler:
         assert "[factory_test]" in content
 
         # Clean up
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows ACLs do not expose POSIX group-writable mode bits",
+    )
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         formatter = logging.Formatter("%(message)s")

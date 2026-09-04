@@ -112,4 +112,51 @@ describe('goal store', () => {
 
     expect($goalsBySession.get().s2).toMatchObject({ status: 'paused', title: 'other work' })
   })
+
+  it('does not retry goal hydration for a runtime rejected as session-not-found', async () => {
+    const request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('session not found', { code: 4001 })
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshSessionGoal('dead-runtime')
+    await refreshSessionGoal('dead-runtime')
+
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('refreshSessionGoal dead-session guard', () => {
+  afterEach(() => {
+    $gateway.set(null as never)
+    resetBackgroundPollingGuard()
+  })
+
+  it('stops re-asking a runtime the gateway no longer holds', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshSessionGoal('dead-1')
+    await refreshSessionGoal('dead-1')
+    await refreshSessionGoal('dead-1')
+
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not latch on a transient failure', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('request timed out after 30s: slash.exec')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshSessionGoal('s1')
+    await refreshSessionGoal('s1')
+
+    expect(request).toHaveBeenCalledTimes(2)
+  })
 })

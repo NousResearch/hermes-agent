@@ -190,6 +190,18 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
   const foldCollapsed = foldIds.length > 0 && foldIds.every(id => nodeOpen[id] === false)
 
+  // Fold the level in view: project rows, or the date/status buckets. Project
+  // rows default open, so "all collapsed" means every one of them has been
+  // explicitly shut. Never sweeps Pinned or Cron.
+  const foldIds =
+    grouping === 'project'
+      ? projects.map(project => project.id)
+      : grouping === 'date' || grouping === 'status'
+        ? listGroupIds
+        : []
+
+  const foldCollapsed = foldIds.length > 0 && foldIds.every(id => nodeOpen[id] === false)
+
   const groupings = GROUPINGS.map(option =>
     option.id === 'profile' ? { ...option, label: t.sidebar.gatewayGroups.grouping } : option
   )

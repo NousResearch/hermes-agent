@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile } from './profile'
+import { $sessions } from './session'
 import {
   canOpenBrowserWindow,
   canOpenNewWindow,

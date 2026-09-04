@@ -159,7 +159,11 @@ def _read_allowlist_env(env_var: str) -> str:
     ``os.getenv`` read. Writes (``save_env_value``/``remove_env_value``) target the
     active profile's ``.env`` / installed scope, not ``os.environ``.
 
-    See #88441.
+    The grant mirror below writes through ``hermes_cli.config.save_env_value``
+    / ``remove_env_value``: the file target is the active profile's ``.env``
+    (``get_env_path()`` honors the profile-home override) and, under
+    multiplexing, the in-process publish updates the installed scope mapping
+    rather than the shared ``os.environ`` (#88441).
     """
     with contextlib.suppress(Exception):
         from agent.secret_scope import UnscopedSecretError, get_secret

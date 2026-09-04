@@ -1,13 +1,39 @@
 """Service-level orchestration for LSP clients.
 
-:class:`LSPService` bridges the synchronous file_operations layer and the async
-:class:`agent.lsp.client.LSPClient`: one asyncio loop in a background thread, one lazily
-spawned client per ``(server_id, workspace_root)`` — servers flagged ``multi_root`` (pyright) get ONE
-client per ``server_id`` and further roots (typically sibling git worktrees) are attached to the running
-process via ``workspace/didChangeWorkspaceFolders`` — a **broken-set** of pairs that failed
-to spawn/initialize (never retried for the life of the service), and a **delta baseline**
-per file (``snapshot_baseline()`` runs BEFORE a write; the next ``get_diagnostics_sync()``
-returns only diagnostics not in it).  Off unless config enables it.
+The :class:`LSPService` is the bridge between the synchronous
+file_operations layer and the async :class:`agent.lsp.client.LSPClient`.
+
+Design choices:
+
+- A **single asyncio event loop** runs in a background thread.  All
+  client work happens on that loop.  Synchronous callers from
+  ``tools/file_operations.py`` use :meth:`get_diagnostics_sync` to
+  open + wait + drain in one blocking call.
+
+- One client per ``(server_id, workspace_root)`` key.  Lazy spawn:
+  the first request for a key spawns the client; subsequent requests
+  re-use it.  Servers flagged ``multi_root`` (pyright) get ONE client
+  per ``server_id``; further roots — typically sibling git worktrees —
+  are attached to the running process via
+  ``workspace/didChangeWorkspaceFolders`` instead of a new spawn.
+
+- A **broken-set** records ``(server_id, workspace_root)`` pairs that
+  failed to spawn or initialize.  These are never retried for the
+  life of the service.  Mirrors OpenCode's design.
+
+- A **delta baseline** map keeps "diagnostics-as-of-the-last-snapshot"
+  per file.  ``snapshot_baseline()`` is called BEFORE a write; the
+  next ``get_diagnostics_sync()`` returns only diagnostics that
+  weren't in the baseline.  This is the lift from Claude Code's
+  ``beforeFileEdited`` / ``getNewDiagnostics`` pattern, except wired
+  to the local LSP layer instead of MCP IDE RPC.
+
+The service is **off by default** — call :meth:`is_active` to check
+whether it's actually doing anything.  When LSP is disabled in
+config, when no git workspace can be detected, when all configured
+servers are missing binaries and auto-install is off, ``is_active``
+returns False and the file_operations layer falls through to the
+in-process syntax check.
 """
 from __future__ import annotations
 
@@ -282,7 +308,12 @@ class LSPService:
             return
         already_broken = key in self._broken
         self._broken.add(key)
-        ckey = _client_key(srv, key[1])
+
+        # Kill any client we managed to spawn before the timeout.  The
+        # cancelled future never reached the broken-set add inside
+        # ``_get_or_spawn`` so the client may still be hanging in
+        # ``_clients`` with a half-initialized state.
+        ckey = _client_key(srv, per_server_root)
         with self._state_lock:
             client = self._clients.pop(ckey, None)
             self._last_used.pop(ckey, None)
@@ -358,10 +389,9 @@ class LSPService:
         srv = find_server_for_file(file_path)
         if not (ws and gated and srv):
             return []
-        # Same key _get_or_spawn() stored under: single-root servers live under their
-        # resolved project root (a nested package.json), not the enclosing workspace.
-        root = srv.resolve_root(file_path, ws)
-        if root is None:
+        with self._state_lock:
+            client = self._clients.get(_client_key(srv, ws))
+        if client is None:
             return []
         with self._state_lock:
             client = self._clients.get(_client_key(srv, root))
@@ -378,39 +408,78 @@ class LSPService:
         if not (ws_root and gated):
             eventlog.log_no_project_root(srv.server_id, file_path)
             return None
-        root = srv.resolve_root(file_path, ws_root)
-        if root is None:
-            eventlog.log_disabled(srv.server_id, file_path, "exclude marker hit (server gated off)")
+        per_server_root = srv.resolve_root(file_path, ws_root)
+        if per_server_root is None:
+            eventlog.log_disabled(
+                srv.server_id, file_path, "exclude marker hit (server gated off)"
+            )
+            return None  # exclude marker hit, server gated off
+
+        if (srv.server_id, per_server_root) in self._broken:
             return None
-        if (srv.server_id, root) in self._broken:
-            return None
-        key = _client_key(srv, root)
+        key = _client_key(srv, per_server_root)
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
                 self._last_used[key] = time.time()
-                eventlog.log_active(srv.server_id, root)
-                return await self._attach_root(srv, client, root)
+                eventlog.log_active(srv.server_id, per_server_root)
+            else:
+                client = None
             spawning = self._spawning.get(key)
-            owner = spawning is None
-            if owner:
-                spawning = self._spawning[key] = asyncio.get_running_loop().create_future()
-        if not owner:
+        if client is None and spawning is not None:
             try:
                 client = await spawning
             except Exception:  # noqa: BLE001
                 return None
-            return await self._attach_root(srv, client, root) if client is not None else None
+        if client is not None:
+            if srv.multi_root:
+                await client.add_workspace_folder(per_server_root)
+            return client
+
+        # Begin spawn
+        loop = asyncio.get_running_loop()
+        spawn_future: asyncio.Future = loop.create_future()
+        with self._state_lock:
+            self._spawning[key] = spawn_future
         try:
-            client = await self._spawn_client(srv, root)
-            if client is None:
-                self._broken.add((srv.server_id, root))
-            else:
-                with self._state_lock:
-                    self._clients[key] = client
-                    self._last_used[key] = time.time()
-                eventlog.log_active(srv.server_id, root)
-            spawning.set_result(client)
+            ctx = ServerContext(
+                workspace_root=per_server_root,
+                install_strategy=self._install_strategy,
+                binary_overrides=self._binary_overrides,
+                env_overrides=self._env_overrides,
+                init_overrides=self._init_overrides,
+            )
+            spec = srv.build_spawn(per_server_root, ctx)
+            if spec is None:
+                # ``build_spawn`` returns None when the binary can't be
+                # located (auto-install disabled, manual-only server,
+                # or install attempt failed).  Surface this once via
+                # the structured logger so the user can act on it.
+                eventlog.log_server_unavailable(srv.server_id, srv.server_id)
+                self._broken.add((srv.server_id, per_server_root))
+                spawn_future.set_result(None)
+                return None
+            client = LSPClient(
+                server_id=srv.server_id,
+                workspace_root=spec.workspace_root,
+                command=spec.command,
+                env=spec.env,
+                cwd=spec.cwd,
+                initialization_options=spec.initialization_options,
+                seed_diagnostics_on_first_push=spec.seed_diagnostics_on_first_push or srv.seed_first_push,
+            )
+            try:
+                await client.start()
+            except Exception as e:  # noqa: BLE001
+                eventlog.log_spawn_failed(srv.server_id, per_server_root, e)
+                self._broken.add((srv.server_id, per_server_root))
+                spawn_future.set_result(None)
+                return None
+            with self._state_lock:
+                self._clients[key] = client
+                self._last_used[key] = time.time()
+            eventlog.log_active(srv.server_id, per_server_root)
+            spawn_future.set_result(client)
             return client
         finally:
             with self._state_lock:
@@ -447,14 +516,17 @@ class LSPService:
         return client
 
     def _touch(self, client: LSPClient) -> None:
-        """Refresh last-used; guarded on membership so a client reaped mid-operation can't resurrect its entry."""
+        """Refresh the last-used timestamp for a client we just used.
+
+        Guarded on membership so a reaped-mid-operation client can't
+        resurrect an orphan ``_last_used`` entry after the reaper popped
+        the key.  All writers and the reaper run on the background loop
+        thread; the lock keeps this consistent with the reader anyway.
+        """
         with self._state_lock:
             for key, c in self._clients.items():
                 if c is client:
                     self._last_used[key] = time.time()
-
-    async def _start_idle_reaper(self) -> None:
-        self._idle_reaper_task = asyncio.create_task(self._idle_reaper_loop())
 
     async def _idle_reaper_loop(self) -> None:
         interval = min(60.0, self._idle_timeout)
@@ -489,7 +561,78 @@ class LSPService:
             self._clients.clear()
             self._broken.clear()
             self._last_used.clear()
-        await asyncio.gather(*(c.shutdown() for c in clients), return_exceptions=True)
+        await asyncio.gather(
+            *(c.shutdown() for c in clients),
+            return_exceptions=True,
+        )
+
+    # ------------------------------------------------------------------
+    # status / introspection (used by ``hermes lsp status``)
+    # ------------------------------------------------------------------
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return a snapshot of the service for the CLI status command."""
+        with self._state_lock:
+            clients = [
+                {
+                    "server_id": c.server_id,
+                    "workspace_root": c.workspace_root,
+                    "workspace_folders": list(c.workspace_folders),
+                    "state": c.state,
+                    "running": c.is_running,
+                }
+                for c in self._clients.values()
+            ]
+            broken = list(self._broken)
+        return {
+            "enabled": self._enabled,
+            "wait_mode": self._wait_mode,
+            "wait_timeout": self._wait_timeout,
+            "install_strategy": self._install_strategy,
+            "clients": clients,
+            "broken": broken,
+            "disabled_servers": sorted(self._disabled_servers),
+        }
+
+
+def _client_key(srv, root: str) -> Tuple[str, str]:
+    """Cache key for the client serving ``root``.
+
+    Multi-root servers share one process per ``server_id``; everything
+    else is keyed per resolved project root.
+    """
+    return (srv.server_id, "" if srv.multi_root else root)
+
+
+def _diag_key(d: Dict[str, Any]) -> str:
+    """Content equality key used for cross-edit delta filtering.
+
+    Includes the diagnostic's position range — when used together
+    with :func:`agent.lsp.range_shift.shift_baseline`, the baseline
+    is line-shifted into post-edit coordinates BEFORE this key is
+    computed, so identical-but-shifted diagnostics hash equal.  Two
+    genuinely distinct diagnostics at different lines (e.g. the same
+    error class introduced at a second site) hash differently and
+    are surfaced as new.
+
+    Mirrors :func:`agent.lsp.client._diagnostic_key`; intentionally
+    identical so the two layers agree on diagnostic identity.
+    """
+    rng = d.get("range") or {}
+    start = rng.get("start") or {}
+    end = rng.get("end") or {}
+    code = d.get("code")
+    if code is not None and not isinstance(code, str):
+        code = str(code)
+    return "\x00".join(
+        [
+            str(d.get("severity") or 1),
+            str(code or ""),
+            str(d.get("source") or ""),
+            str(d.get("message") or "").strip(),
+            f"{start.get('line', 0)}:{start.get('character', 0)}-{end.get('line', 0)}:{end.get('character', 0)}",
+        ]
+    )
 
 
 __all__ = ["LSPService"]

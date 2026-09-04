@@ -276,6 +276,70 @@ def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
     except Exception as e:
         logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)
 
+def _get_endpoint_metadata_cache_path() -> Path:
+    """On-disk memo of remote ``/models`` probes (see ``_endpoint_disk_cache_get``)."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "endpoint_model_metadata.json"
+
+
+def _endpoint_disk_cache_get(normalized: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Return a still-fresh (``_ENDPOINT_MODEL_CACHE_TTL``) disk memo for one endpoint.
+
+    The in-memory endpoint cache only helps within a process. One-shot runs
+    (``hermes -q``, cron, every Bot Mode DM hop) start cold and re-probed the
+    live ``/models`` endpoint on every launch — 0.3–0.6s of pure network per
+    process on Nous, whose persistent context cache is bypassed by design so
+    the portal stays authoritative. This memo keeps that authority (same TTL
+    as the in-memory cache, so reconciliation still lands within 5 minutes)
+    while sharing the answer across processes. Local endpoints are never
+    memoized: their loaded context is transient (LM Studio reloads).
+    """
+    try:
+        with _get_endpoint_metadata_cache_path().open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        entry = data.get(normalized) if isinstance(data, dict) else None
+        if not isinstance(entry, dict):
+            return None
+        if (time.time() - float(entry.get("at", 0))) >= _ENDPOINT_MODEL_CACHE_TTL:
+            return None
+        models = entry.get("models")
+        return models if isinstance(models, dict) else None
+    except Exception:
+        return None
+
+
+def _endpoint_disk_cache_put(normalized: str, cache: Dict[str, Dict[str, Any]]) -> None:
+    """Memoize a successful remote ``/models`` probe; expired siblings are dropped."""
+    try:
+        path = _get_endpoint_metadata_cache_path()
+        data: Dict[str, Any] = {}
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                now = time.time()
+                data = {
+                    k: v for k, v in loaded.items()
+                    if isinstance(v, dict) and (now - float(v.get("at", 0))) < _ENDPOINT_MODEL_CACHE_TTL
+                }
+        data[normalized] = {"at": time.time(), "models": cache}
+        atomic_json_write(path, data, indent=0, separators=(",", ":"))
+    except Exception as e:
+        logger.debug("Failed to save endpoint model metadata disk cache: %s", e)
+
+
+# Descending tiers for context length probing when the model is unknown.
+# We start at 256K (covers GPT-5.x, many current large-context models) and
+# step down on context-length errors until one works.  Tier[0] is also the
+# default fallback when no detection method succeeds.
+CONTEXT_PROBE_TIERS = [
+    256_000,
+    128_000,
+    64_000,
+    32_000,
+    16_000,
+    8_000,
+]
 
 def _get_endpoint_metadata_cache_path() -> Path:
     """On-disk memo of remote ``/models`` probes (see ``_endpoint_disk_cache_get``)."""
@@ -354,6 +418,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
+    # Muse Spark family (1.1/1.2/1.3 + contributor tiers) ships with a 1M
+    # context window: 1,048,576 per OpenRouter live metadata (verified
+    # 2026-09-02). The family key covers every checkpoint; live endpoint /
+    # models.dev metadata still wins when available. Substring match also
+    # covers -contributor and provider-prefixed ids (meta/...).
+    "muse-spark-1.3": 1_048_576,
+    "muse-spark": 1_048_576,
     # Thinking Machines — Inkling family ships with a 1M context window
     # (max output 256K).  Verified against OpenRouter live metadata
     # (context_length 1,048,576 for inkling, inkling-small, and the
@@ -470,6 +541,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "MiniMaxAI/MiniMax-M2.5": 204800, "XiaomiMiMo/MiMo-V2-Flash": 262144,
     "mimo-v2-pro": 1048576, "mimo-v2.5-pro": 1048576, "mimo-v2.5": 1048576, "mimo-v2-omni": 262144, "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
+    # Meta Muse Spark — 1M context (1,048,576; verified via models.dev
+    # opencode/opencode-go/meta and api.commandcode.ai /models). Covers every
+    # variant: 1.1, 1.2, 1.3, -contributor, -contributor-free. Kept to the
+    # "muse-spark" prefix on purpose: a bare "muse" key would also match
+    # muse-image / muse-voice.
+    "muse-spark": 1_048_576,
 }
 # xAI Grok models that ACCEPT `reasoning.effort` (verified live against
 # /v1/responses). Unlisted Grok models still reason natively but 400 on the
@@ -1126,10 +1203,16 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         cached = _endpoint_model_metadata_cache.get(memo_key)
         if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
-        memo = _endpoint_disk_cache_get(normalized) if not local else None
-        if memo is not None:
-            return _remember_endpoint_models(memo_key, memo)
-    # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
+        if not is_local_endpoint(normalized):
+            memo = _endpoint_disk_cache_get(normalized)
+            if memo is not None:
+                _endpoint_model_metadata_cache[normalized] = memo
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
+                return memo
+
+    # Blackholed endpoint: every candidate below would spend its full 5s
+    # connect budget. Returned empty rather than cached, so the endpoint is
+    # retried as soon as the blackhole entry expires.
     if _endpoint_blackholed(normalized):
         return {}
     alternate = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
@@ -1159,13 +1242,82 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 break
             response.raise_for_status()
             payload = response.json()
-            cache = _parse_models_payload(payload)
-            if any(m.get("owned_by") == "llamacpp" for m in payload.get("data", []) if isinstance(m, dict)):
-                with contextlib.suppress(Exception):
-                    _apply_llamacpp_props(cache, request_candidate, headers, verify)
-            if cache and not local:
+            cache: Dict[str, Dict[str, Any]] = {}
+            for model in payload.get("data", []):
+                if not isinstance(model, dict):
+                    continue
+                model_id = model.get("id")
+                if not model_id:
+                    continue
+                entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+                context_length = _extract_context_length(model)
+                if context_length is not None:
+                    entry["context_length"] = context_length
+                max_completion_tokens = _extract_max_completion_tokens(model)
+                if max_completion_tokens is not None:
+                    entry["max_completion_tokens"] = max_completion_tokens
+                pricing = _extract_pricing(model)
+                if pricing:
+                    entry["pricing"] = pricing
+                _add_model_aliases(cache, model_id, entry)
+
+            # If this is a llama.cpp server, query /props for actual allocated context
+            is_llamacpp = any(
+                m.get("owned_by") == "llamacpp"
+                for m in payload.get("data", []) if isinstance(m, dict)
+            )
+            if is_llamacpp:
+                try:
+                    # Try /v1/props first (current llama.cpp); fall back to /props for older builds
+                    base = request_candidate.rstrip("/").replace("/v1", "")
+                    _verify = _resolve_requests_verify(normalized)
+                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
+                    if not props_resp.ok:
+                        props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
+                    if props_resp.ok:
+                        props = props_resp.json()
+                        gen_settings = props.get("default_generation_settings", {})
+                        n_ctx = gen_settings.get("n_ctx")
+                        model_alias = props.get("model_alias", "")
+                        if n_ctx and model_alias and model_alias in cache:
+                            cache[model_alias]["context_length"] = n_ctx
+                    else:
+                        # Router mode: bare /props 400s and telemetry is
+                        # per-child (?model=). Enumerate children via the
+                        # native /models (carries status) and read each
+                        # LOADED child's granted window — the value the
+                        # context policy actually granted, which the meter
+                        # and compressor must follow. Unloaded children are
+                        # skipped: probing them could trigger an autoload.
+                        native = requests.get(base + "/models", headers=headers, timeout=5, verify=_verify)
+                        if native.ok:
+                            children = (native.json() or {}).get("data", [])
+                            for child in children[:16]:
+                                if not isinstance(child, dict):
+                                    continue
+                                child_id = child.get("id")
+                                status = (child.get("status") or {}).get("value")
+                                if not child_id or child_id not in cache or status not in ("loaded", "ready"):
+                                    continue
+                                pr = requests.get(
+                                    base + "/v1/props", params={"model": child_id},
+                                    headers=headers, timeout=5, verify=_verify)
+                                if not pr.ok:
+                                    pr = requests.get(
+                                        base + "/props", params={"model": child_id},
+                                        headers=headers, timeout=5, verify=_verify)
+                                if pr.ok:
+                                    child_ctx = (pr.json().get("default_generation_settings") or {}).get("n_ctx")
+                                    if child_ctx:
+                                        cache[child_id]["context_length"] = child_ctx
+                except Exception:
+                    pass
+
+            _endpoint_model_metadata_cache[normalized] = cache
+            _endpoint_model_metadata_cache_time[normalized] = time.time()
+            if cache and not is_local_endpoint(normalized):
                 _endpoint_disk_cache_put(normalized, cache)
-            return _remember_endpoint_models(memo_key, cache)
+            return cache
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -1568,7 +1720,184 @@ def _memo_local_probe(cache_key: tuple, probe: Callable[[], Optional[int]]) -> O
     cached = _LOCAL_CTX_PROBE_CACHE.get(cache_key)
     if cached is not None and (now - cached[1]) < _LOCAL_CTX_PROBE_TTL_SECONDS:
         return cached[0]
-    result = probe()
+
+    result = _query_ollama_api_show_uncached(model, base_url, api_key=api_key)
+    if result:  # positive-only — never memoize a failed probe
+        _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
+    return result
+
+
+def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+    """Uncached body of ``_query_ollama_api_show`` — one POST to ``/api/show``."""
+    import httpx
+
+    server_url = _localhost_to_ipv4(base_url.rstrip("/"))
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    if _endpoint_blackholed(server_url):
+        return None
+
+    headers = _auth_headers(api_key)
+
+    try:
+        with httpx.Client(timeout=5.0, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": model})
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+
+            # Hosted Ollama: GGUF model_info is the real max — prefer it over
+            # num_ctx which the Cloud operator may have capped arbitrarily.
+            model_info = data.get("model_info", {})
+            for key, value in model_info.items():
+                if "context_length" in key and isinstance(value, (int, float)):
+                    ctx = int(value)
+                    if ctx >= 1024:
+                        return ctx
+
+            # Fall back to num_ctx from Modelfile parameters (rare on Cloud)
+            params = data.get("parameters", "")
+            if "num_ctx" in params:
+                for line in params.split("\n"):
+                    if "num_ctx" in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            try:
+                                ctx = int(parts[-1])
+                                if ctx >= 1024:
+                                    return ctx
+                            except ValueError:
+                                pass
+    except Exception as exc:
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(server_url)
+    return None
+
+
+def _model_name_suggests_kimi(model: str) -> bool:
+    """Return True if the model name looks like a Kimi-family model.
+
+    Catches ``kimi-k2.6``, ``kimi-k2.5``, ``kimi-k2-thinking``,
+    ``moonshotai/Kimi-K2.6``, and similar variants.  Used as a guard
+    against stale OpenRouter metadata that underreports these models
+    as 32K context when they actually support 262K+.
+    """
+    lower = model.lower()
+    return lower.startswith("kimi") or "moonshot" in lower
+
+
+def _model_name_suggests_minimax_m3(model: str) -> bool:
+    """Return True if the model name looks like MiniMax M3.
+
+    Catches ``MiniMax-M3``, ``minimax/minimax-m3``, and similar variants
+    across surfaces. Used by the models.dev underreport guard below and the
+    cache-control gating in agent_runtime_helpers (stale persisted cache
+    entries are handled generically by _stale_pre_catalog_cache_entry).
+    """
+    return "minimax-m3" in model.lower()
+
+
+# Catalog keys whose DEFAULT_CONTEXT_LENGTHS entry was added AFTER the model
+# first became reachable through a shorter catch-all (or the 256K probe
+# fallback).  Builds from that window persisted the catch-all's value, and
+# the step-1 persistent-cache hit would otherwise pin it forever.  Each key
+# listed here gets a stale-entry guard in get_model_context_length(): a
+# cached value at or below what the old resolution path could have produced
+# is treated as a pre-catalog leftover and dropped so the entry re-resolves
+# against the current catalog.
+#
+# Only add keys whose catalog value is STRICTLY ABOVE every shorter matching
+# key (and above the 256K fallback) — the guard infers the stale threshold
+# from those shorter keys, so a model whose true window is below its
+# catch-all can never be listed here.
+_PRE_CATALOG_STALE_KEYS = frozenset({
+    "minimax-m3",    # 1M; older builds persisted the "minimax" catch-all (204,800)
+    "muse-spark-1.3",  # 1M; builds before this entry fell through to the 256K fallback
+    "muse-spark",      # 1M; 1.1/1.2 builds fell through to the 256K fallback
+    "grok-4.3",      # 1M; pre-2026-05-15 builds persisted the "grok-4" catch-all (256,000)
+    "grok-4.6",      # 500K; pre-catalog builds persisted the "grok-4" catch-all (256,000)
+    "grok-4-fast",   # 2M; pre-2026-04-10 builds fell through to the 256K probe fallback
+    "grok-4.20",     # 2M; pre-2026-04-10 builds fell through to the 256K probe fallback
+    "qwen3.6-plus",  # 1M; pre-2026-05-17 builds persisted the "qwen" catch-all (131,072)
+})
+
+
+def _stale_pre_catalog_cache_entry(model: str, cached: int) -> bool:
+    """Return True when a persisted context length is a pre-catalog leftover.
+
+    Generic replacement for the per-model ``_model_name_suggests_*`` guards
+    (MiniMax-M3, Grok-4.3, Grok-4.6, ...).  The model must resolve — by the
+    same longest-key-first substring match step 8 uses — to a catalog key
+    listed in ``_PRE_CATALOG_STALE_KEYS``, and the cached value must be at or
+    below the best value the OLD resolution path could have produced: the
+    largest shorter matching catch-all entry, or ``DEFAULT_FALLBACK_CONTEXT``
+    when no shorter key matches.  Cached values above that threshold (e.g. a
+    genuine probe result) are never dropped.
+    """
+    model_lower = model.lower()
+    matches = [
+        (key, value)
+        for key, value in DEFAULT_CONTEXT_LENGTHS.items()
+        if key in model_lower
+    ]
+    if not matches:
+        return False
+    specific_key, specific_value = max(matches, key=lambda kv: len(kv[0]))
+    if specific_key not in _PRE_CATALOG_STALE_KEYS:
+        return False
+    if cached >= specific_value:
+        return False
+    shorter_values = [v for k, v in matches if len(k) < len(specific_key)]
+    threshold = max(shorter_values, default=DEFAULT_FALLBACK_CONTEXT)
+    return cached <= threshold
+
+
+def _model_name_suggests_minimax(model: str) -> bool:
+    """Return True if the model name looks like a MiniMax-family model.
+
+    Catches ``MiniMax-M2.7``, ``minimax-m2.5``, ``MiniMaxAI/MiniMax-M2.5``,
+    and similar variants. Used as a guard against stale 32K metadata that
+    underreports the MiniMax M2 family, whose real context window is 204.8K.
+    """
+    lower = model.lower()
+    return lower.startswith("minimax") or "minimaxai/" in lower
+
+
+def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
+    """Return True for model families known to be wrongly underreported as 32K."""
+    return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
+
+
+def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+    """Query a local server for the model's context length (short-TTL cached).
+
+    The live-probe paths added for local endpoints (reconcile-on-hit and the
+    pre-defaults step-7 probe) can fire this function several times in quick
+    succession during one startup — banner display, ``/model`` switch,
+    compressor ``update_model`` all resolve the same model. Each raw probe
+    issues synchronous ``detect_local_server_type`` + query HTTP calls (bounded
+    by the 3s httpx timeout), so an unreachable/slow local server would pay
+    that cost repeatedly. A tiny in-process TTL cache collapses back-to-back
+    probes for the same (model, base_url) into one network round-trip without
+    persisting anything to disk (freshness across restarts is still handled by
+    the reconcile logic, which probes again once the TTL expires).
+    """
+    import time as _time
+
+    cache_key = (_strip_provider_prefix(model), base_url.rstrip("/"))
+    now = _time.monotonic()
+    cached = _LOCAL_CTX_PROBE_CACHE.get(cache_key)
+    if cached is not None and (now - cached[1]) < _LOCAL_CTX_PROBE_TTL_SECONDS:
+        return cached[0]
+
+    result = _query_local_context_length_uncached(model, base_url, api_key=api_key)
+    # Cache only positive results. A None/failure (server not up yet,
+    # connection refused, timeout) must NOT be memoized — otherwise a probe
+    # that fails during a startup race would suppress a legit retry seconds
+    # later once the server is reachable. Positive-only caching still fully
+    # bounds the hot-path probe rate (a reachable server returns a value and
+    # gets cached); an unreachable one simply re-probes on the next call.
     if result:
         _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
     return result
@@ -1775,6 +2104,27 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
                             break
+
+            # llama.cpp: /props reports default_generation_settings.n_ctx —
+            # the RUNTIME window the server grants. Critically, the router
+            # answers this (from its preset) even for a model that is not
+            # currently loaded, while /v1/models reports meta=null until
+            # load. Without this probe, resolving a lazily-loaded model at
+            # session start finds no metadata and falls through to the
+            # name-pattern defaults, where a family catch-all (e.g. "qwen"
+            # = 131072) misreports a server launched at 262144.
+            if server_type == "llamacpp":
+                for props_path in (f"/props?model={model}", "/props"):
+                    try:
+                        resp = client.get(f"{server_url}{props_path}")
+                    except httpx.HTTPError:
+                        break
+                    if resp.status_code != 200:
+                        continue
+                    n_ctx = (resp.json().get("default_generation_settings")
+                             or {}).get("n_ctx")
+                    if isinstance(n_ctx, (int, float)) and n_ctx:
+                        return int(n_ctx)
 
             # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies:
             # try /v1/models/{model}
@@ -2534,13 +2884,127 @@ def get_model_context_length(
     # 5. Provider-aware lookups — before the generic OR cache, since the same model has
     # different limits per provider. Generic providers are inferred from the URL.
     effective_provider = provider
-    if base_url and (not effective_provider or effective_provider in {"openrouter", "custom"}):
-        effective_provider = _infer_provider_from_url(base_url) or effective_provider
-    ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider)
-    if ctx is not None:
-        return ctx
-    # 6. OpenRouter metadata, provider-unaware fallback — only when the provider is unknown (OR
-    # data is community-maintained); 32K underreport guard.
+    if not effective_provider or effective_provider in {"openrouter", "custom"}:
+        if base_url:
+            inferred = _infer_provider_from_url(base_url)
+            if inferred:
+                effective_provider = inferred
+
+    # 5a. Copilot live /models API — max_prompt_tokens from the user's account.
+    # This catches account-specific models (e.g. claude-opus-4.6-1m) that
+    # don't exist in models.dev. For models that ARE in models.dev, this
+    # returns the provider-enforced limit which is what users can actually use.
+    if effective_provider in {"copilot", "copilot-acp", "github-copilot"}:
+        try:
+            from hermes_cli.models import get_copilot_model_context
+            ctx = get_copilot_model_context(model, api_key=api_key)
+            if ctx:
+                return ctx
+        except Exception:
+            pass  # Fall through to models.dev
+
+    if effective_provider == "nous":
+        ctx, source = _resolve_nous_context_length(
+            model, base_url=base_url or "", api_key=api_key or ""
+        )
+        if ctx:
+            # Persist ONLY portal-derived values.  Caching an OR-fallback
+            # value here would freeze in a wrong number on the first portal
+            # blip / auth glitch and step-1 would short-circuit it forever.
+            # OR's catalog is community-maintained and is precisely why the
+            # Kimi/Qwen DEFAULT_CONTEXT_LENGTHS overrides exist — we don't
+            # want it leaking into the persistent cache for Nous URLs.
+            if base_url and source == "portal":
+                save_context_length(model, base_url, ctx)
+            return ctx
+    if effective_provider == "openai-codex":
+        # Codex OAuth enforces lower context limits than the direct OpenAI
+        # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K
+        # on Codex). Authoritative source is Codex's own /models endpoint.
+        codex_ctx, codex_source = _resolve_codex_oauth_context_length_with_source(
+            model, access_token=api_key or "",
+        )
+        if codex_ctx:
+            # Only a successful authenticated catalogue response is safe to
+            # persist. The static fallback is deliberately runtime-only so a
+            # transient OAuth/network failure cannot poison future probes.
+            if base_url and codex_source == "live":
+                save_context_length(model, base_url, codex_ctx)
+            return codex_ctx
+    if effective_provider in {"gmi", "commandcode", "commandcode-anthropic"} and base_url:
+        # GMI and CommandCode (api.commandcode.ai) expose authoritative
+        # context_length via /models (e.g. muse-spark 1M) but are not in
+        # models.dev, and as known providers they skip step 2's
+        # custom-endpoint probe — without this they fell to the 256K fallback.
+        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if ctx is not None:
+            return ctx
+    # 5e. Ollama native /api/show probe — runs for providers whose base_url
+    # is NOT a known non-Ollama provider.  Ollama-compatible servers expose
+    # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
+    # custom Ollama hosting).  The OpenAI-compat /v1/models endpoint
+    # correctly omits context_length per the OpenAI schema, but /api/show
+    # returns the authoritative GGUF model_info.context_length.
+    # Known hosted providers (OpenRouter, Anthropic, OpenAI, …) are skipped:
+    # they are definitively not Ollama, the POST always 404s, and the result
+    # is never cached for them — so every fresh process used to pay a
+    # ~300ms blocking HTTP round-trip on the first-turn critical path
+    # (measured against openrouter.ai; worse on slow DNS).
+    if base_url:
+        _inferred_for_probe = _infer_provider_from_url(base_url)
+        _skip_ollama_probe = (
+            _inferred_for_probe is not None
+            and "ollama" not in _inferred_for_probe
+        )
+        if not _skip_ollama_probe:
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            if ctx is not None:
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
+                return ctx
+    # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
+    # models. OpenRouter's catalog carries per-model context_length (e.g.
+    # anthropic/claude-fable-5 -> 1M) and refreshes as new slugs ship, so it
+    # must win over both models.dev (step 5g) and the hardcoded family catch-all
+    # (step 8). Before this branch, an OpenRouter selection set
+    # effective_provider="openrouter", which (a) made the models.dev lookup miss
+    # brand-new slugs and (b) skipped the step-6 OR fallback (gated on `not
+    # effective_provider`), so a fresh slug like claude-fable-5 fell through to
+    # the generic "claude": 200K entry and under-reported a 1M window. Mirrors
+    # the dedicated Nous/Copilot/GMI branches above.
+    if effective_provider == "openrouter":
+        metadata = fetch_model_metadata()
+        entry = metadata.get(model)
+        if entry:
+            or_ctx = entry.get("context_length")
+            # Guard against the known OpenRouter Kimi-family 32k underreport
+            # (same class the hardcoded overrides exist to mitigate).
+            if isinstance(or_ctx, int) and or_ctx > 0 and not (
+                or_ctx == 32768 and _model_name_suggests_kimi(model)
+            ):
+                return or_ctx
+
+    if effective_provider:
+        from agent.models_dev import lookup_models_dev_context
+        ctx = lookup_models_dev_context(effective_provider, model)
+        if ctx:
+            # MiniMax M3: models.dev reports 512K but actual context is 1M.
+            # Prefer hardcoded catalog over stale probe value.
+            if _model_name_suggests_minimax_m3(model):
+                catalog = DEFAULT_CONTEXT_LENGTHS.get("minimax-m3")
+                if catalog and ctx < catalog:
+                    logger.info(
+                        "Rejecting models.dev context=%s for %r "
+                        "(MiniMax-M3 underreport); using hardcoded default %s",
+                        ctx, model, f"{catalog:,}",
+                    )
+                    ctx = catalog
+            return ctx
+
+    # 6. OpenRouter live API metadata — provider-unaware fallback.
+    # Only consulted when the provider is unknown (no effective_provider),
+    # because OpenRouter data is community-maintained and can be incorrect
+    # for models that belong to known providers with curated defaults.
     if not effective_provider:
         metadata = fetch_model_metadata()
         if model in metadata:
@@ -2597,11 +3061,32 @@ def estimate_tokens_rough(text: str) -> int:
     if not text:
         return 0
     text = str(text)
-    if text.isascii():  # flag check on CPython; ASCII cannot contain token-dense CJK
-        return (len(text) + 3) // CHARS_PER_TOKEN
+    if text.isascii():
+        # O(1) fast path — ASCII text cannot contain token-dense CJK chars.
+        return (len(text) + 3) // 4
     stripped = _CJK_DENSE_RE.sub("", text)
     dense = len(text) - len(stripped)
-    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
+    if not dense:
+        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): count UTF-8
+        # BYTES at ~4/token instead of characters. The byte width is the
+        # corrective: Cyrillic/Greek/Arabic are 2 bytes per char, so they
+        # count as ~chars/2 — matching their real BPE cost (~2-3 chars per
+        # token) where chars/4 under-counted them ~2x and let sessions ride
+        # the provider's context ceiling below the compaction threshold.
+        # ASCII spans inside mixed text still count at 1 byte each.
+        #
+        # Calibrated against cl100k/o200k/Qwen2.5 (estimate / mean real):
+        # Russian 0.67->1.24, Ukrainian 0.55->1.03, Arabic 0.53->0.96,
+        # Hindi 0.34->0.90, Greek 0.37->0.68, Polish 0.63->0.69; accented
+        # Latin barely moves (French 1.02->1.03, German 0.99->1.02,
+        # Spanish 1.04->1.07) because only the accented chars widen.
+        # Pure-ASCII prose already over-counts at ~1.4 on the same rule.
+        # errors="replace": lone surrogates (routine in tool output; see
+        # message_sanitization) must not turn an estimate into a raise.
+        return (len(text.encode("utf-8", "replace")) + 3) // 4
+    # Mixed CJK + other: dense chars stay ~1 token each; the sparse
+    # remainder is byte-counted for the same corrective.
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
 
 
 def estimate_messages_tokens_rough(
@@ -2928,6 +3413,8 @@ def capture_usage_anchor(
 def anchored_context_tokens(
     messages: List[Dict[str, Any]],
     anchor: Optional[Dict[str, Any]],
+    *,
+    charge_stale_thinking: bool = True,
 ) -> Optional[int]:
     """Context size anchored on the last provider-reported usage.
 
@@ -2937,6 +3424,13 @@ def anchored_context_tokens(
     estimation). The assistant reply produced by the anchored response
     (first appended message after the base) is skipped: its cost is already
     counted exactly by ``completion_tokens``.
+
+    ``charge_stale_thinking`` is forwarded to the delta estimate — pass
+    ``False`` to exclude transient ``reasoning``/``reasoning_content`` text
+    on all but the newest assistant message in the delta (the durable-
+    transcript view used by display surfaces; see the turn-base anchor in
+    ``agent/conversation_loop.py``). Default ``True`` preserves the
+    conservative full charge for request-size callers.
     """
     if not isinstance(anchor, dict) or not isinstance(messages, list):
         return None
@@ -2958,7 +3452,9 @@ def anchored_context_tokens(
             # completion_tokens above.
             delta = delta[1:]
     if delta:
-        total += estimate_messages_tokens_rough(delta)
+        total += estimate_messages_tokens_rough(
+            delta, charge_stale_thinking=charge_stale_thinking
+        )
     return total
 
 

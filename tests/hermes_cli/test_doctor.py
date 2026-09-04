@@ -305,7 +305,7 @@ class TestDoctorMemoryProviderSection:
         if provider:
             config["provider"] = provider
         config = {"memory": config}
-        (home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+        (home / "config.yaml").write_text(yaml.dump(config))
         return home
 
     def _run_doctor_and_capture(

@@ -65,7 +65,13 @@ class AnthropicTransport(ProviderTransport):
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Parse content blocks (text/thinking/tool_use), map stop_reason, collect reasoning_details."""
         import json
-        from agent.anthropic_message_convert import _sanitize_replay_block, _to_plain_data
+        from agent.anthropic_adapter import (
+            _OAUTH_TOOL_NAME_REVERSE_ALIASES,
+            _sanitize_replay_block,
+            _to_plain_data,
+        )
+        from agent.transports.types import ToolCall
+
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
         text_parts, reasoning_parts, reasoning_details, tool_calls = [], [], [], []
         # Anthropic signs each thinking block against the blocks PRECEDING it; when thinking
@@ -88,12 +94,60 @@ class AnthropicTransport(ProviderTransport):
             elif block.type == "tool_use":
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = _unprefix_oauth_tool_name(name)
-                tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
-        provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
-        # Ordered channel only for the shape the parallel lists reconstruct wrongly.
-        signed = any(b.get("type") in _THINKING_TYPES and (b.get("signature") or b.get("data")) for b in ordered_blocks)
-        if signed and any(b.get("type") == "tool_use" for b in ordered_blocks):
+                    # On the OAuth wire every tool carries a double-underscore
+                    # ``mcp__`` prefix (added in build_anthropic_kwargs to avoid
+                    # Anthropic's single-underscore third-party classifier).
+                    # Reverse it back to the name the registry/dispatcher knows.
+                    # Two original forms map onto the same ``mcp__`` wire name:
+                    #   ``mcp__read_file``       <- bare native tool ``read_file``
+                    #   ``mcp__linear_get_issue`` <- MCP server tool
+                    #                                ``mcp_linear_get_issue``
+                    # Resolve by registry lookup, preferring whichever original
+                    # is actually registered; never rewrite a name the LLM used
+                    # that already resolves natively. GH-25255.
+                    from tools.registry import registry as _tool_registry
+                    if not _tool_registry.get_entry(name):
+                        bare = name[len(_MCP_PREFIX):]            # read_file
+                        single = "mcp_" + bare                    # mcp_read_file / mcp_linear_get_issue
+                        if _tool_registry.get_entry(single):
+                            name = single
+                        elif _tool_registry.get_entry(bare):
+                            name = bare
+                        elif bare in _OAUTH_TOOL_NAME_REVERSE_ALIASES:
+                            # OAuth wire alias (e.g. chat_history_lookup ->
+                            # session_search, #65365). Checked LAST so a real
+                            # tool actually registered under the wire name
+                            # still wins — same GH-25255 precedence.
+                            name = _OAUTH_TOOL_NAME_REVERSE_ALIASES[bare]
+                tool_calls.append(
+                    ToolCall(
+                        id=block.id,
+                        name=name,
+                        arguments=json.dumps(block.input),
+                    )
+                )
+
+        finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
+
+        provider_data = {}
+        if reasoning_details:
+            provider_data["reasoning_details"] = reasoning_details
+        # Only worth carrying the ordered-blocks channel when the turn
+        # actually interleaves signed thinking with tool_use — that's the
+        # only shape the parallel lists reconstruct incorrectly. A turn that
+        # is purely text, or thinking-then-tools with a single leading
+        # thinking block, replays correctly without it.
+        _has_signed_thinking = any(
+            isinstance(b, dict)
+            and b.get("type") in ("thinking", "redacted_thinking")
+            and (b.get("signature") or b.get("data"))
+            for b in ordered_blocks
+        )
+        _has_tool_use = any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in ordered_blocks
+        )
+        if _has_signed_thinking and _has_tool_use:
             provider_data["anthropic_content_blocks"] = ordered_blocks
         return NormalizedResponse(
             content="\n".join(text_parts) if text_parts else None, tool_calls=tool_calls or None,

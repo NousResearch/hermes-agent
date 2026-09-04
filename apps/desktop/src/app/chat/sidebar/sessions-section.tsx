@@ -22,7 +22,6 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import {
   $sidebarListGroupIds,
-  $sidebarShowAllSessions,
   $sidebarWorkspaceNodeOpen,
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
@@ -31,7 +30,6 @@ import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
-import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,

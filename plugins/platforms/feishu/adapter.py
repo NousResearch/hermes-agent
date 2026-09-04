@@ -84,9 +84,16 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
-    SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
-    cache_audio_from_bytes_async, cache_image_from_bytes_async,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
+    cache_document_from_bytes_async,
+    cache_image_from_url,
+    cache_audio_from_bytes_async,
+    cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
@@ -315,7 +322,9 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
-    allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    # DM allow-all (FEISHU_ALLOW_ALL_USERS / GATEWAY_ALLOW_ALL_USERS), resolved
+    # per-profile so multiplexed secondary adapters honor their own .env.
+    allow_all_dm: bool = False
 
 
 @dataclass
@@ -973,40 +982,39 @@ def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -
             return remaining
 
 
-# --- Multiplex isolation for the lark_oapi WebSocket client ---
+# ---------------------------------------------------------------------------
+# Multiplex isolation for the lark_oapi WebSocket client (#73779)
+# ---------------------------------------------------------------------------
 #
-# ``lark_oapi.ws.client`` keeps the asyncio loop in a *module-level global* (``loop``), and
-# Hermes monkey-patches ``websockets.connect`` on the shared module to inject ping settings.
-# In multiplex mode N profiles each run a WS client on their own thread, so they overwrite
-# each other's globals (last-write-wins): tasks land on a sibling's loop ("Future attached
-# to a different loop") or a client binds the wrong loop and goes deaf. Fix: install
-# process-wide, thread-dispatching shims exactly once —
-#   * ``ws_client_module.loop`` becomes a proxy forwarding to the loop registered by the
-#     *current thread* (all SDK reads happen on the loop-owning thread); unregistered
-#     threads fall back to the SDK's original loop.
-#   * ``websockets.connect`` becomes one dispatcher that merges the calling thread's
-#     registered ping overrides, so profiles stop racing over the global patch.
+# ``lark_oapi.ws.client`` keeps the asyncio loop used by ``Client.start()``
+# and every coroutine it spawns in a *module-level global* (``loop``), and
+# Hermes also monkey-patches ``websockets.connect`` on the shared
+# ``websockets`` module to inject per-adapter ping settings. In multiplex
+# mode every profile runs its own WS client on a dedicated thread, so the N
+# threads overwrite each other's module globals (last-write-wins): a client
+# ends up scheduling tasks on a sibling profile's loop ("Future attached to
+# a different loop" crashes) or binds to the wrong loop at construction time
+# and goes deaf from the start.
+#
+# The fix installs process-wide, thread-dispatching shims exactly once:
+#
+#   * ``ws_client_module.loop`` becomes a proxy that forwards every attribute
+#     access to the loop registered by the *current thread*. All SDK reads of
+#     the global happen on the thread that owns the loop (``start()`` blocks
+#     in ``run_until_complete`` and every ``create_task`` callback runs on
+#     the loop's own thread), so each profile transparently sees its own
+#     loop. Threads that never registered one (single-profile installs, CLI)
+#     fall back to the SDK's original module loop.
+#   * ``websockets.connect`` becomes a single dispatcher that merges the
+#     per-thread ping overrides registered by the calling profile, so
+#     profiles no longer race over the global patch or restore each other's
+#     hooks while a sibling is still connected.
 
-# --------------------------------------------------------------------------- Multiplex isolation for the
-# lark_oapi WebSocket client (#73779)
-# --------------------------------------------------------------------------- ``lark_oapi.ws.client`` keeps
-# the asyncio loop used by ``Client.start()`` and every coroutine it spawns in a *module-level global*
-# (``loop``), and Hermes also monkey-patches ``websockets.connect`` on the shared ``websockets`` module to
-# inject per-adapter ping settings. In multiplex mode every profile runs its own WS client on a dedicated
-# thread, so the N threads overwrite each other's module globals (last-write-wins): a client ends up
-# scheduling tasks on a sibling profile's loop ("Future attached to a different loop" crashes) or binds to
-# the wrong loop at construction time and goes deaf from the start. The fix installs process-wide,
-# thread-dispatching shims exactly once: * ``ws_client_module.loop`` becomes a proxy that forwards every
-# attribute access to the loop registered by the *current thread*. All SDK reads of the global happen on the
-# thread that owns the loop (``start()`` blocks in ``run_until_complete`` and every ``create_task`` callback
-# runs on the loop's own thread), so each profile transparently sees its own loop. Threads that never
-# registered one (single-profile installs, CLI) fall back to the SDK's original module loop. *
-# ``websockets.connect`` becomes a single dispatcher that merges the per-thread ping overrides registered by
-# the calling profile, so profiles no longer race over the global patch or restore each other's hooks while
-# a sibling is still connected.
 _WS_ISOLATION_LOCK = threading.Lock()
 _WS_ISOLATION_INSTALLED = False
-_ws_isolation_state = threading.local()  # per WS thread: .loop and .connect_kwargs
+# Per-WS-thread registration: ``.loop`` (the thread's asyncio loop) and
+# ``.connect_kwargs`` (websockets.connect overrides, e.g. ping settings).
+_ws_isolation_state = threading.local()
 
 
 class _ThreadLocalLoopProxy:
@@ -1031,7 +1039,9 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
     with _WS_ISOLATION_LOCK:
         if _WS_ISOLATION_INSTALLED:
             return
+
         ws_client_module.loop = _ThreadLocalLoopProxy(ws_client_module.loop)
+
         real_connect = ws_client_module.websockets.connect
 
         def _dispatch_connect(*args: Any, **kwargs: Any) -> Any:
@@ -1040,7 +1050,9 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
                 kwargs.setdefault(key, value)
             return real_connect(*args, **kwargs)
 
-        # Keep inspect.signature(websockets.connect) honest — the SDK probes it for ``proxy`` support.
+        # Keep ``inspect.signature(websockets.connect)`` honest: the SDK's
+        # ``_ws_connect_kwargs()`` probes the real signature to decide whether
+        # the installed websockets generation supports the ``proxy`` kwarg.
         _dispatch_connect.__wrapped__ = real_connect
         _dispatch_connect.__name__ = getattr(real_connect, "__name__", "connect")
         ws_client_module.websockets.connect = _dispatch_connect
@@ -1048,12 +1060,18 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
-    """Run the official Lark WS client in its own thread-local loop (see isolation notes above)."""
+    """Run the official Lark WS client in its own thread-local event loop.
+
+    In multiplex mode several profiles run this concurrently; the shims
+    installed by ``_install_lark_ws_isolation`` make each thread see its own
+    loop and connect overrides (see the isolation comment block above).
+    """
     import lark_oapi.ws.client as ws_client_module
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     adapter._ws_thread_loop = loop
+
     original_configure = getattr(ws_client, "_configure", None)
 
     def _apply_runtime_ws_overrides() -> None:
@@ -1065,11 +1083,12 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
-    connect_overrides = {
-        key: value
-        for key, value in (("ping_interval", adapter._ws_ping_interval), ("ping_timeout", adapter._ws_ping_timeout))
-        if value is not None
-    }
+    connect_overrides: Dict[str, Any] = {}
+    if adapter._ws_ping_interval is not None:
+        connect_overrides["ping_interval"] = adapter._ws_ping_interval
+    if adapter._ws_ping_timeout is not None:
+        connect_overrides["ping_timeout"] = adapter._ws_ping_timeout
+
     _install_lark_ws_isolation(ws_client_module)
     _ws_isolation_state.loop = loop
     _ws_isolation_state.connect_kwargs = connect_overrides
@@ -1223,9 +1242,14 @@ class FeishuAdapter(BasePlatformAdapter):
         # See issue #10849.
         self._sdk_executor_lock = threading.Lock()
         self._sdk_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        self._sdk_executor_closing = False  # set on disconnect so a real teardown isn't resurrected
-        self._ws_client = self._ws_future = self._ws_supervisor = self._ws_thread_loop = None
+        # Set on disconnect/shutdown so a real teardown can't be resurrected
+        # by the recreate-on-shutdown path; cleared on connect for reconnects.
+        self._sdk_executor_closing = False
+        self._ws_client: Optional[Any] = None
+        self._ws_future: Optional[asyncio.Future] = None
+        self._ws_supervisor: Optional[asyncio.Task] = None
         self._ws_restart_backoff = 5.0
+        self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner = self._webhook_site = self._event_handler = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
@@ -1291,10 +1315,18 @@ class FeishuAdapter(BasePlatformAdapter):
                     require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
                 )
 
-        # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
-        # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
-        # See #86905.
-        allow_bots = str(_extra_or_secret("allow_bots", "FEISHU_ALLOW_BOTS", "none") or "none").strip().lower()
+        # Bot-level admins
+        raw_admins = extra.get("admins", [])
+        admins = frozenset(str(u).strip() for u in raw_admins if str(u).strip())
+
+        # Default group policy (for groups not in group_rules)
+        default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
+
+        # Env-only so adapter and gateway auth bypass share one source; yaml
+        # feishu.allow_bots is bridged to this env var at config load.
+        # Scope-aware read: under multiplex a secondary profile's .env must
+        # govern its own adapter (same pattern as app_secret below) — #86905.
+        allow_bots = _get_scoped_secret("FEISHU_ALLOW_BOTS", "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -1303,37 +1335,73 @@ class FeishuAdapter(BasePlatformAdapter):
             allow_bots = "none"
 
         allow_all_dm = any(
-            _secret(var).lower() in {"true", "1", "yes"} for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
+            _get_scoped_secret(var, "").strip().lower() in {"true", "1", "yes"}
+            for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
         )
+
         return FeishuAdapterSettings(
-            app_id=_extra_or_secret("app_id", "FEISHU_APP_ID"),
-            app_secret=_extra_or_secret("app_secret", "FEISHU_APP_SECRET"),
-            domain_name=_extra_or_env("domain", "FEISHU_DOMAIN", "feishu").lower(),
-            connection_mode=_extra_or_env("connection_mode", "FEISHU_CONNECTION_MODE", "websocket").lower(),
-            encrypt_key=_extra_or_secret("encrypt_key", "FEISHU_ENCRYPT_KEY"),
-            verification_token=_extra_or_secret("verification_token", "FEISHU_VERIFICATION_TOKEN"),
-            group_policy=_secret("FEISHU_GROUP_POLICY", "allowlist").lower(),
-            allowed_group_users=frozenset(_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
-            bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
-            bot_user_id=_secret("FEISHU_BOT_USER_ID"),
-            bot_name=_secret("FEISHU_BOT_NAME"),
-            dedup_cache_size=max(32, env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE)),
-            text_batch_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS),
-            text_batch_split_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0),
-            text_batch_max_messages=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES)),
-            text_batch_max_chars=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
-            media_batch_delay_seconds=env_float("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
-            webhook_host=_extra_or_env("webhook_host", "FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST),
-            webhook_port=int(extra.get("webhook_port") or _get_scoped_secret("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
-            webhook_path=_extra_or_env("webhook_path", "FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH) or _DEFAULT_WEBHOOK_PATH,
+            app_id=str(extra.get("app_id") or _get_scoped_secret("FEISHU_APP_ID", "")).strip(),
+            app_secret=str(extra.get("app_secret") or _get_scoped_secret("FEISHU_APP_SECRET", "")).strip(),
+            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
+            connection_mode=str(
+                extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
+            ).strip().lower(),
+            encrypt_key=str(extra.get("encrypt_key") or _get_scoped_secret("FEISHU_ENCRYPT_KEY", "")).strip(),
+            verification_token=str(
+                extra.get("verification_token") or _get_scoped_secret("FEISHU_VERIFICATION_TOKEN", "")
+            ).strip(),
+            group_policy=_get_scoped_secret("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            allowed_group_users=frozenset(
+                item.strip()
+                for item in _get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(",")
+                if item.strip()
+            ),
+            bot_open_id=_get_scoped_secret("FEISHU_BOT_OPEN_ID", "").strip(),
+            bot_user_id=_get_scoped_secret("FEISHU_BOT_USER_ID", "").strip(),
+            bot_name=_get_scoped_secret("FEISHU_BOT_NAME", "").strip(),
+            dedup_cache_size=max(
+                32,
+                env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE),
+            ),
+            text_batch_delay_seconds=env_float(
+                "HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS
+            ),
+            text_batch_split_delay_seconds=env_float(
+                "HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0
+            ),
+            text_batch_max_messages=max(
+                1,
+                env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES),
+            ),
+            text_batch_max_chars=max(
+                1,
+                env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS),
+            ),
+            media_batch_delay_seconds=env_float(
+                "HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS
+            ),
+            webhook_host=str(
+                extra.get("webhook_host") or os.getenv("FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST)
+            ).strip(),
+            webhook_port=int(
+                extra.get("webhook_port") or os.getenv("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))
+            ),
+            webhook_path=(
+                str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
+                or _DEFAULT_WEBHOOK_PATH
+            ),
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
-            admins=frozenset(_id_set(extra.get("admins", []))),
-            default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
-            group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
-            require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            admins=admins,
+            default_group_policy=default_group_policy,
+            group_rules=group_rules,
+            allow_bots=allow_bots,
+            allow_all_dm=allow_all_dm,
+            require_mention=_to_boolean(
+                extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1343,6 +1411,26 @@ class FeishuAdapter(BasePlatformAdapter):
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
+        self._group_rules = settings.group_rules
+        self._bot_open_id = settings.bot_open_id
+        self._bot_user_id = settings.bot_user_id
+        self._bot_name = settings.bot_name
+        self._dedup_cache_size = settings.dedup_cache_size
+        self._text_batch_delay_seconds = settings.text_batch_delay_seconds
+        self._text_batch_split_delay_seconds = settings.text_batch_split_delay_seconds
+        self._text_batch_max_messages = settings.text_batch_max_messages
+        self._text_batch_max_chars = settings.text_batch_max_chars
+        self._media_batch_delay_seconds = settings.media_batch_delay_seconds
+        self._webhook_host = settings.webhook_host
+        self._webhook_port = settings.webhook_port
+        self._webhook_path = settings.webhook_path
+        self._ws_reconnect_nonce = settings.ws_reconnect_nonce
+        self._ws_reconnect_interval = settings.ws_reconnect_interval
+        self._ws_ping_interval = settings.ws_ping_interval
+        self._ws_ping_timeout = settings.ws_ping_timeout
+        self._allow_bots = settings.allow_bots
+        self._allow_all_dm = settings.allow_all_dm
+        self._require_mention = settings.require_mention
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1446,8 +1534,12 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             if self._connection_mode == "websocket":
-                # The WS thread can die without any external signal; keep a watcher alive.
-                self._ws_supervisor = asyncio.ensure_future(self._supervise_websocket_thread())
+                # Supervised reconnect (#73779): the WS thread can die without
+                # any external signal; keep a watcher alive for as long as this
+                # adapter is supposed to be connected.
+                self._ws_supervisor = asyncio.ensure_future(
+                    self._supervise_websocket_thread()
+                )
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             # Plugin-registered native handlers (lark_oapi client).
@@ -2659,7 +2751,8 @@ class FeishuAdapter(BasePlatformAdapter):
         filename = self._derive_remote_filename(
             file_url, content_type=content_type_hdr, default_name=preferred_name, default_ext=default_ext,
         )
-        return await cache_document_from_bytes_async(body, filename), filename
+        cached_path = await cache_document_from_bytes_async(body, filename)
+        return cached_path, filename
 
     @staticmethod
     def _guess_remote_extension(url: str, *, default: str) -> str:
@@ -3017,7 +3110,8 @@ class FeishuAdapter(BasePlatformAdapter):
             filename = getattr(response, "file_name", None) or f"{image_key}.jpg"
             ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
             cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
-            return cached_path, self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
+            media_type = self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
+            return cached_path, media_type
         except Exception:
             logger.warning("[Feishu] Failed to cache image resource %s", image_key, exc_info=True)
             return "", ""
@@ -3052,23 +3146,28 @@ class FeishuAdapter(BasePlatformAdapter):
 
                 if media_type.startswith("image/"):
                     ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-                    kind, cached_path = "image", await cache_image_from_bytes_async(raw_bytes, ext=ext)
-                    media_type = media_type or self._default_image_media_type(ext)
-                elif request_type == "audio" or media_type.startswith("audio/"):
+                    cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
+                    logger.info("[Feishu] Cached message image resource at %s", cached_path)
+                    return cached_path, media_type or self._default_image_media_type(ext)
+
+                if request_type == "audio" or media_type.startswith("audio/"):
                     ext = self._guess_extension(filename, content_type, ".ogg", allowed=_AUDIO_EXTENSIONS)
-                    kind, cached_path = "audio", await cache_audio_from_bytes_async(raw_bytes, ext=ext)
-                    media_type = media_type or f"audio/{ext.lstrip('.') or 'ogg'}"
-                elif media_type.startswith("video/"):
+                    cached_path = await cache_audio_from_bytes_async(raw_bytes, ext=ext)
+                    logger.info("[Feishu] Cached message audio resource at %s", cached_path)
+                    return cached_path, (media_type or f"audio/{ext.lstrip('.') or 'ogg'}")
+
+                if media_type.startswith("video/"):
                     if not Path(filename).suffix:
                         filename = f"{filename}.mp4"
-                    kind, cached_path = "video", await cache_document_from_bytes_async(raw_bytes, filename)
-                else:
-                    if not Path(filename).suffix and media_type in _DOCUMENT_MIME_TO_EXT:
-                        filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
-                    kind, cached_path = "document", await cache_document_from_bytes_async(raw_bytes, filename)
-                    media_type = media_type or self._guess_document_media_type(filename)
-                logger.info("[Feishu] Cached message %s resource at %s", kind, cached_path)
-                return cached_path, media_type
+                    cached_path = await cache_document_from_bytes_async(raw_bytes, filename)
+                    logger.info("[Feishu] Cached message video resource at %s", cached_path)
+                    return cached_path, media_type
+
+                if not Path(filename).suffix and media_type in _DOCUMENT_MIME_TO_EXT:
+                    filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
+                cached_path = await cache_document_from_bytes_async(raw_bytes, filename)
+                logger.info("[Feishu] Cached message document resource at %s", cached_path)
+                return cached_path, (media_type or self._guess_document_media_type(filename))
             except Exception:
                 logger.warning("[Feishu] Failed to cache message resource %s/%s", message_id, file_key, exc_info=True)
         return "", ""
@@ -3300,15 +3399,23 @@ class FeishuAdapter(BasePlatformAdapter):
             if mode == "mentions" and not require_mention and not self._mentions_self(message):
                 return "bot_not_mentioned"
         if not is_group:
-            # _allow_all_dm is snapshotted per-profile in _load_settings: _admit runs on the
-            # lark_oapi WS thread with no secret scope, so a bare os.getenv would read the
-            # default profile's value.
-            # Empty FEISHU_ALLOWED_USERS is setup's pairing-mode default: forward DMs so the
-            # pairing handshake can run (gateway auth fail-closes until approval).
-            if self._allow_all_dm or not self._allowed_group_users:
+            # Snapshotted per-profile in _load_settings: _admit runs on the
+            # lark_oapi WS thread with no secret scope, and a bare os.getenv
+            # here would read the default profile's value (#86905).
+            if self._allow_all_dm:
                 return None
-            return None if sender_ids & self._allowed_group_users else "dm_policy_rejected"
-        if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):
+            # Empty FEISHU_ALLOWED_USERS is the pairing-mode default from setup:
+            # forward DMs to gateway intake so the pairing handshake can run.
+            # Gateway auth fail-closes agent access until approval.
+            if not self._allowed_group_users:
+                return None
+            if not (sender_ids and (sender_ids & self._allowed_group_users)):
+                return "dm_policy_rejected"
+            return None
+
+        if not self._allow_group_message(
+            getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
+        ):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
             return "group_policy_rejected"
@@ -3469,7 +3576,8 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Failed to persist dedup state to %s", self._dedup_state_path, exc_info=True)
 
     async def _is_duplicate(self, message_id: str) -> bool:
-        now, ttl = time.time(), _FEISHU_DEDUP_TTL_SECONDS
+        now = time.time()
+        ttl = _FEISHU_DEDUP_TTL_SECONDS
         with self._dedup_lock:
             seen_at = self._seen_message_ids.get(message_id)
             if seen_at is not None and (ttl <= 0 or now - seen_at < ttl):
@@ -3477,15 +3585,25 @@ class FeishuAdapter(BasePlatformAdapter):
             self._seen_message_ids[message_id] = now  # wall-clock so TTL survives restarts
             self._seen_message_order.append(message_id)
             while len(self._seen_message_order) > self._dedup_cache_size:
-                self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
-        # atomic_json_write() fsyncs; this runs on the event loop for every inbound message, so
-        # offload the flush onto the adapter-owned pool: the loop's default executor may already
-        # be torn down by a dead background loop, which used to wedge every inbound message in
-        # the dedup gate (#111020). The lock keeps flushes in mutation order (the snapshot
-        # inside the worker is taken under _dedup_lock, but the write itself is not).
+                stale = self._seen_message_order.pop(0)
+                self._seen_message_ids.pop(stale, None)
+        # atomic_json_write() calls os.fsync(), which blocks until the write
+        # reaches stable storage. _handle_message_event_data runs on the
+        # event loop for every inbound message, so offload the flush the
+        # same way #83906 did for the other gateway persist paths. The lock
+        # keeps flushes in mutation order (the snapshot inside the worker is
+        # taken under _dedup_lock, but the write itself is not).
         async with self._dedup_persist_lock_or_create():
-            await self._run_blocking(self._persist_seen_message_ids)
+            await asyncio.to_thread(self._persist_seen_message_ids)
         return False
+
+    def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
+        # Tests build bare adapters via object.__new__ and install dedup state
+        # by hand; create the lock lazily so those fixtures keep working.
+        lock = getattr(self, "_dedup_persist_lock", None)
+        if lock is None:
+            lock = self._dedup_persist_lock = asyncio.Lock()
+        return lock
 
     def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
         # Tests build bare adapters via object.__new__ and install dedup state
@@ -3698,10 +3816,12 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _supervise_websocket_thread(self) -> None:
         """Restart the WS client thread if it dies while the adapter is up.
 
-        ``lark_oapi.start()`` only returns on fatal errors; without this watcher a dead thread
-        left the profile silently deaf until a gateway restart. Rebuild with capped backoff.
-
-        See #73779.
+        ``lark_oapi``'s ``start()`` blocks forever on a healthy connection
+        and only returns on fatal errors. Before this watcher existed the
+        executor future was awaited solely by ``disconnect()``, so a dead
+        thread left the profile silently deaf until a gateway restart
+        (#73779). Watch the future and, on unexpected exit, rebuild the
+        client with capped exponential backoff.
         """
         backoff = initial_backoff = float(self._ws_restart_backoff)
         last_dead: Optional[asyncio.Future] = None
@@ -3715,11 +3835,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 raise
             except Exception:
                 pass
-            # Deliberate disconnects nil ``_ws_client``/``_running`` first; only restart a live link.
+            # Deliberate disconnect paths nil ``_ws_client`` / ``_running``
+            # before the thread exits; only restart when the link is still
+            # expected to be up.
             if not self._running or self._ws_client is None:
                 return
             if ws_future is not last_dead:
-                logger.error("[Feishu] WebSocket client thread exited unexpectedly; restarting in %.0fs", backoff)
+                logger.error(
+                    "[Feishu] WebSocket client thread exited unexpectedly; "
+                    "restarting in %.0fs",
+                    backoff,
+                )
                 last_dead = ws_future
             await asyncio.sleep(backoff)
             if not self._running:
@@ -3728,7 +3854,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 await self._connect_websocket()
                 backoff = initial_backoff
             except Exception as exc:
-                logger.warning("[Feishu] WebSocket restart failed (retrying): %s", exc)
+                logger.warning(
+                    "[Feishu] WebSocket restart failed (retrying): %s", exc
+                )
                 backoff = min(backoff * 2, 60.0)
 
     async def _connect_websocket(self) -> None:

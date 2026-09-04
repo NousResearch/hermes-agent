@@ -445,6 +445,46 @@ def _probe_loop_tick_socket(
                 pass
 
 
+def _probe_loop_tick_tcp(
+    port: int,
+    timeout: float = 1.0,
+) -> bool | None:
+    """Ping the loop-scheduling witness via TCP loopback (Windows).
+
+    Same protocol and semantics as the Unix socket variant: connect to
+    127.0.0.1:<port> and expect one byte "1" as proof the loop is
+    dispatching. Used on Windows / non-POSIX systems where AF_UNIX is not
+    available in asyncio.
+
+    Returns:
+      True  — the loop answered.
+      False — the port was reachable but did not answer, or refused.
+      None  — invalid port / could not connect for unrelated reasons.
+    """
+    try:
+        port_num = int(port)
+        if port_num <= 0 or port_num > 65535:
+            return None
+    except (TypeError, ValueError):
+        return None
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(max(float(timeout), 0.0))
+        sock.connect(("127.0.0.1", port_num))
+        return sock.recv(1) == b"1"
+    except Exception:
+        # Connection refused, timeout, transient errors: witness exists
+        # but is silent (or the process is dead and the port is closed).
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
 def _probe_loop_tick_socket_sustained(
     pid: int,
     home: Path | None,
@@ -452,6 +492,7 @@ def _probe_loop_tick_socket_sustained(
     timeout: float = 1.0,
     strikes: int = 3,
     gap_s: float = 0.2,
+    tcp_port: int | None = None,
 ) -> bool | None:
     """Probe the tick socket until a reply or the sustained-miss budget.
 
@@ -473,7 +514,10 @@ def _probe_loop_tick_socket_sustained(
     """
     total = max(int(strikes), 0)
     for attempt in range(total):
-        result = _probe_loop_tick_socket(pid, home, timeout=timeout)
+        if tcp_port is not None:
+            result = _probe_loop_tick_tcp(tcp_port, timeout=timeout)
+        else:
+            result = _probe_loop_tick_socket(pid, home, timeout=timeout)
         if result is True:
             return True
         if result is None:
@@ -543,14 +587,26 @@ def probe_gateway_loop_liveness(
         # Heartbeat is not this process's (old version, starting up, stale file): not evidence.
         return GATEWAY_LOOP_UNKNOWN
 
-    witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+    # Pick the right witness probe: TCP loopback (Windows / non-POSIX)
+    # takes priority if the producer published a port, otherwise fall back
+    # to the AF_UNIX socket (POSIX / legacy).
+    tcp_port = payload.get("loop_tick_tcp_port")
+    try:
+        tcp_port_int = int(tcp_port) if tcp_port is not None else None
+    except (TypeError, ValueError):
+        tcp_port_int = None
+
+    if tcp_port_int is not None and tcp_port_int > 0:
+        witness = _probe_loop_tick_tcp(tcp_port_int, timeout=tick_timeout)
+        tick_armed = True
+    else:
+        witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+        tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     if witness is True:
         # The loop answered a ping — it is dispatching right now. A stale
         # heartbeat file is a stalled write or a saturated executor, not a
         # wedge (#90502).
         return GATEWAY_LOOP_ALIVE
-
-    tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     age = time.time() - mtime
     if age <= stale_budget:
         if witness is False:
@@ -584,6 +640,7 @@ def probe_gateway_loop_liveness(
             timeout=tick_timeout,
             strikes=tick_strikes - 1,
             gap_s=tick_gap_s,
+            tcp_port=tcp_port_int,
         )
         if sustained is False:
             # Both witnesses agree, sustained: the loop did not schedule for
@@ -1151,7 +1208,9 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         import sys
         import time
         from hermes_cli._subprocess_compat import (
-            _WINDOWS_GATEWAY_BREAKAWAY_ENV, windows_detach_flags, windows_detach_flags_without_breakaway,
+            _WINDOWS_GATEWAY_BREAKAWAY_ENV,
+            windows_detach_flags,
+            windows_detach_flags_without_breakaway,
         )
 
         pid = int(sys.argv[1])
@@ -1166,9 +1225,12 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 break
             time.sleep(0.2)
 
-        # Route the respawned gateway's stray stdout/stderr to the same sidecar log _spawn_detached
-        # uses: with DEVNULL a gateway killed moments after respawn (parent Job Object teardown when
-        # breakaway is denied) left ZERO trace. Best-effort: DEVNULL when the log dir is unavailable.
+        # Route stray stdout/stderr from the respawned gateway to the same
+        # sidecar log _spawn_detached uses.  DEVNULL here meant a gateway
+        # killed moments after respawn (e.g. parent Job Object teardown when
+        # breakaway is denied, #48820 4th repro) left ZERO trace anywhere —
+        # no gateway.log line, no exit-diag record, nothing.  Best-effort:
+        # fall back to DEVNULL when the log dir is unavailable.
         _stdio_target = subprocess.DEVNULL
         _stdio_fh = None
         try:
@@ -1181,16 +1243,91 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         except Exception:
             pass
 
-        # Platform-appropriate detach for the respawned gateway: POSIX start_new_session (setsid);
-        # Windows needs explicit creationflags. CREATE_BREAKAWAY_FROM_JOB is critical: the watcher may
-        # itself sit inside a job object (Electron/Tauri parent) and without breakaway the respawned
-        # gateway dies when that job tears down. See _subprocess_compat.windows_detach_flags().
-        _popen_kwargs = {{"stdout": _stdio_target, "stderr": _stdio_target}}
-        # Anchor at the stable working dir and overlay the env (VIRTUAL_ENV / PYTHONPATH /
-        # HERMES_HOME) the windowless base interpreter needs to import hermes_cli. Empty on POSIX.
+        # Platform-appropriate detach for the respawned gateway.  On POSIX
+        # start_new_session=True maps to os.setsid; on Windows we need
+        # explicit creationflags because start_new_session is a no-op there.
+        # CREATE_BREAKAWAY_FROM_JOB is critical: the watcher itself may have
+        # been spawned inside a job object (Electron/Tauri parent), and
+        # without breakaway the respawned gateway would die when that job
+        # tears down. See _subprocess_compat.windows_detach_flags().
+        _popen_kwargs = {{
+            "stdout": _stdio_target,
+            "stderr": _stdio_target,
+        }}
+        # Anchor the respawned gateway at the stable working dir and overlay
+        # the env (VIRTUAL_ENV / PYTHONPATH / HERMES_HOME) the windowless
+        # base interpreter needs to import hermes_cli.  Empty on POSIX, where
+        # the venv python resolves imports without help.
         if _respawn_cwd:
             _popen_kwargs["cwd"] = _respawn_cwd
         _base_env = {{**os.environ, **_respawn_env_overlay}}
+        try:
+            if sys.platform == "win32":
+                try:
+                    _popen_kwargs["creationflags"] = windows_detach_flags()
+                    # Stamp the breakaway state exactly like the canonical
+                    # gateway_windows._spawn_detached, so the respawned
+                    # gateway's exit-diag / lifecycle records show whether it
+                    # escaped the parent Job Object (#48820 4th repro:
+                    # without the stamp, a job-teardown kill was
+                    # indistinguishable from any other silent death).
+                    _popen_kwargs["env"] = {{
+                        **_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1",
+                    }}
+                    subprocess.Popen(cmd, **_popen_kwargs)
+                except OSError:
+                    # CREATE_BREAKAWAY_FROM_JOB can be rejected with
+                    # ERROR_ACCESS_DENIED when the parent's job object refuses
+                    # breakaway. Retry without it — DETACHED_PROCESS et al.
+                    # alone are enough in most setups. Mirrors the canonical
+                    # fallback in gateway_windows._spawn_detached.
+                    _popen_kwargs["creationflags"] = (
+                        windows_detach_flags_without_breakaway()
+                    )
+                    _popen_kwargs["env"] = {{
+                        **_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0",
+                    }}
+                    subprocess.Popen(cmd, **_popen_kwargs)
+            else:
+                if _respawn_env_overlay:
+                    _popen_kwargs["env"] = _base_env
+                _popen_kwargs["start_new_session"] = True
+                subprocess.Popen(cmd, **_popen_kwargs)
+        finally:
+            if _stdio_fh is not None:
+                try:
+                    _stdio_fh.close()
+                except OSError:
+                    pass
+        """
+    ).strip().format(
+        respawn_cwd_literal=respawn_cwd_literal,
+        respawn_env_literal=respawn_env_literal,
+    )
+
+    watcher_argv = [
+        sys.executable,
+        "-c",
+        watcher,
+        str(old_pid),
+        *run_argv,
+    ]
+
+    # Same platform-aware detach for the watcher process itself — so
+    # closing the user's terminal doesn't kill the watcher.
+    try:
+        subprocess.Popen(
+            watcher_argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **windows_detach_popen_kwargs(),
+        )
+    except OSError:
+        # CREATE_BREAKAWAY_FROM_JOB rejected by the parent job object
+        # (Electron, Windows Terminal with restrictive job settings, …).
+        # Retry without it. POSIX never reaches this branch — there
+        # ``start_new_session=True`` cannot raise OSError — so the
+        # fallback is only meaningful on Windows.
         try:
             if sys.platform == "win32":
                 try:
@@ -4991,13 +5128,16 @@ def _running_under_gateway_supervisor() -> bool:
 
 
 def named_profile_served_by_running_multiplexer(profile_name: str | None = None) -> bool:
-    """True when a live default multiplexer already ticks this named profile (a satellite profile has no
-    gateway.pid; the multiplexer fires its jobs and serves its platforms). Defaults to the current profile.
+    """True when a live default multiplexer already ticks this named profile.
 
-    See #97120.
+    Shared by the named-profile start guard, cron liveness, and the
+    ``gateway status`` / ``gateway list`` / ``profile list`` reports: a
+    satellite profile has no gateway.pid of its own, but the default
+    multiplexer's ticker still fires its jobs (#97120) and serves its
+    platforms. ``profile_name`` defaults to the current HERMES_HOME profile.
     """
     try:
-        suffix = profile_name if profile_name is not None else _current_profile_name()
+        suffix = profile_name if profile_name is not None else _profile_suffix()
     except Exception:
         return False
     if not suffix or suffix == "default":
@@ -5247,6 +5387,63 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # Startup-liveness watchdog (OOF-298), idempotent backstop: normal
+    # ``hermes gateway run`` invocations already armed in hermes_cli.main's
+    # argv fast-path (before the heavy import graph), but programmatic
+    # callers can enter run_gateway() directly. Placed after the
+    # process-conflict guards: a --replace loser exiting above must not have
+    # armed a watchdog first. Disarmed by GatewayRunner once the event loop
+    # is confirmed live.
+    #
+    # config.yaml is the user-facing surface (gateway.startup_watchdog /
+    # gateway.startup_watchdog_timeout_seconds); the env vars are the
+    # internal bridge, needed because the argv fast-path arms before config
+    # can load. Explicit env values (operator override) are respected.
+    #
+    # The argv fast-path has ALREADY armed on the standard `hermes gateway
+    # run` path by the time this runs, and arm_startup_watchdog() is
+    # idempotent (returns the live handle without re-reading env). So the
+    # bridge alone is not enough: apply the config to the live handle —
+    # disarm when disabled, disarm+re-arm when a config timeout should
+    # replace the fast-path default. Re-arming is safe here: the heavy
+    # import graph the fast-path guards is behind us, and the fresh handle
+    # covers the remaining pre-loop startup with the configured deadline.
+    try:
+        from hermes_startup_watchdog import (
+            ENV_STARTUP_WATCHDOG,
+            ENV_STARTUP_WATCHDOG_TIMEOUT_S,
+            arm_startup_watchdog,
+            disarm_startup_watchdog,
+            startup_watchdog_disabled,
+        )
+        _sw_timeout_bridged = False
+        try:
+            from hermes_cli.config import load_config as _sw_load_config
+            _gw_cfg = (_sw_load_config() or {}).get("gateway", {}) or {}
+            if ENV_STARTUP_WATCHDOG not in os.environ and not _gw_cfg.get(
+                "startup_watchdog", True
+            ):
+                os.environ[ENV_STARTUP_WATCHDOG] = "0"
+            _sw_timeout = _gw_cfg.get("startup_watchdog_timeout_seconds")
+            if (
+                ENV_STARTUP_WATCHDOG_TIMEOUT_S not in os.environ
+                and _sw_timeout is not None
+            ):
+                os.environ[ENV_STARTUP_WATCHDOG_TIMEOUT_S] = str(_sw_timeout)
+                _sw_timeout_bridged = True
+        except Exception:
+            pass
+        if startup_watchdog_disabled():
+            disarm_startup_watchdog()
+        else:
+            if _sw_timeout_bridged:
+                # A config timeout must beat the fast-path default that an
+                # already-armed handle resolved before config was readable.
+                disarm_startup_watchdog()
+            arm_startup_watchdog()
+    except Exception:
+        pass
+
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
     # needs to obey the banner's "Press Ctrl+C to stop" contract.
@@ -5354,13 +5551,16 @@ def _respawn_storm_backoff() -> None:
                 "Gateway (re)started %d times in %.0fs — backing off %.0fs to break a respawn storm.",
                 _storm.count, _storm.window_s, _storm.backoff_s,
             )
-            # Tell the startup watchdog the backoff sleep is intentional, not a parked deadlock.
+            # The backoff sleep is intentional idle time — tell the startup
+            # watchdog (OOF-298) so it isn't mistaken for a parked deadlock
+            # and hard-exited mid-backoff (which would defeat the breaker).
             try:
-                from hermes_startup_watchdog import kick_startup_watchdog
+                from gateway.startup_watchdog import kick_startup_watchdog
+
                 kick_startup_watchdog(extra_s=_storm.backoff_s)
             except Exception:
                 pass
-            time.sleep(_storm.backoff_s)
+            _time.sleep(_storm.backoff_s)
     except Exception as _be:
         logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
@@ -7282,11 +7482,92 @@ def _cmd_stop(args):
     if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
         return
 
-    service_available = _stop_installed_service(system)
-    if stop_all:
-        total = kill_gateway_processes(all_profiles=True) + (1 if service_available else 0)
-        if total:
-            print(f"✓ Stopped {total} gateway process(es) across all profiles")
+            # Prefer the Windows-specific restart path: it supports both
+            # registered Scheduled Task / Startup installs and no-service
+            # detached restarts.  In the normal successful Telegram-triggered
+            # restart flow, this avoids the generic foreground run_gateway()
+            # path that can be reaped with the old gateway process.  If the
+            # Windows backend raises, intentionally preserve the existing
+            # generic failure fallback below.
+            service_configured = gateway_windows.is_installed()
+            try:
+                gateway_windows.restart()
+                return
+            except (subprocess.CalledProcessError, RuntimeError, OSError):
+                pass
+
+        if not service_available:
+            # systemd/launchd restart failed — check if linger is the issue
+            if supports_systemd_services():
+                linger_ok, _detail = get_systemd_linger_status()
+                if linger_ok is not True:
+                    import getpass
+
+                    _username = getpass.getuser()
+                    print()
+                    print(
+                        "⚠ Cannot restart gateway as a service — linger is not enabled."
+                    )
+                    print(
+                        "  The gateway user service requires linger to function on headless servers."
+                    )
+                    print()
+                    print(f"  Run:  sudo loginctl enable-linger {_username}")
+                    print()
+                    print("  Then restart the gateway:")
+                    print("    hermes gateway restart")
+                    return
+
+            if service_configured:
+                print()
+                print("✗ Gateway service restart failed.")
+                print(
+                    "  The service definition exists, but the service manager did not recover it."
+                )
+                print("  Fix the service, then retry: hermes gateway start")
+                sys.exit(1)
+
+            # Manual restart: stop only this profile's gateway
+            if stop_profile_gateway():
+                print("✓ Stopped gateway for this profile")
+
+            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+
+            # Start fresh
+            print("Starting gateway...")
+            run_gateway(verbose=0)
+
+    elif subcmd == "status":
+        deep = getattr(args, "deep", False)
+        full = getattr(args, "full", False)
+        system = getattr(args, "system", False)
+        snapshot = get_gateway_runtime_snapshot(system=system)
+
+        # Check for service first
+        _windows_service_installed = False
+        if is_windows():
+            from hermes_cli import gateway_windows
+
+            _windows_service_installed = gateway_windows.is_installed()
+        if not snapshot.running and named_profile_served_by_running_multiplexer():
+            # Satellite profile: no gateway.pid / service of its own, but the
+            # default multiplexer is the live inbound process for it.
+            print("✓ Gateway is running via the default-profile multiplexer")
+            print("  Manage it from the default profile: hermes gateway status")
+        elif supports_systemd_services() and (
+            get_systemd_unit_path(system=False).exists()
+            or get_systemd_unit_path(system=True).exists()
+        ):
+            systemd_status(deep, system=system, full=full)
+            _print_gateway_process_mismatch(snapshot)
+        elif is_macos() and get_launchd_plist_path().exists():
+            launchd_status(deep)
+            _print_gateway_process_mismatch(snapshot)
+        elif _windows_service_installed:
+            from hermes_cli import gateway_windows
+
+            gateway_windows.status(deep=deep)
+            _print_gateway_process_mismatch(snapshot)
         else:
             print("✗ No gateway processes found")
     elif not service_available:

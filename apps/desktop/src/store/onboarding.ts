@@ -830,7 +830,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
         message: translateNow('onboarding.signInExpired')
       })
     )
-    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx, generation), POLL_MS)
+    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
     if (generation !== flowGeneration) {
       return

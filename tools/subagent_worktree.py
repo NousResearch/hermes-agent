@@ -23,15 +23,25 @@ _GIT_TIMEOUT = 30
 
 
 def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
-    """Run git capturing output; never raises on non-zero exit.
+    """Run a git command, capturing output. Never raises on non-zero exit.
 
-    :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): this runs unattended against whatever
-    repo the parent sits in and ``worktree add`` runs hooks, so a malicious ``.git/config`` must
-    not execute.
+    Runs under :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): worktree
+    isolation runs automatically for delegated subagents against whatever repo
+    the parent sits in, and ``worktree add`` runs checkout hooks. Disabling the
+    fsmonitor/hooks/pager/credential config sinks keeps a malicious ``.git/config``
+    from executing on the host.
     """
-    return subprocess.run(["git", *harden_git_argv(args)], cwd=cwd, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL, env=noninteractive_git_env())
+    return subprocess.run(
+        ["git", *harden_git_argv(args)],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        stdin=subprocess.DEVNULL,
+        env=noninteractive_git_env(),
+    )
 
 
 def local_backend_active() -> bool:

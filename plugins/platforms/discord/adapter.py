@@ -218,13 +218,14 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 
 def _is_discord_transport_error(exc: BaseException) -> bool:
-    """True for connection-shaped send failures (dead/dropping WS) that never reached Discord, so
-    the delivery ledger can replay them; timeouts excluded (a timed-out send may have landed).
+    """Return True for connection-shaped send failures (dead/dropping WS).
 
-    These are the failures where the message demonstrably did NOT reach Discord because the transport itself
-    was down — the delivery-obligation ledger can safely replay them after reconnect (#95382). HTTP-level
-    rejections (permissions, formatting, 4xx) are NOT transport errors and must keep their original error
-    string.
+    These are the failures where the message demonstrably did NOT reach
+    Discord because the transport itself was down — the delivery-obligation
+    ledger can safely replay them after reconnect (#95382). HTTP-level
+    rejections (permissions, formatting, 4xx) are NOT transport errors and
+    must keep their original error string. Timeouts are excluded: a timed-out
+    send may have reached Discord, so replaying it risks a duplicate.
     """
     if isinstance(exc, asyncio.TimeoutError):
         return False
@@ -246,8 +247,12 @@ def _is_discord_transport_error(exc: BaseException) -> bool:
     return any(
         marker in text
         for marker in (
-            "websocket closed", "connection reset", "connection closed", "session is closed",
-            "cannot write to closing transport", "not connected",
+            "websocket closed",
+            "connection reset",
+            "connection closed",
+            "session is closed",
+            "cannot write to closing transport",
+            "not connected",
         )
     )
 
@@ -266,10 +271,21 @@ from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
-    cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
-    cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
-    _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+    cache_image_from_url,
+    cache_image_from_bytes_async,
+    cache_audio_from_url,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    SUPPORTED_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
+    _prefix_within_utf16_limit,
+    utf16_len,
+    validate_inbound_media_size,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
@@ -2898,9 +2914,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Send a message to a Discord channel or thread (metadata thread_id wins over
         chat_id; forum channels auto-create a thread post since they reject direct sends)."""
         if not self._client:
-            # Dead transport: classify as send_path_degraded so the delivery ledger's reconnect
-            # sweep can replay this; a generic "Not connected" error would strand the output.
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            # Dead transport (client gone / gateway reconnecting): classify as
+            # send_path_degraded so the delivery-obligation ledger's reconnect
+            # sweep (_redeliver_failed_obligations_for_platform) can replay
+            # this final response once the adapter is live again — a generic
+            # "Not connected" error is not runtime-retryable and left the
+            # turn's output stranded until a full process restart (#95382).
+            return SendResult(
+                success=False, error="send_path_degraded", retryable=True
+            )
         if not (content or "").strip():
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s", self.name,
@@ -2970,11 +2992,53 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             if _is_discord_transport_error(e):
-                # Connection-shaped failure: runtime-retryable marker so the reconnect sweep can replay it.
-                result = SendResult(success=False, error="send_path_degraded", retryable=True)
+                # Connection-shaped failure (WS drop / closed session): use
+                # the ledger's runtime-retryable marker so the reconnect
+                # sweep can replay this final response instead of stranding
+                # it until a process restart (#95382 silent partial loss).
+                result = SendResult(
+                    success=False, error="send_path_degraded", retryable=True
+                )
             else:
                 result = SendResult(success=False, error=str(e))
-            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
+            await asyncio.to_thread(
+                self._record_discord_response,
+                reply_to=reply_to,
+                result=result,
+                content=content,
+                final=bool(metadata and metadata.get("notify")),
+            )
+            return result
+
+    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+        """Create a thread post in a forum channel with the message as starter content.
+
+        Forum channels (type 15) don't support direct messages.  Instead we
+        POST to /channels/{forum_id}/threads with a thread name derived from
+        the first line of the message.  Any follow-up chunk failures are
+        reported in ``raw_response['warnings']`` so the caller can surface
+        partial-send issues.
+        """
+        # _derive_forum_thread_name is defined further down in this same
+        # module — no cross-module import needed.
+
+        formatted = self.format_message(content)
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
+
+        thread_name = _derive_forum_thread_name(content)
+
+        starter_content = chunks[0] if chunks else thread_name
+
+        try:
+            thread = await forum_channel.create_thread(
+                name=thread_name,
+                content=starter_content,
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
 
     @staticmethod
     def _forum_thread_parts(thread: Any) -> tuple:
@@ -4747,16 +4811,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
         # Forum threads inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
-        # guild_id/parent_chat_id feed profile_routes matching, as on_message does.
-        # guild_id/parent_chat_id feed profile_routes matching in build_source, exactly as on_message passes
-        # them — without them a guild- or channel-routed profile never matches a native slash command
-        # (#69178).
-        parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+
+        # guild_id/parent_chat_id feed profile_routes matching in build_source,
+        # exactly as on_message passes them — without them a guild- or
+        # channel-routed profile never matches a native slash command (#69178).
+        parent_id = (
+            self._get_parent_channel_id(interaction.channel) if is_thread else None
+        ) or ""
         source = self.build_source(
-            chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
-            user_id=str(interaction.user.id), user_name=interaction.user.display_name,
-            thread_id=thread_id, chat_topic=chat_topic,
-            guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
+            chat_id=str(interaction.channel_id),
+            chat_name=chat_name,
+            chat_type=chat_type,
+            user_id=str(interaction.user.id),
+            user_name=interaction.user.display_name,
+            thread_id=thread_id,
+            chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=parent_id or None,
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
@@ -4810,14 +4881,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Inherit forum topic when the thread was created inside a forum channel.
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
         _parent_id = str(getattr(_parent_channel, "id", "") or "")
         source = self.build_source(
-            chat_id=thread_id, chat_name=chat_name, chat_type="thread",
-            user_id=str(interaction.user.id), user_name=interaction.user.display_name,
-            thread_id=thread_id, chat_topic=chat_topic,
-            guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+            chat_id=thread_id,
+            chat_name=chat_name,
+            chat_type="thread",
+            user_id=str(interaction.user.id),
+            user_name=interaction.user.display_name,
+            thread_id=thread_id,
+            chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=_parent_id or None,
         )
+
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
@@ -5655,12 +5733,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            content = self._self_contained_prompt_content("☤ **Update Needs Your Input**", f"{prompt}{default_hint}")
-            return {"content": content, "embed": embed, "view": view}, view
-        result = await self._send_prompt(chat_id, metadata, _build)
-        if result.success and _metadata_marks_nonconversational(metadata):
-            await self._nonconversational_messages.mark_many([result.message_id])
-        return result
+            # Mirror the prompt in plain content — embeds are invisible on
+            # some clients (see send_exec_approval).
+            content = self._self_contained_prompt_content(
+                "⚕ **Update Needs Your Input**", f"{prompt}{default_hint}"
+            )
+            msg = await channel.send(content=content, embed=embed, view=view)
+            view._message = msg  # store for on_timeout expiration editing
+            if _metadata_marks_nonconversational(metadata):
+                await self._nonconversational_messages.mark_many([str(msg.id)])
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str,
@@ -6089,7 +6173,127 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
-        media_urls, media_types, pending_text_injection = await self._collect_attachment_media(all_attachments)
+
+        # Build media URLs -- download image attachments to local cache so the
+        # vision tool can access them reliably (Discord CDN URLs can expire).
+        media_urls = []
+        media_types = []
+        pending_text_injection: Optional[str] = None
+        for att in all_attachments:
+            content_type = att.content_type or "unknown"
+            if content_type.startswith("image/"):
+                try:
+                    # Determine extension from content type (image/png -> .png)
+                    ext = "." + content_type.split("/")[-1].split(";")[0]
+                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                        ext = ".jpg"
+                    cached_path = await self._cache_discord_image(att, ext)
+                    media_urls.append(cached_path)
+                    media_types.append(content_type)
+                    print(f"[Discord] Cached user image: {cached_path}", flush=True)
+                except Exception as e:
+                    print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
+                    # Fall back to the CDN URL if caching fails
+                    media_urls.append(att.url)
+                    media_types.append(content_type)
+            elif content_type.startswith("audio/"):
+                try:
+                    ext = "." + content_type.split("/")[-1].split(";")[0]
+                    if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
+                        ext = ".ogg"
+                    cached_path = await self._cache_discord_audio(att, ext)
+                    media_urls.append(cached_path)
+                    media_types.append(content_type)
+                    print(f"[Discord] Cached user audio: {cached_path}", flush=True)
+                except Exception as e:
+                    print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
+                    media_urls.append(att.url)
+                    media_types.append(content_type)
+            else:
+                # Document attachments: download, cache, and optionally inject text
+                ext = ""
+                if att.filename:
+                    _, ext = os.path.splitext(att.filename)
+                    ext = ext.lower()
+                if not ext and content_type:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(content_type, "")
+                in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
+                # Any file type is accepted — authorization to message the agent
+                # is the gate, not the file extension. Known types keep their
+                # precise MIME; unknown types fall back to the source content_type
+                # or octet-stream so the agent reaches for terminal tools.
+                max_doc_bytes = self._discord_max_attachment_bytes()
+                if max_doc_bytes and att.size and att.size > max_doc_bytes:
+                    logger.warning(
+                        "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
+                        att.size, max_doc_bytes, att.filename,
+                    )
+                else:
+                    try:
+                        raw_bytes = await self._cache_discord_document(att, ext)
+                        cached_path = await cache_document_from_bytes_async(
+                            raw_bytes, att.filename or f"document{ext or '.bin'}"
+                        )
+                        if in_allowlist:
+                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                        else:
+                            # Untyped file. Use the source content_type if
+                            # discord gave us one, otherwise fall back to
+                            # octet-stream so the agent knows it's binary and
+                            # reaches for terminal tools.
+                            doc_mime = (
+                                content_type
+                                if content_type and content_type != "unknown"
+                                else "application/octet-stream"
+                            )
+                        media_urls.append(cached_path)
+                        media_types.append(doc_mime)
+                        logger.info(
+                            "[Discord] Cached user %s: %s",
+                            "document" if in_allowlist else "attachment",
+                            cached_path,
+                        )
+                        # Inject text content for any text-readable document
+                        # Inject text content for text-readable documents
+                        # (capped at 100 KB). Gate on a text-like extension/MIME
+                        # — NOT a blind UTF-8 decode, since binary formats like
+                        # PDF/zip/docx can have decodable ASCII headers. Unknown
+                        # but clearly-textual types (text/* MIME or a known text
+                        # extension) are inlined too; everything else relies on
+                        # ``gateway/run.py`` to emit a path-pointing context note.
+                        MAX_TEXT_INJECT_BYTES = 100 * 1024
+                        _is_text = (
+                            ext in _TEXT_INJECT_EXTENSIONS
+                            or (content_type or "").startswith("text/")
+                        )
+                        if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            try:
+                                text_content = raw_bytes.decode("utf-8")
+                                display_name = att.filename or f"document{ext or '.txt'}"
+                                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                                injection = f"[Content of {display_name}]:\n{text_content}"
+                                if pending_text_injection:
+                                    pending_text_injection = f"{pending_text_injection}\n\n{injection}"
+                                else:
+                                    pending_text_injection = injection
+                            except UnicodeDecodeError:
+                                pass
+                        # NOTE: for the untyped-attachment path we deliberately
+                        # do NOT inject a path string here. ``gateway/run.py``
+                        # already detects DOCUMENT-typed events with
+                        # ``application/octet-stream`` MIME and emits a context
+                        # note with the sandbox-translated cache path via
+                        # ``to_agent_visible_cache_path()`` (important for
+                        # Docker/Modal terminal backends).
+                    except Exception as e:
+                        logger.warning(
+                            "[Discord] Failed to cache document %s: %s",
+                            att.filename, e, exc_info=True,
+                        )
+
+        # Use normalized_content (saved before auto-threading) instead of message.content,
+        # to detect /slash commands in channel messages.
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection

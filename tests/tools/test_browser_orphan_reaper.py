@@ -57,30 +57,27 @@ class TestReapOrphanedBrowserSessions:
         _reap_orphaned_browser_sessions()  # should not raise
 
     def test_stale_dir_without_pid_file_is_removed(self, fake_tmpdir):
-        """A no-PID socket dir is removed once it is older than the grace window."""
-        from tools.browser_tool import (
-            BROWSER_ORPHAN_GRACE_SECONDS,
-            _reap_orphaned_browser_sessions,
-        )
-
+        """Socket dir with no PID file is cleaned up."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
-        _age_socket_dir(d, BROWSER_ORPHAN_GRACE_SECONDS + 1)
         assert d.exists()
         with patch(
-            "tools.browser_tool_lifecycle._socket_dir_idle_seconds",
+            "tools.browser_tool._socket_dir_idle_seconds",
             return_value=10_000,
         ):
             _reap_orphaned_browser_sessions()
         assert not d.exists()
 
-    def test_fresh_dir_without_pid_file_is_spared_during_creation_window(
-        self, fake_tmpdir
-    ):
-        """Another process must not delete a fallback dir before owner/PID files exist."""
+    def test_fresh_dir_without_pid_file_survives_creator_race(self, fake_tmpdir):
+        """A concurrent reaper must not delete a session still starting."""
         from tools.browser_tool import _reap_orphaned_browser_sessions
 
-        d = _make_socket_dir(fake_tmpdir, "h_cfb_creating")
-        _reap_orphaned_browser_sessions()
+        d = _make_socket_dir(fake_tmpdir, "h_starting1234")
+        with patch(
+            "tools.browser_tool._socket_dir_idle_seconds",
+            return_value=0.0,
+        ):
+            _reap_orphaned_browser_sessions()
 
         assert d.exists()
 

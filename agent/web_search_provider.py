@@ -7,9 +7,41 @@ exa, parallel, tavily, keenable, firecrawl) implements; registered via
 
 Response shapes (legacy contract, the tool wrapper does not translate)::
 
-    search:  {"success": True, "data": {"web": [{"title", "url", "description", "position"}, ...]}}
-    extract: {"success": True, "data": [{"url", "title", "content", "raw_content", "metadata"}, ...]}
-    failure: {"success": False, "error": str}
+This ABC is the SINGLE plugin-facing surface for web providers — every
+provider in the tree (brave-free, ddgs, searxng, exa, parallel, tavily,
+keenable, firecrawl) implements it. The legacy in-tree ``tools.web_providers.base``
+ABCs were deleted in PR #25182 along with the per-vendor inline helpers
+in ``tools/web_tools.py``; the response-shape contract documented below
+is preserved bit-for-bit so the tool wrapper does not have to translate.
+
+Response shape (preserved from the legacy contract):
+
+Search results::
+
+    {
+        "success": True,
+        "data": {
+            "web": [
+                {"title": str, "url": str, "description": str, "position": int},
+                ...
+            ]
+        }
+    }
+
+Extract results::
+
+    {
+        "success": True,
+        "data": [
+            {"url": str, "title": str, "content": str,
+             "raw_content": str, "metadata": dict},
+            ...
+        ]
+    }
+
+On failure (either capability)::
+
+    {"success": False, "error": str}
 """
 
 from __future__ import annotations
@@ -40,9 +72,37 @@ def get_provider_env(name: str) -> str:
     return (val or "").strip()
 
 
-class WebSearchProvider(ProviderBase):
-    """Abstract base class for a web search/extract backend: implement :meth:`is_available`
-    and at least one of :meth:`search` / :meth:`extract`; the ``supports_*`` flags route each capability."""
+# ---------------------------------------------------------------------------
+# ABC
+# ---------------------------------------------------------------------------
+
+
+class WebSearchProvider(abc.ABC):
+    """Abstract base class for a web search/extract backend.
+
+    Subclasses must implement :meth:`is_available` and at least one of
+    :meth:`search` / :meth:`extract`. The :meth:`supports_search` /
+    :meth:`supports_extract` capability flags let the registry route each
+    tool call to the right provider, and let multi-capability providers
+    (Firecrawl, Tavily, Exa, …) advertise multiple capabilities from a
+    single class.
+    """
+
+    @property
+    @abc.abstractmethod
+    def name(self) -> str:
+        """Stable short identifier used in ``web.search_backend`` /
+        ``web.extract_backend`` / ``web.backend`` config keys.
+
+        Lowercase, no spaces; hyphens permitted to preserve existing
+        user-visible names. Examples: ``brave-free``, ``ddgs``,
+        ``searxng``, ``firecrawl``.
+        """
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable label shown in ``hermes tools``. Defaults to ``name``."""
+        return self.name
 
     @abc.abstractmethod
     def is_available(self) -> bool:

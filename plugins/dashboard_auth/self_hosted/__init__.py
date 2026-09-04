@@ -19,22 +19,15 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
-from plugins.dashboard_auth._shared import (
-    JSON_HEADERS,
-    TOKEN_ENDPOINT_TIMEOUT_SEC as _TOKEN_ENDPOINT_TIMEOUT_SEC,
-    JwtOAuthProvider,
-    SkipRegistration,
-    exchange_token,
-    load_config_section,
-    parse_json_body,
-    pkce_login_start,
-    refresh_token_from,
-    register_provider,
-    resolve_env_or_cfg,
-    session_from_claims,
-    validate_redirect_uri,
-    verify_jwt)
+from hermes_cli.dashboard_auth import (
+    DashboardAuthProvider,
+    InvalidCodeError,
+    LoginStart,
+    ProviderError,
+    RefreshExpiredError,
+    classify_jwks_lookup_error,
+    Session,
+)
 
 logger = logging.getLogger(__name__)
 _TAG = "dashboard-auth-self-hosted"
@@ -235,7 +228,74 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
             id_token, self._get_jwks_client(), algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
             audience=self._client_id, issuer=issuer, label="ID token")
 
-    _claims_for = _verify_id_token
+        disco = self._get_discovery()
+
+        try:
+            signing_key = self._get_jwks_client().get_signing_key_from_jwt(
+                id_token
+            )
+        except Exception as exc:
+            # Unreachable JWKS -> ProviderError (503); a bearer that is not
+            # one of our JWTs (opaque peer key, foreign kid) -> InvalidCodeError
+            # (None / next provider). Folding both into 503 produced #94558.
+            raise classify_jwks_lookup_error(exc) from exc
+
+        try:
+            claims = jwt.decode(
+                id_token,
+                signing_key.key,
+                algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
+                audience=self._client_id,
+                issuer=disco["issuer"],
+                options={"require": ["exp", "iat", "aud", "iss", "sub"]},
+            )
+        except jwt.ExpiredSignatureError as exc:
+            # verify_session() catches this and returns None per protocol.
+            raise InvalidCodeError(f"ID token expired: {exc}") from exc
+        except jwt.InvalidTokenError as exc:
+            # Surface the actual iss/aud the token carried so operators can
+            # debug config drift between the configured issuer/client_id and
+            # what the IDP emits. Decoding-without-verification is safe here:
+            # we already failed verification and never trust these values.
+            details = ""
+            try:
+                unverified = jwt.decode(
+                    id_token,
+                    options={"verify_signature": False, "verify_exp": False},
+                )
+                details = (
+                    f" [token iss={unverified.get('iss')!r} "
+                    f"aud={unverified.get('aud')!r}; "
+                    f"expected iss={disco['issuer']!r} "
+                    f"aud={self._client_id!r}]"
+                )
+            except Exception:
+                pass
+            raise ProviderError(
+                f"ID token verification failed: {exc}{details}"
+            ) from exc
+
+        return claims
+
+    # ---- internals: mapping + misc ----------------------------------------
+
+    def _session_from_tokens(
+        self,
+        *,
+        id_token: str,
+        refresh_token: str,
+        claims: Dict[str, Any],
+    ) -> Session:
+        """Map verified OIDC claims onto a Session.
+
+        The verified ID token is stored in ``Session.access_token`` so the
+        per-request ``verify_session`` re-verifies a real JWT. The opaque
+        OAuth access token is intentionally NOT stored — Hermes does not call
+        any resource API with it; the dashboard only needs identity.
+        """
+        user_id = str(claims.get("sub", ""))
+        if not user_id:
+            raise ProviderError("ID token missing 'sub' (user_id) claim")
 
     def _session(self, id_token: str, refresh_token: str, claims: Dict[str, Any]) -> Session:
         """Map verified OIDC claims onto a Session. The verified ID token is stored in

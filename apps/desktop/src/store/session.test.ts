@@ -37,10 +37,13 @@ import {
   getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
+  getRememberedWorkspaceCwd,
   getSessionOwnerHint,
   hydrateSessionOwnerHints,
+  keepFailedProfileMeta,
   knownSessionOwner,
   knownSessionProfile,
+  lineageAliases,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
@@ -72,6 +75,83 @@ import {
 } from './session-states'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
+
+describe('composer model persistence scope', () => {
+  const local = { baseUrl: '', connectionId: 'local', mode: 'local' } as never
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    setConnection(local)
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentModelSource('')
+  })
+
+  afterEach(() => {
+    setConnection(local)
+    window.localStorage.clear()
+  })
+
+  it('keeps manual model selections isolated by remote connection and profile', () => {
+    const remote = (profile: string) =>
+      ({ baseUrl: 'https://aibox.example', connectionId: 'aibox', mode: 'remote', profile }) as never
+
+    setConnection(remote('fred'))
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+
+    setConnection(remote('fred-work'))
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+
+    setCurrentModel('local/model')
+    setCurrentProvider('custom:local')
+    setConnection(remote('fred'))
+
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+  })
+
+  it('keeps inferred local-primary connections on the historical bare keys', () => {
+    setComposerSelectionOwner('remote', 'default')
+    window.localStorage.setItem('hermes.desktop.composer.model', 'legacy-model')
+    window.localStorage.setItem('hermes.desktop.composer.provider', 'legacy-provider')
+
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
+
+    expect($currentModel.get()).toBe('legacy-model')
+    expect($currentProvider.get()).toBe('legacy-provider')
+    setCurrentModel('next-model')
+    expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBe('next-model')
+    expect(window.localStorage.getItem('hermes.desktop.composer.model.registry.local.default')).toBeNull()
+  })
+
+  it('uses the live registry owner when the connection descriptor is stale', () => {
+    const remote = (profile: string) =>
+      ({ baseUrl: 'https://aibox.example', connectionId: 'aibox', mode: 'remote', profile }) as never
+
+    setConnection(remote('fred'))
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+
+    // ensureGatewayAgent publishes this coordinate even if getConnectionFor
+    // fails and $connection therefore still describes fred.
+    setComposerSelectionOwner('aibox', 'fred-work')
+    setCurrentModel('local/model')
+    setCurrentProvider('custom:local')
+    setCurrentModelSource('default')
+
+    setComposerSelectionOwner('aibox', 'fred')
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+
+    setComposerSelectionOwner('aibox', 'fred-work')
+    expect($currentModel.get()).toBe('local/model')
+    expect($currentProvider.get()).toBe('custom:local')
+  })
+})
 
 describe('session owner hints', () => {
   afterEach(() => {
@@ -185,6 +265,32 @@ describe('session owner hints', () => {
     hydrateSessionOwnerHints()
     expect(getSessionOwnerHint('stored-a')).toBeUndefined()
     expect(getSessionOwnerHint('stored-c')).toEqual({ connectionId: 'local', profile: 'omar' })
+  })
+
+  it('forgets every route for one session without disturbing other sessions', () => {
+    setSessionOwnerHint('poisoned', { connectionId: 'local', mode: 'local', profile: 'default' })
+    setSessionOwnerHint('poisoned', { connectionId: 'remote-a', mode: 'remote', profile: 'default' })
+    setSessionOwnerHint('healthy', { connectionId: 'remote-a', mode: 'remote', profile: 'default' })
+
+    forgetSessionOwnerHintsForSession('poisoned')
+
+    expect(getSessionOwnerHints('poisoned')).toEqual([])
+    expect(getSessionOwnerHint('healthy')).toMatchObject({ connectionId: 'remote-a' })
+
+    _resetSessionOwnerHintsForTests()
+    hydrateSessionOwnerHints()
+    expect(getSessionOwnerHints('poisoned')).toEqual([])
+    expect(getSessionOwnerHint('healthy')).toMatchObject({ connectionId: 'remote-a' })
+  })
+
+  it('pins only connection-tagged rows and leaves primary SSH rows ambient', () => {
+    expect(sessionOwnerRouteFromRow(session({ connection_id: 'source-a', profile: 'worker' }))).toEqual({
+      connectionId: 'source-a',
+      profile: 'worker',
+      targetProfile: 'worker'
+    })
+    expect(sessionOwnerRouteFromRow(session({ profile: 'default' }))).toBeUndefined()
+    expect(sessionOwnerRouteFromRow(session({ connection_id: '  ', profile: 'default' }))).toBeUndefined()
   })
 })
 

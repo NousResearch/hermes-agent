@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -505,11 +505,80 @@ def custom_provider_pool_key_candidates(
     return []
 
 
-def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
-    """Preferred pool key for a custom provider: durable slug, else ``custom:<name>``.
+def _custom_entry_name_aliases(norm_name: str, entry: Dict[str, Any]) -> set:
+    aliases = {norm_name}
+    provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
+    if provider_key:
+        aliases.add(provider_key)
+    return aliases
 
-    When provider_name is given, match by name first so two custom providers
-    sharing a base_url keep separate keys.
+
+def _requested_custom_name_aliases(provider_name: str) -> set:
+    normalized = _normalize_custom_pool_name(provider_name)
+    aliases = {normalized} if normalized else set()
+    if normalized.startswith(CUSTOM_POOL_PREFIX):
+        suffix = _normalize_custom_pool_name(normalized[len(CUSTOM_POOL_PREFIX):])
+        if suffix:
+            aliases.add(suffix)
+    return aliases
+
+
+def _pool_keys_for_custom_entry(norm_name: str, entry: Dict[str, Any]) -> List[str]:
+    """Durable ``providers.<key>`` slug first, then legacy ``custom:<name>``."""
+    keys: List[str] = []
+    seen = set()
+
+    def _add(key: str) -> None:
+        normalized = str(key or "").strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            keys.append(normalized)
+
+    provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
+    if provider_key:
+        _add(provider_key)
+    if norm_name:
+        _add(f"{CUSTOM_POOL_PREFIX}{norm_name}")
+    return keys
+
+
+def custom_provider_pool_key_candidates(
+    base_url: Optional[str],
+    provider_name: Optional[str] = None,
+) -> List[str]:
+    """Return pool keys to try for a custom endpoint.
+
+    ``hermes auth add <key>`` stores new-style ``providers.<key>`` credentials
+    under the durable config slug (``b-ai``). Older rows and legacy
+    ``custom_providers:`` entries still live under ``custom:<display-name>``.
+    Try the slug first, then the legacy namespace, so a populated pool is not
+    skipped in favour of the ``no-key-required`` placeholder.
+    """
+    if not base_url:
+        return []
+    normalized_url = base_url.strip().rstrip("/")
+    requested_aliases = (
+        _requested_custom_name_aliases(provider_name) if provider_name else set()
+    )
+
+    if requested_aliases:
+        for norm_name, entry in _iter_custom_providers():
+            if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
+                return _pool_keys_for_custom_entry(norm_name, entry)
+
+    for norm_name, entry in _iter_custom_providers():
+        entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
+        if entry_url and entry_url == normalized_url:
+            return _pool_keys_for_custom_entry(norm_name, entry)
+    return []
+
+
+def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
+    """Look up the matching custom provider and return its preferred pool key.
+
+    Prefers the durable ``providers.<key>`` slug when present, otherwise
+    ``custom:<normalized-name>``. When provider_name is given, match by name
+    first so two custom providers sharing a base_url keep separate keys.
     """
     candidates = custom_provider_pool_key_candidates(base_url, provider_name)
     return candidates[0] if candidates else None
@@ -599,6 +668,36 @@ def _legacy_custom_pool_matches(
     return False
 
 
+def _keyed_custom_pool_matches(
+    pool_provider: str,
+    provider_norm: str,
+    base_url: Optional[str],
+) -> bool:
+    """Match a durable ``providers.<key>`` pool against runtime identities."""
+    runtime_url = str(base_url or "").strip().rstrip("/")
+    if not runtime_url:
+        return False
+    try:
+        for normalized_name, entry in _iter_custom_providers():
+            provider_key = _normalize_custom_pool_name(
+                str(entry.get("provider_key") or "")
+            )
+            if provider_key != pool_provider:
+                continue
+            aliases = _custom_entry_name_aliases(normalized_name, entry)
+            aliases.add(f"{CUSTOM_POOL_PREFIX}{normalized_name}")
+            if provider_key:
+                aliases.add(f"{CUSTOM_POOL_PREFIX}{provider_key}")
+            configured_url = str(entry.get("base_url") or "").strip().rstrip("/")
+            if provider_norm == "custom":
+                return runtime_url == configured_url
+            runtime_aliases = _requested_custom_name_aliases(provider_norm)
+            return bool(runtime_aliases & aliases) and runtime_url == configured_url
+    except Exception:
+        return False
+    return False
+
+
 def credential_pool_matches_provider(
     pool_or_provider: Any,
     provider: Optional[str],
@@ -609,10 +708,12 @@ def credential_pool_matches_provider(
 
     Named custom endpoints may use three identities: the live agent can retain
     the configured name/provider key, newer runtime paths normalize it to
-    ``custom``, and the pool is keyed ``custom:<name>``. Accept those aliases
-    only when the runtime endpoint belongs to the same configured custom
-    provider. Empty identities fail closed. Legacy pool adapters without a
-    ``provider`` attribute remain compatible; production pools are scoped.
+    ``custom``, and the pool may be keyed either as the durable
+    ``providers.<key>`` slug or as legacy ``custom:<name>``. Accept those
+    aliases only when the runtime endpoint belongs to the same configured
+    custom provider. Empty identities fail closed. Legacy pool adapters
+    without a ``provider`` attribute remain compatible; production pools
+    are scoped.
     """
     raw_pool_provider = getattr(pool_or_provider, "provider", None)
     if raw_pool_provider is None:
@@ -626,13 +727,18 @@ def credential_pool_matches_provider(
     if not pool_provider or not provider_norm:
         return False
     if not pool_provider.startswith(CUSTOM_POOL_PREFIX):
-        return pool_provider == provider_norm
+        if pool_provider == provider_norm:
+            return True
+        return _keyed_custom_pool_matches(pool_provider, provider_norm, base_url)
     if provider_norm == "custom":
         try:
             matched_pool = get_custom_provider_pool_key(base_url or "")
+            if str(matched_pool or "").strip().lower() == pool_provider:
+                return True
+            candidates = custom_provider_pool_key_candidates(base_url or "")
         except Exception:
             return False
-        return str(matched_pool or "").strip().lower() == pool_provider
+        return pool_provider in {str(key).strip().lower() for key in candidates}
 
     runtime_url = str(base_url or "").strip().rstrip("/")
     if not runtime_url:
@@ -684,9 +790,10 @@ def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -
 def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -> str:
     """Resolve the credential-pool key for a runtime provider identity.
 
-    Named custom runtimes retain their configured alias while their pool is
-    stored under ``custom:<name>``. Return that scoped key only when the
-    canonical provider/endpoint boundary accepts it; otherwise preserve the
+    Named custom runtimes retain their configured alias while their pool may
+    be stored under the durable ``providers.<key>`` slug or legacy
+    ``custom:<name>``. Return that scoped key only when the canonical
+    provider/endpoint boundary accepts it; otherwise preserve the
     normalized runtime identity so callers fail closed.
     """
     provider_norm = str(provider or "").strip().lower()
@@ -703,18 +810,19 @@ def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -
             ):
                 return str(candidate).strip().lower()
         else:
-            # Named and exact custom runtimes are keyed by provider identity,
-            # while auth storage remains keyed by display name. Search the
-            # configured candidates by identity before considering endpoint;
-            # this prevents a sibling sharing the URL from lending its pool.
-            for normalized_name, _entry in _iter_custom_providers():
-                candidate = f"{CUSTOM_POOL_PREFIX}{normalized_name}"
-                if credential_pool_matches_provider(
-                    candidate,
-                    provider_norm,
-                    base_url=base_url,
-                ):
-                    return candidate
+            # Named and exact custom runtimes are keyed by provider identity.
+            # Auth storage prefers the durable providers.<key> slug, with
+            # legacy custom:<display-name> as fallback. Search configured
+            # candidates by identity before considering endpoint so a sibling
+            # sharing the URL cannot lend its pool.
+            for normalized_name, entry in _iter_custom_providers():
+                for candidate in _pool_keys_for_custom_entry(normalized_name, entry):
+                    if credential_pool_matches_provider(
+                        candidate,
+                        provider_norm,
+                        base_url=base_url,
+                    ):
+                        return candidate
     except Exception:
         pass
     return provider_norm
@@ -807,56 +915,28 @@ def _profile_owns_pool_provider(provider: str) -> bool:
 
 
 def _borrowed_single_use_pool_root() -> Optional[Path]:
-    """Global-root auth.json when persisting a BORROWED single-use pool, else None.
+    """Return the global-root auth.json when persisting a BORROWED single-use pool.
 
     ``None`` means "persist to the active store as usual": classic mode
     (profile == root), or the profile owns its own rows for this provider.
+    Pytest seat belt mirrors ``_write_through_provider_state_to_global_root``.
     """
     try:
-        return _guarded_global_root(_global_auth_file_path())
+        global_path = _global_auth_file_path()
     except Exception:
         return None
-
-
-def _update_root_pool_rows(
-    provider: str, payloads: List[Dict[str, Any]], global_path: Path,
-    *, status_cleared_ids: Optional[Iterable[str]] = None,
-) -> None:
-    """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
-
-    A borrower may refresh the root's rows (rotation, cooldown state) but
-    never add or delete them — the root owns their lifecycle. In particular a
-    profile's singleton-prune (it has no ``.anthropic_oauth.json`` of its own)
-    must not delete the root grant, so ``removed_ids`` is ignored by callers.
-    """
-    with _auth_store_lock(target_path=global_path):
-        store = _load_auth_store(global_path)
-        pool = store.get("credential_pool")
-        if not isinstance(pool, dict):
-            pool = {}
-            store["credential_pool"] = pool
-        existing = pool.get(provider)
-        existing_list = existing if isinstance(existing, list) else []
-        incoming_by_id = {p.get("id"): p for p in payloads if isinstance(p, dict) and p.get("id")}
-        cleared = {cid for cid in (status_cleared_ids or ()) if cid}
-        merged: List[Dict[str, Any]] = []
-        changed = False
-        for disk_entry in existing_list:
-            did = disk_entry.get("id") if isinstance(disk_entry, dict) else None
-            incoming = incoming_by_id.get(did) if did else None
-            if incoming is None:
-                merged.append(disk_entry)
-                continue
-            # A deliberately cleared entry has no disk cooldown worth keeping.
-            updated = auth_mod._merge_disk_cooldown_state(
-                incoming, None if did in cleared else disk_entry, provider,
-            )
-            if updated != disk_entry:
-                changed = True
-            merged.append(updated)
-        if changed:
-            pool[provider] = merged
-            _save_auth_store(store, target_path=global_path)
+    if global_path is None:
+        return None
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return None
+            except Exception:
+                return None
+    return global_path
 
 
 def persist_pool_entries(
@@ -864,26 +944,58 @@ def persist_pool_entries(
     payloads: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
-    status_cleared_ids: Optional[Iterable[str]] = None,
 ) -> None:
     """Persist a provider's pool rows to the store that OWNS them.
 
     A named profile that sees a single-use-refresh provider (Anthropic,
     Codex, xAI OAuth) only through the global-root fallback must not
-    materialize a local ``credential_pool.<provider>`` copy: that copy forks
-    the single-use refresh token, the first profile to rotate commits the new
-    pair only to its own file, and root plus every sibling die with
-    ``invalid_grant`` (#100339). Such rows are written back to the root store
-    (under the root lock); everything else goes to the active store.
+    materialize a local ``credential_pool.<provider>`` copy on its first
+    persist: that copy forks the single-use refresh token, the first profile
+    to rotate commits the new pair only to its own file, and root plus every
+    sibling die with ``invalid_grant`` on their next refresh (#100339). Such
+    rows are written back to the root store (under the root lock) so the
+    rotation is visible to every profile; everything else goes to the active
+    store exactly as before.
     """
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
         global_path = _borrowed_single_use_pool_root()
         if global_path is not None:
+            removed = {rid for rid in (removed_ids or ()) if rid}
             try:
-                _update_root_pool_rows(
-                    provider, payloads, global_path,
-                    status_cleared_ids=status_cleared_ids,
-                )
+                with _auth_store_lock(target_path=global_path):
+                    store = _load_auth_store(global_path)
+                    pool = store.get("credential_pool")
+                    if not isinstance(pool, dict):
+                        pool = {}
+                        store["credential_pool"] = pool
+                    existing = pool.get(provider)
+                    existing_list = existing if isinstance(existing, list) else []
+                    incoming_by_id = {
+                        p.get("id"): p for p in payloads
+                        if isinstance(p, dict) and p.get("id")
+                    }
+                    # UPDATE-ONLY: a borrower may refresh the root's rows
+                    # (rotation, cooldown state) but never add or delete
+                    # them — the root owns their lifecycle. In particular a
+                    # profile's singleton-prune (it has no
+                    # .anthropic_oauth.json of its own) must not delete the
+                    # root grant, and ``removed_ids`` is ignored here.
+                    merged: List[Dict[str, Any]] = []
+                    changed = False
+                    for disk_entry in existing_list:
+                        did = disk_entry.get("id") if isinstance(disk_entry, dict) else None
+                        incoming = incoming_by_id.get(did) if did else None
+                        if incoming is None:
+                            merged.append(disk_entry)
+                            continue
+                        updated = auth_mod._merge_disk_cooldown_state(incoming, disk_entry, provider)
+                        if updated != disk_entry:
+                            changed = True
+                        merged.append(updated)
+                    if changed:
+                        pool[provider] = merged
+                        _save_auth_store(store, target_path=global_path)
+                return
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
                 # writing a local copy (that IS the bug). The in-memory pool
@@ -893,55 +1005,11 @@ def persist_pool_entries(
                     "not materializing a profile-local copy",
                     provider, exc,
                 )
-            return
-    write_credential_pool(
-        provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
-    )
+                return
+    write_credential_pool(provider, payloads, removed_ids=removed_ids)
 
 
-# --- Per-provider singleton refresh plumbing -------------------------------
-#
-# Providers whose OAuth singleton lives in auth.json ``providers.<id>.tokens``
-# (Codex, xAI): log names (sync-message form, "<name> OAuth" form),
-# ``hermes_cli.auth`` refresh function and terminal-error predicate (looked
-# up at call time so tests can patch them).
-_TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
-    "openai-codex": ("Codex", "Codex", "refresh_codex_oauth_pure", "_is_terminal_codex_oauth_refresh_error"),
-    "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
-}
-
-# Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
-# provider is returned unchanged by that path, so callers must not report a refresh for them.
-REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
-
-# Providers whose refresh tokens are single-use: the sync -> POST -> write-back
-# sequence must be serialized across processes under the auth-store flock.
-_SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
-
-_REFRESH_TIMEOUT_ENV_VARS = {
-    "openai-codex": "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
-    "xai-oauth": "HERMES_XAI_REFRESH_TIMEOUT_SECONDS",
-}
-
-# Singleton-seeded source whose exhausted/DEAD pool row may be revived by a
-# re-auth another process wrote to the provider's store.
-_RESYNC_SOURCE = {
-    "anthropic": "claude_code",
-    "nous": "device_code",
-    "openai-codex": "device_code",
-    "xai-oauth": "device_code",
-}
-
-
-class _RefreshDone(Exception):
-    """Raised inside a provider refresher to short-circuit ``_refresh_entry_impl`` with ``result``."""
-
-    def __init__(self, result: Optional["PooledCredential"]):
-        super().__init__()
-        self.result = result
-
-
-class CredentialPool(CredentialPoolAdminMixin):
+class CredentialPool:
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -1886,10 +1954,14 @@ class CredentialPool(CredentialPoolAdminMixin):
                 elif entry.source == "hermes_pkce":
                     try:
                         from agent.anthropic_credentials import _write_hermes_oauth_credentials
+                        # A borrowed row was seeded from the ROOT's singleton
+                        # (this profile has none); commit the rotation there,
+                        # never into a new profile-local copy (#100339).
                         _write_hermes_oauth_credentials(
                             refreshed["access_token"],
                             refreshed["refresh_token"],
                             refreshed["expires_at_ms"],
+                            target=_singleton_target_for_entry(self, entry),
                         )
                     except Exception as wexc:
                         # Same transaction rule as claude_code above.
@@ -1938,12 +2010,16 @@ class CredentialPool(CredentialPoolAdminMixin):
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
-                    # A peer already rotated and persisted a usable key: adopt
-                    # it without consuming the single-use refresh token again.
+                    # A peer already rotated and persisted a usable key while
+                    # this process was still holding the failed one: adopt it
+                    # without consuming the (single-use) refresh token again.
                     if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
                         logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
                         return entry
-                auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=stale_key or None)
+                auth_mod.resolve_nous_runtime_credentials(
+                    force_refresh=force,
+                    stale_access_token=stale_key or None,
+                )
                 updated = self._sync_nous_entry_from_auth_store(entry)
             else:
                 return entry
@@ -2048,47 +2124,208 @@ class CredentialPool(CredentialPoolAdminMixin):
             if self.provider == "xai-oauth":
                 synced = self._sync_xai_oauth_entry_from_auth_store(entry)
                 if synced.refresh_token != entry.refresh_token:
-                    logger.debug("Anthropic OAuth refresh failed but pool store has newer tokens — adopting")
-                    return self._adopt(synced, **_MARK_OK)
-        elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
-            _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
-            synced = self._sync_entry_from_auth_store(entry)
-            if synced.refresh_token != entry.refresh_token:
-                logger.debug("%s OAuth refresh failed but auth.json has newer tokens — adopting", display)
-                return self._adopt(synced, **_MARK_OK)
-            # Terminal error with no newer tokens: the stored refresh_token is
-            # dead. Clear it from auth.json so the next session does not
-            # re-seed the revoked credentials, and drop singleton-seeded
-            # entries from the pool (mirrors the Nous quarantine path).
-            if getattr(auth_mod, terminal_fn_name)(exc):
-                logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
-                self._clear_terminal_tokens_state(entry, exc)
-                self._quarantine_sources(entry, {"device_code"})
-                return None
-        elif self.provider == "nous":
-            synced = self._sync_nous_entry_from_auth_store(entry)
-            if synced.refresh_token != entry.refresh_token:
-                logger.debug("Nous refresh failed but auth.json has newer tokens — adopting")
-                updated = self._adopt(synced, **_MARK_OK)
-                self._sync_device_code_entry_to_auth_store(updated)
-                return updated
-            if isinstance(exc, TimeoutError):
-                # Lost the auth-store lock race under heavy fan-out. That says
-                # nothing about the credential — benching it here emptied the
-                # pool for ~120 sessions ("matched no nous entry ... pool size
-                # 0"). The caller's retry re-syncs once the winner persisted.
-                logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
-                return entry
-            if auth_mod._is_terminal_nous_refresh_error(exc):
-                logger.debug("Nous refresh token is terminally invalid; clearing local token state")
-                self._clear_terminal_nous_state(entry, exc)
-                self._quarantine_sources(
-                    entry,
-                    {auth_mod.NOUS_DEVICE_CODE_SOURCE, f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}"},
-                )
-                return None
-        self._mark_exhausted(entry, None)
-        return None
+                    logger.debug(
+                        "xAI OAuth refresh failed but auth.json has newer tokens — adopting"
+                    )
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    return updated
+                # Terminal error: auth.json has no newer tokens — the stored
+                # refresh_token is dead.  Clear it from auth.json so the next
+                # session does not re-seed the same revoked credentials, and
+                # remove all singleton-seeded xAI entries from the in-memory
+                # pool. Mirrors the Nous quarantine path above.
+                if auth_mod._is_terminal_xai_oauth_refresh_error(exc):
+                    logger.debug(
+                        "xAI OAuth refresh token is terminally invalid; clearing local token state"
+                    )
+                    try:
+                        with _auth_store_lock():
+                            auth_store = _load_auth_store()
+                            state = _load_provider_state(auth_store, "xai-oauth") or {}
+                            if isinstance(state, dict):
+                                tokens = state.get("tokens") or {}
+                                if isinstance(tokens, dict):
+                                    store_refresh = str(tokens.get("refresh_token") or "").strip()
+                                    entry_refresh = str(entry.refresh_token or "").strip()
+                                    if not store_refresh or store_refresh == entry_refresh:
+                                        tokens.pop("access_token", None)
+                                        tokens.pop("refresh_token", None)
+                                        state["tokens"] = tokens
+                                        state["last_auth_error"] = {
+                                            "provider": "xai-oauth",
+                                            "code": getattr(exc, "code", "unknown"),
+                                            "message": str(exc),
+                                            "reason": "credential_pool_refresh_failure",
+                                            "relogin_required": True,
+                                            "at": datetime.now(timezone.utc).isoformat(),
+                                        }
+                                        _save_provider_state(auth_store, "xai-oauth", state)
+                                        _save_auth_store(auth_store)
+                    except Exception as clear_exc:
+                        logger.debug(
+                            "Failed to clear terminal xAI OAuth state: %s", clear_exc
+                        )
+                    # Read-modify-write of self._entries: must be atomic.
+                    # This runs on the DEFERRED refresh path (outside the
+                    # pool lock), so take it here. self._lock is an RLock,
+                    # so the still-locked callers re-enter safely.
+                    with self._lock:
+                        removed_ids = [
+                            item.id for item in self._entries
+                            if item.source == "device_code"
+                        ]
+                        self._entries = [
+                            item for item in self._entries
+                            if item.source != "device_code"
+                        ]
+                        if self._current_id == entry.id:
+                            self._current_id = None
+                        self._persist(removed_ids=removed_ids)
+                    return None
+            # For openai-codex: same race as xAI/nous — another Hermes process
+            # may have consumed the refresh token between our proactive sync
+            # and the HTTP call.  Re-check auth.json and adopt the fresh tokens
+            # if they have rotated since.
+            if self.provider == "openai-codex":
+                synced = self._sync_codex_entry_from_auth_store(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug(
+                        "Codex OAuth refresh failed but auth.json has newer tokens — adopting"
+                    )
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    return updated
+                # Terminal error: auth.json has no newer tokens — the stored
+                # refresh_token is dead.  Clear it from auth.json so the next
+                # session does not re-seed the same revoked credentials, and
+                # remove all singleton-seeded (device_code) entries from the
+                # in-memory pool.  Mirrors the xAI and Nous quarantine paths.
+                if auth_mod._is_terminal_codex_oauth_refresh_error(exc):
+                    logger.debug(
+                        "Codex OAuth refresh token is terminally invalid; clearing local token state"
+                    )
+                    try:
+                        with _auth_store_lock():
+                            auth_store = _load_auth_store()
+                            state = _load_provider_state(auth_store, "openai-codex") or {}
+                            if isinstance(state, dict):
+                                tokens = state.get("tokens") or {}
+                                if isinstance(tokens, dict):
+                                    store_refresh = str(tokens.get("refresh_token") or "").strip()
+                                    entry_refresh = str(entry.refresh_token or "").strip()
+                                    if not store_refresh or store_refresh == entry_refresh:
+                                        tokens.pop("access_token", None)
+                                        tokens.pop("refresh_token", None)
+                                        state["tokens"] = tokens
+                                        state["last_auth_error"] = {
+                                            "provider": "openai-codex",
+                                            "code": getattr(exc, "code", "unknown"),
+                                            "message": str(exc),
+                                            "reason": "credential_pool_refresh_failure",
+                                            "relogin_required": True,
+                                            "at": datetime.now(timezone.utc).isoformat(),
+                                        }
+                                        _save_provider_state(auth_store, "openai-codex", state)
+                                        _save_auth_store(auth_store)
+                    except Exception as clear_exc:
+                        logger.debug(
+                            "Failed to clear terminal Codex OAuth state: %s", clear_exc
+                        )
+                    # Read-modify-write of self._entries: must be atomic.
+                    # This runs on the DEFERRED refresh path (outside the
+                    # pool lock), so take it here. self._lock is an RLock,
+                    # so the still-locked callers re-enter safely.
+                    with self._lock:
+                        removed_ids = [
+                            item.id for item in self._entries
+                            if item.source == "device_code"
+                        ]
+                        self._entries = [
+                            item for item in self._entries
+                            if item.source != "device_code"
+                        ]
+                        if self._current_id == entry.id:
+                            self._current_id = None
+                        self._persist(removed_ids=removed_ids)
+                    return None
+            # For nous: another process may have consumed the refresh token
+            # between our proactive sync and the HTTP call.  Re-sync from
+            # auth.json and adopt the fresh tokens if available.
+            if self.provider == "nous":
+                synced = self._sync_nous_entry_from_auth_store(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug("Nous refresh failed but auth.json has newer tokens — adopting")
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    self._sync_device_code_entry_to_auth_store(updated)
+                    return updated
+                if isinstance(exc, TimeoutError):
+                    # Lost the auth-store lock race under heavy fan-out. That
+                    # says nothing about the credential — benching it here is
+                    # what emptied the pool for ~120 sessions on Sep 2 2026
+                    # ("matched no nous entry ... pool size 0"). Leave the
+                    # entry untouched; the caller's retry re-syncs once the
+                    # winner has persisted.
+                    logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
+                    return entry
+                if auth_mod._is_terminal_nous_refresh_error(exc):
+                    logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                    try:
+                        with _auth_store_lock():
+                            auth_store = _load_auth_store()
+                            state = _load_provider_state(auth_store, "nous") or {
+                                "client_id": entry.client_id,
+                                "portal_base_url": entry.portal_base_url,
+                                "inference_base_url": entry.inference_base_url,
+                                "token_type": entry.token_type,
+                                "scope": entry.scope,
+                                "tls": entry.tls,
+                            }
+                            store_refresh = str(state.get("refresh_token") or "").strip()
+                            entry_refresh = str(entry.refresh_token or "").strip()
+                            if not store_refresh or store_refresh == entry_refresh:
+                                auth_mod._quarantine_nous_oauth_state(
+                                    state,
+                                    exc,
+                                    reason="credential_pool_refresh_failure",
+                                )
+                                auth_mod._quarantine_nous_pool_entries(
+                                    auth_store,
+                                    exc,
+                                    reason="credential_pool_refresh_failure",
+                                )
+                                _save_provider_state(auth_store, "nous", state)
+                                _save_auth_store(auth_store)
+                    except Exception as clear_exc:
+                        logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
 
     def _clear_terminal_tokens_state(self, entry: PooledCredential, exc: Exception) -> None:
         """Drop the dead Codex/xAI token pair from auth.json unless a peer already rotated it."""
@@ -2577,8 +2814,71 @@ class CredentialPool(CredentialPoolAdminMixin):
         return refreshed
 
 
+    def remove_index(self, index: int) -> Optional[PooledCredential]:
+        with self._lock:
+            if index < 1 or index > len(self._entries):
+                return None
+            removed = self._entries.pop(index - 1)
+            self._entries = [
+                replace(entry, priority=new_priority)
+                for new_priority, entry in enumerate(self._entries)
+            ]
+            persist_pool_entries(
+                self.provider,
+                [entry.to_dict() for entry in self._entries],
+                removed_ids=[removed.id],
+            )
+            if self._current_id == removed.id:
+                self._current_id = None
+            return removed
 
-# --- Seeding --------------------------------------------------------------
+    def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
+        raw = str(target or "").strip()
+        if not raw:
+            return None, None, "No credential target provided."
+
+        with self._lock:
+            for idx, entry in enumerate(self._entries, start=1):
+                if entry.id == raw:
+                    return idx, entry, None
+
+            label_matches = [
+                (idx, entry)
+                for idx, entry in enumerate(self._entries, start=1)
+                if entry.label.strip().lower() == raw.lower()
+            ]
+            if len(label_matches) == 1:
+                return label_matches[0][0], label_matches[0][1], None
+            if len(label_matches) > 1:
+                return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
+            if raw.isdigit():
+                index = int(raw)
+                if 1 <= index <= len(self._entries):
+                    return index, self._entries[index - 1], None
+                return None, None, f"No credential #{index}."
+            return None, None, f'No credential matching "{raw}".'
+
+    def add_entry(self, entry: PooledCredential) -> PooledCredential:
+        with self._lock:
+            entry = replace(entry, priority=_next_priority(self._entries))
+            self._entries.append(entry)
+            borrowed_ids = getattr(self, "_borrowed_root_ids", None)
+            if borrowed_ids:
+                # ``hermes -p <profile> auth add <single-use provider>``: the
+                # profile is claiming its OWN credential. Persist only the
+                # profile-owned rows locally — copying the borrowed root
+                # grant alongside them would fork its single-use refresh
+                # token (#100339). Once the profile owns rows, the root
+                # fallback for this provider is shadowed (existing contract).
+                write_credential_pool(
+                    self.provider,
+                    [e.to_dict() for e in self._entries if e.id not in borrowed_ids],
+                )
+                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
+                self._borrowed_root_ids = set()
+            else:
+                self._persist()
+            return entry
 
 
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
@@ -3029,9 +3329,38 @@ def get_env_prefer_dotenv(key: str) -> str:
     return raw or scoped_value
 
 
-# Providers already warned about env-key -> pool ingestion, once per process
-# (#81952 expected-behavior #3).
+# Providers we've already warned about env-key → pool ingestion for, once per
+# process. See _warn_env_ingestion_once (#81952 expected-behavior #3).
 _ENV_INGESTION_WARNED: Set[str] = set()
+
+
+def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
+    """WARN (once per process per provider) when an env credential is newly
+    ingested into a paid provider's pool.
+
+    Auto-ingesting OPENROUTER_API_KEY is what ARMS silent OpenRouter spend —
+    every downstream auto-detect (resolve_provider pool probe, aux fallback)
+    keys off the pool having credentials. Ingestion itself stays allowed (the
+    user exported the key = arguable intent, per #81952), but it must never be
+    silent.
+    """
+    if provider in _ENV_INGESTION_WARNED:
+        return
+    _ENV_INGESTION_WARNED.add(provider)
+    logger.warning(
+        "Ingested %s from environment into the %s credential pool — this "
+        "enables %s spend. Remove the key or run "
+        "hermes auth remove %s <n> to suppress.",
+        env_var,
+        provider,
+        "OpenRouter" if provider == "openrouter" else provider,
+        provider,
+    )
+
+
+def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+    changed = False
+    active_sources: Set[str] = set()
 
 
 def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
@@ -3091,13 +3420,28 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         return seed.result
 
     if provider == "openrouter":
-        token = get_env_prefer_dotenv("OPENROUTER_API_KEY")
-        if token and seed.upsert(
-            "env:OPENROUTER_API_KEY",
-            _env_payload(env_var="OPENROUTER_API_KEY", token=token, base_url=OPENROUTER_BASE_URL),
-        ):
-            _warn_env_ingestion_once(provider, "OPENROUTER_API_KEY")
-        return seed.result
+        # Prefer ~/.hermes/.env over os.environ
+        token = _get_env_prefer_dotenv("OPENROUTER_API_KEY")
+        if token:
+            source = "env:OPENROUTER_API_KEY"
+            if _is_source_suppressed(provider, source):
+                return changed, active_sources
+            active_sources.add(source)
+            ingested = _upsert_entry(
+                entries,
+                provider,
+                source,
+                _env_payload(
+                    source=source,
+                    env_var="OPENROUTER_API_KEY",
+                    token=token,
+                    base_url=OPENROUTER_BASE_URL,
+                ),
+            )
+            changed |= ingested
+            if ingested:
+                _warn_env_ingestion_once(provider, "OPENROUTER_API_KEY")
+        return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:
@@ -3178,20 +3522,33 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 "",
             )
             if model_provider == "custom" and model_base_url and model_api_key:
-                # The pool may be keyed under the durable ``providers.<key>``
-                # slug or legacy ``custom:<name>``; accept any candidate, or
-                # seeding is skipped when the pool holds the other identity.
-                # Check if this model's base_url matches our custom provider. See #100413.
+                # Check if this model's base_url matches our custom provider.
+                # The pool may be keyed under either the durable
+                # ``providers.<key>`` slug or the legacy ``custom:<name>``
+                # namespace, so accept the match against any candidate —
+                # comparing against the single preferred key silently skips
+                # seeding when the pool holds the other identity (verified
+                # regression from PR #100413 review).
                 matched_keys = {
-                    str(key).strip().lower() for key in custom_provider_pool_key_candidates(model_base_url)
+                    str(key).strip().lower()
+                    for key in custom_provider_pool_key_candidates(model_base_url)
                 }
                 if pool_key in matched_keys:
-                    seed.upsert("model_config", {
-                        "auth_type": AUTH_TYPE_API_KEY,
-                        "access_token": model_api_key,
-                        "base_url": model_base_url,
-                        "label": "model_config",
-                    })
+                    source = "model_config"
+                    if not _is_suppressed(pool_key, source):
+                        active_sources.add(source)
+                        changed |= _upsert_entry(
+                            entries,
+                            pool_key,
+                            source,
+                            {
+                                "source": source,
+                                "auth_type": AUTH_TYPE_API_KEY,
+                                "access_token": model_api_key,
+                                "base_url": model_base_url,
+                                "label": "model_config",
+                            },
+                        )
     except Exception:
         pass
 
@@ -3202,7 +3559,9 @@ def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
         # One-time heal for installs that forked this grant across profiles
-        # before the clone-strip / root write-through existed (#100339).
+        # BEFORE the clone-strip / root-write-through existed: consolidate the
+        # profile's copy into root so the read below borrows root's grant
+        # (#100339). No-op in classic mode or once the profile is clean.
         auth_mod.heal_forked_single_use_oauth_grants(provider)
     raw_entries = read_credential_pool(provider)
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
@@ -3233,9 +3592,16 @@ def load_pool(provider: str) -> CredentialPool:
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
-        changed |= singleton_changed or env_changed
-        # ``load_pool()`` is a non-destructive read for env-seeded entries
-        # (#9331); file-backed singletons still prune when their file is gone.
+        changed = (
+            raw_needs_sanitization
+            or raw_needs_auth_normalization
+            or singleton_changed
+            or env_changed
+        )
+        # ``load_pool()`` is a non-destructive read for env-seeded entries: a
+        # process missing a provider env var must not delete the persisted
+        # pool entry for every other process (#9331). File-backed singletons
+        # still prune when their backing file is gone.
         borrowing_root_grant = (
             provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
             and bool(disk_ids)
@@ -3244,8 +3610,8 @@ def load_pool(provider: str) -> CredentialPool:
         if borrowing_root_grant:
             # Rows read through the global-root fallback are seeded from the
             # ROOT's singleton files, which this profile cannot see; pruning
-            # them would hide (and, via write-through, delete) the shared
-            # grant. The root's own load_pool() prunes.
+            # them as "backing file gone" would hide (and, via write-through,
+            # delete) the shared grant. The root's own load_pool() prunes.
             borrowed = [e for e in entries if e.id in disk_ids]
             others = [e for e in entries if e.id not in disk_ids]
             changed |= _prune_stale_seeded_entries(
@@ -3254,7 +3620,9 @@ def load_pool(provider: str) -> CredentialPool:
             entries[:] = borrowed + others
         else:
             changed |= _prune_stale_seeded_entries(
-                entries, singleton_sources | env_sources, prune_env_sources=False,
+                entries,
+                singleton_sources | env_sources,
+                prune_env_sources=False,
             )
         changed |= _normalize_pool_priorities(provider, entries)
 
@@ -3266,8 +3634,9 @@ def load_pool(provider: str) -> CredentialPool:
             removed_ids=disk_ids - new_ids,
         )
     pool = CredentialPool(provider, entries)
-    # Remember the root's borrowed rows so a later ``add_entry`` in this
-    # profile leaves them out of the profile's own store (#100339).
+    # Remember which rows are the root's grant (borrowed via fallback) so a
+    # later ``add_entry`` in this profile can leave them out of the profile's
+    # own store (#100339).
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
         pool._borrowed_root_ids = set(disk_ids)
     return pool

@@ -294,17 +294,20 @@ export function openUpdatesWindow(target: UpdateTarget = activeUpdateTarget()): 
  * through the everything-flow so "update" means every machine, not just the
  * active target — the single-target ternary is what left remote-mode users
  * updating the backend forever while the GUI itself went stale.
+ *
+ * An explicit `target` opts out of both: the caller is acting on one named
+ * machine's status and must not fan out to the others.
  */
-export function startActiveUpdate(): void {
-  if (hasMultipleUpdateTargets()) {
+export function startActiveUpdate(target?: UpdateTarget): void {
+  if (!target && hasMultipleUpdateTargets()) {
     $updateOverlayOpen.set(true)
     void applyEverythingUpdate()
 
     return
   }
 
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
-  $updateOverlayTarget.set(target)
+  const effective = target ?? activeUpdateTarget()
+  $updateOverlayTarget.set(effective)
   $updateOverlayOpen.set(true)
   void (effective === 'backend' ? applyBackendUpdate() : applyUpdates())
 }
@@ -335,7 +338,7 @@ export function requestActiveUpdate(): void {
     }
   }
 
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+  const target = activeUpdateTarget()
   const status = target === 'backend' ? $backendUpdateStatus.get() : $updateStatus.get()
 
   if ((status?.behind ?? 0) > 0 || status?.updateAvailable) {
@@ -898,6 +901,12 @@ export function applyEverythingUpdate(): Promise<void> {
 async function runEverythingUpdate(): Promise<void> {
   $updateEverything.set({ running: true })
 
+  // Snapshot the client status before any leg runs: the backend leg's own
+  // post-update nudge re-checks the client and overwrites `$updateStatus`,
+  // including with an error row when the bridge is unreachable. Step 3 needs a
+  // pre-flow value to fall back on when its own live check can't answer.
+  const cachedClientStatus = $updateStatus.get()
+
   try {
     // 1. Active backend first (remote mode), with the detailed overlay flow.
     //    Its own finish path re-checks and nudges, but the everything-flow
@@ -954,7 +963,14 @@ async function runEverythingUpdate(): Promise<void> {
 
     // 3. The client last — its apply relaunches or hands off the app, so it
     //    must come after every dispatch above. Skipped when already current.
-    const clientStatus = $updateStatus.get() ?? (await checkUpdates())
+    //    Re-check rather than trusting `$updateStatus`: the cached value can be
+    //    up to a poll interval (30 min) old and was captured BEFORE the backend
+    //    update above, so a cached `behind: 0` would skip the client leg and
+    //    leave the app stale — the exact failure this flow exists to prevent.
+    //    `checkUpdates()` resolves with an error-status rather than rejecting,
+    //    so fall back to the pre-flow snapshot when the live check can't answer.
+    const freshClientStatus = await checkUpdates().catch(() => null)
+    const clientStatus = freshClientStatus?.error ? cachedClientStatus : (freshClientStatus ?? cachedClientStatus)
 
     if ((clientStatus?.behind ?? 0) > 0 || clientStatus?.updateAvailable) {
       $updateOverlayTarget.set('client')

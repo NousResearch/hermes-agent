@@ -287,12 +287,30 @@ def _wayland_environment_context(report: Report) -> Optional[Report]:
         return None
     return {"scope": "cli_process", "gateway_environment_checked": False}
 
-def _print_text_report(report: Report, color: bool, *, identity: Optional[Report] = None,
-                       environment: Optional[Report] = None) -> None:
-    """Render like `cua-driver call health_report`: header (CLI --version preferred over health_report's stale
-    ``driver_version``), identity block, environment note, one line per check + indented hint/``data`` rows
-    (support staff need them)."""
-    platform, report_v, overall = (report.get(k, "?") for k in ("platform", "driver_version", "overall"))
+def _wayland_environment_context(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if report.get("platform") != "linux" or not os.environ.get("WAYLAND_DISPLAY"):
+        return None
+    return {"scope": "cli_process", "gateway_environment_checked": False}
+
+
+def _print_text_report(
+    report: Dict[str, Any],
+    color: bool,
+    *,
+    identity: Optional[Dict[str, Any]] = None,
+    environment: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Render the report in the same style as `cua-driver call health_report`
+    would (one line per check + a summary footer).
+
+    When *identity* is provided (resolved binary + ``--version``), the header
+    prefers the CLI version if health_report's ``driver_version`` disagrees,
+    and a short identity block is printed under the header.
+    """
+    schema = report.get("schema_version", "?")
+    platform = report.get("platform", "?")
+    report_v = report.get("driver_version", "?")
+    overall = report.get("overall", "?")
     identity = identity or {}
     cli_v = identity.get("cli_version") or ""
     header_v = cli_v or report_v  # binary's own --version wins when health_report is stale
@@ -302,15 +320,35 @@ def _print_text_report(report: Report, color: bool, *, identity: Optional[Report
     status_cols = {"pass": green, "fail": red, "skip": dim}
     lines = [f"{_OVERALL_GLYPH.get(overall, '•')} cua-driver {header_v} on {platform} — {col_for}{overall}{reset}"]
     if identity.get("resolved_binary"):
-        lines.append(f"  {dim}binary: {identity['resolved_binary']}{reset}")
-    if cli_v and report_v and str(report_v) not in str(cli_v) and str(cli_v) not in str(report_v):  # clearly differ
-        lines += [f"  {dim}--version: {cli_v}{reset}", f"  {dim}health_report.driver_version: {report_v}{reset}"]
+        print(f"  {col_dim}binary: {identity['resolved_binary']}{col_reset}")
+    if cli_v and report_v and str(report_v) not in str(cli_v) and str(cli_v) not in str(report_v):
+        # Only annotate when the free-form strings clearly differ.
+        print(
+            f"  {col_dim}--version: {cli_v}{col_reset}"
+        )
+        print(
+            f"  {col_dim}health_report.driver_version: {report_v}{col_reset}"
+        )
+    elif cli_v and not mismatch:
+        # Still show the resolved path; version already matches header.
+        pass
     if environment:
-        lines += [f"  {dim}environment: current CLI process{reset}",
-                  f"  {dim}gateway environment was not checked; active gateway computer_use sessions use that process environment{reset}"]
-    if identity.get("version_mismatch"):
-        lines += [f"  {yellow}⚠️ version mismatch: health_report says {report_v!r} but binary --version is {cli_v!r}{reset}",
-                  f"  {dim}→ trust --version / packages/current for debugging; health_report's binary_version check can lag on Windows{reset}"]
+        print(f"  {col_dim}environment: current CLI process{col_reset}")
+        print(
+            f"  {col_dim}gateway environment was not checked; active gateway "
+            f"computer_use sessions use that process environment{col_reset}"
+        )
+    if mismatch:
+        warn = col_yellow if color else ""
+        print(
+            f"  {warn}⚠️ version mismatch: health_report says {report_v!r} "
+            f"but binary --version is {cli_v!r}{col_reset}"
+        )
+        print(
+            f"  {col_dim}→ trust --version / packages/current for debugging; "
+            f"health_report's binary_version check can lag on Windows{col_reset}"
+        )
+
     for check in report.get("checks", []):
         status = check.get("status", "?")
         lines.append(f"  {_STATUS_GLYPH.get(status, '•')} {status_cols.get(status, '')}{check.get('name', '?')}{reset}: {check.get('message') or ''}")
@@ -354,15 +392,31 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
     report = _apply_display_count_guard(report)
     identity = _build_identity(binary, report)
     environment = _wayland_environment_context(report)
+
     if json_output:
-        # Additive envelope: upstream keys preserved, identity under hermes_identity (and environment under
-        # hermes_environment when present) so overall/checks parsers keep working.
-        payload = {**report, "hermes_identity": identity}
+        # Additive envelope: preserve the upstream health_report keys and
+        # attach Hermes identity under hermes_identity so existing parsers
+        # that only read overall/checks keep working.
+        payload = dict(report)
+        payload["hermes_identity"] = identity
         if environment:
             payload["hermes_environment"] = environment
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:
-        _print_text_report(report, color=sys.stdout.isatty() if color is None else bool(color), identity=identity,
-                           environment=environment)
-    return 0 if report.get("overall") == "ok" else 1  # unknown/missing overall must not look like success
+        if color is None:
+            color = sys.stdout.isatty()
+        _print_text_report(
+            report,
+            color=bool(color),
+            identity=identity,
+            environment=environment,
+        )
+
+    overall = report.get("overall")
+    if overall in ("degraded", "failed"):
+        return 1
+    if overall != "ok":
+        # Unknown / missing overall after fallback should not look like success.
+        return 1
+    return 0

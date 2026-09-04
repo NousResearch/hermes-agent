@@ -10,7 +10,16 @@ from typing import Dict, List, Any, Set, Optional, Tuple
 # entries are further gated by their tools' check_fns.
 _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
+    # Terminal + process management
     "terminal", "process_manage",
+    # NOTE: the desktop GUI affordances (read_terminal, open_preview, …) are
+    # deliberately NOT here, for the same reason as the `project` tools below:
+    # they only work where a GUI renderer can answer them. They live in the
+    # `desktop_ui` toolset and are enabled solely by the GUI gateway for a
+    # session whose SOURCE is the desktop app (tui_gateway/server.py::
+    # _load_enabled_toolsets) — never keyed on a process env var, which is
+    # blind to a desktop client talking to a remote/cloud backend.
+    # File manipulation
     "read_file", "write_file", "patch", "search_files",
     "vision_analyze", "image_generate",
     # Skills
@@ -22,11 +31,20 @@ _HERMES_CORE_TOOLS = [
     "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
     "text_to_speech",
+    # Planning & memory
     "todo_list", "memory",
+    # NOTE: the desktop Project tools (project_list/create/switch) are
+    # deliberately NOT here. They only make sense where a GUI can follow the
+    # move, so they live in the `project` toolset and are enabled solely by the
+    # GUI gateway (tui_gateway/server.py::_load_enabled_toolsets) — keeping them
+    # off every CLI/messaging/cron schema (narrow waist).
+    # Session history search
     "session_search",
     "clarify",
     "execute_code", "delegate_task",
+    # Cronjob management
     "cronjob_manage",
+    # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
@@ -139,7 +157,7 @@ TOOLSETS = {
 
     "terminal": {
         "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process_manage"],
         "includes": []
     },
     
@@ -163,7 +181,7 @@ TOOLSETS = {
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
-        "tools": ["cronjob"],
+        "tools": ["cronjob_manage"],
         "includes": []
     },
     
@@ -182,7 +200,7 @@ TOOLSETS = {
     
     "todo": {
         "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
+        "tools": ["todo_list"],
         "includes": []
     },
     
@@ -226,7 +244,7 @@ TOOLSETS = {
             "desktop_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp", "tour", "tip",
+            "setup_mcp", "gui_tour", "show_tip",
         ],
         "includes": []
     },
@@ -364,25 +382,33 @@ TOOLSETS = {
     ),
 
     # Scenario-specific toolsets
-    "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
-    "safe": _ts("Safe toolkit without terminal access", [], includes=["web", "vision", "image_gen"]),
+    
+    "debugging": {
+        "description": "Debugging and troubleshooting toolkit",
+        "tools": ["terminal", "process_manage"],
+        "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
+    },
+    
+    "safe": {
+        "description": "Safe toolkit without terminal access",
+        "tools": [],
+        "includes": ["web", "vision", "image_gen"]
+    },
 
-    # Coding posture, auto-selected in a code workspace (agent/coding_context.py).
-    # `desktop_ui` is folded in separately by the GUI gateway for desktop sessions.
-    # posture=True: per-session posture, never auto-recovered into platform tool
-    # config (see the non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
-    "coding": _ts(
-        "Coding-focused toolset: files, terminal, search, web docs, skills, todo, "
-        "delegate, vision, browser",
-        _CODING_TOOLS,
-        posture=True,
-    ),
-
-    "hermes-acp": {
-        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
+    # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
+    # code workspace; see agent/coding_context.py. Keeps everything you reach
+    # for while pairing on code and drops the rest (messaging, tts, image_gen,
+    # spotify, home-assistant, cron, computer-use).
+    #
+    # The GUI pane/browser affordances are NOT listed here: they belong to the
+    # client surface, not the posture, so the GUI gateway folds `desktop_ui`
+    # in alongside this selection for a desktop-sourced session (see
+    # tui_gateway/server.py::_load_enabled_toolsets).
+    "coding": {
+        "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -391,7 +417,40 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
-            "todo", "memory",
+            "todo_list", "memory",
+            "session_search", "clarify",
+            "execute_code", "delegate_task",
+        ],
+        "includes": [],
+        # Posture toolset: selected per-session by agent/coding_context.py,
+        # never auto-recovered into per-platform tool config (see the
+        # non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
+        "posture": True,
+    },
+    
+    # ==========================================================================
+    # Full Hermes toolsets (CLI + messaging platforms)
+    #
+    # All platforms share the same core tools. Note: agents do NOT get an
+    # agent-callable send_message tool — outbound platform messaging is handled
+    # outside the agent loop (cron delivery, the gateway kanban notifier, and
+    # the `hermes send` CLI), not by the model deciding to send on its own.
+    # ==========================================================================
+
+    "hermes-acp": {
+        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
+        "tools": [
+            "web_search", "web_extract",
+            "terminal", "process_manage",
+            "read_file", "write_file", "patch", "search_files",
+            "vision_analyze",
+            "skills_list", "skill_view", "skill_manage",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_exec",
+            "todo_list", "memory",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -404,7 +463,7 @@ TOOLSETS = {
             # Web
             "web_search", "web_extract",
             # Terminal + process management
-            "terminal", "process",
+            "terminal", "process_manage",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
@@ -418,13 +477,13 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
             # Planning & memory
-            "todo", "memory",
+            "todo_list", "memory",
             # Session history search
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management
-            "cronjob",
+            "cronjob_manage",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 

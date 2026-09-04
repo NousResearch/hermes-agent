@@ -23,12 +23,19 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-# Per-profile by design (anchored on get_hermes_home(), see cron/jobs.py). Optional test override;
-# production resolves the path at CALL time so multiplexed profile ticks (set_hermes_home_override)
-# cannot leak one profile's suggestions into the import-time home.
-# Per-profile by design (issue #4707): suggestions live alongside the active profile's cron store. Anchor on
-# get_hermes_home() (profile home), not the shared default root. Same pattern as cron/executions.py.
+# Per-profile by design (issue #4707): suggestions live alongside the active
+# profile's cron store. Anchor on get_hermes_home() (profile home), not the
+# shared default root. See cron/jobs.py for the full rationale.
+#
+# Optional test override. Production resolves the path at call time so
+# multiplexed profile ticks (set_hermes_home_override) cannot leak one
+# profile's suggestions into the import-time home (#86519). Same pattern as
+# cron/executions.py.
 SUGGESTIONS_FILE: Optional[Path] = None
+
+
+def _current_suggestions_file() -> Path:
+    return SUGGESTIONS_FILE or (get_hermes_home().resolve() / "cron" / "suggestions.json")
 
 # Protects load->modify->save cycles (the background review fork and the main agent can both write).
 _suggestions_lock = threading.Lock()
@@ -49,7 +56,7 @@ def _current_suggestions_file() -> Path:
 def _ensure_dir() -> None:
     from cron.jobs import _ensure_cron_dir
 
-    _ensure_cron_dir(CRON_DIR)
+    _ensure_cron_dir(_current_suggestions_file().parent)
 
 
 def _load_raw() -> Dict[str, Any]:
@@ -72,8 +79,25 @@ def _load_raw() -> Dict[str, Any]:
 
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
-    payload = {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()}
-    atomic_json_write(_current_suggestions_file(), payload, mode=0o600)
+    suggestions_file = _current_suggestions_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(suggestions_file.parent), suffix=".tmp", prefix=".sugg_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(
+                {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()},
+                f,
+                indent=2,
+            )
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, suggestions_file)
+        _secure_file(suggestions_file)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def load_suggestions() -> List[Dict[str, Any]]:

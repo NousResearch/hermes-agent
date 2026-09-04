@@ -952,7 +952,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         submission: { submitLiteralRef, submitRef },
-        system: { bellOnComplete, stdout, sys },
+        system: { bellOnComplete, bellOnPrompt, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,

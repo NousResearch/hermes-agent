@@ -29,10 +29,16 @@ AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, bounded_put
-from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.base import (
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+)
 from utils import env_float
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
@@ -252,6 +258,13 @@ class WeComAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
         extra = config.extra or {}
+        self._bot_id = str(extra.get("bot_id") or _get_scoped_secret("WECOM_BOT_ID", "")).strip()
+        self._secret = str(extra.get("secret") or _get_scoped_secret("WECOM_SECRET", "")).strip()
+        self._ws_url = str(
+            extra.get("websocket_url")
+            or extra.get("websocketUrl")
+            or _get_scoped_secret("WECOM_WEBSOCKET_URL", DEFAULT_WS_URL)
+        ).strip() or DEFAULT_WS_URL
 
         self._dm_policy = str(extra.get("dm_policy") or _get_scoped_secret("WECOM_DM_POLICY", "pairing")).strip().lower()
         # dm_policy already honors WECOM_DM_POLICY, so the allowlist must honor
@@ -609,7 +622,7 @@ class WeComAdapter(BasePlatformAdapter):
         except ImportError:
             _ssl_ctx = _ssl.create_default_context()
         _connector = aiohttp.TCPConnector(ssl=_ssl_ctx)
-        self._session = aiohttp.ClientSession(trust_env=True, connector=_connector)
+        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_connector)
         self._ws = await self._session.ws_connect(
             self._ws_url,
             heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,
@@ -1330,6 +1343,147 @@ class WeComAdapter(BasePlatformAdapter):
         quote_type = str(quote.get("msgtype") or "").lower()
         reply_text = _content_of(quote, quote_type) or None if quote_type in ("text", "voice") else None
         return "\n".join(part for part in text_parts if part).strip(), reply_text
+
+    async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+        """Best-effort extraction of inbound media to local cache paths."""
+        media_paths: List[str] = []
+        media_types: List[str] = []
+        refs: List[Tuple[str, Dict[str, Any]]] = []
+        msgtype = str(body.get("msgtype") or "").lower()
+
+        if msgtype == "mixed":
+            _raw_mixed = body.get("mixed")
+            mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
+            _raw_items = mixed.get("msg_item")
+            items = _raw_items if isinstance(_raw_items, list) else []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("msgtype") or "").lower()
+                if item_type == "image" and isinstance(item.get("image"), dict):
+                    refs.append(("image", item["image"]))
+        else:
+            if isinstance(body.get("image"), dict):
+                refs.append(("image", body["image"]))
+            if msgtype == "file" and isinstance(body.get("file"), dict):
+                refs.append(("file", body["file"]))
+            # Handle appmsg (WeCom AI Bot attachments with PDF/Word/Excel)
+            if msgtype == "appmsg" and isinstance(body.get("appmsg"), dict):
+                appmsg = body["appmsg"]
+                if isinstance(appmsg.get("file"), dict):
+                    refs.append(("file", appmsg["file"]))
+                elif isinstance(appmsg.get("image"), dict):
+                    refs.append(("image", appmsg["image"]))
+
+        quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
+        quote_type = str(quote.get("msgtype") or "").lower()
+        if quote_type == "image" and isinstance(quote.get("image"), dict):
+            refs.append(("image", quote["image"]))
+        elif quote_type == "file" and isinstance(quote.get("file"), dict):
+            refs.append(("file", quote["file"]))
+
+        for kind, ref in refs:
+            cached = await self._cache_media(kind, ref)
+            if cached:
+                path, content_type = cached
+                media_paths.append(path)
+                media_types.append(content_type)
+
+        return media_paths, media_types
+
+    async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        """Cache an inbound image/file/media reference to local storage."""
+        if "base64" in media and media.get("base64"):
+            try:
+                raw = self._decode_base64(media["base64"])
+            except Exception as exc:
+                logger.debug("[%s] Failed to decode %s base64 media: %s", self.name, kind, exc)
+                return None
+
+            if kind == "image":
+                ext = self._detect_image_ext(raw)
+                try:
+                    return await cache_image_from_bytes_async(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                except ValueError as exc:
+                    logger.warning("[%s] Rejected non-image bytes: %s", self.name, exc)
+                    return None
+
+            filename = str(media.get("filename") or media.get("name") or "wecom_file")
+            return await cache_document_from_bytes_async(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+        url = str(media.get("url") or "").strip()
+        if not url:
+            return None
+
+        try:
+            raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
+        except Exception as exc:
+            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            return None
+
+        aes_key = str(media.get("aeskey") or "").strip()
+        if aes_key:
+            try:
+                raw = self._decrypt_file_bytes(raw, aes_key)
+            except Exception as exc:
+                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                return None
+
+        content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
+        if kind == "image":
+            ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
+            try:
+                return await cache_image_from_bytes_async(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+            except ValueError as exc:
+                logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
+                return None
+
+        filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
+        return await cache_document_from_bytes_async(raw, filename), content_type
+
+    @staticmethod
+    def _decode_base64(data: str) -> bytes:
+        payload = data.split(",", 1)[-1].strip()
+        return base64.b64decode(payload)
+
+    @staticmethod
+    def _detect_image_ext(data: bytes) -> str:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if data.startswith((b"GIF87a", b"GIF89a")):
+            return ".gif"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return ".webp"
+        return ".jpg"
+
+    @staticmethod
+    def _mime_for_ext(ext: str, fallback: str = "application/octet-stream") -> str:
+        return mimetypes.types_map.get(ext.lower(), fallback)
+
+    @staticmethod
+    def _guess_extension(url: str, content_type: str, fallback: str) -> str:
+        ext = mimetypes.guess_extension(content_type) if content_type else None
+        if ext:
+            return ext
+        path_ext = Path(urlparse(url).path).suffix
+        if path_ext:
+            return path_ext
+        return fallback
+
+    @staticmethod
+    def _guess_filename(url: str, content_disposition: Optional[str], content_type: str) -> str:
+        if content_disposition:
+            match = re.search(r'filename="?([^";]+)"?', content_disposition)
+            if match:
+                return match.group(1)
+
+        name = Path(urlparse(url).path).name or "document"
+        if "." not in name:
+            ext = mimetypes.guess_extension(content_type) or ".bin"
+            name = f"{name}{ext}"
+        return name
 
     @staticmethod
     def _derive_message_type(body: Dict[str, Any], text: str, media_types: List[str]) -> MessageType:

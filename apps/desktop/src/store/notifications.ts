@@ -180,8 +180,7 @@ const ERROR_SUMMARIES: ErrorSummaryRule[] = [
   },
   {
     test: msg => /Restart required:/i.test(msg),
-    summarize: () => translateNow('notifications.errors.codeSkewRestartRequired'),
-    action: () => RECOVERY_ACTIONS.restartHermes()
+    summarize: () => translateNow('notifications.errors.codeSkewRestartRequired')
   }
 ]
 

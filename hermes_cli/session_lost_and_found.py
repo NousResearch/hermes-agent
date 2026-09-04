@@ -13,15 +13,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
-
-from hermes_state_ids import SESSION_ID_PATTERN  # timestamp prefix: strongest sentinel for schema-less rows
-from hermes_cli.session_recovery import (
-    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
-    _placeholder_titles, _quoted_columns, _table_columns,
-)
-
 logger = logging.getLogger(__name__)
+
+# Hermes session ids are timestamps: 20260812_135332_ab12cd. This is the
+# strongest sentinel available for classifying schema-less rows.
+SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 
 MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
@@ -55,10 +51,10 @@ _LAYOUT_SENTINELS: dict[str, tuple[str, ...]] = {
 _EPOCH_LOW = 1_000_000_000.0   # 2001
 _EPOCH_HIGH = 4_000_000_000.0  # 2096
 
-# Title label/prefix of every session row this lane synthesises (legacy-layout rows and stubbed parents).
-# The recovery verifier keys on the prefix to tell synthesised rows from positionally mapped ones.
-_STUB_TITLE_LABEL = "best-effort recovered"
-STUB_TITLE_PREFIX = f"[{_STUB_TITLE_LABEL}"
+# Title prefix of every session row this lane synthesises (legacy-layout rows
+# and stubbed parents). The recovery verifier keys on it to tell synthesised
+# rows from positionally mapped ones.
+STUB_TITLE_PREFIX = "[best-effort recovered"
 
 SQLITE3_CLI_GUIDANCE = (
     "A last-resort page-level salvage is available when a `.recover`-capable `sqlite3` command-line shell is "
@@ -94,15 +90,50 @@ _WAL_RESET_VULNERABLE_GUIDANCE = (
     "install sqlite` or the precompiled sqlite-tools from sqlite.org)"
 )
 
+# SQLite's WAL-reset bug (https://sqlite.org/wal.html#walresetbug) lets a
+# fresh opener unlink a live WAL/SHM sidecar pair and split the database into
+# two concurrent generations whose acknowledged writes can silently vanish.
+# It is real in CLI builds up to 3.51.2; fixed in 3.51.3+ with backports
+# 3.50.7 and 3.44.6 — the same version gate hermes_state applies to the
+# embedded library (#69784). The system `sqlite3` CLI on Debian/Ubuntu is
+# routinely in the vulnerable band (e.g. 3.45.1), and #100368's forensics
+# caught exactly this shell converting a live Hermes state.db into two
+# generations. A salvage shell must therefore be version-gated, not just
+# capability-gated, before it is pointed at (a copy of) a Hermes database.
+#
+# The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
+# the installer/update gates) so the embedded runtime and the salvage shell
+# can never disagree about which versions are safe.
+from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
+
+_WAL_RESET_VULNERABLE_GUIDANCE = (
+    "salvage against a Hermes database with the WAL-reset bug "
+    "(https://sqlite.org/wal.html#walresetbug, fixed in 3.51.3+ / backports "
+    "3.50.7 / 3.44.6; the vulnerable fresh-opener can unlink a live WAL/SHM "
+    "pair and split the database into two generations, losing acknowledged "
+    "writes — #100368). Install a fixed sqlite3 CLI (3.51.3+, e.g. `brew "
+    "install sqlite` or the precompiled sqlite-tools from sqlite.org)"
+)
+
 
 class LostAndFoundError(RuntimeError):
     """Raised when the CLI .recover pass cannot produce a usable database."""
 
 
 def _parse_sqlite3_cli_version(binary: str) -> Optional[tuple[int, int, int]]:
-    """Version of the sqlite3 CLI at *binary* via ``--version``, or None when it cannot run or be parsed."""
+    """Parse the reporting version of the sqlite3 CLI at *binary*.
+
+    Returns ``None`` when the CLI cannot be executed or its version line
+    cannot be understood (older shells print the version only in
+    interactive mode; the modern ``--version`` flag covers every build in
+    the supported range).
+    """
     try:
-        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30)
+        probe = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            timeout=30,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     if probe.returncode != 0:
@@ -117,19 +148,34 @@ _last_cli_refusal: dict[str, Any] = {}
 
 
 def find_sqlite3_cli_refusal() -> dict[str, Any]:
-    """Why the last :func:`find_sqlite3_cli` call in this process refused: ``{"reason": ...}`` with reason in
-    ``missing``, ``no_dbpage`` (shell cannot run ``.recover``), ``wal_reset_vulnerable``; empty if it succeeded."""
+    """Why the last :func:`find_sqlite3_cli` call in this process refused.
+
+    ``{"reason": ...}`` with ``reason`` in ``missing``, ``no_dbpage`` (the
+    shell cannot run ``.recover``), or ``wal_reset_vulnerable``; empty when
+    the last probe found a usable shell or never ran.
+    """
     return dict(_last_cli_refusal)
 
 
 def find_sqlite3_cli() -> Optional[str]:
-    """A salvage-safe ``.recover``-capable sqlite3 CLI path, or None.
+    """Return a salvage-safe ``.recover``-capable sqlite3 CLI path, or None.
 
-    PATH presence is not enough, and neither is ``.recover`` support alone: (1) distro builds can lack the
-    ``sqlite_dbpage`` virtual table ``.recover`` needs — probed once on a scratch DB; (2) a capable CLI can still
-    carry the WAL-reset opener bug (fixed 3.51.3+ / backports 3.50.7 / 3.44.6). The salvage lane only runs it on a
-    snapshot copy, but refusing it keeps vulnerable shells out of the documented workflow. Refusals are recorded
-    for :func:`find_sqlite3_cli_refusal` so callers can say exactly what to install.
+    PATH presence is not enough, and neither is `.recover` support alone:
+
+    1. Distro builds (e.g. Ubuntu's) can ship a sqlite3 shell compiled
+       without the ``sqlite_dbpage`` virtual table that ``.recover``
+       requires — those fail every recovery with ``no such table:
+       sqlite_dbpage``. Capability is probed on a scratch DB once.
+    2. A `.recover`-capable CLI can still carry the WAL-reset opener bug
+       (fixed 3.51.3+ / backports 3.50.7 / 3.44.6). The salvage lane runs
+       the CLI against a *snapshot copy* of the source, so it cannot hit
+       the live sidecars itself; but the same binary is what operators
+       reach for when following the old guidance, and refusing it here
+       keeps the vulnerable shells out of the documented workflow
+       entirely. Probe the version once.
+
+    Refusals are recorded for :func:`find_sqlite3_cli_refusal` so callers
+    can explain exactly what to install instead of a generic "not found".
     """
     global _last_cli_refusal
     _last_cli_refusal = {}
@@ -153,7 +199,10 @@ def find_sqlite3_cli() -> Optional[str]:
             "reason": "wal_reset_vulnerable",
             "binary": binary,
             "version": version_str,
-            "detail": f"reports version {version_str}, which has " + _WAL_RESET_VULNERABLE_GUIDANCE,
+            "detail": (
+                f"reports version {version_str}, which has "
+                + _WAL_RESET_VULNERABLE_GUIDANCE
+            ),
         }
         return None
     return binary
@@ -651,13 +700,24 @@ def _execute_insert(
 
 def _copy_direct_tables(lf_conn: sqlite3.Connection, dest: sqlite3.Connection) -> dict[str, int]:
     """Copy rows .recover managed to attribute to real canonical tables."""
+
+    # Lazy import: session_recovery imports this module inside a function, so
+    # a module-level import here would be circular.
+    from hermes_cli.session_recovery import (
+        _AUXILIARY_TABLE_SCHEMAS,
+        _AUXILIARY_TABLES,
+        _CANONICAL_TABLES,
+    )
+
     copied: dict[str, int] = {}
     for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES):
         source_columns = _table_columns(lf_conn, table)
         if not source_columns:
             continue
         dest_columns = _table_columns(dest, table)
-        if not dest_columns and table in _AUXILIARY_TABLE_SCHEMAS:  # lazily-created gateway table
+        if not dest_columns and table in _AUXILIARY_TABLE_SCHEMAS:
+            # Lazily-created gateway table: base SessionDB never made it on
+            # the fresh destination, so create it before copying.
             _AUXILIARY_TABLE_SCHEMAS[table](dest)
             dest_columns = _table_columns(dest, table)
         columns = [c for c in dest_columns if c in source_columns]
@@ -705,66 +765,60 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
             for lf_table in lf_tables:
                 if _table_columns(lf_conn, lf_table)[:3] != ["rootpgno", "pgno", "nfield"]:
                     continue
-                for row in lf_conn.execute(f'SELECT * FROM "{lf_table}"'):
-                    try:
-                        nfield = int(row[2]) if row[2] is not None else 0
-                    except (TypeError, ValueError):
-                        yield None, None, 0, ()
-                        continue
-                    cells = tuple(row[4 : 4 + max(nfield, 0)])
-                    yield classify_lost_and_found_row(nfield, cells), row[3], nfield, cells
-
-        # Pass 1: stream the population once, keeping only what layout inference needs. The physical
-        # layout is a property of the whole population (one store wrote all of them), so it is inferred
-        # once per kind, not per row.
-        evidence = {kind: LayoutEvidence(kind) for kind in targets}
-        for kind, _, _, cells in records():
-            if kind is None:
-                report["unmapped_rows"] += 1
-            else:
-                evidence[kind].add(cells)
-        layouts = {kind: infer_physical_layouts(evidence[kind], dest_types[kind]) for kind in targets}
-        # Per kind and record width, the column each position resolved to (None where the surviving
-        # layouts disagreed and the cell was left to the destination default).
-        report["inferred_layouts"] = {
-            kind: {str(width): list(layout) for width, layout in by_width.items()}
-            for kind, by_width in layouts.items() if by_width
-        }
-
-        # Pass 2: insert. Records whose width resolved to a layout are mapped by column name (#101409);
-        # the rest take the historical positional prefix, audited by the recovery verifier's plausibility gate.
-        for kind, lf_rowid, nfield, cells in records():
-            if kind is None:
-                continue  # counted in pass 1
-            columns, defaults = targets[kind]
-            layout = layouts[kind].get(len(cells))
-            legacy_minimal = kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD
-            if layout is None and not legacy_minimal:
-                report["unrecognized_layout_rows"] += 1
-                widths = report["unrecognized_layout_widths"].setdefault(kind, [])
-                if len(cells) not in widths:
-                    widths.append(len(cells))
-            try:
-                if layout is not None:
-                    # messages.id is a rowid alias: NULL in the record, carried by the lost_and_found row id.
-                    inserted = _insert_named_row(
-                        dest, kind, layout, cells, columns, defaults,
-                        {"id": lf_rowid} if kind == "messages" else None,
-                    )
-                    report["mapped_by_layout"] += int(inserted)
-                elif legacy_minimal:
-                    # A 14-field record matching no known layout (torn cells, or a pre-history store):
-                    # salvage identity + timing rather than guessing 14 positional meanings.
-                    row_values = (
-                        cells[0], cells[1] if _looks_like_source(cells[1]) else "recovered",
-                        _heuristic_started_at(cells),
-                        f"{STUB_TITLE_PREFIX}] legacy session row (layout unknown)",
-                    )
-                    inserted = dest.execute(
-                        "INSERT OR IGNORE INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)",
-                        row_values,
-                    ).rowcount == 1
-                    report["legacy_minimal_sessions"] += int(inserted)
+                lf_rowid = row[3]
+                cells = tuple(row[4 : 4 + max(nfield, 0)])
+                kind = classify_lost_and_found_row(nfield, cells)
+                if kind is None:
+                    report["unmapped_rows"] += 1
+                    continue
+                try:
+                    if kind == "messages":
+                        values = [lf_rowid, *cells[1 : min(nfield, len(messages_columns))]]
+                        inserted = _insert_prefix_row(
+                            dest, "messages", messages_columns, values,
+                            messages_defaults,
+                        )
+                    elif kind == "session_model_usage":
+                        values = list(cells[: len(usage_columns)])
+                        inserted = _insert_prefix_row(
+                            dest, "session_model_usage", usage_columns, values,
+                            usage_defaults,
+                        )
+                    elif nfield == SESSIONS_LEGACY_MINIMAL_NFIELD:
+                        # A pre-modern layout whose column order is unknown:
+                        # salvage identity + timing rather than guessing 14
+                        # positional meanings.
+                        inserted = bool(
+                            dest.execute(
+                                "INSERT OR IGNORE INTO sessions "
+                                "(id, source, started_at, title) "
+                                "VALUES (?, ?, ?, ?)",
+                                (
+                                    cells[0],
+                                    cells[1] if _looks_like_source(cells[1])
+                                    else "recovered",
+                                    _heuristic_started_at(cells),
+                                    f"{STUB_TITLE_PREFIX}] legacy session "
+                                    "row (layout unknown)",
+                                ),
+                            ).rowcount
+                            == 1
+                        )
+                        if inserted:
+                            report["legacy_minimal_sessions"] += 1
+                    else:
+                        values = list(cells[: min(nfield, len(sessions_columns))])
+                        inserted = _insert_prefix_row(
+                            dest, "sessions", sessions_columns, values,
+                            sessions_defaults,
+                        )
+                except sqlite3.DatabaseError:
+                    report["unmapped_rows"] += 1
+                    continue
+                if inserted:
+                    report["mapped"][
+                        "sessions" if kind == "sessions" else kind
+                    ] += 1
                 else:
                     values = list(cells[:len(columns)])
                     if kind == "messages":
@@ -801,7 +855,20 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
             orphan_ids.setdefault(str(session_id), {"started_at": 0.0, "message_count": 0})
         titles = _placeholder_titles(dest, _STUB_TITLE_LABEL)
         for session_id, info in sorted(orphan_ids.items()):
-            title = next(titles)
+            while True:
+                title = (
+                    f"{STUB_TITLE_PREFIX} {sequence}] session metadata "
+                    "was unreadable"
+                )
+                sequence += 1
+                if (
+                    dest.execute(
+                        "SELECT 1 FROM sessions WHERE title = ? LIMIT 1",
+                        (title,),
+                    ).fetchone()
+                    is None
+                ):
+                    break
             dest.execute(
                 "INSERT INTO sessions (id, source, started_at, title, message_count) "
                 "VALUES (?, 'recovered', ?, ?, ?)",

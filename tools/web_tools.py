@@ -1,20 +1,86 @@
 #!/usr/bin/env python3
 """Generic web_search / web_extract tools over pluggable backends.
 
-Backend is selected during ``hermes tools`` (``web.backend`` in config.yaml; per
-capability via ``web.search_backend`` / ``web.extract_backend``). Every vendor
-implementation lives in ``plugins/web/<vendor>/provider.py`` and registers with
-``agent.web_search_registry``; this module owns selection, safety gates,
-caching, keyless rescue, and the truncate-and-store result pipeline.
-Debug: ``WEB_TOOLS_DEBUG=true`` writes ``logs/web_tools_debug_<UUID>.json``.
+This module provides generic web tools that work with multiple backend providers.
+Backend is selected during ``hermes tools`` setup (web.backend in config.yaml).
+When available, Hermes can route Firecrawl calls through a Nous-hosted tool-gateway
+for Nous Subscribers only.
+
+Available tools:
+- web_search_tool: Search the web for information
+- web_extract_tool: Extract content from specific web pages
+
+Backend compatibility:
+- Exa: https://exa.ai (search, extract)
+- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
+- Parallel: https://docs.parallel.ai (search, extract)
+- Tavily: https://tavily.com (search, extract; keyed or opt-in keyless)
+
+LLM Processing:
+- Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
+- Extracts key excerpts and creates markdown summaries to reduce token usage
+
+Debug Mode:
+- Set WEB_TOOLS_DEBUG=true to enable detailed logging
+- Creates web_tools_debug_UUID.json in ./logs directory
+- Captures all tool calls, results, and compression metrics
+
+Usage:
+    from web_tools import web_search_tool, web_extract_tool
+    
+    # Search the web
+    results = web_search_tool("Python machine learning libraries", limit=3)
+    
+    # Extract content from URLs  
+    content = web_extract_tool(["https://example.com"], format="markdown")
 """
 
 import json
 import logging
 import os
-from typing import List, Any, Optional
-# Per-vendor client cache slots; plugins read/write these via tools.web_tools (tests reset them to None).
-_firecrawl_client = _firecrawl_client_config = _parallel_client = _async_parallel_client = _exa_client = None
+import re
+import asyncio
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
+# After the web-provider plugin migration (PR #25182), the Firecrawl SDK
+# proxy, client construction, and response-shape normalizers all live in
+# plugins.web.firecrawl.provider. We re-export the names that external
+# code, integration tests, and unit-test patches reach for so the public
+# surface stays stable.
+if TYPE_CHECKING:
+    from firecrawl import Firecrawl  # noqa: F401 — type hints only
+from plugins.web.firecrawl.provider import (
+    Firecrawl,  # noqa: F401  # re-exported for tests that mock.patch("tools.web_tools.Firecrawl")
+    _firecrawl_backend_help_suffix,
+    _get_firecrawl_client,  # noqa: F401  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
+    _get_firecrawl_gateway_url,
+    _is_tool_gateway_ready,
+    check_firecrawl_api_key,
+)
+# Tavily helpers re-exported for backward-compat with existing unit tests
+# (tests/tools/test_web_tools_tavily.py imports these names directly).
+from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat names
+    _normalize_tavily_documents,
+    _normalize_tavily_search_results,
+    _tavily_request,
+)
+# Parallel + Exa clients re-exported for backward-compat with existing
+# unit tests (tests/tools/test_web_tools_config.py imports _get_parallel_client
+# / _get_async_parallel_client / _get_exa_client directly).
+from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat names
+    _get_async_parallel_client,
+    _get_parallel_client,
+)
+from plugins.web.exa.provider import _get_exa_client  # noqa: F401
+
+# Module-level cache slots for the per-vendor clients. The plugins read/write
+# these via tools.web_tools so unit tests that reset
+# ``tools.web_tools._<vendor>_client = None`` between cases keep working.
+_firecrawl_client: Optional[Any] = None
+_firecrawl_client_config: Optional[Any] = None
+_parallel_client: Optional[Any] = None
+_async_parallel_client: Optional[Any] = None
+_exa_client: Optional[Any] = None
 
 from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
 from tools.debug_helpers import DebugSession
@@ -147,7 +213,7 @@ def _get_backend() -> str:
     # with "no subscription" and the tool returns an error to the agent
     # without falling back). Free-tier backends trail the paid ones.
     backend_candidates = (
-        ("tavily", _has_env("TAVILY_API_KEY")), ("perplexity", _has_env("PERPLEXITY_API_KEY")),
+        ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("keenable", _has_env("KEENABLE_API_KEY")),
@@ -521,6 +587,36 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_USER_TOKEN",
     ]
 
+
+# ─── Parallel / Tavily / Firecrawl helpers — moved into plugins ──────────────
+# After PR #25182, the per-vendor client construction, request helpers, and
+# response normalizers all live in plugins.web.<vendor>.provider:
+#   - parallel: plugins/web/parallel/provider.py
+#   - tavily:   plugins/web/tavily/provider.py
+#   - firecrawl: plugins/web/firecrawl/provider.py
+# The names from the firecrawl plugin (Firecrawl proxy, _get_firecrawl_client,
+# _to_plain_object, _normalize_result_list, _extract_web_search_results,
+# _extract_scrape_payload, _is_tool_gateway_ready, etc.) are re-exported at
+# the top of this module for backward-compat with integration tests and
+# unit-test patches.
+
+
+# Default budget (characters) of clean page text sent to the model. Pages at
+# or under this size are returned whole; larger pages are head+tail truncated
+# and the full text is stored on disk (see _store_full_text). Spending context,
+# not API dollars — so this is generous relative to the old 5k summary cap.
+# Override via web.extract_char_limit in config.yaml.
+DEFAULT_EXTRACT_CHAR_LIMIT = 15000
+
+# Hard ceiling on the full-text file written to cache/web. The truncate-store
+# path otherwise calls path.write_text(content, encoding="utf-8") with no upper bound, so a
+# multi-MB page (some backends return very large markdown) writes unbounded
+# bytes to disk on every extract. Cap the stored copy; the model only ever
+# sees char_limit anyway, and a 2MB page is already far more than any single
+# read_file paging session needs. Mirrors the pre-truncate-store era's 2MB
+# refusal ceiling, but stores (capped) instead of refusing.
+MAX_STORED_TEXT_CHARS = 2_000_000
+
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 
@@ -535,12 +631,19 @@ def _ensure_web_plugins_loaded() -> None:
     that never triggered discovery (subprocess agent runs, delegate children, scripts); without it a
     configured backend yields a misleading "No web ... provider" error.
 
-    Every bundled web provider (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl, keenable)
-    registers itself via ``plugins/web/<vendor>/__init__.py`` during plugin discovery. Tool dispatch can be
-    reached from contexts that haven't already triggered discovery — subprocess agent runs, delegate
-    children, standalone scripts, certain test paths — and without it the registry is empty and
-    ``get_provider('firecrawl')`` returns ``None`` even when the user has ``web.extract_backend: firecrawl``
-    configured and ``FIRECRAWL_API_KEY`` set. See #27580.
+    Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
+    tavily, firecrawl, keenable) registers itself via ``plugins/web/<vendor>/__init__.py``
+    during plugin discovery. Tool dispatch can be reached from contexts that
+    haven't already triggered discovery — subprocess agent runs, delegate
+    children, standalone scripts, certain test paths — and without it the
+    registry is empty and ``get_provider('firecrawl')`` returns ``None`` even
+    when the user has ``web.extract_backend: firecrawl`` configured and
+    ``FIRECRAWL_API_KEY`` set. The symptom is a misleading "No web extract
+    provider configured" error (issue #27580).
+
+    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` exactly:
+    the underlying discovery call is idempotent and cheap on subsequent
+    invocations.
     """
     try:
         from hermes_cli.plugins import _ensure_plugins_discovered
@@ -579,7 +682,11 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
-        # Sync only — every provider's search() is sync.
+
+        # Dispatch through the web search registry. All bundled providers
+        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl,
+        # keenable) now live as plugins; the dispatcher is just a registry lookup +
+        # delegation. Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
         backend = _get_search_backend()
@@ -733,9 +840,79 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
     pointing at the stored full text; inline base64 images become ``[IMAGE: alt]``. URLs carrying secrets are
     refused before any fetch; private-network URLs are blocked per entry. Returns JSON ``{"results": [...]}``.
     """
-    normalized_urls, normalized_indices, invalid_urls, blocked = _validate_extract_urls(urls)
-    if blocked is not None:
-        return blocked
+    Extract content from specific web pages using available extraction API backend.
+
+    Returns clean page content (markdown/text) with NO LLM summarization. The
+    extract backends (Firecrawl, Tavily, Exa, Parallel, Keenable) already return clean,
+    boilerplate-stripped content, so we return it directly and fast. Pages over
+    ``char_limit`` are head+tail truncated with an explicit footer; the full
+    text is stored under cache/web and the footer tells the model how to
+    read_file the omitted middle. Inline base64 images are replaced with
+    ``[IMAGE: alt]`` placeholders (real image URLs are preserved as links).
+
+    Args:
+        urls (List[Any]): URL strings or search-result objects containing a
+            string ``url`` or ``href`` field
+        format (str): Desired output format ("markdown" or "html", optional)
+        char_limit (Optional[int]): Per-page char budget sent to the model
+            (default: web.extract_char_limit or 15000). Larger pages truncate.
+
+    Security: URLs are checked for embedded secrets before fetching.
+
+    Returns:
+        str: JSON string with a ``results`` list; each entry has
+             ``url``, ``title``, ``content``, ``error``. ``content`` is the
+             (possibly truncated) clean page text.
+
+    Raises:
+        Exception: If extraction fails or API key is not set
+    """
+    # Block URLs containing embedded secrets (exfiltration prevention).
+    # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
+    from agent.redact import _PREFIX_RE
+    from urllib.parse import unquote
+    normalized_urls: List[str] = []
+    normalized_indices: List[int] = []
+    invalid_urls: Dict[int, Dict[str, Any]] = {}
+    for index, item in enumerate(urls):
+        _url = _web_extract_url(item)
+        if _url is None:
+            invalid_urls[index] = {
+                "url": "",
+                "title": "",
+                "content": "",
+                "error": (
+                    f"Invalid URL item at index {index}: expected a URL string "
+                    "or an object with a string 'url' or 'href' field"
+                ),
+            }
+            continue
+        normalized_url = normalize_url_for_request(_url)
+        if (
+            _PREFIX_RE.search(_url)
+            or _PREFIX_RE.search(unquote(_url))
+            or _PREFIX_RE.search(normalized_url)
+            or _PREFIX_RE.search(unquote(normalized_url))
+        ):
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: URL contains what appears to be an API key or token. "
+                         "Secrets must not be sent in URLs.",
+            })
+        sensitive_query_key = sensitive_query_param_name(normalized_url)
+        if sensitive_query_key:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: URL contains a credential-like query parameter "
+                    f"({sensitive_query_key}). Web extract backends are third-party "
+                    "readers; remove the sensitive query parameter or use a local "
+                    "browser session when this access is explicitly required."
+                ),
+            })
+        normalized_urls.append(normalized_url)
+        normalized_indices.append(index)
+
     debug_call_data = {
         "parameters": {"urls": normalized_urls, "format": format, "char_limit": char_limit}, "error": None,
         "pages_extracted": 0, "pages_truncated": 0, "original_response_size": 0, "final_response_size": 0,
@@ -758,6 +935,14 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
         results = []
         if safe_urls:
             backend = _get_extract_backend()
+
+            # All bundled providers (brave-free, ddgs, searxng, exa, parallel,
+            # tavily, firecrawl, keenable) now live as plugins. The dispatcher is a
+            # registry lookup + delegation. Some providers' extract() is
+            # async (parallel, firecrawl), others sync (exa, tavily, keenable) — we
+            # detect coroutine functions and await; sync functions run
+            # inline (the policy gate, SSRF re-check, etc. live inside the
+            # provider itself for the firecrawl per-URL loop).
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
@@ -781,7 +966,7 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, keenable, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -844,7 +1029,7 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
                             "error": (
                                 "No web extract provider configured. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, keenable, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -893,7 +1078,7 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
                 )
 
                 # Async-or-sync dispatch: parallel + firecrawl have async
-                # extract(); exa + tavily are sync.
+                # extract(); exa + tavily + keenable are sync.
                 import inspect
                 _extract_rescued = False
                 try:
@@ -1122,7 +1307,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, KEENABLE_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

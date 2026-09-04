@@ -1396,11 +1396,12 @@ class RelayAdapter(BasePlatformAdapter):
             # Same upstream-trust marker the relay text lane stamps. Set locally, never
             # read off the wire (engages /sethome's via_relay guard).
             delivered_via_upstream_relay=True,
-            # Profile routing (multiplex mode), mirroring _event_from_wire.
-            # The HERMES profile this interaction is routed to (multiplex mode) — mirrors _event_from_wire's
-            # profile stamping for plain relayed messages (#60586). Without this, a Team-Gateway's Discord
-            # slash-command/button/modal always fell back to the legacy agent:main namespace even when the
-            # connector resolved a specific profile for it.
+            # The HERMES profile this interaction is routed to (multiplex
+            # mode) — mirrors _event_from_wire's profile stamping for plain
+            # relayed messages (#60586). Without this, a Team-Gateway's
+            # Discord slash-command/button/modal always fell back to the
+            # legacy agent:main namespace even when the connector resolved
+            # a specific profile for it.
             profile=getattr(forward, "profile", None),
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)

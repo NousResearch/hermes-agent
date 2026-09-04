@@ -74,6 +74,16 @@ class FileStateRegistry:
         self._meta_lock = threading.Lock()  # guards _path_locks
         self._state_lock = threading.Lock()  # guards _reads + _last_writer
 
+    # ── Path lock management ────────────────────────────────────────
+    def _lock_for(self, resolved: str) -> threading.Lock:
+        with self._meta_lock:
+            lock = self._path_locks.get(resolved)
+            if lock is None:
+                lock = threading.Lock()
+                self._path_locks[resolved] = lock
+            self._path_lock_users[resolved] = self._path_lock_users.get(resolved, 0) + 1
+            return lock
+
     @contextmanager
     def lock_path(self, resolved: str):
         """Per-path lock: threads on the same path serialize, different paths proceed.
@@ -201,6 +211,7 @@ class FileStateRegistry:
         with self._state_lock:
             self._reads.pop(task_id, None)
 
+    # ── Testing hooks ───────────────────────────────────────────────
     def clear(self) -> None:
         """Reset all state. Intended for tests only."""
         with self._state_lock:

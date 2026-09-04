@@ -14,8 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 def execute(
-    tool_name: str, args: dict[str, Any], callback: Callable[[dict[str, Any]], Any], *,
-    session_id: str, tool_call_id: str | None = None, metadata: dict[str, Any] | None = None,
+    tool_name: str,
+    args: dict[str, Any],
+    callback: Callable[[dict[str, Any]], Any],
+    *,
+    session_id: str,
+    tool_call_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Run one tool call through Relay and return its final arguments."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
@@ -42,14 +47,21 @@ def execute(
         except BaseException as exc:
             callback_error = exc
             raise
-        raw_result.update(value=result, json=_jsonable(result))
+        raw_result["value"] = result
+        raw_result["json"] = _jsonable(result)
         return runtime.relay.ToolExecutionResult(raw_result["json"])
 
     try:
         managed = _run_awaitable(
             runtime.run_in_session_async(
-                session, runtime.relay.tools.execute, tool_name, _jsonable(args), invoke,
-                handle=parent, metadata=_jsonable(metadata or {}), tool_call_id=tool_call_id or None,
+                session,
+                runtime.relay.tools.execute,
+                tool_name,
+                _jsonable(args),
+                invoke,
+                handle=parent,
+                metadata=_jsonable(metadata or {}),
+                tool_call_id=tool_call_id or None,
             )
         )
     except BaseException as exc:
@@ -62,6 +74,7 @@ def execute(
             )
             return raw_result["value"], observed_args
         raise
+
     managed_result = managed.result
     if "value" in raw_result and _json_equal(managed_result, raw_result["json"]):
         return raw_result["value"], observed_args

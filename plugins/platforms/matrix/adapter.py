@@ -63,8 +63,15 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+    resolve_proxy_url,
+    proxy_kwargs_for_aiohttp,
+    _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -385,15 +392,19 @@ def _resolve_max_message_length(config) -> int:
     return max(500, min(value, MATRIX_MAX_MESSAGE_LENGTH_CEILING))
 
 
-# E2EE store dir is resolved per adapter in connect() (``_resolve_store_dir``), NOT at module scope:
-# the multiplex gateway imports this once and a module constant would collide every profile's Olm
-# identity in one crypto.db.
-# Store directory for E2EE keys and sync state. Mirrors the pairing-store fix (a6397c379). See #89168.
+# Back-compat alias for callers/tests that import the module constant.
+MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
+
+# Store directory for E2EE keys and sync state. Resolved per adapter in
+# ``connect()`` (see ``_resolve_store_dir``), NOT at module scope: the
+# multiplex gateway imports this module once, so a module-level constant
+# would pin the root HERMES_HOME for every profile and all bots' Olm
+# identities would collide in one crypto.db (#89168). Mirrors the
+# pairing-store fix (a6397c379).
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
-_STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
-
-_OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
+# Grace period: ignore messages older than this many seconds before startup.
+_STARTUP_GRACE_SECONDS = 5
 
 _E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  (requires libolm C library)"
 
@@ -456,14 +467,19 @@ def _create_matrix_session(proxy_url: str | None):
     import aiohttp
     if not proxy_url:
         return aiohttp.ClientSession(trust_env=gateway_trust_env())
+
     if proxy_url.split("://")[0].lower().startswith("socks"):
         try:
             from aiohttp_socks import ProxyConnector
             return aiohttp.ClientSession(connector=ProxyConnector.from_url(proxy_url, rdns=True))
         except ImportError:
             logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. Run: pip install aiohttp-socks", proxy_url)
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
             return aiohttp.ClientSession(trust_env=gateway_trust_env())
+
     return aiohttp.ClientSession(proxy=proxy_url)
 
 
@@ -702,10 +718,19 @@ def matrix_deps_present() -> bool:
 
 
 def check_matrix_requirements() -> bool:
-    """Credentials + deps answer for setup/status callers (credentials must NOT gate the installer)."""
-    token = _get_scoped_secret("MATRIX_ACCESS_TOKEN", "").strip()
-    password = _get_scoped_secret("MATRIX_PASSWORD", "").strip()
-    homeserver = _get_scoped_secret("MATRIX_HOMESERVER", "").strip()
+    """Return True if the Matrix adapter can be used.
+
+    Combined credentials + deps answer for setup/status callers.  The
+    registry's ``ensure_deps_fn`` is the deps-only
+    :func:`ensure_matrix_deps` below — credentials must NOT gate the
+    installer (they're handled by ``is_connected``, which also accepts
+    ``PlatformConfig.extra``-configured setups that these env checks
+    would wrongly veto).
+    """
+    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
+    password = _startup_env_secret("MATRIX_PASSWORD")
+    homeserver = _startup_env_secret("MATRIX_HOMESERVER")
+
     if not token and not password:
         logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
         return False
@@ -820,6 +845,23 @@ class MatrixAdapter(BasePlatformAdapter):
     @property
     def _crypto_db_path(self) -> Path:
         return (self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")) / "crypto.db"
+
+    def _resolve_store_dir(self) -> Path:
+        """Pin this adapter's crypto-store directory to the active profile.
+
+        Called from ``connect()``, which the multiplex gateway runs inside
+        ``_profile_runtime_scope`` -- ``get_hermes_dir`` honors that
+        context-local HERMES_HOME, so each profile's adapter gets its own
+        store. Cached on the instance so later reads (diagnostics, error
+        logs) outside the scope still report the store actually in use.
+        """
+        self._store_dir = _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return self._store_dir
+
+    @property
+    def _crypto_db_path(self) -> Path:
+        store_dir = self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return store_dir / "crypto.db"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
@@ -1085,13 +1127,75 @@ class MatrixAdapter(BasePlatformAdapter):
         if not our_keys:
             logger.warning("Matrix: device keys missing from server — re-uploading")
             olm.account.shared = False
-            return await _reupload("Matrix: failed to re-upload device keys: %s")
-        if self._extract_server_ed25519(our_keys) == local_ed25519:
-            return True
-        if olm.account.shared:
-            logger.error(
-                "Matrix: server has different identity keys for device %s — local crypto state is "
-                "stale. Delete %s and restart.", client.device_id, str(self._crypto_db_path))
+            try:
+                await olm.share_keys()
+            except Exception as exc:
+                logger.error("Matrix: failed to re-upload device keys: %s", exc, exc_info=True)
+                return False
+            return await self._reverify_keys_after_upload(client, local_ed25519)
+
+        server_ed25519 = self._extract_server_ed25519(our_keys)
+
+        if server_ed25519 != local_ed25519:
+            if olm.account.shared:
+                logger.error(
+                    "Matrix: server has different identity keys for device %s — "
+                    "local crypto state is stale. Delete %s and restart.",
+                    client.device_id,
+                    str(self._crypto_db_path),
+                )
+                return False
+
+            logger.warning(
+                "Matrix: server has stale keys for device %s — attempting re-upload",
+                client.device_id,
+            )
+            try:
+                await client.api.request(
+                    client.api.Method.DELETE
+                    if hasattr(client.api, "Method")
+                    else "DELETE",
+                    f"/_matrix/client/v3/devices/{client.device_id}",
+                )
+                logger.info(
+                    "Matrix: deleted stale device %s from server", client.device_id
+                )
+            except Exception:
+                pass
+            try:
+                await olm.share_keys()
+            except Exception as exc:
+                logger.error(
+                    "Matrix: cannot upload device keys for %s: %s. "
+                    "Try generating a new access token to get a fresh device.",
+                    client.device_id,
+                    exc,
+                    exc_info=True,
+                )
+                return False
+            return await self._reverify_keys_after_upload(client, local_ed25519)
+
+        return True
+
+    # ------------------------------------------------------------------
+    # Required overrides
+    # ------------------------------------------------------------------
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Connect to the Matrix homeserver and start syncing."""
+        self._device_id_unverified = False
+        if self._client is not None:
+            try:
+                await self.disconnect()
+            except Exception as exc:
+                logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
+
+        from mautrix.api import HTTPAPI
+        from mautrix.client import Client
+        from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+
+        if not self._homeserver:
+            logger.error("Matrix: homeserver URL not configured")
             return False
         logger.warning("Matrix: server has stale keys for device %s — attempting re-upload", client.device_id)
         with suppress(Exception):
@@ -1103,13 +1207,9 @@ class MatrixAdapter(BasePlatformAdapter):
             "Matrix: cannot upload device keys for %s: %s. Try generating a new access token to get a fresh device.",
             client.device_id)
 
-    @staticmethod
-    async def _abort_connect(api: Any, crypto_db: Any = None) -> bool:
-        """Close what connect() opened so far; always False so callers can ``return await``."""
-        if crypto_db is not None:
-            await crypto_db.stop()
-        await api.session.close()
-        return False
+        # Ensure store dir exists for E2EE key persistence (resolved here,
+        # inside the profile scope, so multiplexed profiles never share it).
+        self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
 
     async def _connect_authenticate(self, client: Any, api: Any) -> bool:
         """Authenticate via access token (whoami) or password login; resolve user/device IDs."""
@@ -1244,16 +1344,86 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self._e2ee_setup_failed(phase, exc, api)
         return True
 
-    async def _e2ee_setup_failed(self, what: str, exc: Exception, api: Any) -> bool:
-        """Optional mode: log + disable E2EE and return True; required mode: close + return False."""
-        if self._e2ee_mode == "optional":
-            logger.warning(
-                "Matrix: failed to %s optional E2EE client; continuing without encrypted-room "
-                "support: %s. %s", what, exc, _E2EE_INSTALL_HINT)
-            self._encryption = False
-            return True
-        logger.error("Matrix: failed to %s E2EE client: %s. %s", what, exc, _E2EE_INSTALL_HINT)
-        return await self._abort_connect(api)
+                    self._store_dir.mkdir(parents=True, exist_ok=True)
+                except Exception as exc:
+                    if self._e2ee_mode == "optional":
+                        logger.warning(
+                            "Matrix: failed to import optional E2EE client; "
+                            "continuing without encrypted-room support: %s. %s",
+                            exc,
+                            _E2EE_INSTALL_HINT,
+                        )
+                        self._encryption = False
+                    else:
+                        logger.error(
+                            "Matrix: failed to import E2EE client: %s. %s",
+                            exc,
+                            _E2EE_INSTALL_HINT,
+                        )
+                        await api.session.close()
+                        return False
+            if self._encryption:
+                try:
+                    # Remove legacy pickle file from pre-SQLite era.
+                    legacy_pickle = self._store_dir / "crypto_store.pickle"
+                    if legacy_pickle.exists():
+                        logger.info(
+                            "Matrix: removing legacy crypto_store.pickle (migrated to SQLite)"
+                        )
+                        legacy_pickle.unlink()
+
+                    crypto_db = Database.create(
+                        f"sqlite:///{self._crypto_db_path}",
+                        upgrade_table=PgCryptoStore.upgrade_table,
+                    )
+                    await crypto_db.start()
+                    self._crypto_db = crypto_db
+
+                    _acct_id = self._user_id or "hermes"
+                    # Use the resolved client.device_id (from whoami or password
+                    # login), not self._device_id (the configured value), because
+                    # #71543 makes the token's real device win over a stale
+                    # MATRIX_DEVICE_ID.  The pickle key must match the device the
+                    # token actually belongs to, or the Olm account is stored
+                    # under a key that can never be looked up again.
+                    _pickle_key = f"{_acct_id}:{client.device_id or self._device_id or 'default'}"
+                    crypto_store = PgCryptoStore(
+                        account_id=_acct_id,
+                        pickle_key=_pickle_key,
+                        db=crypto_db,
+                    )
+                    await crypto_store.open()
+
+                    if client.device_id:
+                        _store_was_reset = await self._reset_crypto_store_if_device_changed(
+                            crypto_store, client.device_id
+                        )
+                        await crypto_store.put_device_id(client.device_id)
+                    else:
+                        _store_was_reset = False
+
+                    # Skip the pickle-key migration when the store was just
+                    # deleted — there is no account to migrate.
+                    if not _store_was_reset:
+                        if not await self._migrate_legacy_crypto_pickle(
+                            crypto_store, crypto_db, _acct_id, _pickle_key
+                        ):
+                            logger.warning(
+                                "Matrix: crypto pickle migration failed — "
+                                "E2EE may not work correctly"
+                            )
+
+                    crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
+                    olm = OlmMachine(client, crypto_store, crypto_state)
+                    olm.share_keys_min_trust = TrustState.UNVERIFIED
+                    olm.send_keys_min_trust = TrustState.UNVERIFIED
+
+                    await olm.load()
+
+                    if not await self._verify_device_keys_on_server(client, olm):
+                        await crypto_db.stop()
+                        await api.session.close()
+                        return False
 
     async def _verify_or_bootstrap_cross_signing(self, olm: Any, client: Any) -> None:
         """Verify cross-signing via MATRIX_RECOVERY_KEY, or bootstrap a new key (non-fatal)."""
@@ -1291,6 +1461,84 @@ class MatrixAdapter(BasePlatformAdapter):
                         new_recovery_key = await olm.generate_recovery_key()
                         _handle_generated_matrix_recovery_key(str(client.mxid), new_recovery_key)
                     except Exception as exc:
+                        exc_str = str(exc)
+                        if "already exists" in exc_str:
+                            logger.error(
+                                "Matrix: device %s has stale one-time keys on the "
+                                "server signed with a previous identity key. "
+                                "Delete the device from the homeserver and restart, "
+                                "or generate a new access token to get a fresh device ID.",
+                                client.device_id,
+                            )
+                            await crypto_db.stop()
+                            await api.session.close()
+                            return False
+                        logger.warning("Matrix: share_keys() warning during startup: %s", exc)
+
+                    # Honor the active profile's secret scope so a secondary
+                    # profile under gateway.multiplex_profiles resolves its own
+                    # recovery key instead of the default profile's (which fails
+                    # E2EE verification with "Key MAC does not match", #69090).
+                    recovery_key = _scoped_recovery_key()
+                    if recovery_key:
+                        try:
+                            await olm.verify_with_recovery_key(recovery_key)
+                            logger.info("Matrix: cross-signing verified via recovery key")
+                        except Exception as exc:
+                            logger.warning("Matrix: recovery key verification failed: %s", exc)
+                    else:
+                        try:
+                            own_xsign = await olm.get_own_cross_signing_public_keys()
+                        except Exception as exc:
+                            own_xsign = None
+                            logger.warning("Matrix: cross-signing key lookup failed: %s", exc)
+                        if own_xsign is None:
+                            _, output_error = _get_matrix_recovery_key_output_target()
+                            if output_error == "not_configured":
+                                logger.warning(
+                                    "Matrix: cross-signing keys are missing, but "
+                                    "automatic bootstrap is skipped because "
+                                    "MATRIX_RECOVERY_KEY_OUTPUT_FILE is not configured. "
+                                    "Configure MATRIX_RECOVERY_KEY from your Matrix client "
+                                    "or set MATRIX_RECOVERY_KEY_OUTPUT_FILE to write a new "
+                                    "recovery key once with mode 0600."
+                                )
+                            elif output_error == "exists":
+                                logger.warning(
+                                    "Matrix: cross-signing keys are missing, but "
+                                    "automatic bootstrap is skipped because "
+                                    "MATRIX_RECOVERY_KEY_OUTPUT_FILE already exists and "
+                                    "will not be overwritten."
+                                )
+                            elif output_error:
+                                logger.warning(
+                                    "Matrix: cross-signing keys are missing, but "
+                                    "automatic bootstrap is skipped because "
+                                    "MATRIX_RECOVERY_KEY_OUTPUT_FILE is not usable: %s",
+                                    output_error,
+                                )
+                            else:
+                                try:
+                                    new_recovery_key = await olm.generate_recovery_key()
+                                    _handle_generated_matrix_recovery_key(
+                                        str(client.mxid),
+                                        new_recovery_key,
+                                    )
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Matrix: cross-signing bootstrap failed "
+                                        "(non-fatal — Element will show 'not verified by its owner'): %s",
+                                        exc,
+                                    )
+
+                    client.crypto = olm
+                    logger.info(
+                        "Matrix: E2EE enabled (store: %s%s)",
+                        str(self._crypto_db_path),
+                        f", device_id={client.device_id}" if client.device_id else "",
+                    )
+                except Exception as exc:
+                    if self._e2ee_mode == "optional":
                         logger.warning(
                             "Matrix: cross-signing bootstrap failed (non-fatal — Element will show "
                             "'not verified by its owner'): %s", exc)
@@ -1433,9 +1681,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 "connected": self._client is not None, "joined_room_count": len(self._joined_rooms),
                 "last_sync_age_seconds": max(0.0, now - self._last_sync_ts) if self._last_sync_ts else None},
             "e2ee": {
-                "mode": self._e2ee_mode, "enabled": bool(self._encryption), "deps_available": _check_e2ee_deps(),
+                "mode": self._e2ee_mode,
+                "enabled": bool(self._encryption),
+                "deps_available": _check_e2ee_deps(),
                 "crypto_store_path": str(self._crypto_db_path),
-                "recovery_key_configured": bool(_scoped_recovery_key().strip())},
+                "recovery_key_configured": bool(
+                    _scoped_recovery_key().strip()
+                ),
+            },
             "policy": {
                 "allowed_user_count": len(self._allowed_user_ids), "allowed_room_count": len(self._allowed_room_ids),
                 "ignored_user_pattern_count": len(self._ignored_user_patterns),
@@ -2142,9 +2395,84 @@ class MatrixAdapter(BasePlatformAdapter):
         cached_path = None
         if url:
             try:
-                cached_path = await self._download_and_cache_media(
-                    url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
-                    is_voice_message, body)
+                file_bytes = await self._client.download_media(ContentURI(url))
+                if file_bytes is not None:
+                    if is_encrypted_media:
+                        from mautrix.crypto.attachments import decrypt_attachment
+
+                        hashes_value = (
+                            file_content.get("hashes")
+                            if isinstance(file_content, dict)
+                            else None
+                        )
+                        hash_value = (
+                            hashes_value.get("sha256")
+                            if isinstance(hashes_value, dict)
+                            else None
+                        )
+
+                        key_value = (
+                            file_content.get("key")
+                            if isinstance(file_content, dict)
+                            else None
+                        )
+                        if isinstance(key_value, dict):
+                            key_value = key_value.get("k")
+
+                        iv_value = (
+                            file_content.get("iv")
+                            if isinstance(file_content, dict)
+                            else None
+                        )
+
+                        if key_value and hash_value and iv_value:
+                            file_bytes = decrypt_attachment(
+                                file_bytes, key_value, hash_value, iv_value
+                            )
+                        else:
+                            logger.warning(
+                                "[Matrix] Encrypted media event missing decryption metadata for %s",
+                                event_id,
+                            )
+                            file_bytes = None
+
+                    if file_bytes is not None:
+                        from gateway.platforms.base import (
+                            cache_audio_from_bytes_async,
+                            cache_document_from_bytes_async,
+                            cache_image_from_bytes_async,
+                        )
+
+                        if msg_type == MessageType.PHOTO:
+                            ext_map = {
+                                "image/jpeg": ".jpg",
+                                "image/png": ".png",
+                                "image/gif": ".gif",
+                                "image/webp": ".webp",
+                            }
+                            ext = ext_map.get(media_type, ".jpg")
+                            cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext)
+                            logger.info("[Matrix] Cached user image at %s", cached_path)
+                        elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
+                            ext = (
+                                Path(
+                                    body
+                                    or (
+                                        "voice.ogg" if is_voice_message else "audio.ogg"
+                                    )
+                                ).suffix
+                                or ".ogg"
+                            )
+                            cached_path = await cache_audio_from_bytes_async(file_bytes, ext=ext)
+                        else:
+                            filename = body or (
+                                "video.mp4"
+                                if msg_type == MessageType.VIDEO
+                                else "document"
+                            )
+                            cached_path = await cache_document_from_bytes_async(
+                                file_bytes, filename
+                            )
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
         # Unencrypted media may fall back to the HTTP download URL when caching failed.

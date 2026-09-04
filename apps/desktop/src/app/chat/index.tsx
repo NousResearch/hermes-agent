@@ -85,7 +85,6 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   modelOptionsOwnerConnectionId?: string
   modelOptionsProfile?: string
   modelMenuContent?: React.ReactNode
-  reasoningMenuContent?: React.ReactNode
   requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
@@ -314,7 +313,7 @@ function ChatRuntimeBoundary({
     // something older to show. Fire-and-forget: the prepend lands through the
     // session-state write path and re-renders this boundary.
     if (
-      !windowStateRef.current?.window.windowed &&
+      !windowStateRef.current.get(runtimeIdRef.current ?? '')?.state.window.windowed &&
       runtimeId &&
       storedId &&
       transcriptBackfillAvailable(storedId, tailProfile)
@@ -382,7 +381,6 @@ const ChatViewContent = memo(function ChatViewContent({
   modelOptionsOwnerConnectionId,
   modelOptionsProfile,
   modelMenuContent,
-  reasoningMenuContent,
   requestModelOptionsForOwner,
   onToggleSelectedPin,
   onDeleteSelectedSession,
@@ -576,7 +574,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
-  const modelOptionsQuery = useQuery<ModelOptionsResult>({
+  const modelOptionsQuery = useQuery<ModelOptionsResponse>({
     queryKey: modelOptionsQueryKey(
       modelOptionsProfile || activeGatewayProfile,
       activeSessionId,

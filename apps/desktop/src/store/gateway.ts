@@ -535,19 +535,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
         // Best effort for partial test/HMR graphs. Production always loads the
         // real store; a failed import must not make the transport unrecoverable.
       }
-
-      // Runtime re-mint also invalidates the status-stack gone-latch: ids
-      // the dead runtime 4001'd may be live again once tiles re-resume.
-      // Fire-and-forget: composer-status imports from this module, so the
-      // import must stay dynamic (cycle), and it must NOT sit on the timed
-      // redial path — awaiting the module load here pushed cold-start
-      // redials past test/waitFor budgets. The reset needs no ordering
-      // guarantee relative to the dial.
-      void import('@/store/composer-status')
-        .then(({ resetBackgroundPollingGuard }) => resetBackgroundPollingGuard())
-        .catch(() => {
-          // Best effort for partial test/HMR graphs, same as above.
-        })
     }
 
     // Registry-scoped entries dial through getConnectionFor when the bridge has
@@ -1267,6 +1254,13 @@ export async function retainGatewayForSessionTurn(
   profile: string,
   sessionId: string
 ): Promise<() => void> {
+  // Primary events do not flow through a Secondary's terminal-event listener.
+  // Registering a no-op lease here would leave a phantom key that can suppress
+  // the real hold if this route is later re-homed as a secondary.
+  if (isPrimaryRegistryRoute(connectionId, normKey(profile))) {
+    return () => undefined
+  }
+
   const scope = registryBackendScopeKey(connectionId, normKey(profile))
   const key = turnLeaseKey(scope, sessionId)
 

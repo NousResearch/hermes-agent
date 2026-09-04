@@ -27,7 +27,7 @@ import { setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 // pin ids we've successfully PATCHed pinned=true this session.
@@ -124,39 +124,6 @@ function rowsByPinId(rows: readonly SessionInfo[]): Map<string, SessionInfo> {
   return byId
 }
 
-/**
- * One authoritative row per durable pin id. Session ids are only unique inside
- * a profile, so the cross-profile list can legitimately hold two rows with the
- * same `sessionPinId` but different `pinned` flags (copied/imported profile
- * databases). Iterating both would pin then unpin the same id in one pass and
- * re-fire `reconcile` forever — the runaway that overflows nanostores'
- * listenerQueue. Collapse to a single row per id, preferring the active
- * gateway's profile (the same tie-break `resolveLoadedRow` uses), so the pull
- * is deterministic and never oscillates.
- */
-function rowsByPinId(rows: readonly SessionInfo[]): Map<string, SessionInfo> {
-  const byId = new Map<string, SessionInfo>()
-  const gateway = normalizeProfileKey($activeGatewayProfile.get())
-
-  for (const row of rows) {
-    const pinId = sessionPinId(row)
-    const existing = byId.get(pinId)
-
-    if (!existing) {
-      byId.set(pinId, row)
-
-      continue
-    }
-
-    // Prefer the active gateway's profile; otherwise keep the first seen.
-    if (normalizeProfileKey(row.profile) === gateway && normalizeProfileKey(existing.profile) !== gateway) {
-      byId.set(pinId, row)
-    }
-  }
-
-  return byId
-}
-
 /** PATCH the flag, guarding reads against pages that predate the write. */
 function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
   unconfirmed.set(id, { at: Date.now(), value: pinned })
@@ -190,7 +157,7 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
 function pullRemotePins(): void {
   const local = new Set($pinnedSessionIds.get())
 
-  for (const row of rowsByPinId($sessions.get()).values()) {
+  for (const row of rowsByPinId(loadedSessionRows()).values()) {
     // A backend without the flag has no opinion; never act on `undefined`.
     if (typeof row.pinned !== 'boolean') {
       continue
@@ -240,8 +207,8 @@ function pullRemotePins(): void {
   }
 }
 
-// Re-entrancy guard: reconcile() is subscribed to BOTH $sessions and
-// $pinnedSessionIds, and pullRemotePins() mutates $pinnedSessionIds (via
+// Re-entrancy guard: reconcile() is subscribed to every loaded-session slice
+// and $pinnedSessionIds, and pullRemotePins() mutates $pinnedSessionIds (via
 // pinSession/unpinSession), which fires reconcile() again synchronously.
 // Without this guard, a session whose pin state oscillates — two rows with the
 // same durable id but conflicting `pinned` flags, possible when profile

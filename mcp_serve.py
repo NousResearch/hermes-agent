@@ -78,8 +78,8 @@ def _close_quietly(db, what: str) -> None:
 def _get_session_db():
     """SessionDB instance for reading message transcripts, or None."""
     try:
-        from hermes_state_registry import acquire
-        return acquire()
+        from hermes_state import get_shared_session_db
+        return get_shared_session_db()
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
         return None
@@ -96,7 +96,7 @@ def _load_session_messages(session_id: str):
         return None, f"Failed to read messages: {e}"
     finally:
         try:
-            from hermes_state_registry import release_or_close
+            from hermes_state import release_or_close
             release_or_close(db)
         except Exception:
             logger.debug("Failed to close MCP SessionDB", exc_info=True)

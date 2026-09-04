@@ -168,11 +168,13 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     if _is_nous_welcome_route(base_url):
         return True
     try:
-        from hermes_cli.models import _is_model_free
-        from hermes_cli.models_pricing import peek_cached_pricing
+        from hermes_cli.models import _is_model_free, peek_cached_pricing
 
-        pricing = peek_cached_pricing(base_url)  # owns the /v1-suffix and auth-state key details
-        return bool(pricing) and _is_model_free(model, pricing)
+        # peek_cached_pricing owns the /v1-suffix and auth-state key details.
+        pricing = peek_cached_pricing(base_url)
+        if not pricing:
+            return False
+        return _is_model_free(model, pricing)
     except Exception:
         return False
 

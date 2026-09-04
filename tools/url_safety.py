@@ -1,10 +1,28 @@
 """URL safety checks — blocks requests to private/internal network addresses (SSRF).
 
-``security.allow_private_urls: true`` disables private-IP blocking (DNS that resolves public
-names to private ranges); cloud metadata hostnames/IPs are **always** blocked. DNS rebinding
-(TOCTOU) is closed for Hermes-owned httpx paths by ``create_ssrf_safe_[async_]client()``, which
-re-apply the policy at TCP connect and dial the validated IP while preserving Host/SNI. Redirect
-bypass is mitigated by response hooks re-validating each target (``redirect_target_from_response``).
+Prevents SSRF (Server-Side Request Forgery) where a malicious prompt or
+skill could trick the agent into fetching internal resources like cloud
+metadata endpoints (169.254.169.254), localhost services, or private
+network hosts.
+
+The check can be globally disabled via ``security.allow_private_urls: true``
+in config.yaml for environments where DNS resolves external domains to
+private/benchmark-range IPs (OpenWrt routers, corporate proxies, VPNs
+that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
+metadata hostnames (metadata.google.internal, 169.254.169.254) are
+**always** blocked — those are never legitimate agent targets.
+
+Limitations:
+  - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
+    can return a public IP for the check, then a private IP for the actual
+    connection. Hermes-owned direct httpx request paths should use
+    ``create_ssrf_safe_client()`` / ``create_ssrf_safe_async_client()`` so the
+    same policy is applied immediately before TCP connect and the client
+    connects to the validated IP while preserving Host/SNI semantics.
+  - Redirect-based bypass is mitigated by httpx event hooks that re-validate
+    each redirect target in vision_tools, gateway platform adapters, and
+    media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
+    where redirect handling is on their servers.
 """
 
 import ipaddress

@@ -39,11 +39,18 @@ logger = logging.getLogger(__name__)
 # loads of a broken config.yaml don't spam stderr. A changed file (new mtime) warns again.
 _CONFIG_PARSE_WARNED: set = set()
 
-# path -> (mtime_ns, size, error message) of active parse failures. Written by
-# _warn_config_parse_failure() (the single funnel for every load-path parse failure) and
-# probed by get_active_config_parse_failure() so provider auto-resolution can refuse to
-# adopt a paid provider from env keys while the user's REAL config is unreadable.
+# Parallel record of active parse failures keyed by path -> (mtime_ns, size,
+# error message). Written by _warn_config_parse_failure() (the single funnel
+# every load-path parse failure goes through) and probed by
+# get_active_config_parse_failure() so provider auto-resolution can refuse to
+# adopt a paid provider from environment keys while the user's REAL config —
+# which may name a completely different provider — is unreadable (#81952).
 _CONFIG_PARSE_FAILURES: dict = {}
+
+
+class InvalidUserConfigError(RuntimeError):
+    """Raised when a run that cannot repair config finds invalid user YAML."""
+
 
 
 class InvalidUserConfigError(RuntimeError):
@@ -94,9 +101,12 @@ def _warn_config_parse_failure(
     """
     try:
         st = config_path.stat()
-        sig = file_signature(st)
-        key = (str(config_path), *sig)
-        _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc))
+        key = (str(config_path), st.st_mtime_ns, st.st_size)
+        _CONFIG_PARSE_FAILURES[str(config_path)] = (
+            st.st_mtime_ns,
+            st.st_size,
+            str(exc),
+        )
     except OSError:
         key = (str(config_path), 0, 0, 0, 0)
     if key in _CONFIG_PARSE_WARNED:
@@ -135,14 +145,33 @@ def _warn_config_parse_failure(
 
 
 def get_active_config_parse_failure() -> Optional[str]:
-    """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
-    (mtime_ns + size + ino + ctime_ns) to the file that failed to parse; else None."""
+    """Return the parse-error message if the ACTIVE config.yaml is corrupt.
+
+    Probes the failure record written by :func:`_warn_config_parse_failure`
+    for the current :func:`get_config_path` and re-stats the file NOW: the
+    recorded error is returned only while the file is byte-identical
+    (mtime_ns + size) to the one that failed to parse. The moment the user
+    fixes (or deletes) the file, this returns ``None`` without any cache
+    invalidation dance.
+
+    Consumers: ``hermes_cli.auth.resolve_provider`` uses this to refuse
+    env-key/pool auto-adoption of a paid provider while the user's real
+    config — which may name a different provider entirely — is unreadable
+    (#81952). Returns ``None`` when no failure was ever recorded, when the
+    file changed since the failure, or on any stat error.
+    """
     try:
-        record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
+        path = get_config_path()
+        recorded = _CONFIG_PARSE_FAILURES.get(str(path))
+        if not recorded:
+            return None
+        mtime_ns, size, err = recorded
         st = path.stat()
-        return record[4] if file_signature(st) == record[:4] else None
+        if st.st_mtime_ns == mtime_ns and st.st_size == size:
+            return err
     except Exception:
         return None
+    return None
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -585,10 +614,15 @@ def get_config_path() -> Path:
 
 def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
     """Reject an existing invalid config before a non-interactive agent run.
-    Interactive surfaces keep ``load_config()``'s recovery behavior so the operator can repair
-    the file; a one-shot run has no such chance, and defaults there could silently pick a hosted
-    provider and spend against ``.env`` credentials. Missing/empty files stay valid first-run
-    states; ``--ignore-user-config`` / HERMES_IGNORE_USER_CONFIG=1 remain authoritative."""
+
+    Interactive surfaces retain ``load_config()``'s recovery behavior so the
+    operator can repair their configuration. A one-shot or single-query run
+    has no such repair opportunity: allowing defaults there can silently pick
+    a hosted provider/model and spend against credentials loaded from ``.env``.
+
+    Missing and empty files remain valid first-run states. The explicit
+    ``--ignore-user-config``/safe-mode escape hatch also remains authoritative.
+    """
     if ignore_user_config or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
         return
 
@@ -603,18 +637,18 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
     else:
         if data is None or isinstance(data, dict):
             return
-        parse_error = TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
+        parse_error = TypeError(
+            f"top-level YAML value must be a mapping, got {type(data).__name__}"
+        )
 
-    from hermes_cli.config_backups import backup_config
-    backup_path = backup_config(config_path, "corrupt")
-    where = _yaml_error_location(parse_error)
+    backup_path = _backup_corrupt_config(config_path)
     message = (
-        f"Hermes stopped because your settings file ({config_path}) has a formatting error"
-        f"{f' at {where}' if where else ''}. Fix it with `hermes config edit` and check with "
-        "`hermes config check`, or add --ignore-user-config to run once with default settings.")
+        f"Refusing non-interactive startup because {config_path} is invalid: "
+        f"{parse_error}. Repair the file or pass --ignore-user-config to "
+        "intentionally run with built-in defaults."
+    )
     if backup_path is not None:
-        message += f" A copy of the broken file is at {backup_path}."
-    message += f" Details: {_yaml_error_details(parse_error)}"
+        message += f" A copy was saved to {backup_path}."
     logger.error(message)
     raise InvalidUserConfigError(message) from parse_error
 
@@ -826,7 +860,8 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
-    11: ["TERMINAL_MODAL_MODE"]}
+    11: ["TERMINAL_MODAL_MODE"],
+}
 
 # Intentionally empty: the LLM provider is required but handled by the setup wizard's provider
 # selection step, so no single env var is universally required.
@@ -1078,6 +1113,17 @@ def _is_env_config_key(key: str) -> bool:
     if "." in key:
         return False
     key_upper = key.upper()
+    api_keys = [
+        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'API_SERVER_KEY',
+        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
+        'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
+        'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
+        'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY',
+    ]
     return (
         key_upper in _ENV_CONFIG_KEYS
         or key_upper.endswith(('_API_KEY', '_TOKEN', '_SECRET'))
@@ -1846,14 +1892,40 @@ def _coerce_config_version(value: Any) -> int:
     return max(version, 0)
 
 
+def _raw_config_has_explicit_version() -> bool:
+    """True when config.yaml exists, parses, and carries a ``_config_version`` key.
+
+    Distinguishes an ANCIENT config (explicit old version → refused by the
+    v12 support floor) from a fresh minimal/hand-written/cloned config with
+    no version key at all (→ migrated + stamped normally). Missing or
+    unparseable files return False so they never trip the floor gate.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = fast_safe_load(f) or {}
+    except Exception:
+        return False
+    return isinstance(raw, dict) and "_config_version" in raw
+
+
 def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
-    """Return ``(current_version, latest_version)`` from the raw on-disk config.
-    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
-    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
-    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
-    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
-    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
-    be mistaken for an up-to-date config."""
+    """
+    Check the raw on-disk config schema version.
+
+    ``load_config()`` deliberately starts from ``DEFAULT_CONFIG`` and deep-merges
+    the user's file, which is correct for runtime reads but wrong for deciding
+    whether the user's persisted schema has been migrated. A config file with no
+    raw ``_config_version`` must remain visible as legacy instead of inheriting
+    the latest default version in memory.
+
+    Returns (current_version, latest_version). Tolerant runtime status callers
+    retain the historical latest/latest fallback for malformed YAML. Mutation
+    and explicit validation paths can set ``raise_on_parse_error`` so a parse
+    failure or a non-mapping root cannot be mistaken for an up-to-date config.
+    """
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
     if not config_path.exists():
@@ -1873,8 +1945,9 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
     if config is None:
         config = {}  # empty file / bare document: valid first-run state
     if not isinstance(config, dict):
-        # A list/scalar root parses fine but is just as unusable as broken YAML: save_config()
-        # would refuse it later, after .env was already rewritten. Strict callers see it up front.
+        # A list/scalar root parses fine but is just as unusable as broken
+        # YAML: save_config() would refuse it later, after .env was already
+        # rewritten. Strict callers must see it up front too.
         if raise_on_parse_error:
             raise InvalidUserConfigError(
                 f"Cannot inspect {config_path}: config.yaml top-level value must be "
@@ -2079,7 +2152,32 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                    f"Move '{key}' under the appropriate section")
 
-    _validate_web_backends(config, issues)
+    # ── web backends that no longer ship in-tree ─────────────────────────
+    # A stale selection (e.g. web.backend: tavily after the #99199 removal)
+    # otherwise fails only at the first web_search/web_extract call, with a
+    # generic "no registered provider" error. Warn at startup instead.
+    web_cfg = config.get("web")
+    if isinstance(web_cfg, dict):
+        try:
+            from tools.tool_backend_helpers import removed_backend_note
+        except Exception:
+            removed_backend_note = None
+        if removed_backend_note is not None:
+            seen: set = set()
+            for _key in ("backend", "search_backend", "extract_backend"):
+                _val = str(web_cfg.get(_key) or "").strip().lower()
+                if not _val or _val in seen:
+                    continue
+                seen.add(_val)
+                note = removed_backend_note("web", _val)
+                if note:
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"web.{_key} is set to '{_val}', but {note} — "
+                        "web_search/web_extract will fail until it is changed",
+                        "Run 'hermes tools' and pick a different Web Search & Extract provider",
+                    ))
+
     return issues
 
 
@@ -2170,10 +2268,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     """Migrate config to latest version, prompting for new required fields."""
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
-    # which must not happen when the migration will be refused for malformed YAML.
+    # Validate config.yaml before any migration side effect. In particular,
+    # sanitize_env_file() can rewrite .env, which must not happen when the
+    # migration will be refused for malformed YAML.
     current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
 
+    # ── Always: normalize safe .env line formatting ──
     try:
         fixes = sanitize_env_file()
         if fixes and not quiet:
@@ -2181,12 +2281,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception:
         pass  # best-effort; never block migration on sanitize failure
 
-    # Auto-migration support floor (v12): an EXPLICIT on-disk ``_config_version`` below the
-    # floor is NOT migrated and NOT rewritten — surface a message and leave the file untouched
-    # (deep-merge supplies defaults at read time). A config with NO version key is a fresh
-    # minimal config, not an ancient install: it gets the normal ladder and a version stamp.
-    # Missing/unparseable files never trip the floor gate.
-    # Imported lazily because the steps call back into this module.
+    # ── Auto-migration support floor (policy: v12, July 2026) ──
+    # A config with an EXPLICIT on-disk ``_config_version`` below the floor is
+    # NOT auto-migrated and NOT rewritten: we surface a clear, actionable
+    # message and leave the file byte-for-byte untouched. This matches the
+    # fail-safe posture for unparseable configs (warn on stderr, continue —
+    # load_config() deep-merges defaults at read time), so the CLI never
+    # crashes on an ancient config. The floor gate lives here in the wrapper
+    # (not in run_migrations) so the registry driver stays a pure mechanism
+    # that tests can exercise directly.
+    #
+    # A config with NO ``_config_version`` key at all is NOT floor-refused:
+    # that shape is a fresh minimal config (profile clones write bare keys;
+    # users hand-write two-line configs), not an ancient install. Those get
+    # the normal ladder (the retired <12 steps were no-ops for configs
+    # lacking the legacy keys they migrated) and a fresh version stamp —
+    # the historical behavior.
     from hermes_cli.config_migrations import (
         SUPPORT_FLOOR_VERSION, run_migrations, support_floor_message)
 
@@ -2474,12 +2584,38 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
-_ENV_REF_RE = re.compile(r"\${([^}]+)}")
-
-
 def _env_ref_lookup(name: str) -> Optional[str]:
-    """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` ref — plain ``os.environ`` outside
-    a profile secret scope (legacy behavior for the default profile).
+    """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` config ref.
+
+    Outside a profile secret scope this is a plain ``os.environ`` read — the
+    default profile and every single-profile caller keep their legacy
+    behavior.  Inside a scope (a multiplexed gateway turn, a secondary
+    profile's config load, a cron job) the read goes through
+    ``agent.secret_scope.get_secret`` so the ref resolves against *that*
+    profile's ``.env``: under multiplexing a miss is a miss, never another
+    profile's ``os.environ`` value (#84079 — every profile "had" the default
+    profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out).  Same policy as
+    ``gateway.config._getenv`` and ``get_env_value``.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+    except Exception:
+        return os.environ.get(name)
+    if current_secret_scope() is None:
+        return os.environ.get(name)
+    return _get_secret(name)
+
+
+def _env_expand_match(m: re.Match) -> str:
+    """Expand one ``${...}`` config reference.
+
+
+    * ``${VAR}`` — legacy bare name, resolved via ``_env_ref_lookup``
+      (``os.environ``, or the active profile secret scope).
+    * ``${env:VAR}`` — Cursor-style SecretRef, same resolution after the
+      ``env:`` prefix is stripped.  Before this, the prefixed form worked in
+      MCP config but stayed a literal string in config.yaml — a confusing
+      half-support.
 
     Inside a scope (a multiplexed gateway turn, a secondary profile's config load, a cron job) the read goes
     through ``agent.secret_scope.get_secret`` so the ref resolves against *that* profile's ``.env``: under
@@ -2517,15 +2653,32 @@ def _env_expand_match(m: re.Match) -> str:
     if val is not None:
         return val
     if inner.startswith("env:"):
+        name = inner[len("env:"):].strip()
+        if not name:
+            return raw
+        val = _env_ref_lookup(name)
+        if val is not None:
+            return val
         logger.warning(
             "Config ref %r: %s is not set (check ~/.hermes/.env); "
-            "keeping the literal placeholder", raw, name)
-    return raw
-
-
-def _is_non_env_secret_ref(ref: str) -> bool:
-    """True for a SecretRef body with a non-``env`` source (``bitwarden:FOO``, ``vault:...``)."""
-    return ":" in ref and re.match(r"^[a-z][a-z0-9_-]*:", ref) is not None
+            "keeping the literal placeholder", raw, name,
+        )
+        return raw
+    if ":" in inner and re.match(r"^[a-z][a-z0-9_-]*:", inner):
+        # Looks like a SecretRef with a non-env source.  Values from vault
+        # backends arrive via the secrets: block as env vars — point there
+        # instead of silently treating "bitwarden:FOO" as a var named
+        # "bitwarden:FOO".
+        logger.warning(
+            "Config ref %r uses source %r which is not resolvable in "
+            "config.yaml — external secret sources inject env vars at "
+            "startup, so reference the variable as ${env:NAME} instead",
+            raw, inner.split(":", 1)[0],
+        )
+        return raw
+    # Legacy ``${VAR}`` — bare name.
+    val = _env_ref_lookup(inner)
+    return val if val is not None else raw
 
 
 def _env_ref_var_name(ref: str) -> Optional[str]:
@@ -3321,15 +3474,15 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            # Signatures match, but the cached expansion is only valid if every ${VAR} it was
-            # expanded against still has the same value — otherwise a load before
-            # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
-            # Without this, a load_config() that ran before load_hermes_dotenv() pins unexpanded literals
-            # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
-            env_snapshot = cached[9] if len(cached) > 9 else {}
+        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+            # File signatures match, but the cached expansion is only valid if
+            # every ${VAR} it was expanded against still has the same value.
+            # Without this, a load_config() that ran before load_hermes_dotenv()
+            # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
+            # life of the process (#58514).
+            env_snapshot = cached[5] if len(cached) > 5 else {}
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[8]) if want_deepcopy else cached[8]
+                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -3646,6 +3799,38 @@ def _env_line_defines_key(
     ) == _env_var_policy_name(key, is_windows=is_windows)
 
 
+def _publish_env_value(key: str, value: Optional[str]) -> None:
+    """Publish a just-persisted ``.env`` change to the live process.
+
+    ``save_env_value`` / ``remove_env_value`` already target the right file
+    (``get_env_path()`` honors the profile-home override), but the in-process
+    mirror historically went straight to ``os.environ``. Under a multiplexed
+    gateway a routed profile's write (e.g. a ``/pair`` grant mirrored into
+    ``DISCORD_ALLOWED_USERS``) would then land in the SHARED process env and
+    be visible to every other profile (#88441, #77490). In that case update
+    the installed scope mapping instead so same-turn reads see the change,
+    and leave ``os.environ`` alone. Every other caller keeps the legacy
+    ``os.environ`` publish.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope() if is_multiplex_active() else None
+    except Exception:
+        scope = None
+    if scope is not None:
+        if isinstance(scope, dict):
+            if value is None:
+                scope.pop(key, None)
+            else:
+                scope[key] = value
+        return
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
     never appends a second line that a later delete would resurrect)."""
@@ -3681,7 +3866,6 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={serialized_value}\n")
 
-    _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
     _publish_env_value(key, value)
     invalidate_env_cache()
 
@@ -3710,7 +3894,36 @@ def remove_env_value(key: str) -> bool:
     new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
     found = len(new_lines) < len(lines)
     if found:
-        _write_env_lines(env_path, new_lines, preserve_mode=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        # Preserve original permissions so Docker volume mounts aren't clobbered.
+        original_mode = None
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
+        try:
+            with os.fdopen(fd, 'w', **write_kw) as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, env_path)
+            # Preserve the original file mode (e.g. 0640 for Docker volume
+            # mounts) instead of letting _secure_file unconditionally tighten
+            # to 0600. Mirrors save_env_value().
+            if original_mode is not None:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
+            else:
+                _secure_file(env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
     _publish_env_value(key, None)
     invalidate_env_cache()
     return found
@@ -4024,16 +4237,42 @@ def show_config():
     print(f"  Config:       {get_config_path()}")
     print(f"  Secrets:      {get_env_path()}")
     print(f"  Install:      {get_project_root()}")
-
-    _section("API Keys")
-    for env_key, name in _SHOW_CONFIG_API_KEYS:
-        print(f"  {name:<14} {redact_key(get_env_value(env_key))}")
+    
+    # API Keys
+    print()
+    print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
+    
+    keys = [
+        ("OPENROUTER_API_KEY", "OpenRouter"),
+        ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+        ("EXA_API_KEY", "Exa"),
+        ("PARALLEL_API_KEY", "Parallel"),
+        ("FIRECRAWL_API_KEY", "Firecrawl"),
+        ("TAVILY_API_KEY", "Tavily"),
+        ("BROWSERBASE_API_KEY", "Browserbase"),
+        ("BROWSER_USE_API_KEY", "Browser Use"),
+        ("FAL_KEY", "FAL"),
+    ]
+    
+    for env_key, name in keys:
+        value = get_env_value(env_key)
+        print(f"  {name:<14} {redact_key(value)}")
     from hermes_cli.auth import get_anthropic_key
     print(f"  {'Anthropic':<14} {redact_key(get_anthropic_key())}")
 
-    _show_model_section(config)
-    _show_display_section(config)
-    _show_terminal_section(config)
+        _active_personality = active_personality_name(config) or 'none'
+    except Exception:
+        _active_personality = display.get('personality') or 'none'
+    print(f"  Personality:  {_active_personality}")
+    print(f"  Reasoning:    {'on' if display.get('show_reasoning', True) else 'off'}")
+    print(
+        f"  Bell:         complete={'on' if display.get('bell_on_complete', False) else 'off'}, "
+        f"prompt={'on' if display.get('bell_on_prompt', False) else 'off'}"
+    )
+    ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
+    ump_first = ump.get('first_lines', 2)
+    ump_last = ump.get('last_lines', 2)
+    print(f"  User preview: first {ump_first} line(s), last {ump_last} line(s)")
 
     _section("Timezone")
     tz = config.get('timezone', '')
@@ -4465,6 +4704,37 @@ def _coerce_float(value: str):
     return f
 
 
+def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
+    """Canonicalize ``platforms.<name>.<display_setting>`` → ``display.platforms.<name>.<setting>``.
+
+    Per-platform *display* settings (streaming, show_reasoning, tool_progress,
+    …) are resolved by the gateway from ``display.platforms.<name>.<setting>``
+    (``gateway/display_config.py::resolve_display_setting``), while the
+    top-level ``platforms.<name>`` block holds only connection config (token,
+    enabled, reply_to_mode, extra, …).  Before #71047 a write such as
+    ``hermes config set platforms.telegram.streaming false`` landed on a key
+    the gateway never reads: ``config get`` echoed the new value back while
+    the runtime kept the old ``display.platforms`` one — a silent no-op that
+    looks like a duplicated key to the user.
+
+    Only known display settings (``OVERRIDEABLE_KEYS``) are redirected so real
+    connection keys stay put.  Returns ``(canonical_key, note_or_None)``.
+    The gateway import is guarded: the CLI must keep working where the
+    gateway package is not importable.
+    """
+    segs = _split_key_path(key)
+    if len(segs) != 3 or segs[0] != "platforms":
+        return key, None
+    try:
+        from gateway.display_config import OVERRIDEABLE_KEYS as _display_keys
+    except Exception:
+        return key, None
+    if segs[2] not in _display_keys:
+        return key, None
+    canonical = f"display.platforms.{segs[1]}.{segs[2]}"
+    return canonical, f"  (note: per-platform display setting — saved as {canonical})"
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value.
 
@@ -4599,6 +4869,12 @@ def _exit_if_key_managed(key: str, action: str) -> None:
     # bare success and left the user debugging behavior that never changed.
     # Warn after the write so the user gets immediate feedback plus a
     # "did you mean" hint, without blocking legitimate unknown keys.
+    # Per-platform display settings live under display.platforms (#71047,
+    # Problem A) — canonicalize BEFORE validation/coercion so the type-aware
+    # coercion and the unknown-key hint both see the path the runtime reads.
+    key, _redirect_note = _redirect_platform_display_key(key)
+    if _redirect_note:
+        print(_redirect_note)
     is_known, suggestion = _validate_config_key(key)
 
     # Otherwise it goes to config.yaml
@@ -4799,8 +5075,8 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
     else:
-        # Mirror set_config_value: read the canonical display.platforms path.
-        # See #71047.
+        # Mirror set_config_value: read the canonical display.platforms path
+        # so ``config get`` reports what the gateway resolves (#71047).
         key, _ = _redirect_platform_display_key(key)
         value = _get_nested(load_config(), key)
 
@@ -4841,9 +5117,9 @@ def unset_config_value(key: str):
     # refuse-write); returns the mapping so we do not re-parse / collapse.
     user_config = require_readable_config_before_write(config_path)
 
+    # Mirror set_config_value's display.platforms canonicalization (#71047).
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
-        # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
     removed = _unset_nested(user_config, key)
 
@@ -5095,7 +5371,7 @@ def config_command(args):
         # Check what's missing
         missing_env = get_missing_env_vars(required_only=False)
         missing_config = get_missing_config_fields()
-        current_ver, latest_ver = check_config_version()
+        current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
         
         if not missing_env and not missing_config and current_ver >= latest_ver:
             print(color("✓ Configuration is up to date!", Colors.GREEN))
@@ -5149,7 +5425,7 @@ def config_command(args):
         print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
         print()
         
-        current_ver, latest_ver = check_config_version()
+        current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
         if current_ver >= latest_ver:
             print(f"  Config version: {current_ver} ✓")
         else:

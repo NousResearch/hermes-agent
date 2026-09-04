@@ -32,9 +32,14 @@ def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.Compl
     ``fetch``/``push`` could never be answered from a REST request, so fail fast and surface
     the real auth error in the toast. None when the process could not run at all."""
     try:
-        return subprocess.run(
-            argv, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
-            errors='replace', timeout=timeout, stdin=subprocess.DEVNULL, env=env,
+        proc = subprocess.run(
+            ["git", *harden_git_argv(args)],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

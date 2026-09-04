@@ -119,6 +119,9 @@ def _(rid, params: dict) -> dict:
     Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
     """
     try:
+        from tui_gateway.project_tree import stamp_profile
+        from tui_gateway.server import _response_profile_name
+
         with _profile_db(params) as db:
             if db is None:
                 return _ok(
@@ -131,6 +134,9 @@ def _(rid, params: dict) -> dict:
                 hydrate=False,
                 session_limit=int(params.get("session_limit") or 2000),
                 include_discovered=True,
+            )
+            stamp_profile(
+                tree["projects"], _response_profile_name(params.get("profile"))
             )
             return _ok(
                 rid,
@@ -151,6 +157,9 @@ def _(rid, params: dict) -> dict:
     built from the same authoritative grouping as ``projects.tree`` so ids and
     membership match exactly. Used when the user enters a project."""
     try:
+        from tui_gateway.project_tree import stamp_profile
+        from tui_gateway.server import _response_profile_name
+
         project_id = str(params.get("project_id") or "")
         if not project_id:
             return _err(rid, 5063, "project_id required")
@@ -167,6 +176,9 @@ def _(rid, params: dict) -> dict:
                 hydrate=True,
                 session_limit=int(params.get("session_limit") or 5000),
                 include_discovered=False,
+            )
+            stamp_profile(
+                tree["projects"], _response_profile_name(params.get("profile"))
             )
             proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
             return _ok(rid, {"project": proj})
@@ -334,45 +346,84 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
+def _readiness_profile_scope(params: dict):
+    """Resolve the optional ``profile`` param of the setup readiness RPCs.
+
+    Returns ``(profile, scope)`` where ``scope`` is a context manager binding
+    that profile's HERMES_HOME and ``.env`` secret scope (ContextVars, so
+    concurrent checks for different profiles stay isolated). The launch
+    profile / no param yields ``("", nullcontext())``. A profile unknown to
+    this host raises ``FileNotFoundError`` — a readiness check must never
+    quietly answer for the launch profile instead (#94071).
+    """
+    import contextlib
+
+    profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
+    if not profile:
+        return "", contextlib.nullcontext()
+    from hermes_cli import profiles as profiles_mod
+    from tui_gateway import server as _server
+
+    if not profiles_mod.profile_exists(profile):
+        raise FileNotFoundError(f"Profile '{profile}' does not exist on this backend.")
+    home = _server._profile_home(profile)
+    if home is None:
+        return profile, contextlib.nullcontext()
+    return profile, _server._session_profile_runtime_scope({"profile_home": str(home)})
+
+
 @method("setup.status")
 def _(rid, params: dict) -> dict:
-    """Loose provider check; ``profile`` (optional) scopes it to that profile's home.
-
-    For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
-    the call blocks up to ``SETUP_READY_WAIT_SECONDS`` for it, so a client's first poll lands after
-    the free-tier identity exists (or has been refused) rather than racing the mint. If the record
-    is still missing after the wait, or a named profile is asked about, today's live probe answers.
-    The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
+    """Loose provider check; ``profile`` (optional) scopes it to that profile's home."""
     try:
         from hermes_cli.main import _has_any_provider_configured
-        from hermes_cli.free_tier_bootstrap import wait_for_record
+        from tui_gateway.methods_config import _readiness_profile_scope
 
-        def probe(profile, scoped):
-            record = None if profile else wait_for_record()
-            if record is None:
-                return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
-                        **scoped}
-            return {"provider_configured": record.provider_configured, "ready": True,
-                    "free_tier": record.free_tier, "other_providers": record.other_providers,
-                    "inference_provider": record.inference_provider, **scoped}
-        return _readiness_check(rid, params, probe)
+        try:
+            profile, scope = _readiness_profile_scope(params)
+        except FileNotFoundError as e:
+            return _ok(rid, {"ok": False, "profile": params.get("profile"), "error": str(e)})
+        with scope:
+            configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
+        payload = {"provider_configured": configured}
+        if profile:
+            payload["profile"] = profile
+        return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5016, str(e))
 
 
 @method("setup.runtime_check")
 def _(rid, params: dict) -> dict:
-    """Strict provider check via the same resolve_runtime_provider() the agent uses on session
-    creation (setup.status is True if ANY provider auth state is discoverable): ok=False + the auth
-    error when the model can't be served, so UIs surface onboarding before a doomed prompt.
-    ``profile`` answers for THAT profile's pin and ``.env``; unknown -> ``ok=False``."""
+    """Strict provider check: does the configured/default model actually resolve to a usable runtime?
+
+    Unlike setup.status (which returns True if ANY provider auth state is
+    discoverable, including indirect fallbacks like ``gh auth token`` for
+    Copilot), this runs the same resolve_runtime_provider() call the agent
+    uses on session creation. It returns ok=False with the auth error message
+    when the user's configured model cannot actually be served, so UIs can
+    surface onboarding before the user submits a doomed prompt.
+
+    ``profile`` (optional): answer for THAT profile's home on this host — its
+    config.yaml model pin and its ``.env`` — instead of the launch profile's
+    (#94071). A profile unknown to this backend answers ``ok=False`` rather
+    than reporting the launch profile's readiness.
+    """
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.auth import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
+        from tui_gateway.methods_config import _readiness_profile_scope
+
         requested = str(params.get("provider") or "").strip() or None
-        runtime = resolve_runtime_provider(requested=requested)
-        provider_configured = bool(_has_any_provider_configured())
+        try:
+            profile, scope = _readiness_profile_scope(params)
+        except FileNotFoundError as e:
+            return _ok(rid, {"ok": False, "profile": params.get("profile"), "error": str(e)})
+        with scope:
+            runtime = resolve_runtime_provider(requested=requested)
+            provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
+        scoped = {"profile": profile} if profile else {}
         provider = runtime.get("provider") or "provider"
         source = str(runtime.get("source") or "")
         if (
@@ -392,6 +443,7 @@ def _(rid, params: dict) -> dict:
                     "model": runtime.get("model"),
                     "source": source,
                     "error": "No Hermes provider is configured.",
+                    **scoped,
                 },
             )
 
@@ -417,53 +469,21 @@ def _(rid, params: dict) -> dict:
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.
             return {"ok": True, "provider": runtime.get("provider"), "model": runtime.get("model"),
                     "source": runtime.get("source"),
-                    "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
-                    **scoped}
-        return _readiness_check(rid, params, probe)
-    except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+                    "error": f"No usable credentials found for {provider}.",
+                    **scoped,
+                },
+            )
 
-
-def _safe_client_label(label: str) -> str:
-    """Alnum/._- () only, ≤64 chars, dot-runs and leading dots collapsed (no traversal shapes)."""
-    safe = "".join(ch for ch in label if ch.isalnum() or ch in "._- ()").strip()[:64]
-    while ".." in safe:
-        safe = safe.replace("..", ".")
-    return safe.lstrip(".").strip()
-
-
-@method("diagnostics.share_nous")
-def _(rid, params: dict) -> dict:
-    """Upload a redacted debug bundle to Nous-internal diagnostics storage — same collection +
-    force-redaction pipeline as ``hermes debug share --nous``; redaction is NOT client-controllable
-    and consent lives with the CALLER (privacy notice first). Structured ``ok``/``error`` envelope so
-    upload failures render inline. Optional: ``error_context`` (-> ``error-context.txt``),
-    ``extra_files`` ({label -> text}), ``log_lines`` (default 200); all force-redacted."""
-    try:
-        from hermes_cli.debug import _redact_log_text, build_nous_bundle, collect_share_bundle
-        from hermes_cli.diagnostics_upload import share_to_nous
-        log_lines = params.get("log_lines")
-        if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
-            log_lines = 200
-        bundle = collect_share_bundle(log_lines=log_lines, redact=True)
-        # Client text goes through the SAME upload-safe redactor as backend logs (force secret
-        # redaction + email masking), never the weaker bare secret pass.
-        error_context = params.get("error_context")
-        if isinstance(error_context, str) and error_context.strip():
-            bundle["error-context.txt"] = _redact_log_text(error_context.strip()[:8_000])
-        # Bounded: at most 4 files, 512KB each, sanitized labels — not an arbitrary upload surface.
-        extra_files = params.get("extra_files")
-        for label, text in list(extra_files.items())[:4] if isinstance(extra_files, dict) else ():
-            safe_label = _safe_client_label(label) if isinstance(label, str) else ""
-            if safe_label and isinstance(text, str) and text.strip():
-                bundle[f"client/{safe_label}"] = _redact_log_text(text[:524_288])
-        res = share_to_nous(build_nous_bundle(bundle, redact=True))
-        view_url = res.get("viewUrl") or res.get("view_url")
-        upload_id = res.get("id")
-        if not view_url and not upload_id:  # an upload the user can't reference is useless to support
-            return _ok(rid, {"ok": False, "error": "upload succeeded but returned no view URL or id"})
-        return _ok(rid, {"ok": True, "view_url": view_url, "upload_id": upload_id,
-                         "expires_at": res.get("expiresAt") or res.get("expires_at")})
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "provider": runtime.get("provider"),
+                "model": runtime.get("model"),
+                "source": runtime.get("source"),
+                **scoped,
+            },
+        )
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})
 

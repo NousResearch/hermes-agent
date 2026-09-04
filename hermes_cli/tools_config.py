@@ -46,7 +46,6 @@ CONFIGURABLE_TOOLSETS = [
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("todo",            "📋 Task Planning",             "todo_list"),
-    ("kanban",          "📌 Kanban",                    "opt-in task board tools for this platform"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
@@ -2620,8 +2619,8 @@ def _plugin_video_gen_providers() -> list[dict]:
 
 # Mirror of _plugin_image_gen_providers for web search backends. Surfaces
 # every plugin-registered web provider so it appears in the
-# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
-# searxng, exa, parallel, tavily, firecrawl) live as plugins after
+# "Web Search & Extract" picker. All bundled providers (brave-free, ddgs,
+# searxng, exa, parallel, tavily, firecrawl, keenable) live as plugins after
 # PR #25182 — this helper is the sole source of truth for the category's
 # provider rows. The hardcoded entries that used to drive the category
 # were deleted in the same PR; only the two non-provider UX rows
@@ -2637,8 +2636,8 @@ def _plugin_web_search_providers() -> list[dict]:
     marker) so the picker behaves identically whether a provider is
     hardcoded or plugin-registered.
 
-    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
-    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
+    After PR #25182, all bundled web providers (brave-free, ddgs, searxng,
+    exa, parallel, tavily, firecrawl, keenable) are plugins; this helper is the sole
     source of provider rows for the Web Search & Extract category.
     """
     try:
@@ -4893,6 +4892,43 @@ def _configure_platforms(config: dict, platform_keys: List[str], *, all_platform
     return True
 
 
+def _shared_metrics_state(config: dict) -> tuple[bool, bool]:
+    """Return (collection_enabled, send_enabled) from a config dict."""
+    telemetry = config.get("telemetry")
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    shared = telemetry.get("shared_metrics")
+    shared = shared if isinstance(shared, dict) else {}
+    return shared.get("enabled") is True, shared.get("send") is True
+
+
+def _shared_metrics_menu_label(config: dict) -> str:
+    """Menu row for shared metrics, showing both consent states."""
+    enabled, send = _shared_metrics_state(config)
+    if not enabled:
+        state = "off"
+    elif send:
+        state = "collecting + sending to Nous"
+    else:
+        state = "collecting locally"
+    return f"Configure shared metrics  ({state})"
+
+
+def _configure_shared_metrics_interactive(config: dict) -> None:
+    """Toggle shared-metrics collection and sending from `hermes tools`.
+
+    Delegates to the setup wizard's prompt so the consent rules live in one
+    place: sending requires collection, and turning collection off also turns
+    sending off.
+    """
+    from hermes_cli.setup import setup_telemetry
+
+    before = _shared_metrics_state(config)
+    setup_telemetry(config)
+    after = _shared_metrics_state(config)
+    if before != after:
+        save_config(config)
+
+
 def tools_command(args=None, first_install: bool = False, config: dict = None):
     """Entry point for `hermes tools` / `hermes setup tools`. ``first_install`` skips the menu (checklist + key
     prompts); a wizard-passed ``config`` receives platform_toolsets so its final save_config() keeps them."""
@@ -4917,17 +4953,24 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     platform_keys = list(enabled_platforms)
     platform_choices = [_platform_menu_label(config, pkey) for pkey in platform_keys]
 
-    def _add_row(label: str, present: bool = True) -> int:
-        if not present:
-            return -1
-        platform_choices.append(label)
-        return len(platform_choices) - 1
+    if len(platform_keys) > 1:
+        platform_choices.append("Configure all platforms (global)")
+    platform_choices.append("Reconfigure an existing tool's provider or API key")
+    platform_choices.append(_shared_metrics_menu_label(config))
 
-    global_idx = _add_row("Configure all platforms (global)", len(platform_keys) > 1)
-    reconfig_idx = _add_row("Reconfigure an existing tool's provider or API key")
-    metrics_idx = _add_row(_shared_metrics_menu_label(config))
-    mcp_idx = _add_row("Configure MCP server tools", bool(config.get("mcp_servers")))
-    done_idx = _add_row("Done")
+    # Show MCP option if any MCP servers are configured
+    _has_mcp = bool(config.get("mcp_servers"))
+    if _has_mcp:
+        platform_choices.append("Configure MCP server tools")
+
+    platform_choices.append("Done")
+
+    # Index offsets for the extra options after per-platform entries
+    _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
+    _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
+    _metrics_idx = _reconfig_idx + 1
+    _mcp_idx = (_metrics_idx + 1) if _has_mcp else -1
+    _done_idx = _metrics_idx + (2 if _has_mcp else 1)
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
@@ -4935,10 +4978,18 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             break
         if idx == reconfig_idx:
             _reconfigure_tool(config, force_fresh=True)
-        elif idx == metrics_idx:
+            print()
+            continue
+
+        # "Shared metrics" selected
+        if idx == _metrics_idx:
             _configure_shared_metrics_interactive(config)
-            platform_choices[metrics_idx] = _shared_metrics_menu_label(config)
-        elif idx == mcp_idx:
+            platform_choices[_metrics_idx] = _shared_metrics_menu_label(config)
+            print()
+            continue
+
+        # "Configure MCP tools" selected
+        if idx == _mcp_idx:
             _configure_mcp_tools_interactive(config)
         elif idx == global_idx:
             if _configure_platforms(config, platform_keys, all_platforms=True):

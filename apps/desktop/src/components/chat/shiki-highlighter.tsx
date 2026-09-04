@@ -22,14 +22,6 @@ export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME } from '@/components/chat/shiki-c
  * background-only — no header row, no language label — so a fence reads as a
  * tinted slab of the reply; copy is a hover-reveal control in the corner.
  *
- * That control is inset 16px rather than hugging the corner: the card's
- * scroller (`ExpandableBlock` / `CodeCardBody`) spans its full width and
- * carries `.scrollbar-overlay`, which hands the card's right edge back to the
- * platform's scrollbar lane (~15px macOS classic with a mouse attached, ~17px
- * Windows) rather than the app's themed 4px gutter. A 6px inset sat on the
- * bar it floats over. 16px clears macOS's lane with the control's outer box
- * and puts the 12px icon (same size as the log-tail copy control) 20px out.
- *
  * The heavy lifting lives in the lazy `shiki-block` chunk (full bundle so all
  * `bundledLanguages` work; theme switches follow the document `color-scheme`
  * via `defaultColor="light-dark()"`), and its output is cached by content so
@@ -162,7 +154,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
             {plain ? (
               <PlainCode code={content} />
             ) : (
-              <LazyShiki code={content} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
+              <LazyShiki code={trimmed} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
             )}
           </Pre>
         </ExpandableBlock>

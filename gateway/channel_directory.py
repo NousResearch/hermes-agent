@@ -11,30 +11,34 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-# Paths resolve lazily: a multiplexed gateway serves several profile homes from one
-# process, so an import-time constant would pin every profile to whichever home imported
-# first. These globals are explicit overrides (tests patch them); None = current home.
+# Resolved lazily (see ``_directory_path``): a multiplexed gateway serves
+# several profile homes from one process, so an import-time constant would pin
+# every profile's directory to whichever home imported this module first.
+# ``DIRECTORY_PATH`` / ``CHANNEL_ALIASES_PATH`` stay as explicit overrides
+# (tests patch them); ``None`` means "resolve from the current home".
 DIRECTORY_PATH: Optional[Path] = None
-# User-maintained friendly-name overlay {"<platform>": {"<chat_id>": "<friendly name>"}},
-# re-applied on every build AND load (hand-edits to the regenerated
-# channel_directory.json don't survive); also lets a chat be pre-named before first traffic.
-CHANNEL_ALIASES_PATH: Optional[Path] = None
-
-# Slack refresh failures recur on every timed rebuild (missing scope, revoked
-# token); warn once per (team, error detail) per interval, then DEBUG.
+# Throttle window for repeated Slack channel-directory refresh failures.
+# The directory rebuilds on a timer, so a persistent workspace error (e.g.
+# missing scope, revoked token) would otherwise re-log the same warning on
+# every refresh. Warn once per (team, error detail) per interval; repeats
+# drop to DEBUG.
 _SLACK_DIRECTORY_WARNING_INTERVAL_SECONDS = 3600
 _slack_directory_warning_last: Dict[tuple[str, str], float] = {}
 
-# Platforms whose historical session origins must never become send targets.
-_SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
-_SLACK_RAW_ID_PREFIXES = ("C0", "D0", "G0")
+# User-maintained friendly-name overlay. The directory is fully regenerated
+# from live adapters + session data on a timer, so hand-edits to
+# channel_directory.json don't survive. Aliases declared here are re-applied
+# on every build AND every load, giving durable human-friendly names (and
+# letting you pre-name a chat before it has produced any traffic).
+# Format: {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
+CHANNEL_ALIASES_PATH: Optional[Path] = None
 
 
 def _directory_path() -> Path:
@@ -45,17 +49,13 @@ def _aliases_path() -> Path:
     return CHANNEL_ALIASES_PATH or get_hermes_home() / "channel_aliases.json"
 
 
-def _read_json(path: Path) -> Any:
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _load_json_dict(path: Path) -> Dict[str, Any]:
-    """Read a JSON object from *path*; {} when missing, unreadable, or not a dict."""
-    if not path.exists():
+def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
+    aliases_path = _aliases_path()
+    if not aliases_path.exists():
         return {}
     try:
-        data = _read_json(path)
+        with open(aliases_path, encoding="utf-8") as f:
+            data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -129,7 +129,12 @@ def _report_slack_failure(team_id: str, error_code: Optional[str], detail: str) 
 # --- Build / refresh -------------------------------------------------------
 
 async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
-    """Build the directory from connected adapters + session data and persist it."""
+    """
+    Build a channel directory from connected platform adapters and session data.
+
+    Returns the directory dict and writes it to the current home's
+    ``channel_directory.json``.
+    """
     from gateway.config import Platform
     platforms: Dict[str, List[Dict[str, str]]] = {}
     for platform, adapter in adapters.items():
@@ -329,6 +334,16 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> List[D
     failure keeps entries read so far."""
     entries: List[Dict[str, Any]] = []
     try:
+        from hermes_state import get_shared_session_db, release_or_close
+        db = get_shared_session_db()
+        try:
+            lister = getattr(db, "list_gateway_sessions", None)
+            if not callable(lister):
+                return []
+            rows = lister(platform=platform_name, active_only=False)
+        finally:
+            release_or_close(db)
+
         seen_ids = set()
         for origin, chat_type in origins_fn():
             entry_id = _session_entry_id(origin)
@@ -385,17 +400,23 @@ def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
 # --- Read / resolve --------------------------------------------------------
 
 def load_directory() -> Dict[str, Any]:
-    """Load the cached directory from disk, with aliases re-applied on read."""
+    """Load the cached channel directory from disk."""
     directory_path = _directory_path()
-    if directory_path.exists():
-        with contextlib.suppress(Exception):
-            data = _read_json(directory_path)
-            # Aliases apply on read too, so new names take effect between timed rebuilds.
-            _apply_channel_aliases(data.setdefault("platforms", {}))
-            return data
-    base = {"updated_at": None, "platforms": {}}
-    _apply_channel_aliases(base["platforms"])
-    return base
+    if not directory_path.exists():
+        base = {"updated_at": None, "platforms": {}}
+        _apply_channel_aliases(base["platforms"])
+        return base
+    try:
+        with open(directory_path, encoding="utf-8") as f:
+            data = json.load(f)
+        # Re-apply aliases on read so friendly names take effect immediately,
+        # even between timed rebuilds and for brand-new alias entries.
+        _apply_channel_aliases(data.setdefault("platforms", {}))
+        return data
+    except Exception:
+        base = {"updated_at": None, "platforms": {}}
+        _apply_channel_aliases(base["platforms"])
+        return base
 
 
 def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:

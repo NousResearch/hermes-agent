@@ -1304,6 +1304,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               }
         })
         setStatus('waiting for input…')
+        ringPromptBell()
 
         return
       }
@@ -1336,9 +1337,37 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
           return changed ? next : prev
         })
+        setStatus('approval needed')
+        ringPromptBell()
 
         return
       }
+
+      case 'sudo.request':
+        patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
+        setStatus('sudo password needed')
+        ringPromptBell()
+
+        return
+
+      case 'secret.request':
+        patchOverlayState({
+          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
+        })
+        setStatus('secret input needed')
+        ringPromptBell()
+
+        return
+
+      case 'sudo.expire':
+        patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
+
+        return
+
+      case 'secret.expire':
+        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
+
+        return
 
       case 'background.complete':
         if (!ev.payload) {

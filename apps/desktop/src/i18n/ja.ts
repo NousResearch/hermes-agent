@@ -197,6 +197,7 @@ export const ja = defineLocale({
         'デスクトップバックエンドがそのリクエストを拒否しました (405 Method Not Allowed)。Hermes Desktop を再起動してください。',
       microphonePermission: 'マイクのアクセス許可が拒否されました。',
       openaiRejectedApiKey: 'OpenAI が API キーを拒否しました。',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI が API キーを拒否しました (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。',
       codeSkewRestartRequired:
         'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。'
@@ -1187,13 +1188,10 @@ export const ja = defineLocale({
         'speed-gated-quality':
           'より高品質なモデルもこのマシンに載りますが、メモリ帯域の制約で応答が遅くなります — これは速度を保てる最良のモデルです。',
         'fastest-resident':
-          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。'
+          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。',
+        'least-painful-spilled':
+          'GPU メモリに完全に収まるモデルはありません — システム RAM からの実行で最も快適なモデルです。'
       } as Record<string, string>,
-      noRecommendationTitle: 'このマシン向けの自動推奨モデルはありません',
-      noRecommendationDetail:
-        '自動セットアップには、GPU メモリまたはユニファイドメモリに完全に収まる厳選モデルが必要です。下の一覧から選ぶか、ほかのモデルを探すこともできます。',
-      noRecommendationAction: 'モデルを探す',
-      quickstartConfigure: '自分で選ぶ',
       downloaded: 'ダウンロード済み',
       downloadAction: size => `ダウンロード · ${size}`,
       downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
@@ -1207,7 +1205,9 @@ export const ja = defineLocale({
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——Hermes が提供する最新ビルドです。`,
+      updateToast: next =>
+        `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -1400,7 +1400,17 @@ export const ja = defineLocale({
         enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
         disabledTitle: '実プロファイルブラウジング：オフ',
         disabledMessage: 'プロファイルのスナップショットは削除され、新しいセッションはクリーンなブラウザを使用します。',
-        failedSave: '実プロファイル設定を保存できませんでした'
+        failedSave: '実プロファイル設定を保存できませんでした',
+        prompt: {
+          title: 'サイトにログインしたまま利用',
+          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、サイトはログイン済みの状態で開きます。',
+          bulletSnapshot: 'Cookie とログイン情報は管理されたスナップショットにコピーされます。',
+          bulletLiveProfile: '実際のブラウザプロファイルが直接開かれることはありません。',
+          bulletLocal: 'データがこのコンピュータの外に出ることはありません。',
+          dontShowAgain: '今後表示しない',
+          notNow: '今はしない',
+          enable: 'プロファイルを使用'
+        }
       }
     }
   },
@@ -3610,9 +3620,10 @@ export const ja = defineLocale({
         title: 'ファイルとコマンド',
         text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
       },
-      'model-switch': {
-        title: '会話の途中でモデルを変更',
-        text: 'モデル名はボタンです。作業の性質が変わったら切り替えてください。'
+      'local-setup': {
+        title: 'このマシンはローカルでモデルを実行できます',
+        text: 'お使いのハードウェアでローカルモデルを動かせます。会話はこのコンピュータから出ず、料金もかかりません。',
+        action: 'セットアップ'
       },
       'right-pane': {
         title: '作業用ペイン',

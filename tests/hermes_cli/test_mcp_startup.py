@@ -140,7 +140,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "tools.mcp_tool",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
         ),
@@ -150,7 +150,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 
     assert calls["background"] == 0
     assert calls["inline"] == 0
-    assert mcp_startup._current_home_thread() is None
+    assert mcp_startup._mcp_discovery_thread is None
 
 
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
@@ -182,7 +182,7 @@ def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "tools.mcp_tool",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
         ),
@@ -366,9 +366,6 @@ def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
     """The filter must narrow the spawn set before any server is connected;
     built-in toolset names in the list are ignored."""
     from tools import mcp_tool
-    from tools import mcp_tool_config as _mcp_config
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_loop as _mcp_loop
 
     servers = {
         "code-mcp": {"command": "true"},
@@ -382,33 +379,33 @@ def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
         sdk_probes["n"] += 1
         return True
 
-    monkeypatch.setattr(_mcp_config, "_load_mcp_config", lambda: dict(servers))
+    monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: dict(servers))
     monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", _fake_ensure_sdk)
-    monkeypatch.setattr(_mcp_loop, "_try_acquire_mcp_discovery_lock", lambda: mcp_tool._LOCK_UNAVAILABLE)
+    monkeypatch.setattr(mcp_tool, "_try_acquire_mcp_discovery_lock", lambda: mcp_tool._LOCK_UNAVAILABLE)
     monkeypatch.setattr(mcp_tool, "_release_mcp_discovery_lock", lambda *_a, **_k: None, raising=False)
 
     def _fake_register(cfgs):
         seen.update(cfgs)
         return []
 
-    monkeypatch.setattr(_mcp_discovery, "register_mcp_servers", _fake_register)
+    monkeypatch.setattr(mcp_tool, "register_mcp_servers", _fake_register)
     monkeypatch.setattr(mcp_tool, "_servers", {})
     monkeypatch.setattr(mcp_tool, "_server_connecting", set())
 
     # Everything (no filter) — both would be registered.
-    _mcp_discovery.discover_mcp_tools()
+    mcp_tool.discover_mcp_tools()
     assert set(seen) == {"code-mcp", "docs-mcp"}
 
     # `-t terminal,code-mcp` — only the matching server; "terminal" is a no-op.
     seen.clear()
-    _mcp_discovery.discover_mcp_tools(allowed_mcp_names=["terminal", "code-mcp"])
+    mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal", "code-mcp"])
     assert set(seen) == {"code-mcp"}
 
     # `-t terminal` — no MCP server in the filter: skip the whole MCP load,
     # including the ~260ms `mcp` SDK import.
     seen.clear()
     sdk_probes["n"] = 0
-    assert _mcp_discovery.discover_mcp_tools(allowed_mcp_names=["terminal"]) == []
+    assert mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal"]) == []
     assert seen == {}
     assert sdk_probes["n"] == 0
 
@@ -417,7 +414,7 @@ def test_background_discovery_honors_server_filter(monkeypatch, _reset_mcp_serve
     calls: list = []
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "tools.mcp_tool",
         types.SimpleNamespace(discover_mcp_tools=lambda allowed_mcp_names=None: calls.append(allowed_mcp_names)),
     )
     monkeypatch.setitem(

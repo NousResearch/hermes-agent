@@ -36,10 +36,32 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
-# Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
-# onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
-# profile's .env. Credentials are excluded: shell exports are a documented way to supply them, and
-# read-time secret-scope checks (agent/secret_scope.py) own cross-profile credential isolation.
+# Routed profile homes whose dotenv load was skipped under multiplex, so the
+# skip is logged once per home rather than on every lazy import mid-turn.
+_SCOPED_SKIP_LOGGED: set[str] = set()
+
+
+def _known_hermes_env_keys() -> set[str]:
+    """Return the combined set of known Hermes env-var keys.
+
+    Includes both ``OPTIONAL_ENV_VARS`` (setup-flow vars with metadata) and
+    ``_EXTRA_ENV_KEYS`` (provider/platform keys managed outside the setup
+    wizard).  Lazy-imported to avoid circular-dependency during early-bootstrap
+    ``load_hermes_dotenv()`` calls.
+    """
+    from hermes_cli.config import _EXTRA_ENV_KEYS
+    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+
+    return set(OPTIONAL_ENV_VARS.keys()) | set(_EXTRA_ENV_KEYS)
+
+
+# Behavioral routing keys a parent Hermes process injects into child env and
+# that silently redirect a profile onto the wrong provider path (ACP auth
+# method, copilot-ACP endpoints). These — and ONLY these — are scrubbed from
+# os.environ at startup when absent from the profile's .env. Credential keys
+# (API keys/tokens) are excluded: shell exports are a legitimate,
+# documented way to supply them, and read-time secret-scope checks
+# (agent/secret_scope.py) own cross-profile credential isolation.
 _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
     "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE", "HERMES_COPILOT_ACP_COMMAND",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
@@ -343,6 +365,49 @@ def load_hermes_dotenv(
             _SCOPED_SKIP_LOGGED.add(home_key)
             logger.debug("multiplex: skipping process-global dotenv load for routed "
                          "profile home %s (credentials resolve via the profile scope)", home_path)
+        if load_external_secrets:
+            from hermes_cli import _early_recovery
+
+            if not _early_recovery._should_skip_external_secret_sources():
+                hydrate_profile_secret_sources(home_path)
+        return []
+
+    Behavior:
+    - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - project `.env` acts as a dev fallback and only fills missing values when
+      the user env exists.
+    - if no user env exists, the project `.env` also overrides stale shell vars.
+    - callers that only maintain the installation can set
+      ``load_external_secrets=False`` to avoid loading optional secret-manager
+      dependencies into the process that replaces that same environment.
+    - routed multiplex profile loads hydrate external sources into the
+      profile's private secret snapshot without mutating the shared process
+      environment; unscoped startup loads retain the normal behavior above.
+    """
+    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
+    # A multiplex gateway hosts every profile in one process.  While a routed
+    # profile-home override is active, copying that profile's .env into
+    # os.environ would expose its credentials to sibling turns and every
+    # subsequently spawned child.  An unscoped startup load remains process
+    # configuration and must retain the normal loading path.
+    # External secret sources still need their normal refresh path, so resolve
+    # them against the existing profile-local mapping instead of simply
+    # returning before all hydration work.
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override
+
+    if is_multiplex_active() and get_hermes_home_override() is not None:
+        home_key = str(home_path.resolve())
+        if home_key not in _SCOPED_SKIP_LOGGED:
+            _SCOPED_SKIP_LOGGED.add(home_key)
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "multiplex: skipping process-global dotenv load for routed "
+                "profile home %s (credentials resolve via the profile scope)",
+                home_path,
+            )
         if load_external_secrets:
             from hermes_cli import _early_recovery
 

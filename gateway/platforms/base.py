@@ -135,8 +135,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
-    # Routed profile (multiplex / profile_routes): outbound prune paths must not assume the
-    # adapter's static profile stamp.
+    # Routed Hermes profile for shared state.db namespaces (topic bindings
+    # under multiplex / profile_routes). Outbound prune paths must not
+    # assume the transport adapter's static profile stamp.
     profile = str(getattr(source, "profile", None) or "").strip()
     if profile:
         metadata["hermes_profile"] = profile
@@ -321,18 +322,29 @@ def resolve_proxy_url(
     proxy = normalize_proxy_url(value or _detect_macos_system_proxy())
     return None if proxy and should_bypass_proxy(target_hosts) else proxy
 
-
-def _aiohttp_socks_connector(proxy_url: str):
-    """``aiohttp_socks.ProxyConnector`` for ``proxy_url``, or None when aiohttp_socks is missing
-    (SOCKS logs a warning; HTTP callers fall back to ``proxy=``). ``rdns=True`` forces remote DNS
-    through the proxy — required by Shadowrocket/Clash-style SOCKS and against GFW DNS pollution."""
-    try:
-        from aiohttp_socks import ProxyConnector
-        return ProxyConnector.from_url(proxy_url, rdns=True)
-    except ImportError:
-        if proxy_url.lower().startswith("socks"):
-            logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Run: pip install aiohttp-socks", proxy_url)
+    Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
+    of ``target_hosts``. Steps 1-2 are skipped when ``gateway.trust_env`` is
+    false in config.yaml (see :func:`gateway_trust_env`).
+    """
+    if platform_env_var:
+        value = (os.environ.get(platform_env_var) or "").strip()
+        if value:
+            if should_bypass_proxy(target_hosts):
+                return None
+            return normalize_proxy_url(value)
+    if not gateway_trust_env():
+        # gateway.trust_env: false — ignore inherited generic proxy env and
+        # system proxy; only the explicit per-platform var above is honored.
+        return None
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            if should_bypass_proxy(target_hosts):
+                return None
+            return normalize_proxy_url(value)
+    detected = normalize_proxy_url(_detect_macos_system_proxy())
+    if detected and should_bypass_proxy(target_hosts):
         return None
 
 
@@ -347,22 +359,23 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
     return {"proxy": proxy_url}
 
 
-def _config_section(name: str) -> dict:
-    """Read-only ``config.yaml`` section ``name``; ``{}`` when unreadable/missing/not a dict."""
+def gateway_trust_env() -> bool:
+    """Return the ``trust_env`` value every gateway ``aiohttp.ClientSession`` uses.
+
+    Reads ``gateway.trust_env`` from config.yaml (default ``True``: honor
+    ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``NO_PROXY`` / ``SSL_CERT_FILE`` from the
+    process environment). Set it to ``false`` when the gateway inherits a
+    proxy env it should not use — e.g. a Windows Scheduled Task picking up a
+    Clash/V2Ray ``HTTP_PROXY`` the interactive shell never sees (#48820).
+    One knob for all platform adapters; fail-open to the default if config
+    is unreadable.
+    """
     try:
         from hermes_cli.config import load_config_readonly as _load_config
-        cfg = _load_config()  # read-only: .get() only, never mutated
+        gw = (_load_config() or {}).get("gateway") or {}
     except Exception:
-        return {}
-    section = cfg.get(name) if isinstance(cfg, dict) else None
-    return section if isinstance(section, dict) else {}
-
-
-def gateway_trust_env() -> bool:
-    """``gateway.trust_env`` from config.yaml (default True): whether gateway
-    ``aiohttp.ClientSession``s honor HTTP(S)_PROXY / NO_PROXY / SSL_CERT_FILE. Set false
-    when the gateway inherits a proxy env it must not use. Fail-open to default."""
-    value = _config_section("gateway").get("trust_env", True)
+        return True
+    value = gw.get("trust_env", True) if isinstance(gw, dict) else True
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off"}
     return bool(value) if value is not None else True
@@ -394,12 +407,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
-from gateway.platforms.base_exec_approval import (
-    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.session import SessionSource, build_session_key
-from gateway.session_transcript import TranscriptReadError
+from gateway.session import SessionSource, TranscriptReadError, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 if TYPE_CHECKING:
@@ -590,14 +598,14 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     return str(filepath)
 
 
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
-    """Save raw image bytes to the cache and return the absolute path; raises
-    ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
-    validate_inbound_media_size(len(data), media_type="image")
-    if not _looks_like_image(data):
-        snippet = data[:80].decode("utf-8", errors="replace")
-        raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")
-    return _write_cache_file(get_image_cache_dir(), "img", ext, data)
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+    """Cache image bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+
+
+async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+    """
+    Download an image from a URL and save it to the local cache.
 
 
 async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
@@ -621,8 +629,10 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
             try:
                 async with client.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
-                    content = await _read_httpx_body_with_limit(response, media_type=media_type)
-                return await asyncio.to_thread(cache_fn, content, ext)
+                    content = await _read_httpx_body_with_limit(
+                        response, media_type="image",
+                    )
+                return await cache_image_from_bytes_async(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -673,11 +683,72 @@ async def cache_audio_from_bytes_async(data: bytes, ext: str = ".ogg") -> str:
     return await asyncio.to_thread(cache_audio_from_bytes, data, ext)
 
 
+async def cache_audio_from_bytes_async(data: bytes, ext: str = ".ogg") -> str:
+    """Cache audio bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_audio_from_bytes, data, ext)
+
+
 async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
-    """Download an audio URL into the audio cache; return the absolute path."""
-    return await _cache_media_from_url(
-        url, ext, retries, media_type="audio", accept="audio/*,*/*;q=0.8",
-        cache_fn=cache_audio_from_bytes, log_label="Audio")
+    """
+    Download an audio file from a URL and save it to the local cache.
+
+    Retries on transient failures (timeouts, 429, 5xx) with exponential
+    backoff so a single slow CDN response doesn't lose the media.
+
+    Args:
+        url: The HTTP/HTTPS URL to download from.
+        ext: File extension including the dot (e.g. ".ogg", ".mp3").
+        retries: Number of retry attempts on transient failures.
+
+    Returns:
+        Absolute path to the cached audio file as a string.
+
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
+    """
+    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
+
+    import httpx
+    _log = logging.getLogger(__name__)
+
+    async with create_ssrf_safe_async_client(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
+        for attempt in range(retries + 1):
+            try:
+                async with client.stream(
+                    "GET",
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                        "Accept": "audio/*,*/*;q=0.8",
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    content = await _read_httpx_body_with_limit(
+                        response, media_type="audio",
+                    )
+                return await cache_audio_from_bytes_async(content, ext)
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                    raise
+                if attempt < retries:
+                    wait = 1.5 * (attempt + 1)
+                    _log.debug(
+                        "Audio cache retry %d/%d for %s (%.1fs): %s",
+                        attempt + 1,
+                        retries,
+                        safe_url_for_log(url),
+                        wait,
+                        exc,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
 
 
 # Video cache utilities (same pattern; referenced by local path).
@@ -699,6 +770,15 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 async def cache_video_from_bytes_async(data: bytes, ext: str = ".mp4") -> str:
     """Cache video bytes without blocking the caller's event loop."""
     return await asyncio.to_thread(cache_video_from_bytes, data, ext)
+
+
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached videos older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_video_cache_dir(), max_age_hours)
 
 
 # Document / screenshot cache utilities (same pattern; referenced by local path).
@@ -913,10 +993,36 @@ def _tenv(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
+def _tenv(name: str, default: str = "") -> str:
+    """Scope-aware TERMINAL_* read (tools.terminal_scope.terminal_env).
+
+    Media-path translation runs in the gateway process concurrently for
+    several profiles; the per-turn terminal scope carries the ACTIVE
+    profile's terminal settings, while a raw os.getenv would read whatever
+    profile's config a previous turn pinned into the process env.
+
+    Only an import failure falls back: an active refusal scope must raise —
+    reconstructing mounts/backends from ambient env under refusal would
+    rebuild another profile's terminal policy.
+    """
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.getenv(name, default)
+    return terminal_env(name, default)
+
+
 def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
-    """Parse ``TERMINAL_DOCKER_VOLUMES`` (JSON list of ``host:container[:mode]``) into
-    ``(host_path, container_path)``; named volumes / non-absolute hosts can't resolve here."""
+    """Parse configured Docker volume mounts into ``(host_path, container_path)``.
+
+    Source of truth is ``TERMINAL_DOCKER_VOLUMES`` (JSON list of
+    ``host:container[:mode]`` specs), matching terminal/docker runtime config.
+    Named volumes and non-absolute hosts are skipped because they cannot be
+    resolved on the gateway host for media delivery.
+    """
     raw = _tenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    if not raw:
+        return []
     try:
         import json as _json
         parsed = _json.loads(raw) if raw else []
@@ -962,7 +1068,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     except Exception:
         return ["default"]
     # Explicit trusted-profiles opt-in: one shared container identity.
-    shared = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
     if shared:
         candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
     try:
@@ -988,9 +1094,9 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     actually resolves — the profile sandbox dir existing does not mean the
     file lives there when it was produced in a legacy per-session container.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+    if _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -998,13 +1104,13 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     }:
         return []
     # Explicit cwd mount takes over /workspace when enabled.
-    if os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
+    if _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }:
-        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        cwd = _tenv("TERMINAL_CWD") or os.getcwd()
         try:
             host = Path(os.path.expanduser(cwd)).resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
@@ -1032,9 +1138,9 @@ def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
     produced a real host file the gateway couldn't find. Ordered best-first:
     the profile-scoped layout, then the legacy bug-window per-session layout.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+    if _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -1056,9 +1162,15 @@ def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
 
 
 def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
-    """(host, container) pairs for the auto-mounted Hermes cache dirs (``/root/.hermes/...`` in
-    MEDIA tags); longer prefixes than the ``/root`` home mount, so longest-prefix match wins."""
-    if not _docker_env_active():
+    """(host, container) pairs for the auto-mounted Hermes cache dirs.
+
+    The agent legitimately sees generated artifacts at ``/root/.hermes/...``
+    (``agent_visible_image`` from image_generate, cache-dir reads) and will
+    naturally emit those container paths in MEDIA tags. These mounts are
+    longer prefixes than the ``/root`` home mount, so longest-prefix matching
+    picks the cache translation over the home translation for them.
+    """
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
     try:
         from tools.credential_files import get_cache_directory_mounts
@@ -1075,7 +1187,7 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
     file seemingly vanished. Point at the sandbox/session mismatch instead.
     Gated to Docker mode so host-path rejections stay quiet.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return
     logger.warning(
         "Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
@@ -1573,6 +1685,15 @@ async def cache_document_from_bytes_async(data: bytes, filename: str) -> str:
     return await asyncio.to_thread(cache_document_from_bytes, data, filename)
 
 
+def cleanup_document_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached documents older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_document_cache_dir(), max_age_hours)
+
+
 # Unified media caching: classify attachment bytes by ext/MIME, route to cache_*_from_bytes.
 @dataclass
 class CachedMedia:
@@ -1649,6 +1770,207 @@ async def cache_media_bytes_async(
         mime_type=mime_type,
         default_kind=default_kind,
     )
+    is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
+    is_audio = mime.startswith("audio/") or ext in _AUDIO_EXTS or default_kind == "audio"
+
+    if is_image:
+        img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
+        try:
+            path = cache_image_from_bytes(data, ext=img_ext)
+        except ValueError:
+            return None
+        out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "image", display)
+
+    if is_video:
+        vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
+        path = cache_video_from_bytes(data, ext=vid_ext)
+        return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
+
+    if is_audio:
+        aud_ext = ext if ext in _AUDIO_EXTS else ".ogg"
+        path = cache_audio_from_bytes(data, ext=aud_ext)
+        out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES[aud_ext]
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
+
+    # Any other file type is cached and surfaced to the agent as a local path
+    # so it can be inspected with terminal / read_file / etc. Authorization to
+    # talk to the agent is the gate that matters — once a user is allowed to
+    # message it, the file-extension allowlist must not silently drop their
+    # uploads. Known extensions keep their precise MIME; everything else is
+    # tagged application/octet-stream (or the caller-supplied MIME) so the
+    # agent knows it's an arbitrary file and reaches for terminal tools.
+    fallback_name = filename or (f"document{ext}" if ext else "document.bin")
+    path = cache_document_from_bytes(data, fallback_name)
+    if ext in SUPPORTED_DOCUMENT_TYPES:
+        out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+    else:
+        out_mime = mime if mime else "application/octet-stream"
+    return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+
+
+async def cache_media_bytes_async(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Classify and cache attachment bytes without blocking the event loop."""
+    return await asyncio.to_thread(
+        cache_media_bytes,
+        data,
+        filename=filename,
+        mime_type=mime_type,
+        default_kind=default_kind,
+    )
+
+
+class MessageType(Enum):
+    """Types of incoming messages."""
+    TEXT = "text"
+    LOCATION = "location"
+    PHOTO = "photo"
+    VIDEO = "video"
+    AUDIO = "audio"
+    VOICE = "voice"
+    DOCUMENT = "document"
+    STICKER = "sticker"
+    COMMAND = "command"  # /command style
+
+
+class ProcessingOutcome(Enum):
+    """Result classification for message-processing lifecycle hooks."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class MessageEvent:
+    """
+    Incoming message from a platform.
+    
+    Normalized representation that all adapters produce.
+    """
+    # Message content
+    text: str
+    message_type: MessageType = MessageType.TEXT
+
+    # Author of this inbound message.  Carried on the event itself (not
+    # only on ``source``) so prompt builders that build per-message text
+    # can resolve "who said this" without having to dig into ``source``.
+    # ``source`` still carries the same values for callers that already
+    # read from there.  Adapters that produce events from non-IM sources
+    # (cron, webhook, autonomous) may leave these as ``None``.
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+
+    # Source information
+    source: SessionSource = None
+    
+    # Original platform data
+    raw_message: Any = None
+    message_id: Optional[str] = None
+
+    # Platform-specific update identifier.  For Telegram this is the
+    # ``update_id`` from the PTB Update wrapper; other platforms currently
+    # ignore it.  Used by ``/restart`` to record the triggering update so the
+    # new gateway can advance the Telegram offset past it and avoid processing
+    # the same ``/restart`` twice if PTB's graceful-shutdown ACK times out
+    # ("Error while calling `get_updates` one more time to mark all fetched
+    # updates" in gateway.log).
+    platform_update_id: Optional[int] = None
+    
+    # Media attachments
+    # media_urls: local file paths (for vision tool access)
+    media_urls: List[str] = field(default_factory=list)
+    media_types: List[str] = field(default_factory=list)
+    # Per-attachment text-inlining contract. None/absent preserves the legacy
+    # assumption that text/* adapters already injected content into ``text``.
+    media_text_inlined: List[Optional[bool]] = field(default_factory=list)
+    
+    # Reply context
+    reply_to_message_id: Optional[str] = None
+    reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    reply_to_author_id: Optional[str] = None
+    reply_to_author_name: Optional[str] = None
+    reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+
+    # Structured interactive-prompt reply (relay Phase 3). Present when this
+    # event is the user answering a native interactive prompt rendered by the
+    # relay connector (Discord component / Telegram inline keyboard / Slack
+    # Block Kit / WhatsApp button-list). Shape mirrors the wire contract:
+    # {prompt_id, option_id, label?, prompt_message_id?}. The RelayAdapter
+    # consumes it in _on_inbound (routing to the approval/slash-confirm/
+    # clarify resolvers) BEFORE normal dispatch; native adapters never set it
+    # (their button callbacks resolve in-process).
+    prompt_response: Optional[Dict[str, Any]] = None
+    
+    # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
+    # Discord channel_skill_bindings).  A single name or ordered list.
+    auto_skill: Optional[str | list[str]] = None
+
+    # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
+    # Applied at API call time and never persisted to transcript history.
+    channel_prompt: Optional[str] = None
+
+    # Channel context recovered by history backfill (e.g. messages between
+    # bot turns that were missed due to require_mention).  Kept separate
+    # from ``text`` so the sender-prefix logic in run.py can operate on the
+    # trigger message alone, then prepend this context afterward.
+    channel_context: Optional[str] = None
+    
+    # Internal flag — set for synthetic events (e.g. background process
+    # completion notifications) that must bypass user authorization checks.
+    internal: bool = False
+
+    # Free-form per-event metadata.  Adapters may set platform-specific
+    # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
+    # the bridge is configured to forward owner-typed messages).  Plugins
+    # consume via ``event.metadata.get(...)`` and must not rely on any
+    # particular key existing.
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Timestamps
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    # Whether this event may resolve gateway commands or pending control
+    # prompts. Kept last to preserve positional construction compatibility.
+    # Proactive plugin events set this to False so untrusted payload text
+    # remains conversational input.
+    allow_gateway_control: bool = True
+    
+    def is_command(self) -> bool:
+        """Check if this is a command message (e.g., /new, /reset)."""
+        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
+    
+    def get_command(self) -> Optional[str]:
+        """Extract command name if this is a command message."""
+        if not self.is_command():
+            return None
+        # Split on space and get first word, strip the /
+        command_text = (self.text or "").lstrip()
+        parts = command_text.split(maxsplit=1)
+        raw = parts[0][1:].lower() if parts else None
+        if raw and "@" in raw:
+            raw = raw.split("@", 1)[0]
+        # Reject file paths: valid command names never contain /
+        if raw and "/" in raw:
+            return None
+        return raw
+    
+    def get_command_args(self) -> str:
+        """Get the arguments after a command."""
+        if not self.is_command():
+            return self.text
+        command_text = (self.text or "").lstrip()
+        parts = command_text.split(maxsplit=1)
+        args = parts[1] if len(parts) > 1 else ""
+        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
+        args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        return args
 
 
 @dataclass
@@ -2211,19 +2533,14 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
-    def _mark_connected(self, *, listener_base: Optional[str] = None) -> None:
-        """``listener_base`` (``http://host:port``) is stamped by port-binders after a REAL bind: under the
-        multiplexer it is the shared listener a served profile's ``/p/<profile>/`` mirror hangs off, and
-        what the dashboard/Desktop report as that profile's api_server/webhook URL."""
+    def _mark_connected(self) -> None:
         self._running = True
         self._fatal_error_code = self._fatal_error_message = None
         self._fatal_error_retryable = True
         if self.send_path_degraded:
             self._mark_degraded()
         else:
-            extra = {"listener_base": listener_base} if listener_base else {}
-            self._write_runtime_status_safe(
-                "connected", platform_state="connected", error_code=None, error_message=None, **extra)
+            self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
 
     def _mark_degraded(self) -> None:
         """Publish ``retrying`` for a running adapter whose delivery path is unproven."""
@@ -2443,13 +2760,33 @@ class BasePlatformAdapter(ABC):
         (Slack thread replies) use it to flag non-allowlisted senders as unverified background."""
         self._authorization_check = callback
 
-    def _is_sender_authorized(self, user_id: Optional[str], chat_type: Optional[str] = None,
-                              chat_id: Optional[str] = None, *, is_bot: bool = False,
-                              thread_id: Optional[str] = None) -> Optional[bool]:
-        """True/False from the registered check, or None when no check exists ("trust unknown",
-        legacy). ``is_bot``/``thread_id`` are forwarded as keywords only when set so legacy
-        three-positional callbacks keep working. Only literal booleans propagate: a truthy
-        non-boolean is "unknown", never an authorization that gates a credentialed side effect."""
+    def _is_sender_authorized(
+        self,
+        user_id: Optional[str],
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        *,
+        is_bot: bool = False,
+        thread_id: Optional[str] = None,
+    ) -> Optional[bool]:
+        """Return whether ``user_id`` is on the allowlist, if a check is configured.
+
+        Returns ``True``/``False`` when an authorization check has been
+        registered via :meth:`set_authorization_check`. Returns ``None``
+        when no check is registered (caller should treat as "trust unknown"
+        and preserve legacy behaviour).
+
+        ``is_bot`` / ``thread_id`` are forwarded as keywords only when set, so
+        the gateway callback can apply its bot policy (``*_ALLOW_BOTS``) and
+        thread-level profile routes while legacy three-positional callbacks
+        keep working unchanged.
+
+        Only the literal booleans are propagated. A callback that returns
+        anything else is treated as "unknown" rather than coerced with
+        ``bool()``: callers that gate a credentialed side effect on an
+        explicit ``is True`` must not have a truthy non-boolean (a status
+        string, a sentinel object) silently promoted to an authorization.
+        """
         if not user_id or self._authorization_check is None:
             return None
         extra: Dict[str, Any] = {}
@@ -2459,6 +2796,15 @@ class BasePlatformAdapter(ABC):
             extra["thread_id"] = thread_id
         try:
             result = self._authorization_check(user_id, chat_type, chat_id, **extra)
+            if result is True:
+                return True
+            if result is False:
+                return False
+            logger.warning(
+                "[%s] Authorization check returned %s for user %s; treating as unknown",
+                self.name, type(result).__name__, user_id,
+            )
+            return None
         except Exception:
             logger.warning("[%s] Authorization check raised for user %s; treating as unknown",
                            self.name, user_id, exc_info=True)

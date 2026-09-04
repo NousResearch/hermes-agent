@@ -262,19 +262,74 @@ class DeliveryRouter:
         adapter = transport.adapter
         content = self._cap_oversized_output(adapter, content, (metadata or {}).get("job_id", "unknown"))
 
-        # Substrate-level anti-loop guard: drop hallucinated "silence narration" (*(silent)*, 🔇, a bare ".")
-        # before it reaches any adapter — in bot-to-bot channels these mirror back and forth until a model
-        # crashes with "no content after all retries"; prompt rules drift across providers, so this single
-        # chokepoint covers every platform. Local/file delivery is never filtered (saved silence has no loop
-        # risk). Cron output is an ARTIFACT, not model chatter: a legitimately terse job ("...", a single 🔇)
-        # has no mirror loop, and dropping it while returning success is how a cron gets logged as delivered
-        # with nothing on the wire. Cron sends carry job_id in metadata; everything else is filtered.
-        # See #77763.
+        if len(content) > MAX_PLATFORM_OUTPUT:
+            # Step 1 — audit save (best-effort).  The save is a side-effect
+            # audit trail, not essential to delivery.  If it fails (full disk,
+            # permissions), delivery proceeds — the content reaches the adapter
+            # regardless.
+            try:
+                saved_path = self._save_full_output(content, job_id)
+            except OSError as exc:
+                logger.warning(
+                    "Audit save failed for cron output (%d chars, job=%s): %s — "
+                    "delivery proceeds without audit copy",
+                    len(content), job_id, exc,
+                )
+
+            # Step 2 — truncation (only for non-chunking adapters).
+            if getattr(adapter, "splits_long_messages", False):
+                # Adapter chunks natively — deliver full payload.
+                if saved_path:
+                    logger.info(
+                        "Cron output preserved for chunking adapter (%d chars) — "
+                        "full output saved to %s",
+                        len(content), saved_path,
+                    )
+            else:
+                # Non-chunking adapter — truncate with footer.  The footer
+                # needs a valid path, so if the best-effort save above failed,
+                # retry it here (a failure now is a real delivery problem).
+                if saved_path is None:
+                    saved_path = self._save_full_output(content, job_id)
+                footer = f"\n\n... [truncated, full output saved to {saved_path}]"
+                visible = max(0, MAX_PLATFORM_OUTPUT - len(footer))
+                logger.info(
+                    "Cron output truncated (%d chars) — full output: %s",
+                    len(content), saved_path,
+                )
+                content = content[:visible] + footer
+        
+        # Substrate-level anti-loop guard: drop hallucinated "silence narration"
+        # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.
+        # In bot-to-bot channels these tokens mirror back and forth until a
+        # model crashes with "no content after all retries". Behavioral prompt
+        # rules drift across providers; this single chokepoint covers every
+        # platform adapter regardless of which persona's prompt failed.
+        # Local/file delivery (_deliver_local) is a separate path and is never
+        # filtered — saved silence has no loop risk.
+        # Cron output is an ARTIFACT, not model chatter: a job whose brief is
+        # legitimately terse ("...", a single 🔇 from a script) has no bot-to-bot
+        # mirror loop to guard against, and dropping it here while returning
+        # {"success": True} is exactly how a cron was logged as delivered with
+        # nothing on the wire (#77763).  Cron sends carry job_id in metadata;
+        # every other caller keeps the filter unchanged.
         is_cron_artifact = "job_id" in (metadata or {})
-        if self._filter_silence_narration_enabled() and not is_cron_artifact and _is_silence_narration(content):
-            logger.warning("Dropped silence-narration outbound to %s (chat=%s): %r",
-                           target.platform.value, target.chat_id, content[:40])
-            return {"success": True, "filtered": "silence_narration", "delivered": False}
+        if (
+            self._filter_silence_narration_enabled()
+            and not is_cron_artifact
+            and _is_silence_narration(content)
+        ):
+            logger.warning(
+                "Dropped silence-narration outbound to %s (chat=%s): %r",
+                target.platform.value,
+                target.chat_id,
+                content[:40],
+            )
+            return {
+                "success": True,
+                "filtered": "silence_narration",
+                "delivered": False,
+            }
 
         send_metadata = dict(metadata or {})
         home = self.config.get_home_channel(target.platform) if transport.is_relay else None

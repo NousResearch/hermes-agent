@@ -475,6 +475,38 @@ export interface RollbackRestoreResponse {
   success?: boolean
 }
 
+// ── Subagent events ──────────────────────────────────────────────────
+
+export interface SubagentEventPayload {
+  api_calls?: number
+  cost_usd?: number
+  /** Batch (delegation) id this subagent belongs to — distinguishes
+   *  interleaved `[n/N]` progress from concurrent or nested fan-outs. */
+  delegation_id?: string
+  depth?: number
+  duration_seconds?: number
+  files_read?: string[]
+  files_written?: string[]
+  goal: string
+  input_tokens?: number
+  iteration?: number
+  model?: string
+  output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
+  output_tokens?: number
+  parent_id?: null | string
+  reasoning_tokens?: number
+  status?: SubagentStatus
+  subagent_id?: string
+  summary?: string
+  task_count?: number
+  task_index: number
+  text?: string
+  tool_count?: number
+  tool_name?: string
+  tool_preview?: string
+  toolsets?: string[]
+}
+
 // ── Delegation control RPCs ──────────────────────────────────────────
 
 export interface DelegationStatusResponse {

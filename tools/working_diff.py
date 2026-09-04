@@ -29,13 +29,18 @@ VALID_MODES = tuple(_MODE_ARGS)
 
 
 def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
-    """Run git, returning (returncode, stdout). Never raises on git failure. Hardened against a
-    malicious repo's ``.git/config`` (GHSA-7x36-8jrh-v4pw): ``noninteractive_git_env`` disables
-    fsmonitor/hooks/pager/editor/credential sinks and ``harden_git_argv`` appends ``--no-ext-diff
-    --no-textconv`` to diff-rendering subcommands so attribute-scoped drivers can't execute either."""
+    """Run git, returning (returncode, stdout). Never raises on git failure.
+
+    Hardened against a malicious repo's ``.git/config`` (GHSA-7x36-8jrh-v4pw):
+    ``noninteractive_git_env`` disables fsmonitor/hooks/pager/editor/credential
+    sinks, and ``harden_git_argv`` appends ``--no-ext-diff --no-textconv`` to
+    the diff-rendering subcommands so attribute-scoped diff/textconv drivers
+    can't execute either.
+    """
     proc = subprocess.run(
         ["git", "-c", "core.quotePath=false", *harden_git_argv(args)],
-        cwd=cwd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
+        cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
     )
     return proc.returncode, proc.stdout

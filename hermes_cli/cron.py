@@ -161,6 +161,53 @@ def _unverified_targets(unverified) -> str:
 _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE)}
 
 
+def _format_lateness(seconds: float) -> str:
+    """Render a lateness duration compactly: '31m', '2h 30m', '45s'."""
+    try:
+        seconds = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "?"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes and not days:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) or "0m"
+
+
+def _dispatch_display(dispatch: dict) -> Optional[str]:
+    """One-line scheduled-vs-actual dispatch summary for a job (#99879).
+
+    Returns None when the stamp is malformed. On-time dispatches render a
+    dim confirmation; late/catch-up dispatches render loudly so a run that
+    fired 30–150 min after gateway downtime no longer looks like an
+    ordinary on-time success.
+    """
+    if not isinstance(dispatch, dict):
+        return None
+    scheduled = dispatch.get("scheduled_at")
+    actual = dispatch.get("dispatched_at")
+    kind = dispatch.get("kind")
+    if not scheduled or not actual or not kind:
+        return None
+    lateness = _format_lateness(dispatch.get("lateness_seconds", 0))
+    if kind == "on_time":
+        return color(f"on time (scheduled {scheduled})", Colors.DIM)
+    label = "catch-up after missed fire" if kind == "catch_up" else "late"
+    return (
+        color(f"⚠ {label}: ", Colors.YELLOW)
+        + f"scheduled {scheduled}, ran {actual} "
+        + color(f"({lateness} late)", Colors.YELLOW)
+    )
+
+
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import effective_job_state, list_jobs
@@ -174,14 +221,116 @@ def cron_list(show_all: bool = False):
     _print_banner("Scheduled Jobs")
 
     for job in jobs:
-        # effective_job_state honours the scheduler flag — never [paused] when enabled=true.
-        badge = _STATE_BADGES.get(effective_job_state(job)) or (
-            ("[active]", Colors.GREEN) if job.get("enabled", True) else ("[disabled]", Colors.RED))
-        print(f"  {color(job.get('id', '?'), Colors.YELLOW)} {color(*badge)}")
-        for label, value in _job_rows(job):
-            print(f"    {label + ':':<11}{value}")
-        for line in _job_warnings(job):
-            print(f"    {line}")
+        job_id = job.get("id", "?")
+        name = job.get("name", "(unnamed)")
+        schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
+        # Derive from the scheduler-honoured flag — never show [paused] when
+        # enabled=true (half-paused contradiction must not look frozen).
+        state = effective_job_state(job)
+        next_run = job.get("next_run_at", "?")
+
+        # `repeat` may be present-but-null in the job record (e.g. a one-shot
+        # job persisted with "repeat": null), so coalesce to {} rather than
+        # relying on the dict-default, which only applies to a missing key.
+        repeat_info = job.get("repeat") or {}
+        repeat_times = repeat_info.get("times")
+        repeat_completed = repeat_info.get("completed", 0)
+        repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
+
+        # `deliver` may be present-but-null in the job record (same pitfall as
+        # `repeat` above), so coalesce to the default rather than relying on the
+        # dict-default, which only applies to a missing key. A null value would
+        # otherwise reach `", ".join(None)` and crash the whole listing (#32896).
+        deliver = job.get("deliver") or ["local"]
+        if isinstance(deliver, str):
+            deliver = [deliver]
+        deliver_str = ", ".join(deliver)
+
+        skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
+        if state == "paused":
+            status = color("[paused]", Colors.YELLOW)
+        elif state == "completed":
+            status = color("[completed]", Colors.BLUE)
+        elif job.get("enabled", True):
+            status = color("[active]", Colors.GREEN)
+        else:
+            status = color("[disabled]", Colors.RED)
+
+        print(f"  {color(job_id, Colors.YELLOW)} {status}")
+        print(f"    Name:      {name}")
+        print(f"    Schedule:  {schedule}")
+        print(f"    Repeat:    {repeat_str}")
+        print(f"    Next run:  {next_run}")
+        print(f"    Deliver:   {deliver_str}")
+        if skills:
+            print(f"    Skills:    {', '.join(skills)}")
+        script = job.get("script")
+        if script:
+            print(f"    Script:    {script}")
+        monitor_source = job.get("monitor_script") or job.get("monitor_url")
+        if monitor_source:
+            print(f"    Monitor:   {monitor_source} (agent runs only on output change)")
+            mon_state = job.get("monitor_state") or {}
+            if mon_state.get("last_changed_at"):
+                print(f"    Changed:   {mon_state['last_changed_at']}")
+        if job.get("no_agent"):
+            print(f"    Mode:      {color('no-agent', Colors.DIM)} (script stdout delivered directly)")
+        workdir = job.get("workdir")
+        if workdir:
+            print(f"    Workdir:   {workdir}")
+
+        # Execution history
+        last_status = job.get("last_status")
+        if last_status:
+            last_run = job.get("last_run_at", "?")
+            if last_status == "ok":
+                status_display = color("ok", Colors.GREEN)
+            elif last_status == "delivery_failed":
+                # The agent succeeded but the result never reached the user —
+                # not green, and the detail lives in last_delivery_error
+                # (last_error is None for these runs).
+                detail = job.get("last_delivery_error") or "?"
+                status_display = color(f"delivery_failed: {detail}", Colors.YELLOW)
+            else:
+                status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
+                streak = int(job.get("failure_streak") or 0)
+                if streak >= 2:
+                    status_display += color(f"  ({streak} failures in a row)", Colors.RED)
+            print(f"    Last run:  {last_run}  {status_display}")
+
+        dispatch_line = _dispatch_display(job.get("last_dispatch"))
+        if dispatch_line:
+            print(f"    Dispatch:  {dispatch_line}")
+
+        latest_execution = job.get("latest_execution")
+        if latest_execution:
+            print(
+                f"    Execution: {latest_execution.get('status', '?')}  "
+                f"{latest_execution.get('id', '?')}"
+            )
+
+        delivery_err = job.get("last_delivery_error")
+        if delivery_err:
+            print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+
+        # A live adapter acked the last send but returned no message_id /
+        # raw_response (Slack/Matrix/Mattermost shape): accepted as delivered,
+        # but say so here rather than only in a WARNING log line.
+        unverified = job.get("last_delivery_unverified")
+        if unverified:
+            targets = ", ".join(str(t) for t in unverified) if isinstance(unverified, list) else str(unverified)
+            print(
+                f"    {color('⚠ Delivery UNVERIFIED:', Colors.YELLOW)} "
+                f"adapter acked {targets} without message_id/raw_response"
+            )
+
+        fire_err = job.get("last_fire_error")
+        if isinstance(fire_err, dict) and fire_err.get("detail"):
+            print(
+                f"    {color('⚠ Missed scheduled fire:', Colors.RED)} "
+                f"{fire_err.get('at', '?')}  {fire_err['detail']}"
+            )
+
         print()
 
     _warn_if_gateway_not_running()
@@ -565,8 +714,39 @@ def cron_status():
 
 
 def _print_active_jobs_summary(jobs) -> None:
-    """Print the '<N> active job(s)' + next-run line shared by every status path."""
-    if not jobs:
+    """Print the '<N> active job(s)' + next-run line shared by every status
+    path (built-in ticker AND external provider)."""
+    if jobs:
+        next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
+        print(f"  {len(jobs)} active job(s)")
+        if next_runs:
+            print(f"  Next run: {min(next_runs)}")
+        # Missed-run visibility (#99879): call out jobs whose LAST dispatch
+        # was late or a catch-up so post-downtime late fires are visible at
+        # status level, not just buried per-job in `hermes cron list`.
+        late = [
+            j for j in jobs
+            if isinstance(j.get("last_dispatch"), dict)
+            and j["last_dispatch"].get("kind") in ("late", "catch_up")
+        ]
+        if late:
+            print()
+            print(color(
+                f"  ⚠ {len(late)} job(s) last fired late (missed-fire catch-up):",
+                Colors.YELLOW,
+            ))
+            for j in late:
+                d = j["last_dispatch"]
+                print(
+                    f"    {j.get('id', '?')}  {j.get('name', '(unnamed)')}: "
+                    f"scheduled {d.get('scheduled_at', '?')}, "
+                    f"ran {d.get('dispatched_at', '?')} "
+                    + color(
+                        f"({_format_lateness(d.get('lateness_seconds', 0))} late)",
+                        Colors.YELLOW,
+                    )
+                )
+    else:
         print("  No active jobs")
         return
     next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
@@ -634,15 +814,22 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
 def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
-    # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
-    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
-        issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
-    if delivery_err := str(job.get("last_delivery_error") or "").strip():
-        issues.append(f"last run finished but the result was not delivered ({_short_reason(delivery_err)}). "
-                      f"{_delivery_fix_hint(job)}")
-    if unverified := job.get("last_delivery_unverified"):
-        issues.append("last delivery unverified (adapter acked without evidence): "
-                      + _unverified_targets(unverified))
+    # "delivery_failed" means the agent run itself succeeded, so it is not a
+    # failed last run — the dedicated delivery issue below reports it (and
+    # last_error is None, which would render as "unknown error" here).
+    if last_status and last_status not in {"ok", "delivery_failed"}:
+        err = str(job.get("last_error") or "unknown error").strip()
+        issues.append(f"last run failed: {err}")
+
+    delivery_err = str(job.get("last_delivery_error") or "").strip()
+    if delivery_err:
+        issues.append(f"last delivery failed: {delivery_err}")
+
+    unverified = job.get("last_delivery_unverified")
+    if unverified:
+        targets = ", ".join(str(t) for t in unverified) if isinstance(unverified, list) else str(unverified)
+        issues.append(f"last delivery unverified (adapter acked without evidence): {targets}")
+
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
         next_run = str(job.get("next_run_at") or "").strip()
         issue = _next_run_overdue_issue(next_run) if next_run else "active job has no next_run_at"
@@ -713,7 +900,13 @@ def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
     result = _cron_api(
-        action="create", schedule=args.schedule, prompt=args.prompt,
+        action="create",
+        schedule=args.schedule,
+        prompt=args.prompt,
+        name=getattr(args, "name", None),
+        deliver=getattr(args, "deliver", None),
+        failure_deliver=getattr(args, "failure_deliver", None),
+        repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         no_agent=getattr(args, "no_agent", False) or None,
@@ -773,6 +966,7 @@ def cron_edit(args):
         prompt=getattr(args, "prompt", None),
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
+        failure_deliver=getattr(args, "failure_deliver", None),
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
         script=getattr(args, "script", None),

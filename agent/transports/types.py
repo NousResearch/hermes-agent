@@ -77,14 +77,38 @@ class NormalizedResponse:
     def _pd(self, key: str) -> Any:
         return (self.provider_data or {}).get(key)
 
-    reasoning_content = property(lambda self: self._pd("reasoning_content"))
-    reasoning_details = property(lambda self: self._pd("reasoning_details"))
-    # Order-preserving Anthropic blocks, present only when a turn interleaves signed
-    # thinking with tool_use (replay order invalidates signatures otherwise).
-    anthropic_content_blocks = property(lambda self: self._pd("anthropic_content_blocks"))
-    bedrock_content_blocks = property(lambda self: self._pd("bedrock_content_blocks"))  # order-preserving Converse blocks
-    codex_reasoning_items = property(lambda self: self._pd("codex_reasoning_items"))
-    codex_message_items = property(lambda self: self._pd("codex_message_items"))
+    @property
+    def reasoning_details(self):
+        pd = self.provider_data or {}
+        return pd.get("reasoning_details")
+
+    @property
+    def anthropic_content_blocks(self):
+        """Verbatim, order-preserving Anthropic content blocks for a turn.
+
+        Present only when an Anthropic turn interleaves signed thinking with
+        tool_use — the one shape the parallel reasoning_details + tool_calls
+        lists reconstruct in the wrong order, invalidating thinking-block
+        signatures on replay. See agent/transports/anthropic.py.
+        """
+        pd = self.provider_data or {}
+        return pd.get("anthropic_content_blocks")
+
+    @property
+    def bedrock_content_blocks(self):
+        """Verbatim, order-preserving Bedrock Converse content blocks."""
+        pd = self.provider_data or {}
+        return pd.get("bedrock_content_blocks")
+
+    @property
+    def codex_reasoning_items(self):
+        pd = self.provider_data or {}
+        return pd.get("codex_reasoning_items")
+
+    @property
+    def codex_message_items(self):
+        pd = self.provider_data or {}
+        return pd.get("codex_message_items")
 
 
 def build_tool_call(id: str | None, name: str, arguments: Any, **provider_fields: Any) -> ToolCall:

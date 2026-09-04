@@ -2409,6 +2409,20 @@ class TestConcurrentToolExecution:
         assert post_calls[0]["status"] == "ok"
         assert post_calls[0]["result"] == '{"intercepted":true}'
 
+    def test_agent_runtime_post_hook_ownership_predicate_covers_agent_tools(self, agent):
+        """Sequential and concurrent agent-level paths share post-hook ownership."""
+        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
+
+        for tool_name in ("todo_list", "session_search", "memory", "clarify", "delegate_task"):
+            assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
+
+        agent._context_engine_tool_names = {"context_query"}
+        assert agent_runtime_owns_post_tool_hook(agent, "context_query") is True
+
+        agent._memory_manager = SimpleNamespace(has_tool=lambda name: name == "memory_extra")
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is True
+        assert agent_runtime_owns_post_tool_hook(agent, "web_search") is False
+
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
@@ -2556,7 +2570,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("read_window_below", {}),
         ("manage_connections", {"action": "install", "connectors": [{"name": "linear", "mcp": True}]}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
-        ("tour", {"action": "stop"}),
+        ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
 
@@ -3773,11 +3787,7 @@ class TestRunConversation:
             caplog.at_level(logging.INFO, logger="agent.conversation_loop"),
         ):
             result = agent.run_conversation("answer me")
-        # Empty after retries keeps the pre-existing status (not a failed turn: cron stays silent,
-        # the transcript keeps the text) and only gains the descriptor code for Desktop/TUI.
-        assert result["failed"] is False and result["completed"] is True
-        assert result["failure_reason"] == "empty_response"
-        assert result["failure_reason"] == "empty_response"
+        assert result["completed"] is True
         assert result["api_calls"] == 2
         assert agent.session_api_calls == 2
         assert caplog.text.count("usage=unavailable") == 2

@@ -122,14 +122,15 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     for pre-migration databases.
     """
     try:
-        from hermes_state_registry import acquire, release_or_close
-        db = acquire()
+        from hermes_state import get_shared_session_db
+        db = get_shared_session_db()
         try:
             finder = getattr(db, "find_session_by_origin", None)
             session_id = finder(platform=platform, chat_id=chat_id, thread_id=thread_id, user_id=user_id) if callable(finder) else None
             if session_id:
                 return str(session_id)
         finally:
+            from hermes_state import release_or_close
             release_or_close(db)
     except Exception as e:
         logger.debug("Mirror state.db session lookup failed: %s", e)
@@ -172,6 +173,16 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
 
     db = acquire()
     try:
-        db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
+        from hermes_state import get_shared_session_db
+        db = get_shared_session_db()
+        db.append_message(
+            session_id=session_id,
+            role=message.get("role", "assistant"),
+            content=message.get("content"),
+        )
+    except Exception as e:
+        logger.debug("Mirror SQLite write failed: %s", e)
     finally:
-        release_or_close(db)
+        if db is not None:
+            from hermes_state import release_or_close
+            release_or_close(db)

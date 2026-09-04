@@ -407,13 +407,195 @@ class ChatCompletionsTransport(ProviderTransport):
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> list[dict[str, Any]]:
         """Strip internal fields that strict chat-completions providers reject (HTTP 400/422).
 
-        Returns the input list unchanged when nothing needs sanitizing.
+        - Codex Responses API fields: ``codex_reasoning_items`` /
+          ``codex_message_items`` on the message, ``call_id`` /
+          ``response_item_id`` on ``tool_calls`` entries.
+        - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
+          stripped unless the outgoing ``model`` is itself Gemini-family.
+          Gemini 3 thinking models attach it for replay, but strict providers
+          (Fireworks, Mistral) reject any payload containing it with
+          ``Extra inputs are not permitted, field: 'messages[N].tool_calls[M].extra_content'``.
+          It must be kept for Gemini targets (replay required) and dropped for
+          everyone else, including non-Gemini models that inherited stale
+          Gemini ``extra_content`` earlier in a mixed-provider session.
+        - ``tool_name`` on tool-result messages — written by
+          ``make_tool_result_message()`` for the SQLite FTS index, but not
+          part of the Chat Completions schema. Strict providers (Fireworks,
+          Moonshot/Kimi) reject any payload containing it with
+          ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
+          Permissive providers (OpenRouter, MiniMax) silently ignore the
+          field, which masked the bug for months.
+        - Hermes-internal scaffolding markers — any top-level message key
+          starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
+          ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
+          bookkeeping flags the agent loop attaches to messages so the
+          persistence layer can later strip its own scaffolding; they must
+          never reach the wire. Permissive providers (real OpenAI,
+          Anthropic) silently drop unknown message keys, but strict
+          gateways (e.g. opencode-go, codex.nekos.me) reject with
+          ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
+          which then poisons every subsequent request in the session.
+        - Provider-specific ordered replay sidecars --
+          ``anthropic_content_blocks`` and ``bedrock_content_blocks`` are
+          durable-history data for their native transports, not part of the
+          Chat Completions schema. They must not cross a provider boundary.
         """
-        strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content)) for m in messages]
-        if all(s is None for _, s in sanitized_pairs):
+        strip_extra_content = not _model_consumes_thought_signature(
+            kwargs.get("model")
+        )
+        needs_sanitize = False
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "tool_name" in msg
+                or "effect_disposition" in msg
+                or "timestamp" in msg  # #47868 — strict providers reject this
+                or "platform_message_id" in msg  # gateway dedup id (persistence-only)
+                or "api_content" in msg  # persist-what-you-send sidecar
+                or "anthropic_content_blocks" in msg
+                or "bedrock_content_blocks" in msg
+            ):
+                needs_sanitize = True
+                break
+            if any(isinstance(k, str) and k.startswith("_") for k in msg):
+                needs_sanitize = True
+                break
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                # Defense-in-depth: a strict OpenAI-compatible provider
+                # (e.g. onerouter / Qwen, DeepSeek v4) rejects an assistant
+                # message carrying ``tool_calls: []`` (empty array) with
+                # HTTP 400 "Empty tool_calls is not supported in message."
+                # The pre-API sanitizer in agent_runtime_helpers drops these,
+                # but only on the conversation_loop path — other routes can
+                # reach the wire without it. For every request that
+                # serializes through this transport (conversation loop and
+                # any caller using it), this is the last boundary, so
+                # normalize here. Requests built by fully separate payload
+                # paths (e.g. some auxiliary clients) never pass through
+                # this layer and are out of scope for it. (#58755 follow-up)
+                if (
+                    msg.get("role") == "assistant"
+                    and "tool_calls" in msg
+                    and not tool_calls
+                ):
+                    needs_sanitize = True
+                    break
+                for tc in tool_calls:
+                    if isinstance(tc, dict) and (
+                        "call_id" in tc
+                        or "response_item_id" in tc
+                        or (strip_extra_content and "extra_content" in tc)
+                    ):
+                        needs_sanitize = True
+                        break
+                if needs_sanitize:
+                    break
+            elif (
+                isinstance(tool_calls, type(None))
+                and msg.get("role") == "assistant"
+                and "tool_calls" in msg
+            ):
+                # Explicit ``tool_calls: null`` is equally invalid on strict
+                # providers — treat it like the empty-array case.
+                needs_sanitize = True
+                break
+
+        if not needs_sanitize:
             return messages
-        return [m if s is None else s for m, s in sanitized_pairs]
+
+        sanitized = list(messages)
+        for msg_idx, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+
+            copied_msg: dict[str, Any] | None = None
+
+            def mutable_msg() -> dict[str, Any]:
+                nonlocal copied_msg
+                if copied_msg is None:
+                    copied_msg = dict(msg)
+                    sanitized[msg_idx] = copied_msg
+                return copied_msg
+
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "tool_name" in msg
+                or "effect_disposition" in msg
+                or "timestamp" in msg  # #47868 — leak into strict providers
+                or "platform_message_id" in msg  # gateway dedup id (persistence-only)
+                or "api_content" in msg  # persist-what-you-send sidecar
+                or "anthropic_content_blocks" in msg
+                or "bedrock_content_blocks" in msg
+            ):
+                out_msg = mutable_msg()
+                out_msg.pop("codex_reasoning_items", None)
+                out_msg.pop("codex_message_items", None)
+                out_msg.pop("tool_name", None)
+                out_msg.pop("effect_disposition", None)
+                out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
+                out_msg.pop("platform_message_id", None)  # gateway dedup id
+                out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                out_msg.pop("anthropic_content_blocks", None)
+                out_msg.pop("bedrock_content_blocks", None)
+
+
+            # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
+            # OpenAI's message schema has no ``_``-prefixed fields, so this
+            # is safe and future-proofs against new markers being added.
+            internal_keys = [k for k in msg if isinstance(k, str) and k.startswith("_")]
+            if internal_keys:
+                out_msg = mutable_msg()
+                for key in internal_keys:
+                    out_msg.pop(key, None)
+
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                # Strip empty/invalid tool_calls arrays at the transport
+                # layer (see detection above). Strict OpenAI-compatible
+                # providers reject ``tool_calls: []`` with HTTP 400; dropping
+                # the key keeps the message schema-valid. Matches the
+                # pre-API sanitizer's behaviour so all routes agree.
+                if (
+                    msg.get("role") == "assistant"
+                    and "tool_calls" in msg
+                    and not tool_calls
+                ):
+                    out_msg = mutable_msg()
+                    out_msg.pop("tool_calls", None)
+                    continue
+                copied_tool_calls: list[Any] | None = None
+                for tc_idx, tc in enumerate(tool_calls):
+                    if isinstance(tc, dict):
+                        should_copy_tc = (
+                            "call_id" in tc
+                            or "response_item_id" in tc
+                            or (strip_extra_content and "extra_content" in tc)
+                        )
+                        if should_copy_tc:
+                            if copied_tool_calls is None:
+                                copied_tool_calls = list(tool_calls)
+                            copied_tc = dict(tc)
+                            copied_tc.pop("call_id", None)
+                            copied_tc.pop("response_item_id", None)
+                            if strip_extra_content:
+                                copied_tc.pop("extra_content", None)
+                            copied_tool_calls[tc_idx] = copied_tc
+                if copied_tool_calls is not None:
+                    mutable_msg()["tool_calls"] = copied_tool_calls
+            elif (
+                isinstance(tool_calls, type(None))
+                and msg.get("role") == "assistant"
+                and "tool_calls" in msg
+            ):
+                # Explicit ``tool_calls: null`` is invalid on strict
+                # providers — drop the key entirely.
+                mutable_msg().pop("tool_calls", None)
+        return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Tools are already in OpenAI format — identity."""
@@ -534,10 +716,19 @@ class ChatCompletionsTransport(ProviderTransport):
                 if params.get("github_reasoning_extra") is not None:
                     extra_body["reasoning"] = params["github_reasoning_extra"]
             else:
-                _effort = (reasoning_config.get("effort", "medium") or "medium") if reasoning_config and isinstance(reasoning_config, dict) else "medium"
-                # Honor explicit "thinking off" like the profile path — never re-enable it.
-                off = thinking_off or _effort == "none"
-                extra_body["reasoning"] = {"enabled": not off, "effort": "none" if off else _effort}
+                _effort = "medium"
+                _enabled = True
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _effort = reasoning_config.get("effort", "medium") or "medium"
+                    # Honor an explicit "thinking off" (agent.reasoning_effort:
+                    # none / the one-shot length-continuation override) the same
+                    # way the provider-profile path does — never re-enable it.
+                    if reasoning_config.get("enabled") is False or _effort == "none":
+                        _enabled = False
+                if _enabled:
+                    extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                else:
+                    extra_body["reasoning"] = {"enabled": False, "effort": "none"}
 
         if str(params.get("provider_name") or "").strip().lower() == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

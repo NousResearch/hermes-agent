@@ -267,7 +267,7 @@ class TestScanSkillCommands:
 
         profile_b = tmp_path / "profiles" / "b"
         _make_skill(profile_b / "skills", "b-only", body="Body of b-only.")
-        (profile_b / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (profile_b / "config.yaml").write_text("{}\n")
 
         with (
             patch.object(sc_mod, "_skill_commands", {}),

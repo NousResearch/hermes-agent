@@ -178,9 +178,25 @@ from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+    classify_send_error,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_video_from_bytes_async,
+    cache_document_from_bytes,
+    resolve_proxy_url,
+    SUPPORTED_VIDEO_TYPES,
+    SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_IMAGE_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
+    utf16_len,
+)
+from plugins.platforms.telegram.telegram_ids import (
+    normalize_telegram_chat_id,
 )
 
 # Every refused button tap answers with the same sentence.
@@ -661,6 +677,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # polling-death site. getattr: tests build adapters via object.__new__().
         return bool(getattr(self, "_send_path_degraded", False))
 
+    @property
+    def send_path_degraded(self) -> bool:
+        # True from polling-generation start until the first getUpdates
+        # round-trip is proven (_record_polling_progress), and again at every
+        # polling-death site. getattr: tests build adapters via object.__new__().
+        return bool(getattr(self, "_send_path_degraded", False))
+
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
@@ -889,20 +912,41 @@ class TelegramAdapter(BasePlatformAdapter):
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
             return False
-        normalized_chat_type = self._normalize_chat_type(chat_type, is_forum=thread_id is not None)
-        # Preferred: the auth callback GatewayRunner injects (set_authorization_check) → full
-        # _is_user_authorized chain; also works for a multiplexed adapter whose _message_handler is a
-        # profile closure. getattr tolerates partially-constructed adapters (object.__new__ in tests).
+
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id is not None else "group"
+
+        # Preferred path: the auth callback GatewayRunner injects at
+        # connection time (set_authorization_check), which delegates to the
+        # full _is_user_authorized chain -- env allowlists, group allowlists,
+        # pairing store, allow-all flags. Unlike the __self__ introspection
+        # below, this also works for a secondary multiplexed adapter, whose
+        # _message_handler is a profile closure with no __self__ (the same
+        # gap the admin-tier check had -- resolved the same way). The getattr
+        # tolerates partially-constructed adapters (object.__new__ in tests)
+        # that never ran BasePlatformAdapter.__init__.
         if getattr(self, "_authorization_check", None) is not None:
             injected = self._is_sender_authorized(
-                normalized_user_id, chat_type=normalized_chat_type, chat_id=str(chat_id or normalized_user_id),
-                thread_id=str(thread_id) if thread_id is not None else None)
+                normalized_user_id,
+                chat_type=normalized_chat_type,
+                chat_id=str(chat_id or normalized_user_id),
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
             if injected is not None:
                 return injected
-        auth_fn = self._legacy_runner_auth_fn()
-        if auth_fn is not None:
+
+        # Legacy path: resolve the runner off the bound message handler.
+        # Still reachable for adapters wired without set_authorization_check
+        # (bare-adapter tests, direct embedding).
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
             try:
                 from gateway.session import SessionSource
+
                 source = SessionSource(
                     platform=Platform.TELEGRAM, chat_id=str(chat_id or normalized_user_id), chat_type=normalized_chat_type,
                     user_id=normalized_user_id, user_name=str(user_name).strip() if user_name else None,
@@ -926,10 +970,15 @@ class TelegramAdapter(BasePlatformAdapter):
         user = getattr(message, "from_user", None)
         chat = getattr(message, "chat", None)
         user_id = str(getattr(user, "id", "")).strip() or None
-        # Carry is_bot so the runner's ``*_ALLOW_BOTS`` branch is reachable, as in build_source.
+        # Carry the bot flag so the runner's ``*_ALLOW_BOTS`` policy branch is
+        # reachable from this prefilter, exactly as it is for ``build_source``.
         is_bot = bool(getattr(user, "is_bot", False)) if user is not None else False
-        user_name = str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip() or None
-        if not user_id:  # channel post — authorize the sender chat instead
+        user_name = (
+            str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
+            or None
+        )
+        # Channel posts have no from_user — authorize the sender chat instead.
+        if not user_id:
             sender_chat = getattr(message, "sender_chat", None)
             if sender_chat is not None:
                 user_id = str(getattr(sender_chat, "id", "")).strip() or None
@@ -946,8 +995,14 @@ class TelegramAdapter(BasePlatformAdapter):
             (chat_type == "forum" and (is_topic_message or is_forum_group)) or (chat_type == "dm" and is_topic_message)):
             thread_id = str(thread_id_raw)
         return SessionSource(
-            platform=Platform.TELEGRAM, chat_id=chat_id or "", chat_type=chat_type, user_id=user_id,
-            user_name=user_name, thread_id=thread_id, is_bot=is_bot)
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id or "",
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_id,
+            is_bot=is_bot,
+        )
 
     def _source_from_reaction_for_auth(self, update):
         """SessionSource for a ``message_reaction`` update's actor (``user`` or ``actor_chat``).
@@ -982,13 +1037,24 @@ class TelegramAdapter(BasePlatformAdapter):
         one-time decline — incl. an allowlist plus an explicit platform override)."""
         if source.chat_type != "dm":
             return False
-        # Bound-handler ``__self__`` is None under multiplex; ``gateway_runner`` survives that wrapping.
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None) or getattr(self, "gateway_runner", None)
+
+        # The bound-handler ``__self__`` is None under multiplex (the handler is
+        # a profile closure); ``gateway_runner`` is injected on every adapter
+        # by ``GatewayRunner._create_adapter`` and survives that wrapping.
+        runner = getattr(
+            getattr(self, "_message_handler", None), "__self__", None
+        ) or getattr(self, "gateway_runner", None)
         behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
         if callable(behavior_fn):
             try:
-                profile = getattr(source, "profile", None) or getattr(self, "_owner_profile", None)
-                return behavior_fn(Platform.TELEGRAM, profile=profile) != "ignore"
+                return (
+                    behavior_fn(
+                        Platform.TELEGRAM,
+                        profile=getattr(source, "profile", None)
+                        or getattr(self, "_owner_profile", None),
+                    )
+                    == "pair"
+                )
             except Exception:
                 logger.debug("[Telegram] Failed to resolve unauthorized DM behavior; falling back to adapter-local override", exc_info=True)
         extra = getattr(getattr(self, "config", None), "extra", None) or {}
@@ -1029,9 +1095,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 # No allowlist → unknown DMs must reach pairing, not be default-denied here.
                 if not self._telegram_auth_env_configured():
                     return True
-                decision = self._is_sender_authorized(
-                    user_id, chat_type=source.chat_type, chat_id=source.chat_id, is_bot=source.is_bot,
-                    thread_id=source.thread_id) if has_callback else None
+                decision = (
+                    self._is_sender_authorized(
+                        user_id,
+                        chat_type=source.chat_type,
+                        chat_id=source.chat_id,
+                        is_bot=source.is_bot,
+                        thread_id=source.thread_id,
+                    )
+                    if has_callback
+                    else None
+                )
                 if decision is not None:
                     authorized = decision
                 elif auth_fn is not None:
@@ -1184,19 +1258,30 @@ class TelegramAdapter(BasePlatformAdapter):
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
 
-    def _prune_stale_dm_topic_binding(self, chat_id: Any, thread_id: Any, *, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Drop the stale ``telegram_dm_topic_bindings`` row for a topic Telegram confirmed deleted, else
-        ``_recover_telegram_topic_thread_id`` keeps steering inbound to the dead thread. Best-effort.
-        Rows are namespaced by profile: the send's ``hermes_profile`` wins over the adapter's stamp.
+    def _prune_stale_dm_topic_binding(
+        self,
+        chat_id: Any,
+        thread_id: Any,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Drop the stale ``telegram_dm_topic_bindings`` row for a
+        topic Telegram has confirmed deleted.
 
-        Without this prune the recovery logic in ``gateway.run._recover_telegram_topic_thread_id`` keeps
-        steering future inbound messages to the dead thread (the bug behind #31501 — tool progress,
-        approvals, replies all end up in the wrong place even though the user has moved on to a fresh
-        topic). Best-effort: we never raise from a send-fallback path — a failed cleanup must not turn into
-        a failed user-facing send.
-        Under ``gateway.profile_routes`` the transport adapter may not be the profile that wrote the
-        binding, so the send's ``hermes_profile`` metadata wins over the adapter's own profile stamp;
-        single-profile bots fall back to ``"default"``. See #76423.
+        Without this prune the recovery logic in
+        ``gateway.run._recover_telegram_topic_thread_id`` keeps
+        steering future inbound messages to the dead thread (the
+        bug behind #31501 — tool progress, approvals, replies all
+        end up in the wrong place even though the user has moved
+        on to a fresh topic).  Best-effort: we never raise from a
+        send-fallback path — a failed cleanup must not turn into a
+        failed user-facing send.
+
+        Rows are namespaced by profile (#76423). Under
+        ``gateway.profile_routes`` the transport adapter may not be the
+        profile that wrote the binding, so the send's ``hermes_profile``
+        metadata wins over the adapter's own profile stamp; single-profile
+        bots fall back to ``"default"``.
         """
         if chat_id is None or thread_id is None:
             return
@@ -1204,8 +1289,16 @@ class TelegramAdapter(BasePlatformAdapter):
         if db is None or not hasattr(db, "delete_telegram_topic_binding"):
             return
         try:
-            profile_name = (metadata or {}).get("hermes_profile") or getattr(self, "_hermes_profile_name", None) or "default"
-            removed = db.delete_telegram_topic_binding(chat_id=str(chat_id), thread_id=str(thread_id), profile_name=profile_name)
+            profile_name = (
+                (metadata or {}).get("hermes_profile")
+                or getattr(self, "_hermes_profile_name", None)
+                or "default"
+            )
+            removed = db.delete_telegram_topic_binding(
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+                profile_name=profile_name,
+            )
         except Exception:
             logger.debug(
                 "[%s] delete_telegram_topic_binding failed for chat=%s thread=%s — skipping prune",
@@ -2004,9 +2097,36 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, exc_info=True,
                 )
 
-    def _spawn_polling_recovery(self, loop, coro) -> None:
-        """Start ``coro`` as the tracked in-flight recovery task (reentrancy guard)."""
-        self._polling_error_task = loop.create_task(coro)
+    def _schedule_polling_recovery(self, error: Exception, *, reason: str) -> None:
+        """Schedule polling recovery without failing gateway startup.
+
+        A Telegram bootstrap failure (deleteWebhook / initial start_polling)
+        caused by a transient network error should degrade only the Telegram
+        adapter: the gateway process stays alive and the existing reconnect
+        ladder (``_handle_polling_network_error``) recovers in the background.
+        """
+        if getattr(self, "_polling_teardown_started", False):
+            return
+        if self.has_fatal_error:
+            return
+        if self._polling_error_task and not self._polling_error_task.done():
+            logger.debug(
+                "[%s] Telegram polling recovery already scheduled; ignoring %s: %s",
+                self.name, reason, _redact_telegram_error_text(error),
+            )
+            return
+        self._send_path_degraded = True
+        # Polling died mid-session on an adapter that published "connected"
+        # at connect time. Without this, gateway_state.json keeps saying
+        # connected for as long as the recovery ladder runs (#101391: 11 h).
+        if getattr(self, "_running", False):
+            self._mark_degraded()
+        logger.warning(
+            "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
+            self.name, reason, _redact_telegram_error_text(error),
+        )
+        loop = asyncio.get_running_loop()
+        self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
         self._background_tasks.add(self._polling_error_task)
         self._polling_error_task.add_done_callback(self._background_tasks.discard)
 
@@ -3404,16 +3524,20 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 await self._start_polling_mode(is_reconnect=is_reconnect)
             self._mark_connected()
-            # WARNING, not INFO: "Connecting…" above is WARNING and reaches the terminal; an INFO success
-            # line made healthy startups look stalled at "attempt 1/8".
-            logger.warning("[%s] Connected to Telegram (%s mode)", self.name, "webhook" if self._webhook_mode else "polling")
-            # Heartbeat only in polling mode: webhook mode has no long-poll socket to wedge in CLOSE-WAIT.
-            # WARNING, not INFO: the "Connecting to Telegram (attempt N/8)…" line above is emitted at
-            # WARNING and reaches the terminal (the gateway's default stderr handler is WARNING-only), but
-            # this success line was INFO and went to the log file only. A healthy startup therefore looked
-            # permanently stalled at "attempt 1/8" on the console — the logging illusion in #90835. Both
-            # sides of the connect transition must share a terminal-visible level so a real hang is the
-            # *absence* of this line, not ambiguity.
+            mode = "webhook" if self._webhook_mode else "polling"
+            # WARNING, not INFO: the "Connecting to Telegram (attempt N/8)…"
+            # line above is emitted at WARNING and reaches the terminal (the
+            # gateway's default stderr handler is WARNING-only), but this
+            # success line was INFO and went to the log file only. A healthy
+            # startup therefore looked permanently stalled at "attempt 1/8"
+            # on the console — the logging illusion in #90835. Both sides of
+            # the connect transition must share a terminal-visible level so a
+            # real hang is the *absence* of this line, not ambiguity.
+            logger.warning("[%s] Connected to Telegram (%s mode)", self.name, mode)
+
+            # Start the persistent heartbeat loop in polling mode. Webhook mode
+            # receives updates via incoming pushes — there is no long-poll
+            # socket to wedge in CLOSE-WAIT, so the loop is not needed there.
             if not self._webhook_mode:
                 self._restart_task_attr("_polling_heartbeat_task", self._polling_heartbeat_loop())
             # Seed the live identity from PTB's initialize() cache; polling rides the heartbeat's get_me(),
@@ -3929,7 +4053,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                     self.name, effective_thread_id,
                                 )
                                 self._prune_stale_dm_topic_binding(
-                                    chat_id, effective_thread_id,
+                                    chat_id,
+                                    effective_thread_id,
+                                    metadata=metadata,
                                 )
                                 used_thread_fallback = True
                                 effective_thread_id = None
@@ -4421,9 +4547,18 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as send_err:
             if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
                 logger.warning(
-                    "[%s] Thread %s not found for control message, retrying without message_thread_id", self.name, message_thread_id)
-                # Same prune as the streaming send path; control sends carry no gateway metadata.
-                self._prune_stale_dm_topic_binding(kwargs.get("chat_id"), message_thread_id)
+                    "[%s] Thread %s not found for control message, retrying without message_thread_id",
+                    self.name,
+                    message_thread_id,
+                )
+                # Same prune as the streaming send path — the
+                # control-message retry tells us the topic is gone,
+                # so the binding row in state.db must go too
+                # (#31501). Control sends carry no gateway metadata, so
+                # the prune namespaces by this adapter's profile stamp.
+                self._prune_stale_dm_topic_binding(
+                    kwargs.get("chat_id"), message_thread_id,
+                )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
                 return await self._bot.send_message(**retry_kwargs)
@@ -6376,7 +6511,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 return mtype
         return MessageType.DOCUMENT
 
-    _CACHED_KIND_TO_MESSAGE_TYPE = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO}
+    async def _cache_observed_media(self, msg: Message, event: MessageEvent) -> None:
+        """Cache an unmentioned group attachment and annotate the observed text.
+
+        Passive group traffic, so downloads are bounded by the same
+        ``_max_doc_bytes`` limit as the addressed document path. Oversized or
+        unsupported attachments are noted in the transcript without downloading.
+        """
+        from gateway.platforms.base import cache_media_bytes_async
 
     async def _download_observed_media(self, msg: Any, what: str):
         """Download ``msg``'s attachment into the media cache (bounded by ``_max_doc_bytes``). Returns ``(status, cached)``:
@@ -6430,14 +6572,51 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _cache_replied_media(self, msg: Any, event: MessageEvent) -> None:
         """Cache media from the message this turn replies to, if any."""
+        from gateway.platforms.base import cache_media_bytes_async
+
         reply_msg = getattr(msg, "reply_to_message", None)
         if reply_msg is None:
             return
-        status, cached = await self._download_observed_media(reply_msg, "replied-to media")
-        if status == "ok":
-            self._attach_cached(
-                event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
-                "[Telegram] Cached replied-to %s at %s")
+        source, filename, mime, kind = self._observed_media_source(reply_msg)
+        if source is None:
+            return
+
+        max_bytes = getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)
+        file_size = getattr(source, "file_size", None)
+        try:
+            size = int(file_size or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if not (0 < size <= max_bytes):
+            return
+
+        try:
+            file_obj = await source.get_file()
+            data = bytes(await file_obj.download_as_bytearray())
+            if not filename:
+                filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
+            cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)
+        except Exception as exc:
+            logger.warning("[Telegram] Failed to cache replied-to media: %s", _redact_telegram_error_text(exc), exc_info=True)
+            return
+
+        if cached is None:
+            return
+
+        event.media_urls.append(cached.path)
+        event.media_types.append(cached.media_type)
+        if len(event.media_urls) == 1:
+            if cached.kind == "image":
+                event.message_type = MessageType.PHOTO
+            elif cached.kind == "video":
+                event.message_type = MessageType.VIDEO
+            elif cached.kind == "audio":
+                event.message_type = MessageType.AUDIO
+        event.text = self._append_observed_note(
+            event.text,
+            f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
+        )
+        logger.info("[Telegram] Cached replied-to %s at %s", cached.kind, cached.path)
 
     def _observed_media_source(self, msg: Message):
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""
@@ -6963,27 +7142,243 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 file_obj = await msg.photo[-1].get_file()  # PhotoSize list sorted by size; largest last
                 image_bytes = await file_obj.download_as_bytearray()
-                ext = self._ext_from_path(file_obj.file_path, [".png", ".webp", ".gif", ".jpeg", ".jpg"], ".jpg")
-                self._set_cached_media(
-                    event, await cache_image_from_bytes_async(bytes(image_bytes), ext=ext), f"image/{ext.lstrip('.')}", event.message_type,
-                    "[Telegram] Cached user photo at %s")
-                await self._route_photo_event(msg, event)
+                # Determine extension from the file path if available
+                ext = ".jpg"
+                if file_obj.file_path:
+                    for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                # Save to local cache (for vision tool access)
+                cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=ext)
+                event.media_urls = [cached_path]
+                event.media_types = [f"image/{ext.lstrip('.')}" ]
+                logger.info("[Telegram] Cached user photo at %s", cached_path)
+                media_group_id = getattr(msg, "media_group_id", None)
+                if media_group_id:
+                    await self._queue_media_group_event(str(media_group_id), event)
+                else:
+                    batch_key = self._photo_batch_key(event, msg)
+                    self._enqueue_photo_event(batch_key, event)
                 return
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "photo", e)
         # Voice/audio cached for STT transcription; video for vision.
         if msg.voice:
-            if await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg"):
-                return
+            try:
+                allowed, note = self._telegram_media_size_allowed(msg.voice, "voice message")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
+                    await self.handle_message(event)
+                    return
+                file_obj = await msg.voice.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = await cache_audio_from_bytes_async(bytes(audio_bytes), ext=".ogg")
+                event.media_urls = [cached_path]
+                event.media_types = ["audio/ogg"]
+                logger.info("[Telegram] Cached user voice at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache voice: %s", _redact_telegram_error_text(e), exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "voice message", e)
         elif msg.audio:
-            if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
-                return
+            try:
+                allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
+                    await self.handle_message(event)
+                    return
+                file_obj = await msg.audio.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = await cache_audio_from_bytes_async(bytes(audio_bytes), ext=".mp3")
+                event.media_urls = [cached_path]
+                event.media_types = ["audio/mp3"]
+                logger.info("[Telegram] Cached user audio at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache audio: %s", _redact_telegram_error_text(e), exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "audio file", e)
+
         elif msg.video:
-            if await self._cache_inbound_av(msg, event, msg.video, "video file", "video", ".mp4", "video/mp4"):
-                return
-        elif msg.document and await self._cache_inbound_document(msg, event):
-            return
+            try:
+                allowed, note = self._telegram_media_size_allowed(msg.video, "video file")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(msg.video, "file_size", None))
+                    await self.handle_message(event)
+                    return
+                file_obj = await msg.video.get_file()
+                video_bytes = await file_obj.download_as_bytearray()
+                ext = ".mp4"
+                if getattr(file_obj, "file_path", None):
+                    for candidate in SUPPORTED_VIDEO_TYPES:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = await cache_video_from_bytes_async(bytes(video_bytes), ext=ext)
+                event.media_urls = [cached_path]
+                event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
+                logger.info("[Telegram] Cached user video at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache video: %s", _redact_telegram_error_text(e), exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "video file", e)
+
+        # Download document files to cache for agent processing
+        elif msg.document:
+            doc = msg.document
+            try:
+                # Determine file extension
+                ext = ""
+                original_filename = doc.file_name or ""
+                if original_filename:
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+
+                # Normalize mime_type for robust comparisons (some clients send
+                # uppercase like "IMAGE/PNG").
+                doc_mime = (doc.mime_type or "").lower()
+
+                # If no extension from filename, reverse-lookup from MIME type
+                if not ext and doc_mime:
+                    ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
+                    if not ext:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                        ext = mime_to_ext.get(doc_mime, "")
+
+                # Check file size early so image documents cannot bypass the
+                # document size limit by taking the image path.
+                if not doc.file_size or doc.file_size > self._max_doc_bytes:
+                    limit_mb = self._max_doc_bytes // (1024 * 1024)
+                    event.text = (
+                        "The document is too large or its size could not be verified. "
+                        f"Maximum: {limit_mb} MB."
+                    )
+                    logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
+                    await self.handle_message(event)
+                    return
+
+                # Telegram may deliver screenshots/photos as documents. If the
+                # payload is actually an image, route it through the image cache
+                # and batching path instead of rejecting it as a document.
+                if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                    try:
+                        cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
+                    except ValueError as e:
+                        logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
+                        event.text = (
+                            f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
+                            "could not be read as an image."
+                        )
+                        await self.handle_message(event)
+                        return
+
+                    event.message_type = MessageType.PHOTO
+                    event.media_urls = [cached_path]
+                    event.media_types = [doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")]
+                    logger.info("[Telegram] Cached user image-document at %s", cached_path)
+
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if media_group_id:
+                        await self._queue_media_group_event(str(media_group_id), event)
+                    else:
+                        batch_key = self._photo_batch_key(event, msg)
+                        self._enqueue_photo_event(batch_key, event)
+                    return
+
+                if not ext and doc.mime_type:
+                    video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
+                    ext = video_mime_to_ext.get(doc.mime_type, "")
+
+                if not ext and doc.mime_type:
+                    # SUPPORTED_IMAGE_DOCUMENT_TYPES has duplicate values (.jpg + .jpeg
+                    # both map to image/jpeg); keep the first ext we encounter.
+                    image_mime_to_ext: dict[str, str] = {}
+                    for _ext, _mime in SUPPORTED_IMAGE_DOCUMENT_TYPES.items():
+                        image_mime_to_ext.setdefault(_mime, _ext)
+                    ext = image_mime_to_ext.get(doc.mime_type, "")
+
+                if ext in SUPPORTED_VIDEO_TYPES:
+                    file_obj = await doc.get_file()
+                    video_bytes = await file_obj.download_as_bytearray()
+                    cached_path = await cache_video_from_bytes_async(bytes(video_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
+                    event.message_type = MessageType.VIDEO
+                    logger.info("[Telegram] Cached user video document at %s", cached_path)
+                    await self.handle_message(event)
+                    return
+
+                # NOTE: image-document handling is performed earlier in this
+                # function (ext in _TELEGRAM_IMAGE_EXTENSIONS or image/* mime),
+                # which returns before reaching here.  Any subsequent
+                # ext-in-SUPPORTED_IMAGE_DOCUMENT_TYPES branch would be dead
+                # code — the extension sets are identical.
+
+                # Download and cache. Any file type is accepted — authorization
+                # to message the agent is the gate, not the file extension.
+                # Known types keep their precise MIME; unknown types are tagged
+                # application/octet-stream so the agent reaches for terminal tools.
+                file_obj = await doc.get_file()
+                doc_bytes = await file_obj.download_as_bytearray()
+                raw_bytes = bytes(doc_bytes)
+                from gateway.platforms.base import cache_media_bytes_async
+
+                cached = await cache_media_bytes_async(
+                    raw_bytes,
+                    filename=original_filename or f"document{ext or '.bin'}",
+                    mime_type=doc_mime,
+                )
+                if cached is None:
+                    event.text = (
+                        f"Document '{original_filename or doc_mime or ext or 'unknown'}' "
+                        "could not be cached."
+                    )
+                    await self.handle_message(event)
+                    return
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                if cached.kind == "audio":
+                    event.message_type = MessageType.AUDIO
+                logger.info(
+                    "[Telegram] Cached user %s at %s (%s)",
+                    cached.kind,
+                    cached.path,
+                    cached.media_type,
+                )
+
+                # For text-readable files, inject content into event.text (capped
+                # at 100 KB). Gate on a text-like extension/MIME — NOT a blind
+                # UTF-8 decode, since binary formats (PDF/zip/docx) can have
+                # decodable ASCII headers. Binary files are surfaced as a cached
+                # path only (run.py emits a path-pointing context note).
+                MAX_TEXT_INJECT_BYTES = 100 * 1024
+                _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
+                if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    try:
+                        text_content = raw_bytes.decode("utf-8")
+                        display_name = original_filename or f"document{ext or '.txt'}"
+                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                        injection = f"[Content of {display_name}]:\n{text_content}"
+                        if event.text:
+                            event.text = f"{injection}\n\n{event.text}"
+                        else:
+                            event.text = injection
+                    except UnicodeDecodeError:
+                        # Binary file — agent has the cached path and can use
+                        # terminal/read_file against it. No inline injection.
+                        pass
+
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache document: %s", _redact_telegram_error_text(e), exc_info=True)
+                await self._surface_media_cache_failure(
+                    msg, event, "attachment", e,
+                    display_name=getattr(doc, "file_name", None) or None,
+                )
+
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)

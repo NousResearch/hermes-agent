@@ -326,17 +326,19 @@ def test_liveness_registry_corruption_fails_closed_without_overwrite(
         )
     assert state_path.read_text(encoding="utf-8") == corrupt
 
-    # The pre-existing concurrency-cap path remains available/fail-open, but
-    # must not erase evidence that strict liveness ownership is unknown.
+    # Ownership uncertainty fails CLOSED on every path now (#94595): a corrupt
+    # registry must refuse the session — with a typed reason — rather than
+    # silently readmitting a possible second writer. It still must not erase
+    # the evidence.
     lease, message = active_sessions.try_acquire_active_session(
         session_id="cli-1",
         surface="cli",
         config={"max_concurrent_sessions": 1},
     )
-    assert lease is not None and message is None
-    assert lease.enabled is False
-    assert state_path.read_text(encoding="utf-8") == corrupt
-    lease.release()
+    assert lease is None
+    assert getattr(message, "reason", None) == (
+        active_sessions.SESSION_COORDINATION_UNAVAILABLE
+    )
     assert state_path.read_text(encoding="utf-8") == corrupt
 
 
@@ -463,13 +465,17 @@ def test_liveness_guard_rejects_unknown_pid_state(tmp_path, monkeypatch):
             pass
 
     original = state_path.read_text(encoding="utf-8")
+    # An unknown pid state means dead-owner pruning cannot be trusted, which
+    # means ownership cannot be proven. Fail closed (#94595), preserve the file.
     lease, message = active_sessions.try_acquire_active_session(
         session_id="cli-cap-session",
         surface="cli",
         config={"max_concurrent_sessions": 1},
     )
-    assert lease is not None and message is None
-    assert lease.enabled is False
+    assert lease is None
+    assert getattr(message, "reason", None) == (
+        active_sessions.SESSION_COORDINATION_UNAVAILABLE
+    )
     assert state_path.read_text(encoding="utf-8") == original
 
 
@@ -613,3 +619,30 @@ def test_release_wins_against_transfer_waiting_on_same_lease_lock(
     assert lease.released is True
     assert active_sessions.active_session_registry_snapshot() == []
 
+
+
+def test_liveness_guard_keeps_a_just_acquired_own_lease_it_cannot_vouch_for(
+    tmp_path, monkeypatch
+):
+    """Race in #101415's fix: the finalizing session snapshots its live lease
+    ids, then a sibling session acquires a lease before the registry lock is
+    taken. That lease is absent from the snapshot but is not an orphan."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fresh, error = active_sessions.try_acquire_active_session(
+        session_id="fresh", surface="desktop", config={}, registry_home=home
+    )
+    assert fresh is not None and error is None
+
+    with active_sessions.active_session_liveness_guard(
+        "fresh", registry_home=home, own_live_lease_ids=set()
+    ) as active:
+        assert active is True
+    assert [e["lease_id"] for e in active_sessions.active_session_registry_snapshot(home)] == [fresh.lease_id]
+
+    _backdate_leases(home)
+    with active_sessions.active_session_liveness_guard(
+        "fresh", registry_home=home, own_live_lease_ids=set()
+    ) as active:
+        assert active is False
+    assert active_sessions.active_session_registry_snapshot(home) == []

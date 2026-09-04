@@ -35,8 +35,48 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
-from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lazy / function-level imports for gateway internals are NOT used here —
+# the plugin discovery flow imports adapter.py late enough that gateway is
+# already loaded.
+# ---------------------------------------------------------------------------
+
+from gateway.platforms.base import (
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
@@ -239,10 +279,30 @@ class _LineClient:
                     raise RuntimeError(f"LINE {label} {resp.status}: {body[:200]}")
 
     async def reply(self, reply_token: str, messages: List[Dict[str, Any]]) -> None:
-        await self._post_messages(LINE_REPLY_URL, "reply", {"replyToken": reply_token, "messages": messages})
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=self._timeout)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+            async with session.post(
+                LINE_REPLY_URL,
+                headers=self._headers,
+                json={"replyToken": reply_token, "messages": messages},
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise RuntimeError(f"LINE reply {resp.status}: {body[:200]}")
 
     async def push(self, chat_id: str, messages: List[Dict[str, Any]]) -> None:
-        await self._post_messages(LINE_PUSH_URL, "push", {"to": chat_id, "messages": messages})
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=self._timeout)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+            async with session.post(
+                LINE_PUSH_URL,
+                headers=self._headers,
+                json={"to": chat_id, "messages": messages},
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise RuntimeError(f"LINE push {resp.status}: {body[:200]}")
 
     async def loading(self, chat_id: str, seconds: int = 60) -> None:
         """Loading indicator (DM only). LINE rejects this for groups/rooms."""
@@ -251,14 +311,22 @@ class _LineClient:
         import aiohttp  # noqa: F401 — ImportError must escape the swallow-all below
         clamped = max(5, min(60, (seconds // 5) * 5 or 5))  # LINE: 5-step increments, max 60
         try:
-            async with self._session(5.0) as session:
-                await session.post(LINE_LOADING_URL, headers=self._headers, json={"chatId": chat_id, "loadingSeconds": clamped})
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+                await session.post(
+                    LINE_LOADING_URL,
+                    headers=self._headers,
+                    json={"chatId": chat_id, "loadingSeconds": clamped},
+                )
         except Exception as exc:  # best-effort; never raise
             logger.debug("LINE loading indicator failed: %s", exc)
 
     async def fetch_content(self, message_id: str) -> bytes:
-        async with self._session(30.0) as session:
-            url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
+        """Download an inbound media message's binary content."""
+        import aiohttp
+        url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
+        timeout = aiohttp.ClientTimeout(total=30.0)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
             async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
                 if resp.status >= 400:
                     raise RuntimeError(f"LINE content {resp.status}")
@@ -268,7 +336,7 @@ class _LineClient:
         """Fetch this channel's own userId so we can filter self-messages."""
         import aiohttp  # noqa: F401 — ImportError must escape the swallow-all below
         try:
-            async with self._session(10.0) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
                 async with session.get(LINE_BOT_INFO_URL, headers=self._headers) as resp:
                     return None if resp.status >= 400 else (await resp.json()).get("userId")
         except Exception:
@@ -635,11 +703,17 @@ class LineAdapter(BasePlatformAdapter):
         try:
             if msg_type == "image":
                 return await cache_image_from_bytes_async(data, ext=ext), "image/jpeg"
-            if msg_type in _INBOUND_AV_CACHERS:
-                return await _INBOUND_AV_CACHERS[msg_type](data, ext=ext), mimetypes.guess_type(f"{msg_type}{ext}")[0] or f"{msg_type}/mp4"
+            if msg_type == "audio":
+                media_type = mimetypes.guess_type(f"audio{ext}")[0] or "audio/mp4"
+                return await cache_audio_from_bytes_async(data, ext=ext), media_type
+            if msg_type == "video":
+                media_type = mimetypes.guess_type(f"video{ext}")[0] or "video/mp4"
+                return await cache_video_from_bytes_async(data, ext=ext), media_type
             document_name = filename or f"line_file{ext}"
-            mime = mimetypes.guess_type(document_name)[0] or "application/octet-stream"
-            return await cache_document_from_bytes_async(data, document_name), mime
+            return (
+                await cache_document_from_bytes_async(data, document_name),
+                mimetypes.guess_type(document_name)[0] or "application/octet-stream",
+            )
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None, ""

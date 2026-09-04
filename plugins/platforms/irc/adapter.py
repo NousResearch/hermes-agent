@@ -123,14 +123,25 @@ class IRCAdapter(BasePlatformAdapter):
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("irc"))
         extra = getattr(config, "extra", {}) or {}
-        self.server = _env_or_extra(extra, "IRC_SERVER", "server")
-        self.port = coerce_port(_env_or_extra(extra, "IRC_PORT", "port", 6697), 6697)
-        self.nickname = _env_or_extra(extra, "IRC_NICKNAME", "nickname", "hermes-bot")
-        self.channel = _env_or_extra(extra, "IRC_CHANNEL", "channel")
+
+        # Connection settings (env vars override config.yaml)
+        self.server = _get_scoped_secret("IRC_SERVER") or extra.get("server", "")
+        try:
+            self.port = int(_get_scoped_secret("IRC_PORT") or extra.get("port", 6697))
+        except (ValueError, TypeError):
+            self.port = 6697
+        self.nickname = _get_scoped_secret("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
+        self.channel = _get_scoped_secret("IRC_CHANNEL") or extra.get("channel", "")
         _use_tls_raw = _get_scoped_secret("IRC_USE_TLS")
-        self.use_tls = _use_tls_raw.lower() in _TRUTHY if _use_tls_raw else extra.get("use_tls", True)
-        self.server_password = _env_or_extra(extra, "IRC_SERVER_PASSWORD", "server_password")
-        self.nickserv_password = _env_or_extra(extra, "IRC_NICKSERV_PASSWORD", "nickserv_password")
+        self.use_tls = (
+            _use_tls_raw.lower() in {"1", "true", "yes"}
+            if _use_tls_raw
+            else extra.get("use_tls", True)
+        )
+        self.server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
+        self.nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
+
+        # Auth
         self.allowed_users: list = extra.get("allowed_users", [])
         # IRC nicks are case-insensitive — normalise for lookups
         self._allowed_users_lower: set = {u.lower() for u in self.allowed_users if isinstance(u, str)}
@@ -327,13 +338,23 @@ class IRCAdapter(BasePlatformAdapter):
 # ── Plugin registration ──────────────────────────────────────────────────────
 
 def check_requirements() -> bool:
-    """Check if IRC is configured via env (server + channel; no pip packages needed)."""
-    return bool(_get_scoped_secret("IRC_SERVER", "") and _get_scoped_secret("IRC_CHANNEL", ""))
+    """Check if IRC is configured.
+
+    Only requires the server and channel — no external pip packages needed.
+    """
+    server = _get_scoped_secret("IRC_SERVER", "")
+    channel = _get_scoped_secret("IRC_CHANNEL", "")
+    # Also accept config.yaml-only configuration (no env vars).
+    # The gateway passes PlatformConfig; we just check env for the
+    # hermes setup / requirements check path.
+    return bool(server and channel)
 
 
 def validate_config(config) -> bool:
-    """Validate that the platform config (env or config.yaml) has enough info to connect."""
-    server, channel = _server_channel(config)
+    """Validate that the platform config has enough info to connect."""
+    extra = getattr(config, "extra", {}) or {}
+    server = _get_scoped_secret("IRC_SERVER") or extra.get("server", "")
+    channel = _get_scoped_secret("IRC_CHANNEL") or extra.get("channel", "")
     return bool(server and channel)
 
 
@@ -411,25 +432,61 @@ def interactive_setup() -> None:
 
 def is_connected(config) -> bool:
     """Check whether IRC is configured (env or config.yaml)."""
-    return validate_config(config)
+    extra = getattr(config, "extra", {}) or {}
+    server = _get_scoped_secret("IRC_SERVER") or extra.get("server", "")
+    channel = _get_scoped_secret("IRC_CHANNEL") or extra.get("channel", "")
+    return bool(server and channel)
 
 
 def _env_enablement() -> dict | None:
-    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env BEFORE adapter construction;
-    ``None`` when IRC isn't minimally configured. Passwords also live in extra for back-compat with
-    config.yaml users; env wins at construct time. Home channel defaults to IRC_CHANNEL so cron
-    ``deliver=irc`` has a target without extra config."""
+    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
+
+    Called by the platform registry's env-enablement hook (landed in the
+    generic-plugin-interface migration) BEFORE adapter construction, so
+    ``gateway status`` and ``get_connected_platforms()`` reflect env-only
+    configuration without instantiating the IRC client.  Returns ``None``
+    when IRC isn't minimally configured; the caller skips auto-enabling.
+
+    The special ``home_channel`` key in the returned dict is handled by
+    the core hook — it becomes a proper ``HomeChannel`` dataclass on the
+    ``PlatformConfig`` rather than being merged into ``extra``.
+    """
     server = _get_scoped_secret("IRC_SERVER", "").strip()
     channel = _get_scoped_secret("IRC_CHANNEL", "").strip()
     if not (server and channel):
         return None
-    seed = _seed_extra_from_env((
-        ("IRC_PORT", "port", int), ("IRC_NICKNAME", "nickname", None),
-        ("IRC_USE_TLS", "use_tls", lambda v: v.lower() in _TRUTHY),
-        ("IRC_SERVER_PASSWORD", "server_password", None), ("IRC_NICKSERV_PASSWORD", "nickserv_password", None),
-    ), home_env="IRC_HOME_CHANNEL", home_default=channel)
-    return {"server": server, "channel": channel, **seed}
-
+    seed: dict = {
+        "server": server,
+        "channel": channel,
+    }
+    port = _get_scoped_secret("IRC_PORT", "").strip()
+    if port:
+        try:
+            seed["port"] = int(port)
+        except ValueError:
+            pass
+    nickname = _get_scoped_secret("IRC_NICKNAME", "").strip()
+    if nickname:
+        seed["nickname"] = nickname
+    use_tls = _get_scoped_secret("IRC_USE_TLS", "").strip().lower()
+    if use_tls:
+        seed["use_tls"] = use_tls in {"1", "true", "yes"}
+    # Passwords live in PlatformConfig.extra as well for back-compat with
+    # existing config.yaml users; env-reads at construct time still win.
+    if _get_scoped_secret("IRC_SERVER_PASSWORD"):
+        seed["server_password"] = _get_scoped_secret("IRC_SERVER_PASSWORD")
+    if _get_scoped_secret("IRC_NICKSERV_PASSWORD"):
+        seed["nickserv_password"] = _get_scoped_secret("IRC_NICKSERV_PASSWORD")
+    # Optional home-channel (usually the same as IRC_CHANNEL, but can be a
+    # dedicated reports channel).  Defaults to IRC_CHANNEL so cron jobs
+    # with ``deliver=irc`` have a sensible target without extra config.
+    home = _get_scoped_secret("IRC_HOME_CHANNEL") or channel
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": _get_scoped_secret("IRC_HOME_CHANNEL_NAME", home),
+        }
+    return seed
 
 
 def _strip_irc_control_chars(text: str) -> str:
@@ -526,16 +583,27 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     ``send_message_tool``). Uses a distinct ``-cron`` nick so it never collides with the live gateway adapter.
     ``thread_id``/``media_files`` are accepted for signature parity only."""
     extra = getattr(pconfig, "extra", {}) or {}
-    server, channel = _server_channel(pconfig)
+    server = _get_scoped_secret("IRC_SERVER") or extra.get("server", "")
+    channel = _get_scoped_secret("IRC_CHANNEL") or extra.get("channel", "")
     if not server or not channel:
-        return _sa_error("IRC_SERVER and IRC_CHANNEL must be configured")
-    port_value = _env_or_extra(extra, "IRC_PORT", "port", 6697)
+        return {"error": "IRC standalone send: IRC_SERVER and IRC_CHANNEL must be configured"}
+
+    port_value = _get_scoped_secret("IRC_PORT") or extra.get("port", 6697)
     try:
         port = int(port_value)
     except (TypeError, ValueError):
-        return _sa_error(f"invalid port {port_value!r}")
+        return {"error": f"IRC standalone send: invalid port {port_value!r}"}
+
+    nickname = _get_scoped_secret("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
     use_tls_env = _get_scoped_secret("IRC_USE_TLS")
-    use_tls = use_tls_env.lower() in _TRUTHY if use_tls_env is not None else bool(extra.get("use_tls", True))
+    if use_tls_env is not None:
+        use_tls = use_tls_env.lower() in {"1", "true", "yes"}
+    else:
+        use_tls = bool(extra.get("use_tls", True))
+
+    server_password = _get_scoped_secret("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
+    nickserv_password = _get_scoped_secret("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
+
     # Reject control characters in chat_id to block IRC command injection.
     target = chat_id or channel
     if any(ch in target for ch in ("\r", "\n", "\x00", " ")):

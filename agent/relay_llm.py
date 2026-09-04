@@ -841,13 +841,24 @@ def _provider_request(
         _restore_provider_message_extensions(original, final, baseline=baseline, intercepted=intercepted)
     headers = getattr(request, "headers", None)
     if isinstance(headers, dict):
-        headers = {k: v for k, v in headers.items() if str(k).lower() not in _RELAY_INTERNAL_PROVIDER_HEADERS}
-    # Relay's managed-call trace header maps to ``extra_headers`` for known SDK adapters and custom
-    # requests that already use that container; other native transports take protocol kwargs directly
-    # and may reject an SDK-only argument. Non-trace middleware headers are preserved as before.
-    supports_extra_headers = _RELAY_PROTOCOL_BY_API_MODE.get(_api_mode(metadata)) is not None or "extra_headers" in original
+        headers = {
+            key: value
+            for key, value in headers.items()
+            if str(key).lower() not in _RELAY_INTERNAL_PROVIDER_HEADERS
+        }
+    # Relay's managed-call trace header maps to ``extra_headers`` for known SDK
+    # adapters and custom requests that already use that container. Other
+    # native transports receive protocol kwargs directly and may reject a new
+    # SDK-only argument. Preserve non-trace middleware headers as before.
+    supports_extra_headers = (
+        _relay_protocol(metadata) is not None or "extra_headers" in original
+    )
     if headers and not supports_extra_headers:
-        headers = {k: v for k, v in headers.items() if str(k).lower() != "traceparent"}
+        headers = {
+            key: value
+            for key, value in headers.items()
+            if str(key).lower() != "traceparent"
+        }
     if headers:
         final["extra_headers"] = {**dict(final.get("extra_headers") or {}), **headers}
     return final

@@ -1833,16 +1833,11 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
 
 
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
-    """Goal judge for every terminal worker handoff (including review).
+    """Apply the goal judge to every terminal worker handoff, including review.
 
-    Returns ``(verdict, reason_or_None)``: ``"done"`` allows; ``"blocked"`` = judge ruled the goal
-    unachievable; ``"continue"``/``"wait"`` reject with the judge's reason. Judge failures allow
-    the handoff (logged).
-
-    See #100954.
-    ``{"done", None}`` means the judge allows the handoff; anything else is a rejection whose verdict
-    disambiguates the guidance the caller gives the worker (``continue`` = not done yet, ``blocked`` =
-    judged unachievable — see #100954).
+    Returns ``(verdict, reason_or_None)`` — ``"done"`` allows the handoff;
+    ``"blocked"`` means the judge ruled the goal unachievable (#100954);
+    ``"continue"``/``"wait"`` reject with the judge's reason.
     """
     if task is None or not task.goal_mode:
         return ("done", None)
@@ -1851,7 +1846,7 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
         client, model = get_text_auxiliary_client("goal_judge")
     except Exception:
-        client, model = None, None
+        return ("done", None)
     if client is None or not model:
         return ("done", None)
 
@@ -1864,23 +1859,12 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     except Exception as judge_exc:
         import logging as _logging
 
-        _logging.getLogger(__name__).warning("goal judge check failed, allowing lifecycle handoff: %s",
-                                             judge_exc, exc_info=True)
+        _logging.getLogger(__name__).warning(
+            "goal judge check failed, allowing lifecycle handoff: %s",
+            judge_exc,
+            exc_info=True,
+        )
     return (verdict, None if verdict == "done" else reason)
-
-
-def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: str,
-                     continue_hint: str) -> Optional[str]:
-    """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
-    applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
-    None to allow."""
-    verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)
-    if verdict == "blocked":
-        return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
-                f"the goal unachievable — {rejection}. {blocked_hint}")
-    if rejection is not None:
-        return f"kanban: goal {handoff} of {tid} rejected by judge: {rejection}. {continue_hint}"
-    return None
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
@@ -1892,25 +1876,51 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     raw_meta = getattr(args, "metadata", None)
     # Handoff fields are per-run; refuse to copy them across N runs.
     if len(ids) > 1 and (summary or raw_meta):
-        return _err("kanban: --summary / --metadata are per-task and can't be used "
-                    "with multiple ids (would apply the same handoff to every task). "
-                    "Complete tasks one at a time, or drop the flags for the bulk close.", 2)
-    metadata, rc = _parse_metadata_flag(raw_meta)
-    if rc:
-        return rc
-    fail_msg: dict[str, str] = {}
-    with kbc.connect_closing() as conn:
-        def op(tid):
-            gate_err = _goal_gate_error(
-                conn, tid, (summary or args.result or "").strip(), "completion",
-                "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
-                "Provide evidence matching the task's acceptance criteria.")
-            if gate_err:
-                fail_msg[tid] = gate_err
-                return False
-            fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+        print(
+            "kanban: --summary / --metadata are per-task and can't be used "
+            "with multiple ids (would apply the same handoff to every task). "
+            "Complete tasks one at a time, or drop the flags for the bulk close.",
+            file=sys.stderr,
+        )
+        return 2
+    metadata = None
+    if raw_meta:
+        try:
+            metadata = json.loads(raw_meta)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            # Goal-mode judge gate (mirrors tools/kanban_tools.py). Apply it
+            # to every terminal handoff so request-review cannot bypass the
+            # acceptance contract that protects complete.
+            task = kb.get_task(conn, tid)
+            gate_verdict, rejection = _goal_mode_handoff_rejection(
+                task,
+                (summary or args.result or "").strip(),
+            )
+            if gate_verdict == "blocked":
+                print(
+                    f"kanban: goal completion of {tid} rejected: judge ruled "
+                    f"the goal unachievable — {rejection}. Re-scope with "
+                    f"kanban edit, or record the block with kanban block "
+                    f"instead of completing.",
+                    file=sys.stderr,
+                )
+                failed.append(tid)
+                continue
+            if rejection is not None:
+                print(
+                    f"kanban: goal completion of {tid} rejected by judge: {rejection}. "
+                    f"Provide evidence matching the task's acceptance criteria.",
+                    file=sys.stderr,
+                )
+                failed.append(tid)
+                continue
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 
@@ -1986,17 +1996,40 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
 
 def _cmd_request_review(args: argparse.Namespace) -> int:
     tid = args.task_id
-    summary = _stripped_or_none(getattr(args, "summary", None))
-    metadata, rc = _parse_metadata_flag(getattr(args, "metadata", None))
-    if rc:
-        return rc
-    with kbc.connect_closing() as conn:
-        gate_err = _goal_gate_error(
-            conn, tid, summary or "", "review handoff",
-            "Record the block with kanban block instead of requesting review.",
-            "Provide acceptance evidence matching the task.")
-        if gate_err:
-            return _err(gate_err)
+    summary = getattr(args, "summary", None)
+    if summary is not None:
+        summary = summary.strip() or None
+    raw_metadata = getattr(args, "metadata", None)
+    metadata = None
+    if raw_metadata:
+        try:
+            metadata = json.loads(raw_metadata)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    reviewer = getattr(args, "reviewer", None)
+    with kb.connect_closing() as conn:
+        gate_verdict, rejection = _goal_mode_handoff_rejection(
+            kb.get_task(conn, tid),
+            summary or "",
+        )
+        if gate_verdict == "blocked":
+            print(
+                f"kanban: goal review handoff of {tid} rejected: judge ruled "
+                f"the goal unachievable — {rejection}. Record the block with "
+                f"kanban block instead of requesting review.",
+                file=sys.stderr,
+            )
+            return 1
+        if rejection is not None:
+            print(
+                f"kanban: goal review handoff of {tid} rejected by judge: "
+                f"{rejection}. Provide acceptance evidence matching the task.",
+                file=sys.stderr,
+            )
+            return 1
         ok, reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
             expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)
@@ -2292,7 +2325,81 @@ _HANDLERS = {
 }
 
 
-# --- Slash-command entry point (used by /kanban from CLI and gateway) ---
+def _cmd_repair(args: argparse.Namespace) -> int:
+    """Check DB integrity and apply the narrow index-REINDEX auto-repair.
+
+    Dispatched BEFORE the auto ``kb.init_db()`` in :func:`kanban_command`
+    (init itself refuses corrupt DBs), so this is reachable on exactly the
+    boards that need it. Exit codes: 0 = healthy / repaired / no DB file,
+    1 = still corrupt (non-index corruption, or REINDEX did not produce a
+    clean re-check).
+    """
+    try:
+        report = kb.repair_db()
+    except Exception as exc:  # locked/busy probe, unexpected I/O
+        print(f"kanban repair: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "status": report.status,
+            "db_path": str(report.db_path),
+            "messages": report.messages,
+            "post_repair_messages": report.post_repair_messages,
+            "backup_path": (
+                str(report.backup_path) if report.backup_path else None
+            ),
+            "reindexed": report.reindexed,
+        }, indent=2))
+        return 0 if report.status in {"ok", "repaired", "missing"} else 1
+
+    if report.status == "missing":
+        print(f"No kanban DB at {report.db_path} — nothing to repair.")
+        return 0
+    if report.status == "ok":
+        print(f"{report.db_path}: integrity_check ok — no repair needed.")
+        return 0
+    if report.status == "repaired":
+        print(f"{report.db_path}: repaired.")
+        print(f"  reindexed: {', '.join(report.reindexed)}")
+        if report.backup_path:
+            print(f"  pre-repair backup: {report.backup_path}")
+        print("  integrity_check now ok.")
+        return 0
+    # still corrupt
+    print(f"{report.db_path}: CORRUPT.", file=sys.stderr)
+    for line in (report.messages or [])[:10]:
+        print(f"  {line}", file=sys.stderr)
+    if report.reindexed:
+        print(
+            f"  REINDEX ({', '.join(report.reindexed)}) attempted but "
+            f"integrity_check is still failing:",
+            file=sys.stderr,
+        )
+        for line in (report.post_repair_messages or [])[:10]:
+            print(f"    {line}", file=sys.stderr)
+    else:
+        print(
+            "  Not an index-only failure — automatic REINDEX repair does "
+            "not apply (fail-closed).",
+            file=sys.stderr,
+        )
+    if report.backup_path:
+        print(f"  corrupt copy quarantined at: {report.backup_path}",
+              file=sys.stderr)
+    print(
+        "  Recover manually (copy kanban.db aside FIRST, then run "
+        "`sqlite3 <copy> \".recover\"` into a fresh file — never against "
+        "the live path, a WAL-reset-vulnerable sqlite3 CLI can corrupt it "
+        "further) or move the file aside to start a new board.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Slash-command entry point (used by /kanban from CLI and gateway)
+# ---------------------------------------------------------------------------
 
 _SLASH_KANBAN_HELP = """\
 **/kanban** — manage the shared task board.

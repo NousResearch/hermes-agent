@@ -301,7 +301,7 @@ class TestSecondaryProfileFatalRecovery:
         )
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
         if entry == "startup":
@@ -335,7 +335,7 @@ class TestSecondaryProfileFatalRecovery:
         synced = []
         runner._sync_voice_mode_state_to_adapter = synced.append
         monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
 
@@ -479,13 +479,15 @@ class TestSecondaryStartupFailureRecovery:
         # gateway is already running) to the regular reconnect task, which
         # publishes the replacement and clears its own slot.
         await asyncio.wait_for(bridge[0], timeout=0.5)
-        for _ in range(20):
-            if (
-                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
-                is replacement
-            ):
-                break
-            await asyncio.sleep(0)
+        # The reconnect runner hops to a worker thread for secret hydration,
+        # so wait on a deadline rather than a fixed number of loop turns.
+        deadline = time.monotonic() + 1.0
+        while (
+            runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+            is not replacement
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.005)
         assert (
             runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
         )
@@ -532,13 +534,15 @@ class TestSecondaryStartupFailureRecovery:
         bridge = list(runner._background_tasks)
         assert len(bridge) == 1
         await asyncio.wait_for(bridge[0], timeout=0.5)
-        for _ in range(20):
-            if (
-                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
-                is replacement
-            ):
-                break
-            await asyncio.sleep(0)
+        # The reconnect runner hops to a worker thread for secret hydration,
+        # so wait on a deadline rather than a fixed number of loop turns.
+        deadline = time.monotonic() + 1.0
+        while (
+            runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+            is not replacement
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.005)
         assert (
             runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
         )
@@ -572,6 +576,55 @@ class TestSecondaryStartupFailureRecovery:
         assert failed.disconnected is True
         assert runner._background_tasks == set()
         assert runner._profile_failed_platforms == {}
+
+    @pytest.mark.asyncio
+    async def test_token_lock_initial_failure_parks_fatal_not_retried(
+        self, monkeypatch
+    ):
+        """Salvage of #83183 claim 2: a secondary whose token is held by a live
+        foreign gateway (``{scope}_lock``, emitted retryable by
+        ``_acquire_platform_lock``) is an ownership conflict — park it fatal
+        like ``duplicate_credential`` instead of retry-storming the token."""
+        runner = _secondary_recovery_runner()
+        failed = _SecondaryRecoveryAdapter()
+        failed.fatal_error_code = "discord-bot-token_lock"
+        failed.fatal_error_message = "Discord bot token already in use (PID 4242)."
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, _SecondaryRecoveryAdapter()
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+        statuses = []
+        monkeypatch.setattr(
+            runner,
+            "_update_platform_runtime_status",
+            lambda key, **kw: statuses.append((key, kw)),
+        )
+
+        async def fail_initial_connect(adapter, platform):
+            return False
+
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", fail_initial_connect
+        )
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert failed.disconnected is True
+        assert runner._background_tasks == set()
+        assert runner._profile_failed_platforms == {}
+        assert statuses == [
+            (
+                "reviewer:discord",
+                {
+                    "platform_state": "fatal",
+                    "error_code": "discord-bot-token_lock",
+                    "error_message": failed.fatal_error_message,
+                },
+            )
+        ]
 
     @pytest.mark.asyncio
     async def test_handoff_failure_is_logged_not_raised(self, monkeypatch, caplog):
@@ -978,6 +1031,29 @@ class TestSecondaryProfileConfigHandling:
         assert failed.disconnected is True
         assert second == 1
         assert runner._profile_adapters["later"][photon] is later
+
+    @pytest.mark.asyncio
+    async def test_secondary_teams_uses_degradable_error(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import SecondaryPortBindingConfigError
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform("teams"): PlatformConfig(enabled=True, extra={"port": 3978}),
+        }
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+
+        with pytest.raises(SecondaryPortBindingConfigError) as exc_info:
+            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert "teams" in str(exc_info.value)
+        assert "reviewer" in str(exc_info.value)
+        assert "reviewer" not in runner._profile_adapters
 
     @pytest.mark.asyncio
     async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch):

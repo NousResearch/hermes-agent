@@ -1547,6 +1547,60 @@ export function reconcileRegistryDrift(
   const config = v1 && typeof v1 === 'object' ? (v1 as Record<string, any>) : {}
   const unchanged = { changed: false, registry }
 
+  if (config.mode === 'ssh') {
+    const ssh = normalizeSshConfig({
+      ...(config.remote && typeof config.remote === 'object' ? config.remote : {}),
+      mode: 'ssh'
+    })
+
+    if (!ssh) {
+      // A v1 SSH route without a usable host is not a route we can register.
+      return unchanged
+    }
+
+    const target = normalizedSshTarget(ssh)
+
+    const alreadyRegistered = registry.connections.some(
+      connection =>
+        connection.kind === 'ssh' &&
+        normalizedSshTarget(connection) === target &&
+        (connection.port ?? 22) === (ssh.port ?? 22)
+    )
+
+    if (alreadyRegistered) {
+      // Route is known; if primary names another source, that is the user's
+      // Connections-panel choice, not drift.
+      return unchanged
+    }
+
+    const { mode: _mode, ...sshFields } = ssh
+
+    let entry: RegistryConnection
+
+    try {
+      entry = normalizeConnectionInput(
+        {
+          kind: 'ssh',
+          label: uniqueLabel(
+            ssh.host,
+            registry.connections.map(connection => connection.label)
+          ),
+          ...sshFields
+        },
+        registry
+      )
+    } catch {
+      // Validation failure (e.g. a crafted collision) must not corrupt the
+      // registry; the v1 path keeps failing the way it already does.
+      return unchanged
+    }
+
+    return {
+      changed: true,
+      registry: { ...upsertConnection(registry, entry), primary: entry.id, lastUsed: entry.id }
+    }
+  }
+
   if (!modeIsRemoteLike(config.mode)) {
     return unchanged
   }

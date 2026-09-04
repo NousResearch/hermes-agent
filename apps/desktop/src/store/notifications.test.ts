@@ -102,10 +102,7 @@ test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', ()
     'Could not load models'
   )
 
-  expect(lastMessage()).toMatch(/still running the old version/i)
-  expect(lastMessage()).not.toMatch(/hermes:api|systemctl|backend/i)
-  const before = $backendRestartRequest.get()
-  expect($notifications.get()[0]?.action?.label).toBe(en.notifications.actions.restartHermes)
-  $notifications.get()[0]?.action?.onClick()
-  expect($backendRestartRequest.get()).toBe(before + 1)
+  expect(lastMessage()).toMatch(/running old code after an update/i)
+  expect(lastMessage()).not.toMatch(/hermes:api/)
+  expect(lastMessage()).not.toMatch(/systemctl/)
 })

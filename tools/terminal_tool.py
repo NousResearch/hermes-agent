@@ -624,7 +624,7 @@ def _sudo_nopasswd_works() -> bool:
     cache) so an expired sudo timestamp cannot make a later command silently
     block waiting for a password.
     """
-    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    terminal_env = _tenv("TERMINAL_ENV", "local").strip().lower() or "local"
     if terminal_env != "local":
         return False
 
@@ -802,7 +802,19 @@ def _rewrite_compound_background(command: str) -> str:
         suffix = result[amp_pos + 1 :]
         # `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
-        result = prefix + "{ " + middle + "& }" + suffix
+        #
+        # The consumed `&` also separated the compound from any statement
+        # that followed on the same line (`A && B & C`); `{ B & } C` is a
+        # syntax error, so restore a `;` when the suffix resumes with command
+        # text. No separator when the suffix already starts with a
+        # terminator (`;` `&` `|` newline `)` `}`) — except `&>`, which is a
+        # redirect prefix for the NEXT command, not a terminator.
+        tail = suffix.lstrip(" \t")
+        needs_separator = bool(tail) and (
+            tail[0] not in ";\n&|)}" or tail.startswith("&>")
+        )
+        separator = " ;" if needs_separator else ""
+        result = prefix + "{ " + middle + "& }" + separator + suffix
 
     return result
 
@@ -1093,12 +1105,12 @@ def _session_isolation_enabled() -> bool:
       attach one live VM and delete it out from under each other).
     """
     _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    env_type = _tenv("TERMINAL_ENV", "local")
     if env_type != "docker" and not _plugin_env_flag(
         env_type, "session_isolated_when_nonpersistent"
     ):
         return False
-    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+    return _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
 
 
 def _docker_session_isolation_enabled() -> bool:
@@ -1108,7 +1120,7 @@ def _docker_session_isolation_enabled() -> bool:
     selection, session-scoped container teardown) key off it; those must
     not fire for other backends.
     """
-    if os.getenv("TERMINAL_ENV", "local") != "docker":
+    if _tenv("TERMINAL_ENV", "local") != "docker":
         return False
     return _session_isolation_enabled()
 
@@ -1128,9 +1140,9 @@ def _docker_persistent_profile_scoped() -> bool:
     keep the session-scoped cache key that fixed the original leak.
     """
     _ensure_terminal_env_bridged()
-    if os.getenv("TERMINAL_ENV", "local") != "docker":
+    if _tenv("TERMINAL_ENV", "local") != "docker":
         return False
-    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"}
+    return _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"}
 
 
 def _current_session_profile() -> str:
@@ -1265,7 +1277,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
             # Explicit opt-in: trusted profiles configuring the same
             # terminal.docker_shared_container_key share ONE container/cache
             # slot (and sandbox dir) regardless of profile name (#84671).
-            shared = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+            shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
             if shared:
                 return f"shared:{shared}"
             profile = _current_session_profile() or "default"
@@ -1278,7 +1290,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # sessions land in "shared:<key>" — splitting the very container the
     # setting exists to unify.
     if _docker_persistent_profile_scoped():
-        shared = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+        shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
         if shared:
             return f"shared:{shared}"
     return "default"
@@ -1371,6 +1383,10 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
     causes an unhandled ValueError that kills every terminal command.
     """
     raw = os.getenv(name, default)
+    if name.startswith("TERMINAL_"):
+        # Scope-aware: under gateway multiplexing the active profile's
+        # per-turn scope overrides the process env.
+        raw = _tenv(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
@@ -1396,7 +1412,7 @@ def _safe_getcwd() -> str:
     try:
         return os.getcwd()
     except (FileNotFoundError, PermissionError):
-        return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
+        return _tenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
 # Path prefixes that identify a *host* working directory which cannot exist
@@ -1467,6 +1483,20 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+def _tenv(name: str, default: str = "") -> str:
+    """Scope-aware read of a ``TERMINAL_*`` variable.
+
+    Every terminal setting read in this module must go through this helper:
+    under gateway multiplexing the active profile's terminal config arrives
+    via a per-turn scope (``tools.terminal_scope``), and a raw ``os.getenv``
+    would read whatever profile's config a previous turn pinned into the
+    process env (the cross-profile backend leak fixed here).
+    """
+    from tools.terminal_scope import terminal_env
+
+    return terminal_env(name, default)
+
+
 # One-shot guard for the config-fallback bridge below.  Purely an
 # optimization: after the first attempt either TERMINAL_ENV is set (bridge
 # succeeded — merged config always carries terminal.backend) or the import
@@ -1488,24 +1518,21 @@ def _ensure_terminal_env_bridged() -> None:
     suppresses the bridge entirely: writing scope values into the process-global
     env would re-create the first-writer-wins cross-profile leak the scope fixes.
 
-    Ambient ``os.environ`` is the *launch* profile's authority only. Under a
-    context-local ``HERMES_HOME`` override (multiplexed dashboard / gateway
-    secondary profile), this bridge is a no-op — otherwise the first unscoped
-    call under that override would latch the secondary profile's ``terminal.*``
-    into process-global env and poison later unscoped launch-profile turns
-    (#107422 residual of #68559). Routed profiles must bind a terminal scope
-    instead (same rule as ``env_loader._reapply_terminal_config_bridge``).
+    Explicit terminal config keys win: when config.yaml has a ``terminal``
+    section, each key present there overrides its matching env value (which may
+    be stale from ``hermes setup``). Environment values for omitted terminal
+    keys are preserved. When no terminal section exists, exported/.env values
+    keep working unchanged.
 
-    terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*). See #61115, #65696.
+    A per-turn terminal scope (multiplexed gateway / profile-scoped cron)
+    suppresses this bridge entirely: the scope holds the active profile's
+    authoritative values and reads fall through ``_tenv`` — writing them into
+    the process-global ``os.environ`` would re-create the first-writer-wins
+    cross-profile leak the scope exists to fix.
     """
     from tools.terminal_scope import get_terminal_scope
 
     if get_terminal_scope() is not None:
-        return
-    # Never write a secondary profile's terminal.* into process-global env.
-    from hermes_constants import get_hermes_home_override
-
-    if get_hermes_home_override() is not None:
         return
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:
@@ -1527,28 +1554,50 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    env_type = _tenv("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    mount_docker_cwd = _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = _is_container_backend(env_type)
     docker_backend = env_type == "docker"
 
 
-def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
-    """``(cwd, host_cwd)`` from TERMINAL_CWD for *env_type*.
+    if docker_backend:
+        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
+        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
+        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
+        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
+        docker_shm_size = _tenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+    else:
+        docker_forward_env = []
+        docker_volumes = []
+        docker_env = {}
+        docker_extra_args = []
+        docker_shm_size = "1g"
 
-    Container backends are sanity-checked: with Docker cwd passthrough the host
-    path is remapped to /workspace and tracked as host_cwd; otherwise host paths
-    are discarded in favor of the backend default.
-    """
-    default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
+    # Default cwd: local uses the host's current directory, ssh uses the
+    # remote home, Vercel uses its documented workspace root, and everything
+    # else starts in the backend's default root-like cwd.
+    if env_type == "local":
+        default_cwd = _safe_getcwd()
+    elif env_type == "ssh":
+        default_cwd = "~"
+    elif env_type == "vercel_sandbox":
+        default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
+    else:
+        default_cwd = "/root"
+
+    # Read TERMINAL_CWD but sanity-check it for container backends.
+    # If Docker cwd passthrough is explicitly enabled, remap the host path to
+    # /workspace and track the original host path separately. Otherwise keep the
+    # normal sandbox behavior and discard host paths.
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        candidate = os.path.abspath(os.path.expanduser(_tenv("TERMINAL_CWD") or _safe_getcwd()))
+        docker_cwd_source = _tenv("TERMINAL_CWD") or _safe_getcwd()
+        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             _is_host_cwd(candidate)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
@@ -1583,21 +1632,23 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": _tenv("TERMINAL_SSH_KEY", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
-        # setting; local is always opt-in. Per-backend env vars override.
-        "ssh_persistent": _tenv_bool(
-            "TERMINAL_SSH_PERSISTENT", _tenv("TERMINAL_PERSISTENT_SHELL", "true"),
-        ),
-        "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "false"),
-        # Container resources (MB); ignored for local/ssh.
+        # setting (true by default for non-local backends); local is always opt-in.
+        # Per-backend env vars override if explicitly set.
+        "ssh_persistent": _tenv(
+            "TERMINAL_SSH_PERSISTENT",
+            _tenv("TERMINAL_PERSISTENT_SHELL", "true"),
+        ).lower() in {"true", "1", "yes"},
+        "local_persistent": _tenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        # Container resource config (applies to docker, singularity, modal,
+        # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": container_cpu,
-        "container_memory": container_memory,
-        "container_disk": container_disk,
-        "container_persistent": _tenv_bool("TERMINAL_CONTAINER_PERSISTENT", "true"),
+        "container_memory": container_memory,     # MB (default 5GB)
+        "container_disk": container_disk,        # MB (default 50GB)
+        "container_persistent": _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": _tenv_bool("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false"),
-        "docker_snap_compat": _tenv_bool("TERMINAL_DOCKER_SNAP_COMPAT", "false"),
-        "docker_network": _tenv_bool("TERMINAL_DOCKER_NETWORK", "true"),
+        "docker_run_as_host_user": _tenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": _tenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -1606,17 +1657,17 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
+        "docker_persist_across_processes": _tenv(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
-        "docker_shared_container_key": os.getenv(
+        "docker_shared_container_key": _tenv(
             "TERMINAL_DOCKER_SHARED_CONTAINER_KEY", ""
         ).strip(),
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
+        "docker_orphan_reaper": _tenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
     }
@@ -2128,6 +2179,26 @@ def cleanup_all_environments():
     return cleaned
 
 
+def _cleanup_env(env, *, force_remove: bool = False) -> None:
+    """Tear down one environment, passing ``force_remove`` only when accepted.
+
+    ``DockerEnvironment.cleanup(force_remove=...)`` (issue #20561) diverges
+    from the base ``cleanup(self)``; other backends expose ``stop`` /
+    ``terminate`` instead. Shared by ``cleanup_vm`` and the prompt-time
+    backend probe so the signature check lives in one place.
+    """
+    if hasattr(env, 'cleanup'):
+        import inspect
+        if "force_remove" in inspect.signature(env.cleanup).parameters:
+            env.cleanup(force_remove=force_remove)
+        else:
+            env.cleanup()
+    elif hasattr(env, 'stop'):
+        env.stop()
+    elif hasattr(env, 'terminate'):
+        env.terminate()
+
+
 def cleanup_vm(task_id: str, *, force_remove: bool = False):
     """Manually clean up a specific environment by task_id.
 
@@ -2172,19 +2243,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
         return
 
     try:
-        if hasattr(env, 'cleanup'):
-            # Pass force_remove only if the env's cleanup() accepts it
-            # (DockerEnvironment after issue #20561; other backends don't).
-            import inspect
-            sig = inspect.signature(env.cleanup)
-            if "force_remove" in sig.parameters:
-                env.cleanup(force_remove=force_remove)
-            else:
-                env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
+        _cleanup_env(env, force_remove=force_remove)
 
         logger.info("Manually cleaned up environment for task: %s", task_id)
 
@@ -2722,6 +2781,15 @@ def terminal_tool(
         config = _get_env_config()
         env_type = "local" if _host_local else config["env_type"]
 
+        # Fail closed under a refusal scope (#68559): the routed profile's
+        # terminal policy could not be resolved, so executing with the launch
+        # process's ambient policy is forbidden — refuse with a typed,
+        # model-actionable error instead.
+        if not _host_local:
+            from tools.terminal_scope import enforce_no_refusal
+
+            enforce_no_refusal()
+
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
@@ -2934,8 +3002,15 @@ def terminal_tool(
                 _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,
                 contains_launchctl_submit_command,
+                lifecycle_scan_root_within_budget,
             )
-            if contains_launchctl_submit_command(command):
+            # Keep the specific launchctl diagnostic when this optional
+            # pre-scan fits the budget.  The full fail-closed guard below still
+            # runs when it does not, so oversized roots never reach shlex here.
+            if (
+                lifecycle_scan_root_within_budget(command)
+                and contains_launchctl_submit_command(command)
+            ):
                 return json.dumps({
                     "output": "",
                     "exit_code": 1,
@@ -3693,7 +3768,44 @@ def terminal_tool(
             return json.dumps(result_dict, ensure_ascii=False)
 
     except EnvironmentConnectionError as e:
-        return _degraded_result(e, task_id)
+        # Infrastructure/connection-class failure (SSH host down, Docker
+        # daemon unreachable) — distinct from a command failing with a
+        # nonzero exit code.  Config gate ``terminal.degraded_mode``:
+        #   warn (default) — return a structured degraded result the model
+        #                    can act on (reason + retry hint, no traceback).
+        #   fail           — preserve the historical error+traceback result.
+        degraded_mode = _tenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
+        if degraded_mode == "fail":
+            import traceback
+            tb_str = traceback.format_exc()
+            logger.error("terminal_tool exception:\n%s", tb_str)
+            # Exception text can embed the failing command line (and any
+            # secrets inline in it) — redact before returning to the model.
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
+                "traceback": _redact_terminal_error_text(tb_str),
+                "status": "error"
+            }, ensure_ascii=False)
+
+        logger.warning("terminal backend degraded: %s", e.reason)
+        # Never keep a possibly-broken backend cached: evict it so the next
+        # call re-creates the environment from scratch and simply works once
+        # the backend is reachable again.
+        try:
+            _evict_environment_for_task(task_id)
+        except Exception:
+            logger.debug("degraded-env eviction failed", exc_info=True)
+        return json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "status": "degraded",
+            "reason": e.reason,
+            "retry_hint": e.retry_hint,
+            "error": f"Terminal backend degraded: {e.reason}",
+        }, ensure_ascii=False)
+
     except Exception as e:
         return _fatal_error_json(e)
 
@@ -3817,6 +3929,56 @@ def check_terminal_requirements() -> bool:
         return False
 
 
+if __name__ == "__main__":
+    # Simple test when run directly
+    print("Terminal Tool Module")
+    print("=" * 50)
+    
+    config = _get_env_config()
+    print("\nCurrent Configuration:")
+    print(f"  Environment type: {config['env_type']}")
+    print(f"  Docker image: {config['docker_image']}")
+    print(f"  Modal image: {config['modal_image']}")
+    print(f"  Working directory: {config['cwd']}")
+    print(f"  Default timeout: {config['timeout']}s")
+    print(f"  Lifetime: {config['lifetime_seconds']}s")
+
+    if not check_terminal_requirements():
+        print("\n❌ Requirements not met. Please check the messages above.")
+        sys.exit(1)
+
+    print("\n✅ All requirements met!")
+    print("\nAvailable Tool:")
+    print("  - terminal_tool: Execute commands in sandboxed environments")
+
+    print("\nUsage Examples:")
+    print("  # Execute a command")
+    print("  result = terminal_tool(command='ls -la')")
+    print("  ")
+    print("  # Run a background task")
+    print("  result = terminal_tool(command='python server.py', background=True)")
+
+    print("\nEnvironment Variables:")
+    default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
+    print(
+        "  TERMINAL_ENV: "
+        f"{_tenv('TERMINAL_ENV', 'local')} "
+        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+    )
+    print(f"  TERMINAL_DOCKER_IMAGE: {_tenv('TERMINAL_DOCKER_IMAGE', default_img)}")
+    print(f"  TERMINAL_SINGULARITY_IMAGE: {_tenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
+    print(f"  TERMINAL_MODAL_IMAGE: {_tenv('TERMINAL_MODAL_IMAGE', default_img)}")
+    print(f"  TERMINAL_DAYTONA_IMAGE: {_tenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
+    print(f"  TERMINAL_CWD: {_tenv('TERMINAL_CWD', _safe_getcwd())}")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  TERMINAL_SANDBOX_DIR: {_tenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
+    print(f"  TERMINAL_TIMEOUT: {_tenv('TERMINAL_TIMEOUT', '60')}")
+    print(f"  TERMINAL_LIFETIME_SECONDS: {_tenv('TERMINAL_LIFETIME_SECONDS', '300')}")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
 from tools.registry import registry
 
 TERMINAL_SCHEMA = {

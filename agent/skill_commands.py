@@ -237,10 +237,19 @@ def _build_skill_message(
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import _skills_dir
-    # Preprocess first so downstream blocks see the expanded content.
-    content = preprocess_skill_content(
-        str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config(),
-    )
+
+    content = str(loaded_skill.get("content") or "")
+
+    # ── Template substitution and inline-shell expansion ──
+    # Done before anything else so downstream blocks (setup notes,
+    # supporting-file hints) see the expanded content.
+    skills_cfg = _load_skills_config()
+    if skills_cfg.get("template_vars", True):
+        content = _substitute_template_vars(content, skill_dir, session_id)
+    if skills_cfg.get("inline_shell", False):
+        timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
+        content = _expand_inline_shell(content, skill_dir, timeout)
+
     parts = [activation_note, "", content.strip()]
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
     if skill_dir:
@@ -303,113 +312,32 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # each naming the same skill as its own incumbent (#74574).
     commands: Dict[str, Dict[str, Any]] = {}
     try:
-        # Track active usage for Curator lifecycle management (#17782)
-        # Track active usage for Curator lifecycle management (#17782)
-        # Track active usage for Curator lifecycle management (#17782)
-        from tools.skill_usage import bump_use
-        bump_use(skill_name, task_id=task_id)
-    except Exception:
-        pass
-    return _build_skill_message(loaded_skill, skill_dir, activation_note, session_id=task_id, **message_kwargs)
-
-
-def _scaffold_header(
-    subject: str, loaded_names: list[str], *, lead_lines: list[str] | None = None,
-    missing: list[str] | None = None, disabled: list[str] | None = None,
-    extra_instruction: str = "", user_instruction: str = "",
-) -> str:
-    """Header for multi-skill messages (bundles and stacked invocations).
-    ``subject`` must end in " skill bundle" so the bundle-format extractor applies."""
-    lines = [
-        f"[IMPORTANT: The user has invoked the {subject}, "
-        f"loading {len(loaded_names)} skills together. Treat every skill below "
-        "as active guidance for this turn.]",
-        "",
-        *(lead_lines or []),
-        f"Skills loaded: {', '.join(loaded_names)}",
-    ]
-    if missing:
-        lines.append(f"Skills missing (skipped): {', '.join(missing)}")
-    if disabled:
-        lines.append(f"Skills disabled for this platform (skipped): {', '.join(disabled)}")
-    if extra_instruction:
-        lines += ["", f"Bundle instruction: {extra_instruction}"]
-    if user_instruction:
-        lines += ["", f"User instruction: {user_instruction}"]
-    return "\n".join(lines)
-
-
-_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive'}
-
-
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]], resolve_command) -> None:
-    """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
-    from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment
-    if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
-        return
-    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8'))
-    # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
-    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
-        return
-    name = frontmatter.get('name', skill_md.parent.name)
-    if name in seen_names or name in disabled:
-        return
-    description = frontmatter.get('description', '') or next(
-        (line.strip()[:80] for line in body.strip().split('\n') if line.strip() and not line.strip().startswith('#')),
-        '',
-    )
-    seen_names.add(name)
-    cmd_name = slugify_skill_name(name)
-    if not cmd_name:
-        return
-    # A collision with a core command (name or alias, via resolve_command) skips
-    # auto-registration; the skill stays loadable via /skill <name>.
-    if resolve_command(cmd_name) is not None:
-        logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
-                       "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
-        return
-    # Dedup on the slug too: "git_helper" and "git-helper" normalize the same.
-    # First-wins preserves project > local > external precedence.
-    cmd_key = f"/{cmd_name}"
-    if cmd_key in commands:
-        logger.warning("Skill %r maps to slash command %s already claimed by %r; keeping the first and skipping this one.",
-                       name, cmd_key, commands[cmd_key]["name"])
-        return
-    commands[cmd_key] = {"name": name, "description": description or f"Invoke the {name} skill",
-                         "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
-
-
-def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Scan skill dirs and return {"/skill-name": {name, description, skill_md_path, skill_dir}}.
-    Builds a local map and publishes once at the end: writing straight into the
-    global exposed partial results to overlapping scans, which then logged
-    bogus "already claimed" collisions against their own incumbents."""
-    global _skill_commands, _skill_commands_platform, _skill_commands_home
-    platform = _resolve_skill_commands_platform()
-    home = _resolve_skill_commands_home()
-    # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
-    # partial results visible to everything else in the process: a second, overlapping scan deduped against
-    # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
-    # one bogus "already claimed" warning per skill — each naming the same skill as its own incumbent
-    # (#74574).
-    commands: Dict[str, Dict[str, Any]] = {}
-    try:
-        from tools.skills_tool import _skills_dir, _get_disabled_skill_names
+        from tools.skills_tool import _skills_dir, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import (
             get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
         )
         from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
-        # Precedence: project (through the quarantine chokepoint) > local > external.
-        # Resolve the local dir at call time: import-time SKILLS_DIR is frozen to
-        # the launch home, but a multiplexed profile scope may have changed it.
-        # See #67277.
+
+        # Scan project dirs first (highest precedence), then local, then external.
+        # Project dirs iterate through the quarantine chokepoint.
+        project_dirs = list(get_project_skills_dirs())
+        dirs_to_scan = list(project_dirs)
+        # Resolve at call time: the import-time SKILLS_DIR is frozen to the
+        # launch home, so a multiplexed profile scope (set_hermes_home_override)
+        # would still scan the default profile's skills (#67277).
         skills_dir = _skills_dir()
-        iters = [iter_project_skill_files(d) for d in get_project_skills_dirs()]
-        local = [skills_dir] if skills_dir.exists() else []
-        iters += [iter_skill_index_files(d, "SKILL.md") for d in local + get_external_skills_dirs()]
-        for _iter in iters:
+        if skills_dir.exists():
+            dirs_to_scan.append(skills_dir)
+        dirs_to_scan.extend(get_external_skills_dirs())
+
+        for scan_dir in dirs_to_scan:
+            _iter = (
+                iter_project_skill_files(scan_dir)
+                if scan_dir in project_dirs
+                else iter_skill_index_files(scan_dir, "SKILL.md")
+            )
             for skill_md in _iter:
                 try:
                     content = skill_md.read_text(encoding='utf-8')

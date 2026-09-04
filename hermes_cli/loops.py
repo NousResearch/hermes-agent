@@ -560,13 +560,27 @@ class LoopManager:
             except Exception as exc:
                 verdict, reason = "continue", f"judge unavailable: {type(exc).__name__}"
             if verdict == "done":
-                return self._stop("done", f"stop condition met: {reason}",
-                                  f"✓ Loop finished after {ticks} — {reason}")
+                s.status = "done"
+                s.last_stop_reason = f"stop condition met: {reason}"
+                save_loop(self.session_id, s)
+                return {
+                    "status": "done",
+                    "stopped": True,
+                    "reason": s.last_stop_reason,
+                    "message": f"✓ Loop finished after {s.ticks_fired} tick{'s' if s.ticks_fired != 1 else ''} — {reason}",
+                }
             if verdict == "blocked":
-                # Unachievable stop condition: pause so the user can re-scope, don't spin.
-                why = f"stop condition judged unachievable: {reason}"
-                return self._stop("paused", why,
-                                  f"⏸ Loop paused — {why}. /loop resume to keep going, /loop stop to end it.")
+                # Judge ruled the stop condition unachievable — don't spin
+                # until the tick budget; pause so the user can re-scope.
+                s.status = "paused"
+                s.paused_reason = f"stop condition judged unachievable: {reason}"
+                save_loop(self.session_id, s)
+                return {
+                    "status": "paused",
+                    "stopped": True,
+                    "reason": s.paused_reason,
+                    "message": f"⏸ Loop paused — {s.paused_reason}. /loop resume to keep going, /loop stop to end it.",
+                }
 
         # 3. --times user cap.
         if s.times and s.ticks_fired >= s.times:

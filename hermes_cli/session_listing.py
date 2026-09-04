@@ -49,11 +49,15 @@ def query_session_listing(
 ) -> list[dict[str, Any]]:
     """Return session rows for interactive listing surfaces (shared CLI/gateway policy).
 
-    Source-scoped unless global is requested; unnamed hidden unless a full listing is asked for;
-    current session hidden unless requested (then marked ``is_current_session``); ``session_key``
-    restricts gateway callers to one lane before the DB limit applies. With ``search_query`` rows
-    are filtered by title/id in SQL, ordered by recent activity, and unnamed sessions stay visible
-    since an id match may be the only handle.
+    This is the shared selection policy behind CLI/gateway session browsing:
+    source-scoped by default, optionally global, hide unnamed sessions unless
+    the caller asks for a full listing, and hide the current session unless the
+    caller asks to show it with an ``is_current_session`` marker.
+    ``session_key`` further restricts gateway callers to one exact conversation
+    lane before the database applies its result limit.
+    With ``search_query``, rows are filtered by title/id match (SQL-level, see
+    ``SessionDB.list_sessions_rich``) and ordered by most-recent activity;
+    unnamed sessions stay visible since an id match may be the only handle.
     """
     search = (search_query or "").strip()
     rows = session_db.list_sessions_rich(
@@ -67,11 +71,14 @@ def query_session_listing(
     result: list[dict[str, Any]] = []
     for row in rows:
         is_current = bool(current_session_id and row.get("id") == current_session_id)
-        if (is_current and not include_current_session) or (
-            not include_unnamed and not row.get("title") and not search and not is_current
-        ):
+        if is_current and not include_current_session:
             continue
-        result.append({**row, "is_current_session": True} if is_current else row)
+        if not include_unnamed and not row.get("title") and not search and not is_current:
+            continue
+        if is_current:
+            row = dict(row)
+            row["is_current_session"] = True
+        result.append(row)
         if len(result) >= limit:
             break
     return result
@@ -86,29 +93,33 @@ def format_gateway_session_listing(
 ) -> str:
     """Render a compact Markdown-ish session list for gateway messengers.
 
-    ``notice`` adds an explanatory line above the footer — e.g. when a requested scope widening
-    (``all``) was declined, so the caller isn't left guessing why sessions are missing.
+    ``notice`` appends an explanatory line above the footer — used e.g. when
+    a requested scope widening (``all``) was declined so the caller isn't
+    left guessing why sessions are missing.
     """
     if not rows:
-        return "\n".join([
+        parts = [
             "No sessions found.\n"
             "Use `/title My Session` to name this chat, or `/sessions full` "
-            "to include unnamed sessions.",
-            *([notice] if notice else []),
-        ])
+            "to include unnamed sessions."
+        ]
+        if notice:
+            parts.append(notice)
+        return "\n".join(parts)
+
     lines = [f"📋 **{title}**", ""]
     for idx, row in enumerate(rows, start=1):
+        session_id = str(row.get("id") or "")
+        title_text = str(row.get("title") or "—")
         current_part = " (current)" if row.get("is_current_session") else ""
         preview = str(row.get("preview") or "")[:40]
         source = str(row.get("source") or "")
         source_part = f" `{source}`" if include_source and source else ""
         preview_part = f" — _{preview}_" if preview else ""
-        lines.append(
-            f"{idx}. **{row.get('title') or '—'}**{current_part}{source_part}"
-            f" — `{row.get('id') or ''}`{preview_part}"
-        )
-    return "\n".join([
-        *lines, "", *([notice] if notice else []),
-        "Resume: `/resume <session id>` or `/resume <number>` from `/resume`.",
-        "More: `/sessions all`, `/sessions full`, `/sessions search <query>`.",
-    ])
+        lines.append(f"{idx}. **{title_text}**{current_part}{source_part} — `{session_id}`{preview_part}")
+    lines.append("")
+    if notice:
+        lines.append(notice)
+    lines.append("Resume: `/resume <session id>` or `/resume <number>` from `/resume`.")
+    lines.append("More: `/sessions all`, `/sessions full`, `/sessions search <query>`.")
+    return "\n".join(lines)

@@ -127,7 +127,9 @@ async def handle_meeting_invited_event(adapter: Any, data: Any) -> None:
     dedup_key = _dedup_key(payload)
     is_duplicate = getattr(adapter, "_is_duplicate", None)
     if callable(is_duplicate) and await is_duplicate(dedup_key):
-        return logger.debug("[Feishu-MeetingInvite] Dropping duplicate event: %s", dedup_key)
+        logger.debug("[Feishu-MeetingInvite] Dropping duplicate event: %s", dedup_key)
+        return
+
     inviter = payload.inviter
     if inviter is None or not inviter.open_id:
         return logger.warning("[Feishu-MeetingInvite] Missing inviter open_id, cannot route reply safely (user_id=%r union_id=%r)",

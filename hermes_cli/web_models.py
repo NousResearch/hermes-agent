@@ -227,10 +227,17 @@ class VoiceLiveSessionRequest(BaseModel):
     history: Optional[List[Dict[str, Any]]] = None
 
 class TTSLeaseRequest(BaseModel):
-    """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease
-    (``desktop:read-aloud``, ``desktop:conversation``); ``active`` True acquires + warms, False releases."""
+    """Body for ``POST /api/audio/tts-lease``.
+
+    ``lease`` names the toggle/surface holding the lease (``desktop:read-aloud``,
+    ``desktop:conversation``); ``active`` True acquires + warms, False releases.
+    """
+
     lease: str
     active: bool = True
+
+
+# --- from web_server.py (originally lines 11549-11551) ---
 
 class OAuthSubmitBody(BaseModel):
     session_id: str

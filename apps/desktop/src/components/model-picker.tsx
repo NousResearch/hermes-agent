@@ -7,11 +7,11 @@ import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import { foldIncludes, normalize } from '@/lib/text'
+import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import type { LocalModelLoadProgress } from '@/types/hermes'
+import type { LocalModelLoadProgress, ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
@@ -291,14 +291,14 @@ function ModelResults({
   // In-flight local downloads render as disabled progress rows: inside the
   // Local group when it exists, else as their own group (first download —
   // nothing staged yet, so the backend reports no Local provider at all).
-  const visibleDownloads = downloads.filter(job => !q || foldIncludes(job.target || '', q))
+  const visibleDownloads = downloads.filter(job => !q || (job.target || '').toLowerCase().includes(q))
   const hasLocalGroup = configured.some(p => p.slug === LOCAL_PROVIDER_SLUG)
 
   return (
     <>
       {configured.map(provider => {
-        // Empty query: the backend's curated order, verbatim.
-        const models = rankModels(provider, provider.models ?? [])
+        // Preserve the backend's curated order — filter in place, no re-sort.
+        const models = (provider.models ?? []).filter(m => matches(provider, m))
         const groupDownloads = provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
 
         if (models.length === 0 && groupDownloads.length === 0) {

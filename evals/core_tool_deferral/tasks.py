@@ -1,9 +1,9 @@
 """Task battery for PR #97979 core-tool-deferral A/B.
 
-Covers all 18 deferred tools:
+Covers all 19 deferred tools:
   computer_use, session_search, clarify, image_generate, todo_list,
   process_manage, cronjob_manage, drive_preview, gui_tour, desktop_preview,
-  annotate_preview, show_tip, desktop_project, close_terminal,
+  annotate_preview, show_tip, setup_mcp, desktop_project, close_terminal,
   apply_layout, read_terminal, read_window_below, focus_pane
 plus an eager-surface control and a false-discovery distractor.
 
@@ -300,17 +300,16 @@ def g_project(ctx):
             notes.append("desktop_project called but not with 'apollo'")
     else:
         notes.append("desktop_project never called")
-    # MCP install is a manage_connections call with an mcp:true target.
-    mcp_calls = [c for c in ctx["messages_tool_args"].get("manage_connections", [])
-                 if "github" in json.dumps(c).lower() and "mcp" in json.dumps(c).lower()]
-    if _called(ctx, "manage_connections"):
+    mcp_calls = [c for c in ctx["messages_tool_args"].get("setup_mcp", [])
+                 if "github" in json.dumps(c).lower()]
+    if _called(ctx, "setup_mcp"):
         score += 0.3
         if mcp_calls:
             score += 0.2
         else:
-            notes.append("manage_connections called but not for the github MCP")
+            notes.append("setup_mcp called but not for github")
     else:
-        notes.append("manage_connections never called")
+        notes.append("setup_mcp never called")
     return score, notes
 
 

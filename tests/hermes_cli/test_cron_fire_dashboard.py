@@ -274,15 +274,15 @@ def test_fire_endpoint_multiplex_reads_port_from_default_listener(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     monkeypatch.delenv("API_SERVER_PORT", raising=False)
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
+    monkeypatch.setattr(web_server, "_cron_default_profile", lambda: "default")
 
-    url = _web_server_cron._gateway_fire_endpoint("worker_alpha", worker_home)
+    url = web_server._gateway_fire_endpoint("worker_alpha", worker_home)
 
     assert url == "http://127.0.0.1:8650/p/worker_alpha/api/cron/fire"
     # The GATEWAY_MULTIPLEX_PROFILES env override is still honored (parity
     # with gateway/config.py): forcing it off restores per-profile routing.
     monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "0")
-    assert _web_server_cron._gateway_fire_endpoint("worker_alpha", worker_home) == (
+    assert web_server._gateway_fire_endpoint("worker_alpha", worker_home) == (
         "http://127.0.0.1:8702/api/cron/fire"
     )
 

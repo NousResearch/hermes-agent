@@ -199,15 +199,19 @@ class GatewayAuthorizationMixin:
     # ``getattr(self, ...)`` throughout: test helpers build bare runners via ``object.__new__``
     # without ``adapters`` / ``config``.
 
-    def _primary_adapters(self) -> dict:
-        return getattr(self, "adapters", None) or {}
+        In multiplex mode, secondary-profile adapters live in
+        ``_profile_adapters[profile]`` while the default/active profile uses
+        ``self.adapters``. ``SessionSource.profile`` selects which map to consult.
+        When a stamped profile has its own adapter registry entry, the default
+        profile's same-platform adapter must not be consulted as a fallback.
 
-    def _profile_adapters_map(self) -> dict:
-        return getattr(self, "_profile_adapters", None) or {}
-
-    def _authorization_adapter(self, platform: Optional[Platform], profile: Optional[str] = None):
-        """Live adapter whose intake policy gates authorization (``_adapters_for_profile`` for the
-        profile rule). ``None`` when the profile has no adapter for *platform*.
+        Consult ``_profile_adapters`` *before* comparing against
+        ``_active_profile_name()``. Multiplex turns wrap authz in
+        ``_profile_runtime_scope``, which overrides ``HERMES_HOME`` so
+        ``get_active_profile_name()`` returns the secondary profile for the
+        duration of the turn. Treating that scoped name as "primary" would
+        look up ``self.adapters`` (empty for secondary-only platforms like
+        A2A) and default-deny an already-authenticated peer.
         """
         if not platform:
             return None
@@ -222,42 +226,33 @@ class GatewayAuthorizationMixin:
         secondary whose adapter failed to connect must NOT fall back to the default profile's adapter
         (replies, tool sends, marker-file notices out the wrong bot)."""
         profile_name = (profile or "").strip() or None
-        if not profile_name or profile_name == "default":
-            return self._primary_adapters()
-        profile_adapters = self._profile_adapters_map()
-        if profile_name in profile_adapters:
-            adapters = profile_adapters[profile_name]
-            if adapters or not self._is_shared_bot_satellite(profile_name):
-                return adapters
-            return self._primary_adapters()
-        # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
-        primary_profile = getattr(self, "_primary_profile_name", None)
-        if not primary_profile:
-            with contextlib.suppress(Exception):
-                primary_profile = self._active_profile_name()
-        return self._primary_adapters() if profile_name == primary_profile else {}
-
-    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
-        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
-        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
-        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
-        platform is its own credential boundary and never borrows the primary. Restored/cached sources
-        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
-        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
-        config = getattr(self, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            return False
-        # A bot that failed to connect is queued for reconnect: that profile owns a credential.
-        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
-            return False
-        routes = getattr(config, "profile_routes", None) or []
-        if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
-            return False
-        from gateway.run import _multiplex_profile_homes
-        try:
-            return profile_name in {name for name, _home in _multiplex_profile_homes(config)}
-        except Exception:
-            return False
+        if profile_name and profile_name != "default":
+            profile_adapters = getattr(self, "_profile_adapters", None) or {}
+            if profile_name in profile_adapters:
+                return profile_adapters[profile_name].get(platform)
+            # Adapter ownership is process-wide: only the profile the gateway
+            # was LAUNCHED as owns ``self.adapters``. ``_active_profile_name()``
+            # reads the per-turn HERMES_HOME override, so inside a secondary
+            # profile's ``_profile_runtime_scope`` it reports that secondary
+            # and would hand it the default bot. Compare against the identity
+            # captured at construction instead.
+            primary_profile = getattr(self, "_primary_profile_name", None)
+            if not primary_profile:
+                active_profile_fn = getattr(self, "_active_profile_name", None)
+                if callable(active_profile_fn):
+                    try:
+                        primary_profile = active_profile_fn()
+                    except Exception:
+                        primary_profile = None
+            if profile_name == primary_profile:
+                adapters = getattr(self, "adapters", None) or {}
+                return adapters.get(platform)
+            # Fail closed: a stamped secondary profile with no registry entry
+            # (e.g. its adapter failed to connect) must NOT fall back to the
+            # default profile's adapter — that sends replies out the wrong bot.
+            return None
+        adapters = getattr(self, "adapters", None) or {}
+        return adapters.get(platform)
 
     def _adapter_for_source(self, source: Optional[SessionSource]):
         """Resolve the live adapter for an inbound ``SessionSource``."""

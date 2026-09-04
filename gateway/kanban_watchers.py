@@ -338,10 +338,199 @@ class GatewayKanbanWatchersMixin:
                     _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
                     _retention = _gc_retention_days()
 
-                deliveries = await asyncio.to_thread(
-                    _notifier_collect, self, _kb,
-                    notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
-                )
+                        _kanban_cfg = (_load_cfg() or {}).get("kanban") or {}
+                        _gc_retention_days = int(
+                            _kanban_cfg.get("done_sub_retention_days", 30)
+                        )
+                    except Exception:
+                        # Fail safe on the shipped default; the sweep itself
+                        # treats <= 0 as disabled.
+                        _gc_retention_days = 30
+
+                def _collect():
+                    deliveries: list[dict] = []
+                    include_unowned = self._owns_kanban_dispatcher_lock()
+                    notifier_profiles = {notifier_profile}
+                    notifier_profiles.update(
+                        str(profile).strip()
+                        for profile in getattr(self, "_profile_adapters", {})
+                        if str(profile).strip()
+                    )
+                    active_platforms = {
+                        getattr(platform, "value", str(platform)).lower()
+                        for platform in self.adapters.keys()
+                    }
+                    # Widen to every platform any secondary profile has live,
+                    # not just the default profile's. This is only a coarse
+                    # pre-filter to skip claiming events for subs nobody can
+                    # possibly deliver — the precise per-profile check (via
+                    # gateway/authz_mixin.py::_authorization_adapter, which
+                    # forbids default-profile fallback) still runs at delivery
+                    # time below, rewinding the claim if it resolves to None.
+                    # Without this, a subscription owned by a secondary
+                    # profile on a platform the DEFAULT profile never
+                    # connected (e.g. beta owns discord, default doesn't) was
+                    # dropped here before ever being claimed — no rewind
+                    # applies to an unclaimed event, so it silently never
+                    # retries.
+                    for _profile_adapter_map in getattr(self, "_profile_adapters", {}).values():
+                        active_platforms.update(
+                            getattr(platform, "value", str(platform)).lower()
+                            for platform in _profile_adapter_map.keys()
+                        )
+                    if not active_platforms:
+                        logger.debug("kanban notifier: no connected adapters; skipping tick")
+                        return deliveries
+
+                    # Enumerate every board on disk, but poll each resolved DB
+                    # path once. Multiple slugs can point at the same DB when
+                    # HERMES_KANBAN_DB pins the board path; without this guard
+                    # one gateway could collect the same subscription/event
+                    # more than once before advancing the cursor.
+                    try:
+                        boards = _kb.list_boards(include_archived=False)
+                    except Exception:
+                        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+                    seen_db_paths: set[str] = set()
+                    for board_meta in boards:
+                        slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+                        db_path = board_meta.get("db_path")
+                        try:
+                            resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
+                        except Exception:
+                            resolved_db_path = f"slug:{slug}"
+                        if resolved_db_path in seen_db_paths:
+                            logger.debug(
+                                "kanban notifier: skipping duplicate board slug %s for DB %s",
+                                slug, resolved_db_path,
+                            )
+                            continue
+                        seen_db_paths.add(resolved_db_path)
+                        # Zero-subscription early exit: probe the board with a
+                        # cheap read-only connection BEFORE the writable
+                        # `connect()`. A board with no subscriptions has
+                        # nothing to notify, and the writable open (schema
+                        # init/migration on first open, WAL/-shm sidecars,
+                        # checkpoint traffic) is exactly the per-tick cost
+                        # this skip avoids.
+                        try:
+                            if _kb.count_notify_subs(
+                                board=slug,
+                                notifier_profiles=notifier_profiles,
+                                include_unowned=include_unowned,
+                            ) == 0:
+                                logger.debug(
+                                    "kanban notifier: board %s has no subscriptions owned by %s; skipping open",
+                                    slug, sorted(notifier_profiles),
+                                )
+                                continue
+                        except Exception as exc:
+                            logger.debug(
+                                "kanban notifier: read-only subscription probe failed "
+                                "for board %s (%s); falling back to writable open",
+                                slug, exc,
+                            )
+                        try:
+                            conn = _kb.connect(board=slug)
+                        except Exception as exc:
+                            logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
+                            continue
+                        try:
+                            if _gc_due:
+                                # Hourly (plus once at startup) stale-sub GC:
+                                # drop subscriptions for tasks that have been
+                                # ``done``/``blocked`` untouched past the retention
+                                # window. Best-effort — a failed sweep never
+                                # blocks delivery; the next hourly gate
+                                # retries it.
+                                try:
+                                    _purged = _kb.purge_stale_done_notify_subs(
+                                        conn,
+                                        max_age_days=_gc_retention_days,
+                                    )
+                                    if _purged:
+                                        logger.info(
+                                            "kanban notifier: purged %d stale done/blocked-task subscription(s) on board %s (retention %dd)",
+                                            _purged, slug, _gc_retention_days,
+                                        )
+                                except Exception as _gc_exc:
+                                    logger.debug(
+                                        "kanban notifier: stale-sub GC failed for board %s: %s",
+                                        slug, _gc_exc,
+                                    )
+                            # `connect()` runs the schema + idempotent migration
+                            # on first open per process, so an explicit
+                            # `init_db()` here would be redundant. Worse:
+                            # `init_db()` deliberately busts the per-process
+                            # cache and re-runs the migration on a *second*
+                            # connection, which races the first and used to
+                            # log a benign but noisy `duplicate column name`
+                            # traceback (and intermittent "database is locked"
+                            # — issue #21378) on every gateway start against
+                            # a legacy DB. `_add_column_if_missing` now
+                            # tolerates that race, but we still skip the
+                            # redundant call to avoid the wasted work.
+                            subs = _kb.list_notify_subs(
+                                conn,
+                                notifier_profiles=notifier_profiles,
+                                include_unowned=include_unowned,
+                            )
+                            if not subs:
+                                logger.debug("kanban notifier: board %s has no subscriptions", slug)
+                            for sub in subs:
+                                try:
+                                    owner_profile = sub.get("notifier_profile") or None
+                                    if owner_profile and owner_profile != notifier_profile:
+                                        _owner_adapters = getattr(self, "_profile_adapters", {}).get(owner_profile)
+                                        if not _owner_adapters:
+                                            logger.debug(
+                                                "kanban notifier: subscription for %s owned by profile %s; current profile %s has no adapter for it, skipping",
+                                                sub.get("task_id"), owner_profile, notifier_profile,
+                                            )
+                                            continue
+                                    platform = (sub.get("platform") or "").lower()
+                                    if platform not in active_platforms:
+                                        logger.debug(
+                                            "kanban notifier: subscription for %s on %s skipped; adapter not connected",
+                                            sub.get("task_id"), platform or "<missing>",
+                                        )
+                                        continue
+                                    old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                        conn,
+                                        task_id=sub["task_id"],
+                                        platform=sub["platform"],
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id") or "",
+                                        kinds=TERMINAL_KINDS,
+                                    )
+                                    if not events:
+                                        continue
+                                    task = _kb.get_task(conn, sub["task_id"])
+                                    logger.debug(
+                                        "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
+                                        len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    )
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "task": task,
+                                        "board": slug,
+                                    })
+                                except Exception as sub_exc:
+                                    # Isolate per-subscription failures so one
+                                    # bad subscription cannot block delivery for
+                                    # all other subscriptions in this tick.
+                                    logger.warning(
+                                        "kanban notifier: subscription for %s on board %s failed: %s",
+                                        sub.get("task_id"), slug, sub_exc,
+                                    )
+                        finally:
+                            conn.close()
+                    return deliveries
+
+                deliveries = await asyncio.to_thread(_collect)
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]

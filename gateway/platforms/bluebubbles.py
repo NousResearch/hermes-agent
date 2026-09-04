@@ -19,8 +19,13 @@ import httpx
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
@@ -519,11 +524,33 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             data = resp.content
             mime = (att_meta.get("mimeType") or "").lower()
             if mime.startswith("image/"):
-                return await cache_image_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_IMAGE_EXT_OVERRIDES, ".jpg"))
+                ext = ext_for_mime(
+                    mime,
+                    overrides=_BLUEBUBBLES_IMAGE_EXT_OVERRIDES,
+                    # Historical map was closed: any unlisted image mime
+                    # fell back to .jpg without consulting mimetypes.
+                    use_defaults=False,
+                    use_mimetypes=False,
+                    fallback=".jpg",
+                ) or ".jpg"
+                return await cache_image_from_bytes_async(data, ext)
+
             if mime.startswith("audio/"):
-                return await cache_audio_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_AUDIO_EXT_OVERRIDES, ".mp3"))
+                ext = ext_for_mime(
+                    mime,
+                    overrides=_BLUEBUBBLES_AUDIO_EXT_OVERRIDES,
+                    # Historical map was closed: any unlisted audio mime
+                    # fell back to .mp3 without consulting mimetypes.
+                    use_defaults=False,
+                    use_mimetypes=False,
+                    fallback=".mp3",
+                ) or ".mp3"
+                return await cache_audio_from_bytes_async(data, ext)
+
             # Videos, documents, and everything else
-            return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
+            filename = transfer_name or f"file_{uuid.uuid4().hex[:8]}"
+            return await cache_document_from_bytes_async(data, filename)
+
         except Exception as exc:
             logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
             return None

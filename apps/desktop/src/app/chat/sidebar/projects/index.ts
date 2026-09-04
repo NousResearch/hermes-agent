@@ -16,7 +16,6 @@ export {
   overlayLiveLanes,
   overlayLivePreviews,
   reconcileEnteredProjectSessions,
-  sessionMatchesProjectFilter,
   sessionRecency,
   type SidebarProjectTree,
   type SidebarSessionGroup,

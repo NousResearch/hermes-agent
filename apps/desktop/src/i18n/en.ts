@@ -231,16 +231,10 @@ export const en: Translations = {
         'This Hermes no longer accepts your saved sign-in. Open Gateways and sign in again (or paste a new access token), then retry.',
       methodNotAllowed: "Hermes' background service is out of step with the app, probably after an update. Restart it to fix this.",
       microphonePermission: 'Microphone permission was denied.',
-      openaiRejectedApiKey: "OpenAI didn't accept your API key. Update it in Settings → Keys, then try again.",
-      openaiTtsNeedsKey: 'Voice needs an OpenAI key. Add one in Settings → Keys.',
-      codeSkewRestartRequired: 'Hermes was updated but is still running the old version. Restart it to finish the update.',
-      restartHermesFailed: "Couldn't restart Hermes"
-    },
-    actions: {
-      restartHermes: 'Restart Hermes',
-      openKeys: 'Open Keys',
-      openGateways: 'Open Gateways',
-      openMaintenance: 'Open Maintenance'
+      openaiRejectedApiKey: 'OpenAI rejected the API key.',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI rejected the API key (${status} invalid_api_key).`,
+      openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.',
+      codeSkewRestartRequired: 'This backend is running old code after an update. Restart it to load the new code.'
     },
     voice: {
       configureSpeechToText: 'Configure speech-to-text to use voice mode.',
@@ -1386,12 +1380,9 @@ export const en: Translations = {
         'speed-gated-quality':
           'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
         'fastest-resident':
-          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
+          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.',
+        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.'
       } as Record<string, string>,
-      noRecommendationTitle: 'No automatic recommendation for this machine',
-      noRecommendationDetail:
-        'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',
-      noRecommendationAction: 'Browse models',
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,
       downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
@@ -1403,7 +1394,7 @@ export const en: Translations = {
       quickstartDetailReady: model =>
         `One click makes ${model} your default for new chats. Everything runs on this machine.`,
       quickstartAction: 'Set up for me',
-      quickstartConfigure: 'Let me choose',
+      quickstartConfigure: 'Configure…',
       quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
       quickstartFailed: 'Local model setup failed',
       quickstartStageEngine: 'Engine',
@@ -1417,7 +1408,8 @@ export const en: Translations = {
       updateAction: 'Update engine',
       updating: 'Updating engine…',
       upToDateTitle: 'Engine up to date',
-      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the configured build.`,
+      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the latest build Hermes ships.`,
+      updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`,
       activeDetail: 'New chats use this model — it loads when you send your first message',
       activeNotLoaded: 'Loads on your first message',
       loadedPill: 'In memory',
@@ -1626,7 +1618,17 @@ export const en: Translations = {
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
         disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
-        failedSave: 'Could not save the real-profile setting'
+        failedSave: 'Could not save the real-profile setting',
+        prompt: {
+          title: 'Stay signed in to your sites',
+          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
+          bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
+          bulletLiveProfile: 'Your live browser profile is never opened directly.',
+          bulletLocal: 'Nothing leaves this computer.',
+          dontShowAgain: "Don't show again",
+          notNow: 'Not now',
+          enable: 'Use my profile'
+        }
       }
     }
   },
@@ -1687,51 +1689,6 @@ export const en: Translations = {
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
-    tabPlugins: 'Plugins',
-    plugins: {
-      agentTitle: 'Agent plugins',
-      agentBlurb:
-        'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
-      pageBlurb: 'One row per plugin. A plugin can extend this app, the agent, or both — each half has its own switch.',
-      halfDesktop: 'Desktop',
-      halfDesktopHint: 'this app, same for every profile',
-      halfAgent: 'Agent',
-      halfAgentIn: (profile: string) => `Agent in ${profile}`,
-      defaultProfile: 'Hermes (default)',
-      kindAgent: 'Agent',
-      kindDesktop: 'Desktop',
-      kindBoth: 'Agent + Desktop',
-      installAgentHere: 'Install here',
-      installAgentHereTip: (profile: string) =>
-        `The desktop half is loaded in this app, but the agent half is not installed in ${profile}. Install it there.`,
-      installAgentHereNoOrigin:
-        'The agent half is not installed in this profile, and this package was copied in by hand (no catalog entry or git remote), so it cannot be installed from here. Copy its folder into the profile or reinstall from Git.',
-      desktopHalfPending: 'copying…',
-      desktopHalfPendingTip:
-        'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
-      emptyAll: 'No plugins yet.',
-      empty: 'No agent plugins installed for this profile.',
-      emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
-      loadFailed: 'Could not load agent plugins',
-      toggleFailed: (name: string) => `Could not toggle ${name}`,
-      legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
-      portableBadge: 'portable',
-      catalogTitle: 'Plugin catalog',
-      catalogBrowse: 'Browse',
-      catalogHide: 'Hide the catalog browser',
-      catalogHint:
-        'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
-      alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
-      catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
-      pinnedProvenance: (sha: string) =>
-        `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
-      pinnedBadge: (sha: string) => `pinned @ ${sha}`,
-      tierOfficial: 'official',
-      tierCommunity: 'community',
-      updateToPin: (sha: string) => `Update to ${sha}`,
-      updateFailed: (name: string) => `Could not update ${name}`,
-      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`
-    },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
     hub: {
@@ -3387,12 +3344,7 @@ export const en: Translations = {
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
     signInExpired:
-      'The sign-in page timed out before you finished. Try again and complete the browser step within a few minutes, or use an API key instead.',
-    signInDidNotFinish: provider =>
-      `Sign-in with ${provider} did not finish. Check your internet connection and try again, or pick a different provider.`,
-    tryAgain: 'Try again',
-    useApiKeyInstead: 'Use an API key',
-    errorDetails: 'Details',
+      'Sign-in expired waiting for authorization. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then try again. If it keeps failing, use an API key or the CLI fallback instead.',
     pickDifferentProvider: 'Pick a different provider',
     signInWith: provider => `Sign in with ${provider}`,
     openedBrowser: provider => `We opened ${provider} in your browser.`,
@@ -4297,9 +4249,10 @@ export const en: Translations = {
         title: 'Attach and command',
         text: 'Type @ to bring a file into the conversation, / to run a command.'
       },
-      'model-switch': {
-        title: 'Switch models mid-thread',
-        text: 'The model name is a button. Change it whenever the work changes shape.'
+      'local-setup': {
+        title: 'This machine can run models locally',
+        text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
+        action: 'Set it up'
       },
       'right-pane': {
         title: 'The working pane',

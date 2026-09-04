@@ -27,6 +27,7 @@ from hermes_cli.web_models import (
     SessionPrune,
     SessionRename,
 )
+from hermes_state import is_malformed_db_error, is_transient_sqlite_error
 
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -231,15 +232,19 @@ def get_sessions(
         raise
     except sqlite3.OperationalError as exc:
         _log.exception("GET /api/sessions failed")
-        # 503, not 500: the store is busy, not gone — the desktop keeps its
-        # sidebar instead of reading a 500 as an authoritative empty list.
+        # 503, not 500: the store is busy, not gone. The desktop keeps the
+        # sidebar it already has instead of reading a 500 as an authoritative
+        # empty list. Retrying the OPEN here is deliberately not done — the
+        # bounded retry lives in SessionDB's read-only constructor, so every
+        # read-only opener gets it, not just this route.
         transient = is_transient_sqlite_error(exc)
         raise HTTPException(
             status_code=503 if transient else 500,
             detail=(
                 "Session store is busy (disk I/O or lock). Retry; the list was not cleared."
                 if transient
-                else "Internal server error"),
+                else "Internal server error"
+            ),
         ) from exc
     except Exception:
         _log.exception("GET /api/sessions failed")

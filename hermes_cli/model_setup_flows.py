@@ -47,9 +47,130 @@ def _prompt_base_url_override(effective_base: str, base_url_env: str, *, persist
     return effective_base
 
 
-def _report_live_models(model_list, source: str) -> None:
-    if model_list:
-        print(f"  Found {len(model_list)} model(s) from {source}")
+def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
+    """True when *model_id* can be invoked from *region_name*'s endpoint.
+
+    Bare foundation-model ids and ``global.*`` profiles route from anywhere.
+    Geo-prefixed inference profiles (``us.*``, ``eu.*``, ...) only route from
+    endpoints in their own geography. Unknown region shapes hide nothing.
+    """
+    mid = (model_id or "").lower()
+    matched_geo = next((p for p in BEDROCK_GEO_PREFIXES if mid.startswith(p)), None)
+    if matched_geo is None or mid.startswith("global."):
+        return True
+    geo = bedrock_region_geo_prefix(region_name)
+    if not geo:
+        return True
+    if geo == "ap.":
+        # Asia-Pacific regions can carry ap./apac./jp. profile spellings.
+        return matched_geo in ("ap.", "apac.", "jp.")
+    return matched_geo == geo
+
+
+def _existing_api_key_for_model_flow(provider_id: str, pconfig) -> tuple[str, str]:
+    """Resolve an existing wizard credential without changing its storage."""
+    from hermes_cli.auth import _resolve_api_key_provider_secret
+
+    return _resolve_api_key_provider_secret(provider_id, pconfig)
+
+
+def _prune_replaced_custom_model_config_credentials(
+    base_url: str,
+    *,
+    provider_name: str = "",
+) -> None:
+    """Drop stale ``model_config`` credentials from inactive custom pools.
+
+    ``model_config`` means "the credential currently stored under
+    ``model.api_key``". After an explicit custom-endpoint switch, any old
+    custom pool still carrying that source points at the previous endpoint and
+    can be selected before the freshly saved config is tried.
+    """
+    try:
+        from agent.credential_pool import (
+            CUSTOM_POOL_PREFIX,
+            custom_provider_pool_key_candidates,
+        )
+        from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+        # A keyed ``providers.<key>`` endpoint stores under the durable slug
+        # while legacy-named pools keep the ``custom:<display-name>`` key, so
+        # every identity the active endpoint may occupy must be skipped —
+        # comparing against a single preferred key false-prunes the provider's
+        # own legacy-named pool (verified regression from PR #100413 review).
+        active_pool_keys = {
+            str(key).strip().lower()
+            for key in custom_provider_pool_key_candidates(
+                base_url,
+                provider_name=provider_name or None,
+            )
+        }
+        if not active_pool_keys:
+            return
+        pools = read_credential_pool(None)
+        if not isinstance(pools, dict):
+            return
+        for pool_key, entries in pools.items():
+            if (
+                not isinstance(pool_key, str)
+                or not pool_key.startswith(CUSTOM_POOL_PREFIX)
+                or pool_key in active_pool_keys
+                or not isinstance(entries, list)
+            ):
+                continue
+            retained = []
+            removed_ids = []
+            changed = False
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("source") == "model_config":
+                    changed = True
+                    entry_id = entry.get("id")
+                    if entry_id:
+                        removed_ids.append(str(entry_id))
+                    continue
+                retained.append(entry)
+            if changed:
+                write_credential_pool(pool_key, retained, removed_ids=removed_ids)
+    except Exception:
+        return
+
+
+def _prompt_auth_credentials_choice(title: str) -> str:
+    """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
+
+    Returns one of ``"use"``, ``"reauth"``, ``"cancel"``. Falls back to a
+    numbered prompt when curses is unavailable (piped stdin, non-TTY).
+    """
+    choices = [
+        "Use existing credentials",
+        "Reauthenticate (new OAuth login)",
+        "Cancel",
+    ]
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice(title, choices, 0)
+        if idx >= 0:
+            print()
+            return ("use", "reauth", "cancel")[idx]
+    except Exception:
+        pass
+
+    print(title)
+    for i, label in enumerate(choices, 1):
+        marker = "→" if i == 1 else " "
+        print(f"  {marker} {i}. {label}")
+    print()
+    try:
+        choice = input("  Choice [1/2/3]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        choice = "1"
+
+    if choice == "2":
+        return "reauth"
+    if choice == "3":
+        return "cancel"
+    return "use"
 
 
 def _model_flow_openrouter(config, current_model=""):
@@ -331,16 +452,86 @@ def _model_flow_nous(config, current_model="", args=None):
     with contextlib.suppress(Exception):
         _nous_portal_url = (get_provider_auth_state("nous") or {}).get("portal_base_url", "")
 
-    catalog = _nous_model_catalog(free_tier, _nous_portal_url, model_ids, pricing)
-    if catalog is None:
+    # For free users: partition models into selectable/unavailable based on
+    # whether they are free per the Portal-reported pricing.  First augment
+    # with the Portal's freeRecommendedModels list so newly-launched free
+    # models show up even if this CLI build's hardcoded curated list and
+    # docs-hosted manifest haven't caught up yet.
+    #
+    # For paid users: mirror the same idea with paidRecommendedModels so
+    # newly-launched paid models surface in the picker too — independent
+    # of CLI release cadence.
+    unavailable_models: list[str] = []
+    unavailable_message = ""
+
+    # Neither the curated list nor the Portal's recommendations know what the
+    # org may reach. Narrow before the tier split, so an id the policy rescues
+    # still has to pass the free/paid predicate instead of going around it.
+    from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+    _policy_allowed = nous_policy_allowed_ids()
+    _policy_narrowed = False
+
+    if free_tier:
+        try:
+            from hermes_cli.nous_account import (
+                format_nous_portal_entitlement_message,
+                get_nous_portal_account_info,
+            )
+
+            _account_info = get_nous_portal_account_info(force_fresh=True)
+            unavailable_message = (
+                format_nous_portal_entitlement_message(
+                    _account_info,
+                    capability="paid Nous models",
+                )
+                or ""
+            )
+        except Exception:
+            unavailable_message = ""
+        model_ids, pricing = union_with_portal_free_recommendations(
+            model_ids, pricing, _nous_portal_url,
+        )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
+        model_ids, unavailable_models = partition_nous_models_by_tier(
+            model_ids, pricing, free_tier=True
+        )
+    else:
+        model_ids, pricing = union_with_portal_paid_recommendations(
+            model_ids, pricing, _nous_portal_url,
+        )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
+
+    if not model_ids and not unavailable_models:
+        print("No models available for Nous Portal after filtering.")
         return
     model_ids, pricing, unavailable_models, unavailable_message, _policy_narrowed = catalog
 
+    if free_tier and not model_ids:
+        print("No free models currently available.")
+        if unavailable_models:
+            from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
+
+            _url = (_nous_portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+            print(unavailable_message or f"Upgrade at {_url} to access paid models.")
+        return
+
     from hermes_cli.nous_account import nous_policy_notice
+
     _policy_notice = nous_policy_notice(removed=_policy_narrowed)
     if _policy_notice:
         print(_policy_notice)
-    print(f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.')
+    print(
+        f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.'
+    )
 
     selected = _prompt_model_selection(
         model_ids, current_model=current_model, pricing=pricing, unavailable_models=unavailable_models,

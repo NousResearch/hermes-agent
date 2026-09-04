@@ -1,10 +1,42 @@
-"""Curator snapshot + rollback. Before any mutating curator pass, ``~/.hermes/skills/`` is tar.gz'd under
-``~/.hermes/skills/.curator_backups/<utc-iso>/`` with a ``manifest.json``. Rollback first snapshots the CURRENT tree (so it is
-itself undoable), then extracts the chosen snapshot into place. Excluded: ``.curator_backups/``, ``.hub/`` (hub-managed), ``.git/``.
-Included: skill dirs, ``.usage.json``, ``.archive/``, ``.curator_state`` (so rollback also restores last-run-at and the curator
-doesn't re-fire), ``.bundled_manifest``, ``.curator_suppressed``. Each snapshot also copies ``~/.hermes/cron/jobs.json`` as
-``cron-jobs.json``: the consolidation pass rewrites cron ``skills``/``skill`` references in place, so rollback restores those two
-fields (only) — the rest is live state."""
+"""Curator snapshot + rollback.
+
+A pre-run snapshot of ``~/.hermes/skills/`` (excluding ``.curator_backups/``
+itself) is taken before any mutating curator pass. Snapshots are tar.gz
+files under ``~/.hermes/skills/.curator_backups/<utc-iso>/`` with a
+companion ``manifest.json`` describing the snapshot (reason, time, size,
+counted skill files). Rollback picks a snapshot, moves the current
+``skills/`` tree aside into another snapshot so even the rollback itself
+is undoable, then extracts the chosen snapshot into place.
+
+The snapshot does NOT include:
+  - ``.curator_backups/`` (would recurse)
+  - ``.hub/`` (hub-installed skills — managed by the hub, not us)
+  - ``.git/`` (repository metadata — managed by git, not the curator)
+
+It DOES include:
+  - all SKILL.md files + their directories (``scripts/``, ``references/``,
+    ``templates/``, ``assets/``)
+  - ``.usage.json`` (usage telemetry — needed to rehydrate state cleanly)
+  - ``.archive/`` (so rollback restores previously-archived skills too)
+  - ``.curator_state`` (so rolling back also restores the last-run-at
+    pointer — otherwise the curator would immediately re-fire on the next
+    tick)
+  - ``.bundled_manifest`` (so protection markers stay consistent)
+  - ``.curator_suppressed`` (so rollback restores the set of pruned built-ins
+    the re-seeder must leave archived)
+
+Alongside the skills tarball, each snapshot also captures a copy of
+``~/.hermes/cron/jobs.json`` as ``cron-jobs.json`` when it exists. Cron
+jobs reference skills by name in their ``skills``/``skill`` fields; the
+curator's consolidation pass rewrites those in place via
+``cron.jobs.rewrite_skill_refs()``. Without capturing the pre-run state,
+rolling back the skills tree would leave cron jobs pointing at the
+umbrella skills even though the narrow skills they were originally
+configured with have been restored. We store the whole jobs.json for
+fidelity but rollback only touches the ``skills``/``skill`` fields — the
+rest (schedule, next_run_at, enabled, prompt, etc.) is live state and
+we leave it alone.
+"""
 
 from __future__ import annotations
 
@@ -29,11 +61,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_KEEP = 5
 
-# Never rolled into a snapshot: .hub/ is owned by the skills hub (rolling it back breaks lockfile invariants); .curator_backups
-# is the backup dir itself; .git is repository metadata — rolling it back breaks git tracking, and snapshots that include it grow
-# with the full history (once backups are committed back, each snapshot contains the prior ones: 38MB of skills inflated to 24GB
-# in weeks). The tar filter in ``snapshot_skills`` applies the same set to nested paths, so a nested ``.git`` is skipped too.
-# See #91449.
+# Entries under skills/ that should NEVER be rolled up into a snapshot.
+# .hub/ is managed by the skills hub; rolling it back would break lockfile
+# invariants. .curator_backups is the backup dir itself — recursion bomb.
+# .git is repository metadata — rolling it back would break git tracking,
+# and snapshots that include it grow with the full history: once backups
+# are committed back, the history contains prior backups, so each snapshot
+# is bigger than the last (observed: 38MB of skills inflating to 24GB in
+# weeks, #91449). ``_tar_filter`` below applies the same set to nested
+# paths, so a ``.git`` inside an individual skill dir is skipped too.
 _EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".git"}
 
 # Snapshot id: UTC ISO with colons replaced by dashes (Windows-safe filename); optional ``-NN`` suffix for same-second snapshots.
@@ -154,16 +190,29 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
     if not _mkdir(dest, "snapshot dir", exist_ok=False):
         return None
 
-    archive = dest / _ARCHIVE_NAME
+    archive = dest / "skills.tar.gz"
+    def _tar_filter(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+        parts = Path(tarinfo.name).parts
+        if any(p in _EXCLUDE_TOP_LEVEL for p in parts):
+            return None
+        return tarinfo
+
     try:
         with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
             for entry in sorted(skills.iterdir()):
-                if entry.name not in _EXCLUDE_TOP_LEVEL:
-                    # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested _EXCLUDE_TOP_LEVEL paths too.
-                    tf.add(str(entry), arcname=entry.name, recursive=True,
-                           filter=lambda ti: None if any(p in _EXCLUDE_TOP_LEVEL for p in Path(ti.name).parts) else ti)
-        # Cron capture is additive and never fails the snapshot; the manifest records whether it happened so rollback can say "no cron data".
-        _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest))
+                if entry.name in _EXCLUDE_TOP_LEVEL:
+                    continue
+                # arcname: store paths relative to skills/ so extraction
+                # drops cleanly back into the skills dir.
+                tf.add(str(entry), arcname=entry.name, recursive=True, filter=_tar_filter)
+        # Capture cron/jobs.json alongside the tarball. Never fails the
+        # snapshot — the skills side is the core guarantee; cron is
+        # additive. We still record in the manifest whether it was
+        # captured so rollback can surface "no cron data in this snapshot".
+        cron_info = _backup_cron_jobs_into(dest)
+        _write_manifest(dest, reason, archive,
+                        _count_skill_files(skills),
+                        cron_info=cron_info)
     except (OSError, tarfile.TarError) as e:
         logger.debug("Curator snapshot failed: %s", e, exc_info=True)
         shutil.rmtree(dest, ignore_errors=True)  # clean up partial snapshot
@@ -327,6 +376,40 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL]
 
 
+def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
+    """Move excluded entries (nested ``.git``/``.hub``/...) from *staged*
+    back under *skills* after a successful extract.
+
+    Snapshots never contain these, so the extract cannot restore them; the
+    staged copy of the live tree is the only source. ``.git`` may be a dir
+    or a file (submodule / worktree ``gitdir:`` pointer) — both are moved.
+    Best-effort and deliberately conditional: an entry is carried over only
+    when its parent skill dir was restored and nothing sits at the target.
+    If the target snapshot predates the skill, the entry is dropped with the
+    staging dir rather than left as an orphan; note the safety snapshot
+    excludes these paths too, so that case is not undoable.
+    """
+    def _carry(src: Path) -> None:
+        dest = skills / src.relative_to(staged)
+        if dest.parent.is_dir() and not dest.exists():
+            try:
+                shutil.move(str(src), str(dest))
+            except OSError as e:
+                logger.debug("Could not restore excluded entry %s: %s", src, e)
+
+    for dirpath, dirnames, filenames in os.walk(staged):
+        keep = []
+        for name in dirnames:
+            if name in _EXCLUDE_TOP_LEVEL:
+                _carry(Path(dirpath) / name)
+            else:
+                keep.append(name)
+        dirnames[:] = keep
+        for name in filenames:
+            if name in _EXCLUDE_TOP_LEVEL:
+                _carry(Path(dirpath) / name)
+
+
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
     """Move staged entries back to their original paths; returns names that could not be restored. ``shutil.move``
     moves *into* an existing destination dir, so partial-extract debris would bury the real skill
@@ -419,10 +502,16 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
         shutil.rmtree(staged, ignore_errors=True)
         return (False, f"snapshot extract failed (state restored): {e}", None)
 
-    # Snapshots never contain excluded subtrees (nested ``.git``, ``.hub``, ...), so carry them over from the staged live tree
-    # (top-level ``.git`` is never staged). Then staging is done; the undo handle is the safety snapshot.
+    # Extract succeeded. Snapshots never contain excluded subtrees (nested
+    # ``.git``, ``.hub``, ...), so the extract cannot restore them — carry
+    # them over from the staged copy of the live tree (top-level ``.git`` is
+    # simpler: it is never staged). Then the staging dir has served its
+    # purpose; the user's undo handle is the safety snapshot tarball.
     _restore_excluded_subtrees(staged, skills)
-    shutil.rmtree(staged, ignore_errors=True)
+    try:
+        shutil.rmtree(staged, ignore_errors=True)
+    except OSError:
+        pass
 
     # Cron reconciliation failures don't fail the rollback — the skills tree (the main guarantee) is already restored.
     cron_report = _restore_cron_skill_links(target)

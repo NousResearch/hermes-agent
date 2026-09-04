@@ -23,7 +23,6 @@ import {
   cronJobHasExecutionContent,
   cronJobFormFromJob,
   cronLastResult,
-  focusCronField,
   type CronJobFormState,
 } from "@/lib/cron-job";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";

@@ -106,7 +106,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["x-preview-f-free", "gpt-5.6-sol", "gpt-5.4", "gpt-5.3-codex", "claude-opus-5", "claude-sonnet-5", "gemini-3.7-flash", "glm-5.2", "kimi-k3", "minimax-m3"],
-    "opencode-free": ["deepseek-v4-flash-free", "hy3-free", "mimo-v2.5-free", "laguna-s-2.1-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free"],
+    "opencode-free": ["deepseek-v4-flash-free", "hy3-free", "mimo-v2.5-free", "laguna-s-2.1-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free"],
     "opencode-go": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "gpt-5.6-luna", "grok-4.5", "glm-5.3", "glm-5.3-flash", "glm-5.2", "mimo-v2.5-pro", "mimo-v2.5", "minimax-m3", "minimax-m2.7", "qwen3.8-max", "qwen3.7-max", "deepseek-v4-pro", "hy3"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
@@ -520,7 +520,439 @@ def _print_banner(*lines: str) -> None:
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
 
-# ── Section 1: Model & Provider Configuration ──
+    # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
+    if subscription_features.web.managed_by_nous:
+        tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
+    elif subscription_features.web.available:
+        label = "Web Search & Extract"
+        if subscription_features.web.current_provider:
+            label = f"Web Search & Extract ({subscription_features.web.current_provider})"
+        tool_status.append((label, True, None))
+    else:
+        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL"))
+
+    # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
+    browser_provider = subscription_features.browser.current_provider
+    if subscription_features.browser.managed_by_nous:
+        tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
+    elif subscription_features.browser.available:
+        label = "Browser Automation"
+        if browser_provider:
+            label = f"Browser Automation ({browser_provider})"
+        tool_status.append((label, True, None))
+    else:
+        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
+        if browser_provider == "Browserbase":
+            missing_browser_hint = (
+                "npm install -g agent-browser and set "
+                "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID"
+            )
+        elif browser_provider == "Browser Use":
+            missing_browser_hint = (
+                "npm install -g agent-browser and set BROWSER_USE_API_KEY"
+            )
+        elif browser_provider == "Camofox":
+            missing_browser_hint = "CAMOFOX_URL"
+        elif browser_provider == "Local browser":
+            missing_browser_hint = (
+                "npm install -g agent-browser && agent-browser install --with-deps"
+            )
+        tool_status.append(
+            ("Browser Automation", False, missing_browser_hint)
+        )
+
+    # Image generation — FAL (direct or via Nous), or any plugin-registered
+    # provider (OpenAI, etc.)
+    if subscription_features.image_gen.managed_by_nous:
+        tool_status.append(("Image Generation (Nous subscription)", True, None))
+    elif subscription_features.image_gen.available:
+        tool_status.append(("Image Generation", True, None))
+    else:
+        # Fall back to probing plugin-registered providers so OpenAI-only
+        # setups don't show as "missing FAL_KEY".
+        _img_backend = None
+        try:
+            from agent.image_gen_registry import list_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            for _p in list_providers():
+                if _p.name == "fal":
+                    continue
+                try:
+                    if _p.is_available():
+                        _img_backend = _p.display_name
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if _img_backend:
+            tool_status.append((f"Image Generation ({_img_backend})", True, None))
+        else:
+            tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
+
+    # Video generation — opt-in via `hermes tools` → Video Generation.
+    # Only show the row when a plugin reports available so we don't badger
+    # users who don't care about video gen with a "missing" status line.
+    if subscription_features.video_gen.managed_by_nous:
+        tool_status.append(("Video Generation (FAL via Nous subscription)", True, None))
+    else:
+        try:
+            from agent.video_gen_registry import list_providers as _list_video_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
+            _ensure_plugins()
+            _video_backend = None
+            for _vp in _list_video_providers():
+                try:
+                    if _vp.is_available():
+                        _video_backend = _vp.display_name
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            _video_backend = None
+        if _video_backend:
+            tool_status.append((f"Video Generation ({_video_backend})", True, None))
+
+    # TTS — show configured provider
+    tts_provider = cfg_get(config, "tts", "provider", default="edge")
+    if subscription_features.tts.managed_by_nous:
+        tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
+    elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
+        tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
+    elif tts_provider == "openai" and (
+        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+    ):
+        tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+    elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
+        tool_status.append(("Text-to-Speech (MiniMax)", True, None))
+    elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
+        tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
+    elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
+        tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
+    elif tts_provider == "neutts":
+        try:
+            neutts_ok = importlib.util.find_spec("neutts") is not None
+        except Exception:
+            neutts_ok = False
+        if neutts_ok:
+            tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "kittentts":
+        try:
+            kittentts_ok = importlib.util.find_spec("kittentts") is not None
+        except Exception:
+            kittentts_ok = False
+        if kittentts_ok:
+            tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+    else:
+        tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+
+    # STT — show configured provider
+    stt_provider = cfg_get(config, "stt", "provider", default="local") or "local"
+    _stt_feature = subscription_features.features.get("stt")
+    if _stt_feature is not None and _stt_feature.managed_by_nous:
+        tool_status.append(("Speech-to-Text (OpenAI via Nous subscription)", True, None))
+    elif stt_provider == "openai" and (
+        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+    ):
+        tool_status.append(("Speech-to-Text (OpenAI)", True, None))
+    elif stt_provider == "groq" and get_env_value("GROQ_API_KEY"):
+        tool_status.append(("Speech-to-Text (Groq Whisper)", True, None))
+    elif stt_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
+        tool_status.append(("Speech-to-Text (ElevenLabs Scribe)", True, None))
+    elif stt_provider == "xai":
+        tool_status.append(("Speech-to-Text (xAI)", True, None))
+    elif stt_provider == "deepinfra" and get_env_value("DEEPINFRA_API_KEY"):
+        tool_status.append(("Speech-to-Text (DeepInfra)", True, None))
+    else:
+        try:
+            fw_ok = importlib.util.find_spec("faster_whisper") is not None
+        except Exception:
+            fw_ok = False
+        if fw_ok:
+            tool_status.append(("Speech-to-Text (Local Whisper)", True, None))
+        else:
+            tool_status.append(
+                ("Speech-to-Text (Local Whisper — not installed)", False, "run 'hermes tools' → Speech-to-Text")
+            )
+
+    if subscription_features.modal.managed_by_nous:
+        tool_status.append(("Modal Execution (Nous subscription)", True, None))
+    elif cfg_get(config, "terminal", "backend") == "modal":
+        if subscription_features.modal.direct_override:
+            tool_status.append(("Modal Execution (direct Modal)", True, None))
+        else:
+            tool_status.append(("Modal Execution", False, "run 'hermes setup terminal'"))
+    elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
+        tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
+
+    # Home Assistant
+    if get_env_value("HASS_TOKEN"):
+        tool_status.append(("Smart Home (Home Assistant)", True, None))
+
+    # Spotify (OAuth via hermes auth spotify — check auth.json, not env vars)
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+        _spotify_state = get_provider_auth_state("spotify") or {}
+        if _spotify_state.get("access_token") or _spotify_state.get("refresh_token"):
+            tool_status.append(("Spotify (PKCE OAuth)", True, None))
+    except Exception:
+        pass
+
+    # Skills Hub
+    if get_env_value("GITHUB_TOKEN"):
+        tool_status.append(("Skills Hub (GitHub)", True, None))
+    else:
+        tool_status.append(("Skills Hub (GitHub)", False, "GITHUB_TOKEN"))
+
+    # Terminal (always available if system deps met)
+    tool_status.append(("Terminal/Commands", True, None))
+
+    # Task planning (always available, in-memory)
+    tool_status.append(("Task Planning (todo)", True, None))
+
+    # Skills (always available -- bundled skills + user-created skills)
+    tool_status.append(("Skills (view, create, edit)", True, None))
+
+    # Print status
+    available_count = sum(1 for _, avail, _ in tool_status if avail)
+    total_count = len(tool_status)
+
+    print_info(f"{available_count}/{total_count} tool categories available:")
+    print()
+
+    for name, available, missing_var in tool_status:
+        if available:
+            print(f"   {color('✓', Colors.GREEN)} {name}")
+        else:
+            print(
+                f"   {color('✗', Colors.RED)} {name} {color(f'(missing {missing_var})', Colors.DIM)}"
+            )
+
+    print()
+
+    disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
+    if disabled_tools:
+        print_warning(
+            "Some tools are disabled. Run 'hermes setup tools' to configure them,"
+        )
+        from hermes_constants import display_hermes_home as _dhh
+        print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
+        print()
+
+    # Done banner
+    print()
+    print(
+        color(
+            "┌─────────────────────────────────────────────────────────┐", Colors.GREEN
+        )
+    )
+    print(
+        color(
+            "│              ✓ Setup Complete!                          │", Colors.GREEN
+        )
+    )
+    print(
+        color(
+            "└─────────────────────────────────────────────────────────┘", Colors.GREEN
+        )
+    )
+    print()
+
+    # Show file locations prominently
+    from hermes_constants import display_hermes_home as _dhh
+    print(color(f"📁 All your files are in {_dhh()}/:", Colors.CYAN, Colors.BOLD))
+    print()
+    print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
+    print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
+    print(
+        f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/cron/, sessions/, logs/"
+    )
+    print()
+
+    print(color("─" * 60, Colors.DIM))
+    print()
+    print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
+    print()
+    print(f"   {color('hermes setup', Colors.GREEN)}          Re-run the full wizard")
+    print(f"   {color('hermes setup model', Colors.GREEN)}    Change model/provider")
+    print(f"   {color('hermes setup terminal', Colors.GREEN)} Change terminal backend")
+    print(f"   {color('hermes setup gateway', Colors.GREEN)}  Configure messaging")
+    print(f"   {color('hermes setup tools', Colors.GREEN)}    Configure tool providers")
+    print()
+    print(f"   {color('hermes config', Colors.GREEN)}         View current settings")
+    print(
+        f"   {color('hermes config edit', Colors.GREEN)}    Open config in your editor"
+    )
+    print(f"   {color('hermes config set <key> <value>', Colors.GREEN)}")
+    print("                          Set a specific value")
+    print()
+    print("   Or edit the files directly:")
+    print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
+    print(f"   {color(f'nano {get_env_path()}', Colors.DIM)}")
+    print()
+
+    print(color("─" * 60, Colors.DIM))
+    print()
+    print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
+    print()
+    print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
+    print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
+    print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
+    print()
+
+
+def _prompt_container_resources(config: dict):
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("Container Resource Settings:")
+
+    # Persistence
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    print_info("  Persistent filesystem keeps files between sessions.")
+    print_info("  Set to 'no' for ephemeral sandboxes that reset each time.")
+    persist_str = prompt(
+        "  Persist filesystem across sessions? (yes/no)", persist_label
+    )
+    terminal["container_persistent"] = persist_str.lower() in {"yes", "true", "y", "1"}
+
+    # CPU
+    current_cpu = terminal.get("container_cpu", 1)
+    cpu_str = prompt("  CPU cores", str(current_cpu))
+    try:
+        terminal["container_cpu"] = float(cpu_str)
+    except ValueError:
+        pass
+
+    # Memory
+    current_mem = terminal.get("container_memory", 5120)
+    mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
+    try:
+        terminal["container_memory"] = int(mem_str)
+    except ValueError:
+        pass
+
+    # Disk
+    current_disk = terminal.get("container_disk", 51200)
+    disk_str = prompt("  Disk in MB (51200 = 50GB)", str(current_disk))
+    try:
+        terminal["container_disk"] = int(disk_str)
+    except ValueError:
+        pass
+
+
+def _prompt_vercel_sandbox_settings(config: dict):
+    """Prompt for Vercel Sandbox settings without exposing unsupported disk sizing."""
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("Vercel Sandbox settings:")
+    print_info("  Filesystem persistence uses Vercel snapshots.")
+    print_info("  Snapshots restore files only; live processes do not continue after sandbox recreation.")
+
+    from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+
+    current_runtime = terminal.get("vercel_runtime") or "node24"
+    supported_label = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+    runtime = prompt(f"  Runtime ({supported_label})", current_runtime).strip() or current_runtime
+    if runtime not in _SUPPORTED_VERCEL_RUNTIMES:
+        print_warning(f"Unsupported Vercel runtime '{runtime}', keeping {current_runtime}.")
+        runtime = current_runtime if current_runtime in _SUPPORTED_VERCEL_RUNTIMES else "node24"
+    terminal["vercel_runtime"] = runtime
+    save_env_value("TERMINAL_VERCEL_RUNTIME", runtime)
+
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    terminal["container_persistent"] = prompt(
+        "  Persist filesystem with snapshots? (yes/no)", persist_label
+    ).lower() in {"yes", "true", "y", "1"}
+
+    current_cpu = terminal.get("container_cpu", 1)
+    cpu_str = prompt("  CPU cores", str(current_cpu))
+    try:
+        terminal["container_cpu"] = float(cpu_str)
+    except ValueError:
+        pass
+
+    current_mem = terminal.get("container_memory", 5120)
+    mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
+    try:
+        terminal["container_memory"] = int(mem_str)
+    except ValueError:
+        pass
+
+    if terminal.get("container_disk", 51200) not in {0, 51200}:
+        print_warning("Vercel Sandbox does not support custom disk sizing; resetting container_disk to 51200.")
+    terminal["container_disk"] = 51200
+
+    print()
+    print_info("Vercel authentication:")
+    print_info("  Use a long-lived Vercel access token plus project/team IDs.")
+    linked_project = _read_nearest_vercel_project()
+    if linked_project:
+        print_info("  Found defaults in nearest .vercel/project.json.")
+
+    remove_env_value("VERCEL_OIDC_TOKEN")
+    token = prompt("    Vercel access token", get_env_value("VERCEL_TOKEN") or "", password=True)
+    project = prompt(
+        "    Vercel project ID",
+        get_env_value("VERCEL_PROJECT_ID") or linked_project.get("projectId", ""),
+    )
+    team = prompt(
+        "    Vercel team ID",
+        get_env_value("VERCEL_TEAM_ID") or linked_project.get("orgId", ""),
+    )
+    if token:
+        save_env_value("VERCEL_TOKEN", token)
+    if project:
+        save_env_value("VERCEL_PROJECT_ID", project)
+    if team:
+        save_env_value("VERCEL_TEAM_ID", team)
+
+
+def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
+    """Read project/team defaults from the nearest Vercel link file."""
+    current = (start or Path.cwd()).resolve()
+    if current.is_file():
+        current = current.parent
+
+    for directory in (current, *current.parents):
+        project_file = directory / ".vercel" / "project.json"
+        if not project_file.exists():
+            continue
+        try:
+            data = json.loads(project_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            key: value
+            for key, value in {
+                "projectId": data.get("projectId"),
+                "orgId": data.get("orgId"),
+            }.items()
+            if isinstance(value, str) and value.strip()
+        }
+    return {}
+
+
+# Tool categories and provider config are now in tools_config.py (shared
+# between `hermes tools` and `hermes setup tools`).
+
+
+# =============================================================================
+# Section 1: Model & Provider Configuration
+# =============================================================================
+
 
 
 def setup_model_provider(config: dict, *, quick: bool = False):
@@ -1417,15 +1849,243 @@ def setup_tools(config: dict, first_install: bool = False):
 # ── Shared Metrics ──
 
 
-_SEND_CONSENT_EXPLAINER = (
-    "", "Sending uploads each daily package to the Nous telemetry",
-    "service. Packages carry your profile-scoped install ID, a",
-    "stable random UUID that identifies this profile across days",
-    "(it contains no personal information and is reset by deleting",
-    "the shared-metrics directory). Only packages whose entire",
-    "collection period falls inside a recorded consent window are",
-    "ever sent — data from before you opt in, or from any gap",
-    "while sending was off, stays on this machine. Sending can be", "turned off again at any time.",
+def setup_telemetry(config: dict):
+    """Configure the local shared-metrics subscriber and optional sending."""
+    print_header("Shared Metrics")
+    print_info("Shared metrics contain only bounded counters and histograms.")
+    print_info("Collection is local. Sending them to Nous is a separate opt-in.")
+
+    telemetry = config.get("telemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+        config["telemetry"] = telemetry
+    shared_metrics = telemetry.get("shared_metrics")
+    if not isinstance(shared_metrics, dict):
+        shared_metrics = {}
+        telemetry["shared_metrics"] = shared_metrics
+
+    current = shared_metrics.get("enabled") is True
+    shared_metrics["enabled"] = prompt_yes_no(
+        "Enable local shared metrics?",
+        default=current,
+    )
+    if not shared_metrics["enabled"]:
+        print_info("Local shared metrics disabled.")
+        # Sending cannot outlive collection: leaving send=true here would be a
+        # configuration that logs an error on every run and never transmits.
+        if shared_metrics.get("send") is True:
+            shared_metrics["send"] = False
+            print_info("Sending shared metrics disabled as well.")
+        # Turning collection off is also a withdrawal of send consent, and it
+        # has to close the window like any other. Recorded unconditionally:
+        # the send key may already be false in config while the consent window
+        # is still open, and that window must not survive to be reopened.
+        _record_send_consent_change(enabled=False)
+        return
+
+    print_success("Local shared metrics enabled.")
+    print_info("")
+    print_info("Sending uploads each daily package to the Nous telemetry")
+    print_info("service. Packages carry your profile-scoped install ID, a")
+    print_info("stable random UUID that identifies this profile across days")
+    print_info("(it contains no personal information and is reset by deleting")
+    print_info("the shared-metrics directory). Only packages whose entire")
+    print_info("collection period falls inside a recorded consent window are")
+    print_info("ever sent — data from before you opt in, or from any gap")
+    print_info("while sending was off, stays on this machine. Sending can be")
+    print_info("turned off again at any time.")
+    shared_metrics["send"] = prompt_yes_no(
+        "Send shared metrics to Nous?",
+        default=shared_metrics.get("send") is True,
+    )
+    if shared_metrics["send"]:
+        _record_send_consent_change(enabled=True)
+        print_success("Sending shared metrics enabled.")
+    else:
+        _record_send_consent_change(enabled=False)
+        print_info("Sending shared metrics disabled (collection stays local).")
+
+
+def _record_send_consent_change(*, enabled: bool) -> None:
+    """Reconcile consent windows at the moment the user decides.
+
+    Same single writer as the relay and the sender — reconciliation derives
+    the window state from the observation, so wizard, relay, and mid-pass
+    callers cannot disagree. The relay's once-per-process reconcile would
+    catch this on the next hook fire anyway; running it here just makes the
+    wizard's effect immediate.
+    """
+    try:
+        from hermes_cli.observability.shared_metrics import SharedMetricsStore
+        from hermes_cli.observability.shared_metrics_sender import (
+            reconcile_send_consent,
+        )
+        from hermes_cli.sqlite_util import write_txn
+
+        store = SharedMetricsStore()
+        with store._connection() as connection:
+            with write_txn(connection):
+                reconcile_send_consent(connection, enabled)
+    except Exception:
+        # Never block the wizard on telemetry bookkeeping. The relay runs the
+        # same reconciliation on the next lifecycle hook.
+        logger.debug("Unable to record shared-metrics consent change", exc_info=True)
+
+
+# =============================================================================
+# Post-Migration Section Skip Logic
+# =============================================================================
+
+
+def _model_section_has_credentials(config: dict) -> bool:
+    """Return True when any known inference provider has usable credentials.
+
+    Sources of truth:
+      * ``PROVIDER_REGISTRY`` in ``hermes_cli.auth`` — lists every supported
+        provider along with its ``api_key_env_vars``.
+      * ``active_provider`` in the auth store — covers OAuth device-code /
+        external-OAuth providers (Nous, Codex, Qwen, Gemini CLI, ...).
+      * The legacy OpenRouter aggregator env vars, which route generic
+        ``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY`` values through OpenRouter.
+    """
+    try:
+        from hermes_cli.auth import get_active_provider
+        if get_active_provider():
+            return True
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        PROVIDER_REGISTRY = {}  # type: ignore[assignment]
+
+    def _has_key(pconfig) -> bool:
+        for env_var in pconfig.api_key_env_vars:
+            # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by
+            # the user — mirrors is_provider_explicitly_configured in auth.py.
+            if env_var == "CLAUDE_CODE_OAUTH_TOKEN":
+                continue
+            if get_env_value(env_var):
+                return True
+        return False
+
+    # Prefer the provider declared in config.yaml, avoids false positives
+    # from stray env vars (GH_TOKEN, etc.) when the user has already picked
+    # a different provider.
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    if isinstance(model_cfg, dict):
+        provider_id = (model_cfg.get("provider") or "").strip().lower()
+        if provider_id in PROVIDER_REGISTRY:
+            if _has_key(PROVIDER_REGISTRY[provider_id]):
+                return True
+        if provider_id == "openrouter":
+            for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+                if get_env_value(env_var):
+                    return True
+
+    # OpenRouter aggregator fallback (no provider declared in config).
+    for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+        if get_env_value(env_var):
+            return True
+
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are
+        # commonly set for git tooling.  Mirrors resolve_provider in auth.py.
+        if pid == "copilot":
+            continue
+        if _has_key(pconfig):
+            return True
+    return False
+
+
+def _gateway_platform_short_label(label: str) -> str:
+    """Strip trailing parenthetical qualifiers from a gateway platform label."""
+    base = label.split("(", 1)[0].strip()
+    return base or label
+
+
+def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
+    """Return a short summary if a setup section is already configured, else None.
+
+    Used after OpenClaw migration to detect which sections can be skipped.
+    ``get_env_value`` is the module-level import from hermes_cli.config
+    so that test patches on ``setup_mod.get_env_value`` take effect.
+    """
+    if section_key == "model":
+        if not _model_section_has_credentials(config):
+            return None
+        model = config.get("model")
+        if isinstance(model, str) and model.strip():
+            return model.strip()
+        if isinstance(model, dict):
+            return str(model.get("default") or model.get("model") or "configured")
+        return "configured"
+
+    elif section_key == "terminal":
+        backend = cfg_get(config, "terminal", "backend", default="local")
+        return f"backend: {backend}"
+
+    elif section_key == "agent":
+        max_turns = cfg_get(config, "agent", "max_turns", default=90)
+        return f"max turns: {max_turns}"
+
+    elif section_key == "gateway":
+        from hermes_cli.gateway import _all_platforms, _platform_status
+        # Count any non-empty status other than the "not configured" sentinel —
+        # platforms like WhatsApp ("enabled, not paired"), Matrix ("configured
+        # + E2EE"), and Signal ("partially configured") all indicate the user
+        # has already started setup and we shouldn't force the section to rerun.
+        configured = [
+            _gateway_platform_short_label(plat["label"])
+            for plat in _all_platforms()
+            if _platform_status(plat) and _platform_status(plat) != "not configured"
+        ]
+        if configured:
+            return ", ".join(configured)
+        return None  # No platforms configured — section must run
+
+    elif section_key == "tools":
+        tools = []
+        if get_env_value("ELEVENLABS_API_KEY"):
+            tools.append("TTS/ElevenLabs")
+        if get_env_value("BROWSERBASE_API_KEY"):
+            tools.append("Browser")
+        if get_env_value("FIRECRAWL_API_KEY"):
+            tools.append("Firecrawl")
+        if tools:
+            return ", ".join(tools)
+        return None
+
+    return None
+
+
+def _skip_configured_section(
+    config: dict, section_key: str, label: str
+) -> bool:
+    """Show an already-configured section summary and offer to skip.
+
+    Returns True if the user chose to skip, False if the section should run.
+    """
+    summary = _get_section_config_summary(config, section_key)
+    if not summary:
+        return False
+    print()
+    print_success(f"  {label}: {summary}")
+    return not prompt_yes_no(f"  Reconfigure {label.lower()}?", default=False)
+
+
+# =============================================================================
+# OpenClaw Migration
+# =============================================================================
+
+
+_OPENCLAW_SCRIPT = (
+    get_optional_skills_dir(PROJECT_ROOT / "optional-skills")
+    / "migration"
+    / "openclaw-migration"
+    / "scripts"
+    / "openclaw_to_hermes.py"
 )
 
 

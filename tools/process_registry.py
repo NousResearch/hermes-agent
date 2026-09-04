@@ -20,9 +20,9 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
-# systemd transient scopes exist only on Linux; gate every scope-path branch on this
-# (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
-# See #70716.
+# systemd transient scopes exist only on Linux. Gate every scope-path branch
+# on this constant (not merely "not Windows") so macOS and other POSIX
+# platforms provably never touch systemd code (#70716 cross-platform audit).
 _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -370,6 +370,35 @@ def restart_safe_gateway_child_argv(
     if scoped == command:
         return _degrade("systemd-run disappeared after the availability probe")
     return GatewayChildDispatch("scoped", scoped)
+
+
+def restart_safe_gateway_child_argv(
+    command: List[str], *, unit_suffix: str
+) -> List[str]:
+    """Place a managed-systemd gateway child outside the gateway cgroup.
+
+    Children that must survive an intentional gateway restart cannot rely on
+    ``start_new_session`` alone: systemd still kills every process in the
+    service cgroup.  In that topology, require a transient user scope and fail
+    closed if it cannot be established.  Standalone processes, non-systemd
+    supervisors, and non-Linux hosts retain the direct command.
+    """
+    if not _IS_LINUX:
+        return command
+    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
+        return command
+    if not _systemd_run_user_scope_available():
+        raise RuntimeError(
+            "cannot create restart-safe systemd scope for gateway child: "
+            "systemd-run --user --scope is unavailable"
+        )
+    scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
+    if scoped == command:
+        raise RuntimeError(
+            "cannot create restart-safe systemd scope for gateway child: "
+            "systemd-run disappeared after the availability probe"
+        )
+    return scoped
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:
@@ -1068,7 +1097,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 # Wrap the PTY command in a systemd scope so interactive
                 # executors get their own cgroup, same as pipe mode.
                 pty_in_supervised_gateway = (
-                    not _IS_WINDOWS and _is_supervised_gateway_process()
+                    _IS_LINUX and _is_supervised_gateway_process()
                 )
                 pty_use_systemd_scope = (
                     pty_in_supervised_gateway and _systemd_run_user_scope_available()
@@ -1130,16 +1159,54 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     session.systemd_unit = ""
         # Pipe path (non-PTY or PTY fallback).
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
-        unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
-        spawn_env = self._spawn_env(env_vars)
-        if session.systemd_unit:
-            spawn_env = systemd_user_bus_env(spawn_env)
-        # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
-        # give the worker a new session, so from an interactive TUI the worker would
-        # share the foreground process group and background spawns would stop the whole
-        # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
-        # the scope attaches to the invoked process, not the spawning session.
+
+        # Cgroup isolation (#70716): when running in the live, supervised
+        # systemd gateway, wrap the worker in its own transient systemd
+        # scope so it gets a separate cgroup.  An OOM in the worker then
+        # kills only the worker instead of taking down the whole gateway
+        # cgroup (and the messaging control plane with it). This applies to
+        # both pipe mode and the PTY path above.
+        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
+        use_systemd_scope = (
+            in_supervised_gateway and _systemd_run_user_scope_available()
+        )
+
+        if use_systemd_scope:
+            unit_suffix = (
+                f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
+            )
+            spawn_argv = _build_systemd_scope_argv(
+                shell_argv,
+                unit_suffix=unit_suffix,
+            )
+            session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
+            # CRITICAL (#70716 regression): systemd-run --scope does NOT give
+            # the worker a new session — the invoked process keeps the
+            # parent's session and inherits its controlling terminal.  From an
+            # interactive TUI this drops the worker into the same session as
+            # the foreground process group: background spawns then stop the
+            # whole session (observed as 5 dead TUIs in state T / "Arrêté").
+            # start_new_session=True gives systemd-run (and the scoped worker
+            # below it) a private session.  Cgroup isolation is preserved:
+            # the scope is attached to the invoked process, not to the
+            # spawning session.
+            popen_start_new_session = True
+        else:
+            spawn_argv = shell_argv
+            popen_start_new_session = True
+            if in_supervised_gateway:
+                # Running under a supervisor but could not get a private
+                # cgroup — the worker shares the gateway cgroup, so an OOM
+                # in the worker can still kill the whole gateway (#70716).
+                logger.debug(
+                    "Local background executor not isolated in a systemd scope "
+                    "(in_supervised_gateway=%s, systemd-run --user available=%s); "
+                    "worker shares the gateway cgroup.",
+                    in_supervised_gateway,
+                    _systemd_run_user_scope_available(),
+                )
+
         proc = subprocess.Popen(
             spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -1316,50 +1383,39 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 session, decoder, _append_chunk, "Process",
                 session.process.wait, lambda: session.process.returncode)
 
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
-        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
-
-        A process may close stdout long before it exits.  The reader owns a dedicated
-        daemon thread, so it must keep waiting rather than publish a false completion
-        and discard the only ``Popen`` handle that can reap the child.
-        """
-        with suppress(Exception):
-            tail = decoder.decode(b"", final=True)
-            if tail:
-                append(tail)
-        try:
-            wait()
-        except Exception as e:
-            # A PTY child reaped by isalive() already has its exitstatus; only an
-            # unknown status must stay tracked for later reconciliation.
-            if exit_code() is None:
-                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
-                return
-            logger.warning("%s wait failed; recording known exit status: %s", label, e)
-        self._finish_exited(session, exit_code())
-
     @staticmethod
     def _log_delta_command(quoted_log_path: str, offset: int) -> str:
-        """Shell command that reads only the log bytes written since ``offset``
-        (``cat``-ing the whole file every poll re-sends all output over docker/SSH).
+        """Build the shell command that reads only new bytes from a log file.
 
-        Prints one header line ``"<size> <offset>"`` then the bytes in [offset, size).
-        The size is read first and the tail cut at that same size, so a growing file
-        never sends a byte twice; a file that shrank was rotated/truncated, so the
-        offset drops to 0 and the reader starts over. The window end is pulled back
-        to a UTF-8 character boundary (the backend decodes each ``execute()`` result
-        on its own, so a straddling multibyte char would become U+FFFD and break watch
-        patterns at the seam): up to 3 trailing continuation bytes are held for the
-        next poll and the header reports the trimmed size."""
+        The old version ran ``cat`` on the whole file every poll, so a job
+        that keeps writing pays for its entire output again and again. Over a
+        long run that turns into a lot of wasted traffic on the docker/SSH
+        channel, since only the new part is ever used.
+
+        The command prints one header line, ``"<size> <offset>"``, then the
+        bytes between ``offset`` and ``size``. Reading the size first and
+        cutting the tail at that same size keeps the two numbers in step, so
+        a file that grows while the command runs never sends a byte twice.
+        A file that shrank was rotated or truncated, so the offset drops back
+        to 0 and the reader starts over.
+
+        The end of the window is pulled back to a UTF-8 character boundary:
+        the backend decodes each ``execute()`` result on its own, so a
+        multibyte character straddling two polls would otherwise come back
+        as replacement characters (and break watch patterns near the seam).
+        Up to 3 trailing continuation bytes are held for the next poll; the
+        header reports the trimmed size so the offset stays consistent.
+        """
         return (
             f"O={offset}; "
             f"S=$({{ wc -c < {quoted_log_path}; }} 2>/dev/null | tr -dc '0-9'); "
             f"S=${{S:-0}}; "
             f'if [ "$S" -lt "$O" ]; then O=0; fi; '
-            # Scan back up to 3 continuation bytes (octal 200-277) to the lead byte; if
-            # the lead's declared length (3xx=2, 34x-35x=3, 36x-37x=4) exceeds the bytes
-            # present, trim to before it. Complete sequences and ASCII tails untouched.
+            # Hold back an INCOMPLETE trailing UTF-8 sequence for the next
+            # poll. Scan back up to 3 continuation bytes (octal 200-277) to
+            # the lead byte; if the lead byte's declared length (3xx=2, 34x-35x
+            # =3, 36x-37x=4) exceeds the bytes present, trim to before it.
+            # Complete sequences and ASCII tails are left untouched.
             f'N=0; P=$S; while [ "$P" -gt "$O" ] && [ "$N" -lt 3 ]; do '
             f"B=$(tail -c +$P {quoted_log_path} 2>/dev/null | head -c 1 | od -An -to1 | tr -dc '0-9'); "
             f'case "$B" in 2[0-7][0-7]) P=$((P-1)); N=$((N+1));; *) break;; esac; done; '
@@ -1372,31 +1428,41 @@ class ProcessRegistry(ProcessCheckpointMixin):
             f"tail -c +$((O+1)) {quoted_log_path} 2>/dev/null | head -c $((S-O)); fi"
         )
 
-    def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
+    def _env_poller_loop(
+        self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
+    ):
         """Background thread: poll a sandbox log file for non-local backends."""
-        q = shlex.quote
-        # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
+        quoted_log_path = shlex.quote(log_path)
+        quoted_pid_path = shlex.quote(pid_path)
+        quoted_exit_path = shlex.quote(exit_path)
+        # Byte offset already read from the log. Bytes, not characters: the
+        # shell counts bytes, and a log with non-ASCII text has more bytes
+        # than characters.
         prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)
             try:
                 # Read only the bytes written since the last poll.
-                raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
-                                  timeout=10).get("output", "")
+                result = env.execute(
+                    self._log_delta_command(quoted_log_path, prev_output_bytes),
+                    timeout=10,
+                )
+                raw = result.get("output", "")
                 header, _, delta = raw.partition("\n")
                 try:
                     size_str, offset_str = header.split()
                     new_size = int(size_str)
                     used_offset = int(offset_str)
                 except ValueError:
-                    # No usable header (command failed, shell missing a tool): skip this
-                    # poll rather than act on a half-read value.
+                    # No usable header (command failed, shell missing a tool).
+                    # Skip this poll rather than act on a half-read value.
                     new_size = None
                     used_offset = None
                     delta = ""
                 if new_size is not None:
                     if used_offset < prev_output_bytes:
-                        # Log rotated/truncated: what we hold no longer lines up. Restart.
+                        # The log was rotated or truncated, so what we hold no
+                        # longer lines up with the file. Drop it and restart.
                         with session._lock:
                             session.output_buffer = ""
                     prev_output_bytes = new_size
@@ -2866,13 +2932,14 @@ def format_process_notification(evt: dict) -> "str | None":
 from tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {
-    "name": "process",
+    "name": "process_manage",
     # Dieted (#95681): the action enum names the verbs; the description
     # keeps only non-obvious semantics. write-vs-submit is the tool's one
     # real trap (a lone \n on a Windows PTY is not a line terminator) —
     # that teaching gains emphasis rather than losing it.
     "description": (
-        "Manage background processes started with terminal(background=true). "
+        "Poll, wait on, or kill background terminal processes (from "
+        "terminal(background=true)). "
         "poll: status + new output. log: full output, paged. wait: block "
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "

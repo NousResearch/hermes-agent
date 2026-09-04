@@ -39,6 +39,7 @@ ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -623,7 +624,7 @@ tcc_pick_update_invoke() { # sets UPDATE_INVOKE; safety net past a failed heal
 # ── self-tests: no update, touch nothing ────────────────────────────────────
 if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   # Runs the REAL heal + invoke selection against --install-root and reports;
-  # tests/scripts/desktop_update/test_desktop_update_tcc_heal.py drives the state matrix through it.
+  # tests/test_desktop_update_tcc_heal.py drives the state matrix through it.
   trap - EXIT
   tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || true
   tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
@@ -760,14 +761,14 @@ export PYTHONUNBUFFERED=1
 # know the flag and argparse would abort with exit 2, which collides with the
 # "close all Hermes windows" sentinel.
 KEEP_STASH=""
-if "$HERMES_BIN" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
+if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
   KEEP_STASH="--keep-stash"
 else
   log "installed hermes predates --keep-stash; running without it"
 fi
-log "running: hermes update --yes --gateway $KEEP_STASH --branch $BRANCH"
+log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH --branch $BRANCH"
 publish_stage "Updating code and dependencies"
-OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
@@ -789,7 +790,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
-  OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi
@@ -801,7 +802,7 @@ trap 'on_signal TERM' TERM
 if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
   publish_stage "Rebuilding Desktop"
-  "$HERMES_BIN" desktop --force-build --build-only >> "$LOG" 2>&1 || {
+  "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {
     FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
     exit 6
   }

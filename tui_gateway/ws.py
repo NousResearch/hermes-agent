@@ -15,13 +15,15 @@ import time
 from typing import Any
 
 from tui_gateway import server
+from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
 
-# Scale-to-zero: tell the (separate) gateway process a dashboard/desktop/TUI client is attached via
-# the mtime of a marker file it reads in its idle predicate (gateway/scale_to_zero.py). Clients ping
-# every 15s; one write per 5s per process is plenty.
+# Scale-to-zero: tell the (separate) gateway process that a dashboard/desktop/
+# TUI client is attached, via the mtime of a marker file it reads in its idle
+# predicate. Clients ping every 15s; one mtime write per 5s per process is
+# plenty and keeps the volume quiet. See gateway/scale_to_zero.py.
 _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S = 5.0
 _dashboard_client_touched_at = 0.0
 _dashboard_client_touch_lock = threading.Lock()
@@ -37,6 +39,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
         _dashboard_client_touched_at = now
     try:
         from gateway.scale_to_zero import touch_dashboard_client_heartbeat
+
         touch_dashboard_client_heartbeat()
     except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
@@ -45,17 +48,17 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
 def _sanitize_ws_text(text: str) -> str:
     """Return *text* that can be UTF-8 encoded for a WebSocket frame.
 
-    ``json.dumps(..., ensure_ascii=False)`` happily emits lone UTF-16 surrogates; Starlette's
-    ``send_text`` then raises ``UnicodeEncodeError``, which used to latch the whole connection
-    closed. Same U+FFFD replacement every other Hermes transport applies.
-
-    See #97288.
+    ``json.dumps(..., ensure_ascii=False)`` happily emits lone UTF-16
+    surrogates; Starlette's ``send_text`` then raises ``UnicodeEncodeError``,
+    which used to latch the whole connection closed (#97288). Same U+FFFD
+    replacement every other Hermes transport applies.
     """
     return _sanitize_surrogates(text) if text else text
 
 
-# Max seconds a pool-dispatched handler blocks waiting for the loop to flush a WS frame before we
-# give up waiting (the transport is NOT marked dead).
+# Max seconds a pool-dispatched handler will block waiting for the event loop
+# to flush a WS frame before we mark the transport dead. Protects handler
+# threads from a wedged socket.
 _WS_WRITE_TIMEOUT_S = 10.0
 # Max seconds one send_text may await the socket once it is actually running on the loop. A healthy
 # socket returns from send_text without waiting (the frame lands in the transport buffer); only kernel
@@ -235,25 +238,24 @@ class WSTransport:
                     return
                 payload = _sanitize_ws_text(line)
                 try:
-                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
-                except asyncio.TimeoutError:
-                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
-                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
-                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
-                    # (session detach/reap, client reconnect) runs. See #106369.
-                    self._closed = True
-                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
-                                 self._peer, _WS_SEND_DEADLINE_S)
-                    self._loop.create_task(self._close_stalled_socket())
-                    return
+                    await self._ws.send_text(payload)
                 except UnicodeEncodeError as exc:
-                    # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
-                    _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
+                    # A single illegal UTF-8 frame (lone surrogate in a
+                    # status/ready payload) must not tear down the socket.
+                    # Fresh Desktop installs looped on this (#97288).
+                    _log.warning(
+                        "ws send skipped invalid utf-8 frame peer=%s error=%s",
+                        self._peer, exc,
+                    )
                     continue
                 except Exception as exc:
-                    # Latch while holding the writer lock so queued batches observe the failure first.
+                    # Latch while still holding the writer lock so queued
+                    # batches observe the failure before they touch the socket.
                     self._closed = True
-                    _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
+                    _log.warning(
+                        "ws send failed peer=%s error_type=%s error=%s",
+                        self._peer, type(exc).__name__, exc,
+                    )
                     return
 
     def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
@@ -347,8 +349,11 @@ async def handle_ws(
         else:
             await ws.accept()
         disconnect_reason = "connected"
-        # Mark the client attached before the (possibly slow) ready/skin setup so scale-to-zero sees it.
+        # A client is attached from the moment the upgrade is accepted — mark it
+        # before the (possibly slow) ready/skin setup so scale-to-zero sees it.
         _note_dashboard_client_activity(force=True)
+        # Push small streamed frames out immediately instead of letting Nagle
+        # batch them — keeps the live token cadence intact for GUI clients.
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 

@@ -39,8 +39,14 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
-    _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    _ssrf_redirect_guard,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
@@ -308,11 +314,26 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         await self._open_ws(gateway_url)
 
     async def _open_ws(self, gateway_url: str) -> None:
-        await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
+        """Open a WebSocket connection to the QQ Bot gateway."""
+        # Only clean up WebSocket resources — keep _http_client alive for REST API calls.
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
+
+        # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
+        # local patch, so QQ can regress to direct-connect timeouts after update.
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
-        proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-        ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
+        ws_proxy = (
+            os.getenv("WSS_PROXY")
+            or os.getenv("wss_proxy")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("ALL_PROXY")
+            or os.getenv("all_proxy")
+        )
         self._ws = await self._session.ws_connect(
             gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
         )
@@ -989,14 +1010,26 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return None
 
         if content_type.startswith("image/"):
-            # Historical qqbot mapping: trust mimetypes' guess (never the shared table), fall back to .jpg.
-            ext = ext_for_mime(content_type, use_defaults=False, use_mimetypes=True, fallback=".jpg") or ".jpg"
+            # preserves historical qqbot mapping: trust mimetypes'
+            # guess (never the shared table) and fall back to .jpg.
+            ext = ext_for_mime(
+                content_type,
+                use_defaults=False,
+                use_mimetypes=True,
+                fallback=".jpg",
+            ) or ".jpg"
             return await cache_image_from_bytes_async(data, ext)
-        if content_type == "voice" or content_type.startswith("audio/"):
-            # QQ voice is usually .amr/.silk — convert to .wav for STT engines.
+        elif content_type == "voice" or content_type.startswith("audio/"):
+            # QQ voice messages are typically .amr or .silk format.
+            # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
-        filename = original_name or Path(urlparse(url).path).name or "qq_attachment"
-        return await cache_document_from_bytes_async(data, filename)
+        else:
+            filename = (
+                original_name
+                or Path(urlparse(url).path).name
+                or "qq_attachment"
+            )
+            return await cache_document_from_bytes_async(data, filename)
 
     @staticmethod
     def _is_voice_content_type(content_type: str, filename: str) -> bool:
@@ -1258,8 +1291,19 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         is_silk = ext == ".silk" or self._looks_like_silk(audio_data)
         convert = self._convert_silk_to_wav if is_silk else self._convert_ffmpeg_to_wav
         try:
-            if not await convert(src_path, wav_path):
-                logger.warning("[%s] audio conversion failed for %s (format=%s)", self._log_tag, source_url[:60], ext)
+            is_silk = ext == ".silk" or self._looks_like_silk(audio_data)
+            if is_silk:
+                result = await self._convert_silk_to_wav(src_path, wav_path)
+            else:
+                result = await self._convert_ffmpeg_to_wav(src_path, wav_path)
+
+            if not result:
+                logger.warning(
+                    "[%s] audio conversion failed for %s (format=%s)",
+                    self._log_tag,
+                    source_url[:60],
+                    ext,
+                )
                 return await cache_document_from_bytes_async(audio_data, f"qq_voice{ext}")
         except Exception:
             return await cache_document_from_bytes_async(audio_data, f"qq_voice{ext}")

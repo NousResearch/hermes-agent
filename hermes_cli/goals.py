@@ -364,6 +364,38 @@ class GoalGate:
         )
 
 
+def workspace_fingerprint(cwd: Optional[str] = None) -> str:
+    """Cheap workspace change fingerprint for unchanged-gate skip.
+
+    Uses ``git status --porcelain`` + ``git rev-parse HEAD`` when inside a git
+    repo (covers tracked edits, stages, and commits). Outside git, returns
+    an empty string — an empty fingerprint never matches, so gates simply
+    always re-run (safe fallback, no behavior regression for non-repo work).
+    """
+    workdir = cwd or os.getcwd()
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, cwd=workdir,
+            stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
+        )
+        if head.returncode != 0:
+            return ""
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, cwd=workdir,
+            stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
+        )
+        if status.returncode != 0:
+            return ""
+        blob = head.stdout.strip() + "\n" + status.stdout
+        return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+    except Exception:
+        return ""
+
+
 def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
     """Run one gate through the shell. Returns ``(passed, exit_code, output_tail)``; a timeout kills
     the process and counts as exit code -1."""
@@ -806,7 +838,7 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
     """Parse the judge's reply. Fail-open on unusable output.
 
     Returns ``(verdict, reason, parse_failed, wait_directive)`` where:
-      - ``verdict`` is ``"done"``, ``"continue"``, or ``"wait"``.
+      - ``verdict`` is ``"done"``, ``"blocked"``, ``"continue"``, or ``"wait"``.
       - ``parse_failed`` is True when the judge returned output that couldn't
         be interpreted as the expected JSON verdict (empty body, prose,
         malformed JSON). Callers use it to auto-pause after N consecutive
@@ -863,7 +895,7 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
             done = bool(done_val)
         verdict = "done" if done else "continue"
 
-    if verdict not in {"done", "continue", "wait"}:
+    if verdict not in {"done", "blocked", "continue", "wait"}:
         verdict = "continue"
 
     if verdict != "wait":
@@ -957,7 +989,7 @@ def judge_goal(
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)`` where verdict
-    is ``"done"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
+    is ``"done"``, ``"blocked"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
     judge couldn't be reached). ``wait_directive`` is set only for ``"wait"``
     (``{"pid": int}`` or ``{"seconds": int}``); ``None`` otherwise.
 
@@ -1850,9 +1882,25 @@ class GoalManager:
         background_processes: Optional[List[Dict[str, Any]]] = None,
         active_delegations: int = 0,
     ) -> Dict[str, Any]:
-        """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
-        ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
-        own continuations increment ``turns_used`` — both consume model budget."""
+        """Run the judge and update state. Return a decision dict.
+
+        ``user_initiated`` distinguishes a real user prompt (True) from a
+        continuation prompt we fed ourselves (False). Both increment
+        ``turns_used`` because both consume model budget.
+
+        ``background_processes`` is the live ``process_registry.list_sessions()``
+        snapshot for this session. It's handed to the judge so it can decide
+        to WAIT on an in-flight process (CI poller, build, ...) instead of
+        re-poking the agent — the automatic counterpart to ``/goal wait``.
+
+        Decision keys:
+          - ``status``: current goal status after update
+          - ``should_continue``: bool — caller should fire another turn
+          - ``continuation_prompt``: str or None
+          - ``verdict``: "done" | "blocked" | "continue" | "wait" | "skipped" | "inactive"
+          - ``reason``: str
+          - ``message``: user-visible one-liner to print/send
+        """
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
@@ -1898,6 +1946,28 @@ class GoalManager:
                 f"judged unachievable: {reason}", "blocked", reason,
                 f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
             )
+
+        # BLOCKED verdict: the judge ruled the goal genuinely cannot be
+        # satisfied as stated (impossible, out of scope, needs user input).
+        # This is NOT done — don't keep burning turns on an unachievable goal
+        # and don't wave it through as complete (#100954). Pause so the user
+        # sees the judge's reason and can re-scope (/goal set) or override
+        # (/goal resume).
+        if verdict == "blocked":
+            state.status = "paused"
+            state.paused_reason = f"judged unachievable: {reason}"
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "blocked",
+                "reason": reason,
+                "message": (
+                    f"🚫 Goal judged unachievable — paused: {reason} "
+                    "Re-scope with /goal set, or override with /goal resume."
+                ),
+            }
 
         if verdict == "done":
             state.status = "done"
@@ -2003,10 +2073,31 @@ def run_kanban_goal_loop(
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
-    Each iteration: stop if the worker already terminated the task (``kanban_complete`` /
-    ``kanban_block`` / review hand-off); otherwise judge the latest response against ``goal_text``
-    (the card's title + body) and feed a continuation or finalize nudge. A WAIT verdict is treated
-    as CONTINUE (workers finish via kanban tools, not by parking).
+    The dispatcher spawns a goal-mode worker exactly like a normal worker
+    (``hermes -p <profile> chat -q "work kanban task <id>"``). The worker's
+    first turn has already run by the time this is called; ``first_response``
+    is that turn's reply. From here we:
+
+    1. Check whether the worker already terminated the task (called
+       ``kanban_complete`` / ``kanban_block``). If so, stop — nothing to do.
+    2. Otherwise judge the latest response against ``goal_text`` (the card's
+       title + body). ``continue`` → feed a continuation prompt and run
+       another turn IN THE SAME SESSION via ``run_turn``. ``done`` but the
+       task is still open → one explicit "call kanban_complete" nudge.
+    3. When the turn budget is exhausted and the worker still hasn't
+       terminated the task, ``block_fn`` is invoked so the card lands in a
+       sticky ``blocked`` state for human review (NOT a silent exit).
+
+    This function performs NO SessionDB persistence — a worker process is
+    ephemeral, so the turn budget lives in a local counter. It is fully
+    decoupled from the CLI for testability: callers inject ``run_turn``
+    (str -> str), ``task_status_fn`` (() -> str|None), and ``block_fn``
+    (reason: str -> None).
+
+    Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
+    outcome is one of ``"completed_by_worker"``, ``"review_requested_by_worker"``,
+    ``"changes_requested_by_reviewer"``, ``"blocked_budget"``,
+    ``"blocked_unachievable"``, ``"blocked_by_worker"``, or ``"stopped"``.
     """
 
     def _log(msg: str) -> None:
@@ -2056,12 +2147,20 @@ def run_kanban_goal_loop(
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
 
         if verdict == "blocked":
-            # Unachievable is NOT done: block the card with the judge's reason now instead of
-            # re-poking an impossible goal, and never let it land in done.
-            # The judge ruled the goal cannot be satisfied at all — this is NOT done (#100954).
+            # The judge ruled the goal cannot be satisfied at all — this is
+            # NOT done (#100954). Block the card now with the judge's reason
+            # instead of spending the remaining turns re-poking an impossible
+            # goal, and never let it land in done.
             _log(f"kanban goal loop: task {task_id} judged unachievable; blocking")
-            _block(f"Goal-mode judge ruled the goal unachievable: {reason}")
-            return _result("blocked_unachievable", f"judge verdict blocked: {reason}")
+            try:
+                block_fn(f"Goal-mode judge ruled the goal unachievable: {reason}")
+            except Exception as exc:
+                _log(f"kanban goal loop: block_fn failed ({exc})")
+            return {
+                "outcome": "blocked_unachievable",
+                "turns_used": turns_used,
+                "reason": f"judge verdict blocked: {reason}",
+            }
 
         if verdict == "done":
             if nudged_to_finalize:

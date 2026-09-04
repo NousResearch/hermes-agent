@@ -1,6 +1,8 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { PoolLimits } from '../electron/pool-limits'
+
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -322,7 +324,13 @@ declare global {
       onContextMenuSpellcheck?: (
         callback: (payload: { misspelledWord: string; suggestions: string[] }) => void
       ) => () => void
-      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
+      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string, name?: string) => Promise<string>
+      /** Crop the in-app browser guest. `rect` is CSS pixels in the page viewport. */
+      capturePreview?: (payload: {
+        rect?: { height: number; width: number; x: number; y: number }
+        viewport?: { height: number; width: number }
+        webContentsId: number
+      }) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
@@ -339,6 +347,9 @@ declare global {
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
+      /** Launch flag: the app was started with --local, enabling the
+       *  local-models GUI surfaces. Absent/false = every local surface hides. */
+      localModelsEnabled?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
@@ -537,9 +548,6 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
-      /** Host facts for the guided first run. Optional: an older preload (a
-       *  mid-upgrade managed install) simply doesn't answer. */
-      getMachineProfile?: () => Promise<DesktopMachineProfile>
       /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
       relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
@@ -625,26 +633,6 @@ export interface DesktopVersionInfo {
   /** True when the bundle on disk is newer than the running process — a plain
    *  app restart (no rebuild, no installer) is enough to load it. */
   bundleSwapPending?: boolean
-}
-
-export interface DesktopMachineProfile {
-  /** Days since the OS created this user account; null when unknowable. */
-  ageDays: null | number
-  arch: string
-  /** The OS display language (`app.getLocale()`, e.g. "ja", "pt-BR"); '' when
-   *  unknowable. A first-run DEFAULT for the UI language, never a lock — the
-   *  user's saved `display.language` always wins, and the picker still rules. */
-  locale: string
-  /** Hardware's self-reported model (`NVIDIA_DGX_Spark`); '' when unavailable. */
-  model: string
-  /** An NVIDIA GPU is present, by PCI vendor id. */
-  nvidia: boolean
-  platform: string
-  release: string
-  /** OS login name ('' when unknowable) — a first-name SUGGESTION for the
-   *  guided chat, never a default. The renderer blocklists handles that are
-   *  not a name before offering it. */
-  username: string
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'

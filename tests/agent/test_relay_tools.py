@@ -161,8 +161,3 @@ def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypat
         )
 
     assert caught.value is tool_error
-
-
-
-
-

@@ -62,7 +62,12 @@ def _scoped_platform_setting(env_name, extra, key):
 logger = logging.getLogger(__name__)
 
 from gateway.platforms.base import (
-    BasePlatformAdapter, CachedMedia, SendResult, cache_media_bytes_async,
+    BasePlatformAdapter,
+    CachedMedia,
+    SendResult,
+    MessageEvent,
+    MessageType,
+    cache_media_bytes_async,
 )
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -1436,7 +1441,11 @@ class BuzzAdapter(BasePlatformAdapter):
                 logger.warning("Buzz: attachment %s does not match imeta", what)
                 return None
         try:
-            return await cache_media_bytes_async(bytes(data), filename=metadata["filename"], mime_type=metadata["mime_type"])
+            return await cache_media_bytes_async(
+                bytes(data),
+                filename=metadata["filename"],
+                mime_type=metadata["mime_type"],
+            )
         except (OSError, ValueError) as exc:
             logger.warning("Buzz: attachment cache write failed: %s", exc)
             return None
@@ -1684,7 +1693,12 @@ class BuzzAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
         media_kinds: List[str] = []
-        from gateway.platforms.base import cache_media_bytes_async, validate_inbound_media_size
+
+        from gateway.platforms.base import (
+            cache_media_bytes_async,
+            validate_inbound_media_size,
+        )
+
         for url in urls:
             path_match = _MEDIA_PATH_RE.fullmatch(urlsplit(url).path)
             if path_match is None:
@@ -1697,11 +1711,21 @@ class BuzzAdapter(BasePlatformAdapter):
                     if code != 0 or not download_path.is_file():
                         logger.warning("Buzz: failed to localize inbound media %s (exit %d)", label, code)
                         continue
-                    validate_inbound_media_size(download_path.stat().st_size, media_type="Buzz media")
-                    mime_type = mimetypes.guess_type(download_path.name)[0] or "application/octet-stream"
+                    validate_inbound_media_size(
+                        download_path.stat().st_size,
+                        media_type="Buzz media",
+                    )
+                    mime_type = (
+                        mimetypes.guess_type(download_path.name)[0]
+                        or "application/octet-stream"
+                    )
                     # Up to the inbound media cap (128 MiB) — read off the loop too.
                     data = await asyncio.to_thread(download_path.read_bytes)
-                    cached = await cache_media_bytes_async(data, filename=download_path.name, mime_type=mime_type)
+                    cached = await cache_media_bytes_async(
+                        data,
+                        filename=download_path.name,
+                        mime_type=mime_type,
+                    )
             except Exception as exc:
                 logger.warning("Buzz: failed to localize inbound media %s (%s)", label, type(exc).__name__)
                 continue

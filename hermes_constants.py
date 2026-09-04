@@ -116,14 +116,25 @@ def get_hermes_home() -> Path:
 _HOME_KEY_CACHE: dict[str, str] = {}
 
 
+# Resolved keys, keyed by the path string that was handed in. Path.resolve()
+# is a filesystem call, and this function sits under every ToolRegistry
+# lookup through current_scope_key(), so without this the registry pays a
+# syscall per lookup. A process only ever sees a handful of home paths, so
+# the dict stays tiny. Only paths that really exist are stored, see below.
+_HOME_KEY_CACHE: dict[str, str] = {}
+
+
 def hermes_home_key(path: str | Path | None = None) -> str:
     """Stable registry key for a Hermes home/profile dir.
 
-    ``strict=False`` so profiles whose directories don't exist yet still get a key.
+    Runtime registries use this key to isolate plugin-owned entries while
+    keeping built-in registrations process-global.  ``strict=False`` preserves
+    useful behavior for profiles whose directories have not been created yet.
 
     The resolved value is remembered per input path. A directory that does
     not exist yet is resolved without touching the cache, because the answer
-    can change once it is created (e.g. part of the path turns out to be a symlink).
+    can change once it is created, for example when part of the path turns
+    out to be a symlink.
     """
     candidate = Path(path) if path is not None else get_hermes_home()
     raw = str(candidate)
@@ -134,8 +145,8 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     try:
         resolved = expanded.resolve(strict=True)
     except OSError:
-        # Not on disk yet: lenient resolve, not stored, so the real answer is
-        # picked up once the directory appears.
+        # Not on disk yet. Fall back to the lenient resolve and do not store
+        # it, so the real answer is picked up once the directory appears.
         return os.path.normcase(str(expanded.resolve(strict=False)))
     key = os.path.normcase(str(resolved))
     _HOME_KEY_CACHE[raw] = key
@@ -143,7 +154,12 @@ def hermes_home_key(path: str | Path | None = None) -> str:
 
 
 def reset_hermes_home_key_cache() -> None:
-    """Forget every remembered home key (for tests that move a home dir on disk)."""
+    """Forget every remembered home key.
+
+    For tests that move a home directory around on disk under one path.
+    Normal callers never need this: a different home path is a different
+    cache key already.
+    """
     _HOME_KEY_CACHE.clear()
 
 

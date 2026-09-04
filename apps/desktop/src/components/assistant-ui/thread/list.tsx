@@ -26,15 +26,8 @@ import {
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
-  planThreadScrollRestore,
   publishThreadAtBottom,
-  resetPublishedThreadScroll,
-  saveThreadScrollPosition,
-  THREAD_SCROLL_BOTTOM,
-  type ThreadScrollState,
-  threadScrollStateFromMetrics,
-  threadScrollStorageKey,
-  threadScrollTargetTop
+  resetPublishedThreadScroll
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
@@ -501,6 +494,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
+  // True once the CURRENT session has settled with a non-empty transcript.
+  // A same-session refresh must keep the reader's position; only a switch or
+  // a cold-load arrival re-arms. Reset on switch so a mid-settle key change
+  // cannot inherit the outgoing session's settled flag.
+  const settledNonEmptyRef = useRef(false)
 
   // Record where the view should land once a prepend has grown the content,
   // measured from the BOTTOM so the added height doesn't invalidate it. Only a
@@ -662,8 +660,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => () => endEditHold(), [endEditHold])
   // New run → snap to the latest turn only when already near the bottom.
   useAuiEvent('thread.runStart', () => {
-    cancelRestoreRef.current?.()
     const el = scrollRef.current
+
+    if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
+      scrollToBottom()
+    }
+  })
 
     if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
       scrollToBottom()
@@ -755,58 +757,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
-    // Cleanup belongs to the subscription owner, not the newly active globals.
-    const storageKey = threadScrollStorageKey()
     const sessionSwitched = settleKeyRef.current !== sessionKey
 
-    const plan = planThreadScrollRestore(restoredContentKeyRef.current, sessionKey, hasGroups, loadSettledRef.current)
-
-    restoredContentKeyRef.current = plan.gate
-
-    // Record only states that were actually shown under this key: the gate
-    // equals this closure's sessionKey exactly when this instance restored
-    // content (cleanups run before the next instance's effect, so a later
-    // cold-switch instance clearing the ref can't spoof it). An
-    // empty-transcript instance still holds the PREVIOUS session's live state,
-    // which must not be filed under this key. And only SETTLED states: mid-
-    // settle the ref holds transient clamped metrics (the loop writing targets
-    // into a still-arriving transcript), and persisting those would corrupt
-    // the session's real reading position.
-    const record = () => {
-      if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
-        saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
-      }
+    if (sessionSwitched) {
+      settledNonEmptyRef.current = false
     }
 
-    if (plan.cold) {
-      // Cold switch: transcript not landed yet (or emptied for a reload). The
-      // DOM collapse clamps scrollTop to garbage, so forget the restore gate —
-      // when content (re)arrives, reapply from memory. The previous session's
-      // real state was already recorded by its own cleanup just before this.
-      // An anchor captured for the OUTGOING transcript must not be applied to
-      // this one — a switch owns the position outright. The empty→non-empty
-      // re-arm is the SAME load, whose in-flight anchor is still correct.
-      loadSettledRef.current = false
-
-      if (settleKeyRef.current !== sessionKey) {
-        settleKeyRef.current = sessionKey
-        restoreFromBottomRef.current = null
-      }
-
-      return record
+    // Same-session refresh (transcript briefly cleared and repopulated) must
+    // keep the reader's position. Run before stopScroll / scrollTop reset so
+    // a refresh neither yanks the view nor clears the settled flag.
+    if (!shouldRePinOnTranscriptReload({ sessionSwitched, settledNonEmpty: settledNonEmptyRef.current })) {
+      return
     }
-
-    if (!plan.restore) {
-      // Same key, already settled: the restore is done, keep recording only.
-      return record
-    }
-
-    const remembered = sessionKey ? getThreadScrollPosition(sessionKey, storageKey) : undefined
-    const target = remembered ?? THREAD_SCROLL_BOTTOM
-
-    // The previous session's parting state must not leak into this one: from
-    // here every scroll/RO event describes the restored session.
-    liveScrollStateRef.current = target
 
     stopScroll()
     el.scrollTop = threadScrollTargetTop(target, el)
@@ -846,23 +808,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
-        if (target.kind === 'bottom') {
-          // Hand back to use-stick-to-bottom locked, so late async growth
-          // (images, highlight) keeps following the bottom.
-          void scrollToBottom('instant')
-          loadSettledRef.current = true
-        } else if (clamped) {
-          // Content hasn't finished arriving (the backfill transition is still
-          // rendering). Park the offset in the anchor so the restore effect
-          // re-applies it the moment the taller tree lands — otherwise the
-          // view is stranded at the clamped position. Keep loadSettled false:
-          // anchorBeforePrepend skips while unsettled, so the parked offset
-          // can't be overwritten by a mid-load anchor measurement. The restore
-          // effect flips settled once it consumes the parked value.
-          restoreFromBottomRef.current = target.fromBottom + node.clientHeight
-        } else {
-          loadSettledRef.current = true
-        }
+        void scrollToBottom('instant')
+        settledNonEmptyRef.current = hasGroups
+        loadSettledRef.current = true
 
         return
       }

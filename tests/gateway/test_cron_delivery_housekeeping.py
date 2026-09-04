@@ -4,7 +4,6 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import cron.scheduler as scheduler
-from cron import scheduler_preflight as sched_preflight
 import gateway.run as gateway_run
 
 
@@ -84,8 +83,6 @@ def test_multiplex_housekeeping_scopes_primary_and_drains_each_profile(
         yield
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
-    from gateway import run_profile_reconcile
-    monkeypatch.setattr(run_profile_reconcile, "_mcp_config_reconciler", lambda runner: lambda: None)
     monkeypatch.setattr(
         scheduler,
         "drain_delivery_queue",
@@ -137,8 +134,10 @@ def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite
             return routed
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
-    monkeypatch.setattr(sched_preflight, "SharedRouteAdapters", FakeSharedRouteAdapters)
-    monkeypatch.setattr(sched_preflight, "_primary_profile_routes_for_current_home",
+    monkeypatch.setattr(scheduler, "SharedRouteAdapters", FakeSharedRouteAdapters)
+    monkeypatch.setattr(
+        scheduler,
+        "_primary_profile_routes_for_current_home",
         lambda: ["route-to-secondary"],
     )
     monkeypatch.setattr(

@@ -13,19 +13,17 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
-from plugins.dashboard_auth._shared import (
-    JwtOAuthProvider,
-    SkipRegistration,
-    exchange_token,
-    load_config_section,
-    pkce_login_start,
-    refresh_token_from,
-    register_provider,
-    resolve_env_or_cfg,
-    session_from_claims,
-    validate_redirect_uri,
-    verify_jwt)
+import httpx
+
+from hermes_cli.dashboard_auth import (
+    DashboardAuthProvider,
+    InvalidCodeError,
+    LoginStart,
+    ProviderError,
+    RefreshExpiredError,
+    classify_jwks_lookup_error,
+    Session,
+)
 
 logger = logging.getLogger(__name__)
 _TAG = "dashboard-auth-nous"
@@ -89,13 +87,77 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         return self._session(access_token, refresh_token_from(payload), self._claims_for(access_token))
 
 
-    def _claims_for(self, access_token: str) -> Dict[str, Any]:
-        claims = verify_jwt(
-            access_token, self._get_jwks_client(), algorithms=["RS256"],
-            audience=self._client_id,  # contract C2: bare client_id
-            issuer=self._portal_url, label="access token")
-        # Contract C9: agent_instance_id is "should" not "must" — tolerated when absent
-        # (the aud check already binds the token to this instance).
+            self._jwks_client = PyJWKClient(
+                self._jwks_url,
+                cache_keys=True,
+                lifespan=_JWKS_CACHE_SECONDS,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "HermesAgent/1.0",
+                },
+            )
+        return self._jwks_client
+
+    def _verify_jwt(self, access_token: str) -> Dict[str, Any]:
+        # Lazy import — keeps startup fast for operators who never trigger
+        # the gated path.
+        import jwt
+
+        try:
+            signing_key = self._get_jwks_client().get_signing_key_from_jwt(
+                access_token
+            )
+        except Exception as exc:
+            # Unreachable JWKS -> ProviderError (503); a bearer that is not
+            # one of our JWTs (opaque peer key, foreign kid) -> InvalidCodeError
+            # (None / next provider). Folding both into 503 produced #94558.
+            raise classify_jwks_lookup_error(exc) from exc
+
+        try:
+            claims = jwt.decode(
+                access_token,
+                signing_key.key,
+                algorithms=["RS256"],
+                # Contract C2: aud is the bare client_id.
+                audience=self._client_id,
+                # Contract: issuer is the Portal base URL.
+                issuer=self._portal_url,
+                options={"require": ["exp", "iat", "aud", "iss", "sub"]},
+            )
+        except jwt.ExpiredSignatureError as exc:
+            # verify_session() catches this and returns None per protocol.
+            raise InvalidCodeError(f"access token expired: {exc}") from exc
+        except jwt.InvalidTokenError as exc:
+            # Surface the actual claim values that failed verification so
+            # operators don't have to dig into the JWT to debug config drift
+            # between HERMES_DASHBOARD_PORTAL_URL / HERMES_DASHBOARD_OAUTH_CLIENT_ID
+            # and what Portal is actually emitting. Decoding without verification
+            # is safe here: we've already failed to verify, and we never trust
+            # these values — they're surfaced for diagnostics only.
+            details = ""
+            try:
+                unverified = jwt.decode(
+                    access_token,
+                    options={"verify_signature": False, "verify_exp": False},
+                )
+                details = (
+                    f" [token iss={unverified.get('iss')!r} "
+                    f"aud={unverified.get('aud')!r}; "
+                    f"expected iss={self._portal_url!r} "
+                    f"aud={self._client_id!r}]"
+                )
+            except Exception:
+                pass
+            raise ProviderError(
+                f"access token verification failed: {exc}{details}"
+            ) from exc
+
+        self._check_agent_instance_id(claims)
+        self._check_contract_version(claims)
+        return claims
+
+    def _check_agent_instance_id(self, claims: Dict[str, Any]) -> None:
+        """Contract C9: cross-check agent_instance_id against our config."""
         token_instance_id = claims.get("agent_instance_id")
         if token_instance_id is not None and token_instance_id != self._agent_instance_id:
             raise ProviderError(

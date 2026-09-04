@@ -54,8 +54,34 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
     returns; falls back to message annotations, then ``citations``. Trust model: Grok *generates*
     the URLs/titles/descriptions and is steerable by the query text — validate before fetching."""
 
-    NAME = "xai"
-    DISPLAY_NAME = "xAI Web Search (Grok)"
+    Sends a structured prompt to Grok with ``tools=[{"type": "web_search"}]``
+    enabled and asks it to return the top *limit* results as JSON. Falls
+    back to the Responses API ``citations`` list if Grok ignores the JSON
+    schema instruction (rare for grok-4.3 but cheap insurance).
+
+    No extract capability — pair with Firecrawl / Tavily / Exa for
+    ``web_extract`` if you need page content.
+
+    Trust model
+    -----------
+    Unlike index-backed providers (Brave / Tavily / Exa) which return
+    verbatim search-engine results, this backend is an LLM in a trench
+    coat: Grok decides which URLs to surface, generates the titles and
+    descriptions itself, and is influenced by the *content of the query*.
+    A maliciously crafted query (e.g. injected via untrusted upstream
+    input the agent picked up) can in principle steer Grok into emitting
+    attacker-chosen URLs. Callers that pipe untrusted text directly into
+    ``web_search`` should treat returned URLs the same way they would
+    treat any model-generated link — validate before fetching.
+    """
+
+    @property
+    def name(self) -> str:
+        return "xai"
+
+    @property
+    def display_name(self) -> str:
+        return "xAI Web Search (Grok)"
 
     def is_available(self) -> bool:
         """Cheap probe (env var OR auth-store tokens). Deliberately NOT

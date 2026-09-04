@@ -39,7 +39,7 @@ export const LOCALE_OPTIONS = [
   },
   {
     id: 'ru',
-    name: LOCALE_ENDONYMS.ru,
+    name: 'Русский',
     englishName: 'Russian',
     configValue: 'ru'
   }

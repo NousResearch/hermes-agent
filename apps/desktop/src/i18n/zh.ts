@@ -219,6 +219,7 @@ export const zh = defineLocale({
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
       codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
     },
@@ -1555,7 +1556,7 @@ export const zh = defineLocale({
         `一键完成所有设置：本地引擎、${model}（需下载 ${size}），并设为新会话的默认模型。数据不会离开这台电脑。`,
       quickstartDetailReady: model => `一键将 ${model} 设为新会话的默认模型。所有内容都在本机运行。`,
       quickstartAction: '为我设置',
-      quickstartConfigure: '让我选择',
+      quickstartConfigure: '自定义…',
       quickstartDoneToast: model => `${model} 已就绪——新会话将在本机运行。`,
       quickstartFailed: '本地模型设置失败',
       quickstartStageEngine: '引擎',
@@ -1571,12 +1572,9 @@ export const zh = defineLocale({
       recommendedReason: {
         'best-quality-resident': '在完全驻留 GPU 且保持全速的模型中质量最高。推荐会在质量与该硬件的预计速度之间权衡。',
         'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。',
-        'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。'
+        'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。',
+        'least-painful-spilled': '没有模型能完全装入 GPU 内存——这是从系统内存运行表现最好的一个。'
       } as Record<string, string>,
-      noRecommendationTitle: '此设备暂无自动推荐模型',
-      noRecommendationDetail:
-        '自动设置需要一个可完全放入显存或统一内存的精选模型。你仍可在下方自行选择，或浏览更多模型。',
-      noRecommendationAction: '浏览模型',
       downloaded: '已下载',
       downloadAction: size => `下载 · ${size}`,
       downloadProgress: (done, total) => `正在下载 ${done} / ${total}`,
@@ -1590,7 +1588,8 @@ export const zh = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——已配置的构建。`,
+      upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新构建。`,
+      updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`,
       activeDetail: '新对话使用此模型——发送首条消息时加载',
       activeNotLoaded: '首条消息时加载',
       loadedPill: '已加载',
@@ -1788,7 +1787,17 @@ export const zh = defineLocale({
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
         disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
-        failedSave: '无法保存真实配置文件设置'
+        failedSave: '无法保存真实配置文件设置',
+        prompt: {
+          title: '让网站保持登录状态',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
+          bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
+          bulletLocal: '所有数据都不会离开这台电脑。',
+          dontShowAgain: '不再显示',
+          notNow: '暂不',
+          enable: '使用我的配置文件'
+        }
       }
     }
   },
@@ -1848,48 +1857,6 @@ export const zh = defineLocale({
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
-    tabPlugins: '插件',
-    plugins: {
-      agentTitle: 'Agent 插件',
-      agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
-      pageBlurb: '每个插件一行。插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
-      halfDesktop: '桌面',
-      halfDesktopHint: '本应用，所有配置相同',
-      halfAgent: 'Agent',
-      halfAgentIn: (profile: string) => `${profile} 中的 Agent`,
-      defaultProfile: 'Hermes（默认）',
-      kindAgent: 'Agent',
-      kindDesktop: '桌面',
-      kindBoth: 'Agent + 桌面',
-      installAgentHere: '在此安装',
-      installAgentHereTip: (profile: string) =>
-        `桌面部分已加载到本应用，但 agent 部分尚未安装到 ${profile}。在那里安装它。`,
-      installAgentHereNoOrigin:
-        '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
-      desktopHalfPending: '复制中…',
-      desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
-      emptyAll: '还没有插件。',
-      empty: '此配置尚未安装任何 agent 插件。',
-      emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
-      loadFailed: '无法加载 agent 插件',
-      toggleFailed: (name: string) => `无法切换 ${name}`,
-      legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
-      portableBadge: '便携',
-      catalogTitle: '插件目录',
-      catalogBrowse: '浏览',
-      catalogHide: '隐藏目录浏览器',
-      catalogHint:
-        '点击任意插件上的「+ Add to this Agent」— 经过审核的条目会以其固定提交安装到所选配置。捆绑的 agent+桌面插件会同时提供两部分。',
-      alreadyInstalled: (name: string) => `${name} 已安装在此配置中。`,
-      catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
-      pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
-      pinnedBadge: (sha: string) => `固定 @ ${sha}`,
-      tierOfficial: '官方',
-      tierCommunity: '社区',
-      updateToPin: (sha: string) => `更新到 ${sha}`,
-      updateFailed: (name: string) => `无法更新 ${name}`,
-      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`
-    },
     officialCatalog: '可安装',
     officialPill: '官方',
     hub: {
@@ -4317,9 +4284,10 @@ export const zh = defineLocale({
         title: '附件与命令',
         text: '输入 @ 把文件带入对话，输入 / 运行命令。'
       },
-      'model-switch': {
-        title: '对话中随时换模型',
-        text: '模型名称就是按钮。工作性质变了就换一个。'
+      'local-setup': {
+        title: '这台电脑可以本地运行模型',
+        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
+        action: '立即设置'
       },
       'right-pane': {
         title: '工作面板',

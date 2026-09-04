@@ -30,7 +30,8 @@ DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
     "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/api/model-catalog.json",
 )
 DEFAULT_TTL_MINUTES = 20
-# Legacy key, honoured only when the user set it explicitly; ``ttl_minutes`` is the shipped default.
+# Legacy key. ``ttl_hours`` is honoured only when the user set it explicitly;
+# the shipped default is ``ttl_minutes`` above.
 DEFAULT_TTL_HOURS = DEFAULT_TTL_MINUTES / 60.0
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
@@ -56,8 +57,11 @@ def _load_catalog_config() -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    # ``ttl_hours`` (legacy) is honoured only when ``ttl_minutes`` is still at its default —
-    # load_config() deep-merges the default in, so "present" alone doesn't mean "user-set".
+    # ``ttl_minutes`` is the shipped default (20). ``ttl_hours`` is the legacy
+    # key: honoured when a user set it explicitly and ``ttl_minutes`` is still
+    # at its default (load_config() deep-merges the default in, so "present"
+    # alone doesn't mean "user-set"), so old customized configs keep their
+    # chosen window.
     ttl_minutes = raw.get("ttl_minutes")
     try:
         ttl_minutes = float(ttl_minutes) if ttl_minutes not in (None, "") else DEFAULT_TTL_MINUTES
@@ -75,7 +79,8 @@ def _load_catalog_config() -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", True)),
         "url": str(raw.get("url") or DEFAULT_CATALOG_URL),
         "ttl_hours": ttl_minutes / 60.0,
-        "providers": raw.get("providers") if isinstance(raw.get("providers"), dict) else {}}
+        "providers": raw.get("providers") if isinstance(raw.get("providers"), dict) else {},
+    }
 
 
 def _cache_path() -> Path:
@@ -243,9 +248,14 @@ def refresh_interval_seconds() -> float:
 
 
 def refresh_catalogs() -> bool:
-    """Force-refresh every remote catalog the picker reads (manifest, OpenRouter live list, Nous Portal
-    recommendations), writing each disk cache so the next ``/model`` open in ANY process sees them.
-    Blocking; run it off the event loop."""
+    """Force-refresh every remote model catalog the picker reads from.
+
+    Fetches the curated manifest, the OpenRouter live list (tool-support /
+    free-pricing filter) and the Nous Portal recommendations, writing each
+    to its disk cache so the next ``/model`` open in ANY process on this
+    machine sees the new lists. Blocking; run it off the event loop.
+    Returns True when the manifest refresh succeeded.
+    """
     if not _load_catalog_config()["enabled"]:
         return False
     catalog = get_catalog(force_refresh=True)

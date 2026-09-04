@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -353,8 +354,8 @@ export function useComposerVoice({
   // lease, and the backend unloads resident local models once no surface holds
   // one. Fire-and-forget — the toggle never waits on or fails from this.
   useEffect(() => {
-    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive)
-  }, [liveEngineActive, voiceConversationActive])
+    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive)
+  }, [voiceConversationActive])
 
   useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
 

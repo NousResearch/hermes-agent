@@ -31,36 +31,48 @@ __all__ = [
     "pid_is_hermes",
 ]
 
-# Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
-# malicious repo can name a driver in ``.gitattributes`` (``* diff=evil``) and point it at an
-# arbitrary program via ``[diff "evil"] command=/textconv=`` in ``.git/config``; because the
-# attacker chooses the name, ``GIT_CONFIG_KEY`` overrides in ``noninteractive_git_env`` cannot
-# enumerate it — only these flags do. ``--no-ext-diff`` kills ``command=``; ``--no-textconv`` kills
-# ``textconv=``; each alone leaves the other live. Smudge/clean filters are neutralized by the env
+# Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering
+# git command (``diff``, ``log -p``, ``show``, ``blame``). A malicious repo can
+# name a driver in ``.gitattributes`` (``* diff=evil``) and point it at an
+# arbitrary program via ``[diff "evil"] command=/textconv=`` in ``.git/config``.
+# Because the attacker chooses the driver name, ``GIT_CONFIG_KEY`` overrides in
+# ``noninteractive_git_env`` cannot enumerate and disable it — only these
+# command-line flags do. ``--no-ext-diff`` kills ``command=``; ``--no-textconv``
+# kills ``textconv=``. Both are required (verified empirically: each alone
+# leaves the other live). Smudge/clean filters are neutralized by the env
 # layer's ``core.hooksPath`` + running against the index without checkout.
 NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 
-# Only these subcommands accept ``NO_DRIVER_DIFF_FLAGS`` — ``status`` and friends reject them
-# (``unknown option``), so the helper gates on this set rather than blanket-prepending.
+# Subcommands that render diffs and therefore invoke ``.gitattributes``-scoped
+# diff/textconv drivers. Only these accept ``NO_DRIVER_DIFF_FLAGS`` — ``status``
+# and friends reject the flags (``unknown option``), so the helper must gate on
+# this set rather than blanket-prepending.
 _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
-
-# Options that consume the FOLLOWING token, so that value is never mistaken for the subcommand
-# (``-C diff`` is a path; ``-c diff=x`` is a config pair).
-_GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
-    """Copy of subcommand-first git *args* (no leading ``"git"``) with :data:`NO_DRIVER_DIFF_FLAGS`
-    inserted right after a diff-rendering subcommand; other subcommands are returned unchanged.
+    """Return a copy of subcommand-first git *args* with diff-driver flags
+    inserted for diff-rendering subcommands.
 
-    Pair with :func:`noninteractive_git_env`: the env layer disables fsmonitor/hooks/pager/editor/
-    credential sinks, this closes the one class (attacker-named attribute drivers) env cannot reach.
+    *args* is the argument list WITHOUT the leading ``"git"`` (e.g.
+    ``["diff", "HEAD"]`` or ``["-c", "core.quotePath=false", "diff", ...]``).
+    The first non-option token is treated as the subcommand; if it is one of
+    :data:`_DIFF_RENDERING_SUBCOMMANDS`, :data:`NO_DRIVER_DIFF_FLAGS` is
+    inserted immediately after it. Non-diff subcommands are returned unchanged.
+
+    Pair with :func:`noninteractive_git_env`: the env layer disables
+    fsmonitor/hooks/pager/editor/credential sinks, this closes the one class
+    (attacker-named attribute drivers) env overrides cannot reach.
     """
     out = list(args)
+    # Options that consume the FOLLOWING token as their value, so that value is
+    # never mistaken for the subcommand (``-C diff`` is a path; ``-c diff=x`` is
+    # a config pair — neither is the diff subcommand).
+    _value_opts = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
     i = 0
     while i < len(out):
         tok = out[i]
-        if tok in _GIT_VALUE_OPTS:
+        if tok in _value_opts:
             i += 2
             continue
         if tok.startswith("-"):
@@ -68,7 +80,9 @@ def harden_git_argv(args: Sequence[str]) -> list[str]:
             continue
         if tok in _DIFF_RENDERING_SUBCOMMANDS:
             return out[: i + 1] + list(NO_DRIVER_DIFF_FLAGS) + out[i + 1 :]
-        return out  # first non-option token is a non-diff subcommand
+        # First non-option token is the subcommand; if it isn't a diff renderer
+        # there is nothing to harden.
+        return out
     return out
 
 
@@ -326,13 +340,28 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     ``stdin=subprocess.DEVNULL``. Internal plumbing only — the agent-facing terminal tool has its
     own policy layer and visible PTY.
 
-    Hermes shells out to git from many non-interactive contexts — MCP catalog installs, plugin
-    install/update, profile distribution staging, worktree base fetches, desktop review-pane fetch/push.
-    When the remote is private, misconfigured, or requires auth, git's default behavior is to prompt on the
-    inherited terminal (or via an askpass helper), which silently hangs the operation until its timeout — or
-    forever at call sites without one. Ported from openai/codex#34540 / #34612 ("detach non-interactive
-    subprocesses from stdin"): a background tool invocation must fail fast with a readable error, not wait
-    for input nobody can type.
+    Returns a copy of ``base`` (default ``os.environ``) with:
+
+    * ``GIT_TERMINAL_PROMPT=0`` — git fails with "terminal prompts disabled"
+      instead of prompting for credentials.
+    * ``GCM_INTERACTIVE=Never`` — Git Credential Manager (the default
+      credential helper on Windows installs) never pops its own dialog.
+    * isolated git config — inherited ``GIT_CONFIG_*`` overrides, global/system
+      config, pagers, editors, fsmonitor, external diff, and hooks are disabled
+      for the child process. A user's repo/global config should not be able to
+      hang or mutate Hermes's internal plumbing calls.
+
+    ``GIT_ASKPASS`` / ``SSH_ASKPASS`` are deliberately left alone: when the
+    user has a *working* askpass helper or ssh-agent configured, auth should
+    still succeed non-interactively. The env only disables paths that block
+    on a human.
+
+    Pair with ``stdin=subprocess.DEVNULL`` so git (and any credential helper
+    it spawns) also can't read the parent's inherited stdin.
+
+    This is for internal plumbing calls only — the agent-facing terminal tool
+    has its own policy layer and user-visible PTY, where prompting can be
+    legitimate.
     """
     env = dict(base if base is not None else os.environ)
     # Captured before the isolation below rewrites GIT_CONFIG_GLOBAL/SYSTEM to /dev/null --
@@ -340,35 +369,43 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     safe_directories = _user_safe_directories(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
-    # Drop caller-supplied config injection; the GIT_CONFIG_COUNT block is rebuilt below so
-    # ambient -c values cannot re-enable pagers, hooks, fsmonitor, editors or credential prompts.
+
+    # Do not inherit caller-supplied config injection. We rebuild the
+    # GIT_CONFIG_COUNT block below so ambient -c values cannot re-enable
+    # pagers, hooks, fsmonitor, editors, or credential prompts.
     for key in list(env):
-        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+        if (
+            key == "GIT_CONFIG_PARAMETERS"
+            or key.startswith("GIT_CONFIG_KEY_")
+            or key.startswith("GIT_CONFIG_VALUE_")
+        ):
             env.pop(key, None)
     env.pop("GIT_CONFIG_COUNT", None)
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
-    env["GIT_CONFIG_SYSTEM"] = os.devnull
+
+    devnull = os.devnull
+    env["GIT_CONFIG_GLOBAL"] = devnull
+    env["GIT_CONFIG_SYSTEM"] = devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_PAGER"] = "cat"
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
-    overrides = list(_GIT_CONFIG_OVERRIDES.items())
-    # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
-    # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
-    # re-injection every internal git call fails "detected dubious ownership" on any repo whose
-    # st_uid != geteuid() -- NFS/CIFS mounts without idmapping, shared checkouts, containers with
-    # a remapped uid -- even though the user's own `git config --global --add safe.directory` is
-    # correctly set and their interactive git works fine. Carried over the GIT_CONFIG_KEY_n
-    # channel, which survives GIT_CONFIG_GLOBAL=/dev/null. Read-only and non-widening: the values
-    # are replayed in git's own effective order, empty reset markers included (see
-    # _user_safe_directories), so a global reset still revokes a system-wide wildcard exactly as it
-    # does for the user's interactive git. Appended last, but the hardening overrides above are
-    # distinct keys, so they are unaffected by ordering within safe.directory.
-    overrides.extend(("safe.directory", value) for value in safe_directories)
-    env["GIT_CONFIG_COUNT"] = str(len(overrides))
-    for idx, (key, value) in enumerate(overrides):
+
+    config_overrides = {
+        "credential.helper": "",
+        "core.askPass": "",
+        "core.fsmonitor": "false",
+        "core.untrackedCache": "false",
+        "core.hooksPath": devnull,
+        "core.pager": "cat",
+        "core.editor": "true",
+        "sequence.editor": "true",
+        "diff.external": "",
+    }
+    env["GIT_CONFIG_COUNT"] = str(len(config_overrides))
+    for idx, (key, value) in enumerate(config_overrides.items()):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
+
     return env
 
 
@@ -526,6 +563,7 @@ def bounded_probe_run(
     *,
     timeout: float,
     errors: str = "replace",
+    env: "Mapping[str, str] | None" = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
@@ -551,6 +589,7 @@ def bounded_probe_run(
             text=True,
             encoding="utf-8",
             errors=errors,
+            env=dict(env) if env is not None else None,
             **_popen_kwargs,
         )
     except Exception:
@@ -579,11 +618,28 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     tree-kill plus a 1s drain, then abandon the pipes; on POSIX the probe gets its own process
     group so cleanup also takes down credential/remote helpers.
 
-    Security (GHSA-7x36-8jrh-v4pw): these probes run automatically against whatever directory the
-    session sits in, before any tool call or trust prompt, and an index refresh executes the
-    repo-configured ``core.fsmonitor`` program. Every probe therefore runs under
-    :func:`noninteractive_git_env`; diff-rendering callers additionally pass
-    :data:`NO_DRIVER_DIFF_FLAGS` (attribute-scoped drivers can't be disabled via env).
+    **Security (GHSA-7x36-8jrh-v4pw):** these probes run automatically against
+    whatever directory the session sits in — the coding-workspace snapshot and
+    the gateway project-tree build fire ``git status`` / ``git branch`` before
+    any tool call, approval, or trust prompt. An index refresh executes the
+    repository-configured ``core.fsmonitor`` program, and other config keys
+    (hooks, pager, editor, credential helper) are execution sinks too. A repo
+    delivered as files with its ``.git`` directory intact (a shared zip, sync
+    folder, or USB stick — ``git clone`` never transfers ``.git/config``) would
+    otherwise get host code execution as the user. Every probe now runs under
+    :func:`noninteractive_git_env`, which pins those keys to inert values via
+    ``GIT_CONFIG_*`` and ignores global/system config. Diff-rendering callers
+    additionally pass :data:`NO_DRIVER_DIFF_FLAGS` (attribute-scoped drivers
+    can't be disabled through env overrides).
+
+    Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup
+    calls an *unbounded* ``communicate()`` after killing git. Killing the
+    PATH-resolved launcher can leave a suspended descendant ``git.exe`` holding
+    duplicates of the captured stdout/stderr handles, so the pipes never reach
+    EOF and the reader-thread join blocks forever. On the Desktop agent-build
+    path (``_start_agent_build → _session_info → branch() → run_git``) that turned
+    an optional branch label into ``agent initialization timed out``
+    (issues #68609 / #66037).
 
     Killing the PATH-resolved launcher can leave a suspended descendant ``git.exe`` holding duplicates of
     the captured stdout/stderr handles, so the pipes never reach EOF and the reader-thread join blocks

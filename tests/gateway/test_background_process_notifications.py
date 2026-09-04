@@ -668,7 +668,7 @@ async def test_async_delegation_apiserver_persists_delivery_not_self_post(
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AdmittingHandler(),
+        handle_message=AsyncMock(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -716,7 +716,7 @@ async def test_async_delegation_apiserver_persist_failure_is_retryable(
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AdmittingHandler(),
+        handle_message=AsyncMock(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter

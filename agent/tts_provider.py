@@ -74,12 +74,19 @@ class TTSProvider(CatalogProviderBase):
 
     def warm(self) -> None:
         """Speech output was just turned on; pre-load so the first reply is hot.
-        Called from the TTS lease path when this is the configured provider.
-        Best-effort; default no-op."""
+
+        Optional. Called from the TTS lease path (Desktop read-aloud / voice
+        conversation, ``/voice tts``) when this provider is the configured
+        ``tts.provider`` — e.g. ask a local model server to load its model.
+        Best-effort: exceptions are logged at debug and ignored. Default: no-op.
+        """
 
     def release(self) -> None:
-        """Last speech-output lease released; free resident resources (counterpart
-        of :meth:`warm`). Best-effort; default no-op."""
+        """The last speech-output lease was released; free resident resources.
+
+        Optional counterpart of :meth:`warm` — e.g. tell a local model server
+        to unload. Best-effort; default: no-op.
+        """
 
     @property
     def voice_compatible(self) -> bool:

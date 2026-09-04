@@ -422,6 +422,7 @@ watchContributedPanes()
 // into the transparent overlay).
 if (!isBrowserWindow() && !isHudWindow()) {
   watchSessionTiles()
+  startUnrestoredTileTitleBackfill()
   watchRouteTiles()
   watchPreviewTiles()
 }

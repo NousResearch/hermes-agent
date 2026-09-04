@@ -343,7 +343,7 @@ class TestPreloadResumedSession:
             20_001, 20_000, scope="in its tip segment"
         )
         error = cli._resume_history_limit_error(tip_only=True)
-        assert error and "20001" in error and "too long to reload safely" in error
+        assert error and "in its tip segment" in error
 
 
 

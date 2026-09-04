@@ -191,6 +191,71 @@ def _model_selection_request(session: dict[str, Any], requested_model: str) -> t
     return None if available and requested_model not in available else ("session/set_model", {"sessionId": session_id, "modelId": requested_model})
 
 
+def _model_selection_request(
+    session: dict[str, Any], requested_model: str
+) -> tuple[str, dict[str, str]] | None:
+    """Return the ACP request that selects ``requested_model`` for ``session``.
+
+    Prefer stable v1 ``session/set_config_option``. Fall back to Copilot's
+    pre-stabilization ``session/set_model`` extension only when no model
+    config option is advertised. A reported model list is authoritative:
+    unknown and policy-disabled ids return None instead of being sent.
+    """
+    session_id = str(session.get("sessionId") or "").strip()
+    requested_model = str(requested_model or "").strip()
+    if not session_id or not requested_model or requested_model == "copilot-acp":
+        return None
+
+    config_options = [
+        o for o in (session.get("configOptions") or []) if isinstance(o, dict)
+    ]
+    model_option = next(
+        (
+            o for o in config_options
+            if o.get("category") == "model" or o.get("id") == "model"
+        ),
+        None,
+    )
+    if model_option is not None:
+        enabled_values = {
+            str(o.get("value") or "").strip()
+            for o in (model_option.get("options") or [])
+            if isinstance(o, dict)
+            and str(
+                ((o.get("_meta") or {}).get("copilotEnablement")) or ""
+            ).strip().lower() != "disabled"
+        }
+        if requested_model not in enabled_values:
+            return None
+        return (
+            "session/set_config_option",
+            {
+                "sessionId": session_id,
+                "configId": str(model_option.get("id") or "model"),
+                "value": requested_model,
+            },
+        )
+
+    advertised = [
+        m
+        for m in ((session.get("models") or {}).get("availableModels") or [])
+        if isinstance(m, dict)
+    ]
+    available = {
+        str(m.get("modelId") or "").strip()
+        for m in advertised
+        if str(
+            ((m.get("_meta") or {}).get("copilotEnablement")) or ""
+        ).strip().lower() != "disabled"
+    }
+    if available and requested_model not in available:
+        return None
+    return (
+        "session/set_model",
+        {"sessionId": session_id, "modelId": requested_model},
+    )
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]], model: str | None = None, tools: list[dict[str, Any]] | None = None, tool_choice: Any = None,
 ) -> str:
@@ -200,8 +265,11 @@ def _format_messages_as_prompt(
         "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
         "If no tool is needed, answer normally.",
     ]
-    if model:
-        sections.append(f"Hermes requested model hint: {model}")
+    # Deliberately no "requested model" line in the prompt: the model is
+    # applied for real via ACP session/set_model, and when the backend can't
+    # honor it (org-policy-disabled id) a prompt-text mention makes the
+    # serving model FALSELY self-identify as the requested one. Identity
+    # must come from the backend, not from prompt suggestion.
 
     # Copilot has no tools of its own that would collide with Hermes', so it
     # forwards the whole toolset (no allowlist).
@@ -284,8 +352,9 @@ _FS_HANDLERS = {"fs/read_text_file": _fs_read_text_file, "fs/write_text_file": _
 class CopilotACPClient:
     """Minimal OpenAI-client-compatible facade for Copilot ACP."""
 
-    # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess over stdio, so it is
-    # already a complete client (never re-dispatch through a wire adapter) and async-safe as-is.
+    # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess
+    # over stdio, so it is already a complete client (never re-dispatch it
+    # through a wire adapter) and is safe to use from async code as-is.
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True
 
@@ -319,8 +388,34 @@ class CopilotACPClient:
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False, **_: Any,
     ) -> Any:
-        prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
-        response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
+        prompt_text = _format_messages_as_prompt(
+            messages or [],
+            model=model,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        # Normalise timeout: run_agent.py may pass an httpx.Timeout object
+        # (used natively by the OpenAI SDK) rather than a plain float.
+        if timeout is None:
+            _effective_timeout = _DEFAULT_TIMEOUT_SECONDS
+        elif isinstance(timeout, (int, float)):
+            _effective_timeout = float(timeout)
+        else:
+            # httpx.Timeout or similar — pick the largest component so the
+            # subprocess has enough wall-clock time for the full response.
+            _candidates = [
+                getattr(timeout, attr, None)
+                for attr in ("read", "write", "connect", "pool", "timeout")
+            ]
+            _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
+            _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
+
+        response_text, reasoning_text = self._run_prompt(
+            prompt_text,
+            timeout_seconds=_effective_timeout,
+            model=model,
+        )
+
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
         message = SimpleNamespace(
             content=cleaned_text, tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,
@@ -333,9 +428,22 @@ class CopilotACPClient:
         )
         return _completion_to_stream_chunks(completion) if stream else completion
 
-    def _spawn(self) -> subprocess.Popen[str]:
-        # Fast-fail when the CLI rejects --acp (else the parent waits the full child timeout for stdout that
-        # never arrives). ``None`` falls through to the spawn's established start error.
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+        model: str | None = None,
+    ) -> tuple[str, str]:
+        # Fast-fail when the CLI doesn't support the ACP args we'd pass.
+        # Without this guard, a CLI like Claude Code v2.x exits with
+        # ``error: unknown option '--acp'`` immediately, then the parent
+        # ACP loop waits the full ``child_timeout_seconds`` (default 600s)
+        # for stdout that never arrives. The probe costs ~50ms and turns
+        # a 600s silent hang into a 280ms clear error.
+        # ``None`` (inconclusive probe — e.g. binary missing) falls
+        # through to the spawn below, which raises the established
+        # "Could not start Copilot ACP command" error.
         if _acp_supported(self._acp_command, self._acp_args) is False:
             preview = " ".join(self._acp_args[:3]) if self._acp_args else "(none)"
             raise RuntimeError(
@@ -344,6 +452,14 @@ class CopilotACPClient:
                 "install a CLI that ships with --acp support (e.g. `@github/copilot` late 2025+), or set "
                 "HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS to a working pair."
             )
+
+        # Note the model Hermes selected; it is applied after session/new via
+        # the ACP-native `session/set_model` call. The CLI's `--model` spawn
+        # flag is deliberately NOT used here: `copilot --acp` validates it
+        # (an unknown id aborts the spawn) but then ignores it for the actual
+        # session, so it adds a failure mode without selecting anything.
+        requested_model = str(model or "").strip()
+
         try:
             from hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
 
@@ -423,7 +539,49 @@ class CopilotACPClient:
             session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
             if not str(session.get("sessionId") or "").strip():
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
-            yield session, _request
+
+            # Select the model Hermes asked for. Prefer the stable ACP v1
+            # session-config API: session/new advertises a category="model"
+            # select option and session/set_config_option updates it. Copilot
+            # still exposes the older models/session/set_model extension too,
+            # so retain that only as compatibility fallback for older agents.
+            if requested_model and requested_model != "copilot-acp":
+                try:
+                    selection = _model_selection_request(session, requested_model)
+                    if selection is not None:
+                        method, params = selection
+                        _request(method, params)
+                    else:
+                        logger.warning(
+                            "Copilot ACP does not offer model %r; using the "
+                            "session default.",
+                            requested_model,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Copilot ACP model selection for %r failed; continuing "
+                        "with the session default: %s",
+                        requested_model,
+                        exc,
+                    )
+
+            text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            _request(
+                "session/prompt",
+                {
+                    "sessionId": session_id,
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": prompt_text,
+                        }
+                    ],
+                },
+                text_parts=text_parts,
+                reasoning_parts=reasoning_parts,
+            )
+            return "".join(text_parts), "".join(reasoning_parts)
         finally:
             self.close()
 

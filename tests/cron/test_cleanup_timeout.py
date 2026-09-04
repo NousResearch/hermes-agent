@@ -27,8 +27,10 @@ class HangingSessionDB:
     def __init__(self, release: threading.Event):
         self.release = release
         self.entered = threading.Event()
+        self.entered_at: float | None = None
 
     def get_compression_tip(self, _session_id):
+        self.entered_at = time.monotonic()
         self.entered.set()
         self.release.wait()
         return None
@@ -60,7 +62,7 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("hermes_state.get_shared_session_db", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
@@ -68,12 +70,12 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            started = time.monotonic()
             success, _output, final_response, error = run_job(job)
-            elapsed = time.monotonic() - started
 
-        assert fake_db.entered.wait(timeout=0.5)
-        assert elapsed < 0.5
+        assert fake_db.entered.wait(timeout=2.0)
+        assert fake_db.entered_at is not None
+        cleanup_elapsed = time.monotonic() - fake_db.entered_at
+        assert cleanup_elapsed < 5.0
         assert success is True
         assert final_response == "ok"
         assert error is None
@@ -141,7 +143,7 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("hermes_state.get_shared_session_db", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \

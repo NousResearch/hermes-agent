@@ -41,8 +41,17 @@ MAX_DELIVERY_ATTEMPTS = 2
 RETRY_BACKOFF_SECONDS = 1.0
 QUEUE_MAX_SIZE = 256
 
-# (home, event, url) triples already wired in this process. Home is part of the key so a
-# multiplexed gateway's secondary profiles (own plugin managers) can register identical targets.
+# Events whose ``matcher`` field is honored (mirrors shell hooks).
+_TOOL_SCOPED_EVENTS = {"pre_tool_call", "post_tool_call"}
+
+# kwargs promoted to top-level payload keys (mirrors shell hooks wire).
+_TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
+
+# (home, event, url) triples already wired to the plugin manager in this
+# process. Home is part of the key so a multiplexed gateway's secondary
+# profiles — each with their own plugin manager (see
+# hermes_cli.plugins.get_plugin_manager) — can register identical webhook
+# targets without the first profile's registration shadowing the rest.
 _registered: Set[Tuple[str, str, str]] = set()
 _registered_lock = threading.Lock()
 
@@ -81,8 +90,11 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     if not targets:
         return []
     from hermes_cli.plugins import get_plugin_manager
+    from hermes_constants import get_hermes_home
+
     manager = get_plugin_manager()
-    home_key = _home_key()
+    home_key = str(get_hermes_home().expanduser().resolve())
+
     registered: List[WebhookTarget] = []
     with _registered_lock:
         for target in targets:
@@ -130,16 +142,25 @@ def flush(timeout: float = 5.0) -> bool:
 
 
 def re_register_config_hooks() -> None:
-    """Re-register outbound webhooks after a plugin force-reload cleared ``_hooks``.  Only the
-    current home's idempotence keys are cleared so a force-reload in one profile cannot
-    invalidate another profile's still-live registration.
+    """Re-register outbound webhooks from config after a plugin force-reload.
 
-    Mirrors ``agent.shell_hooks.re_register_config_hooks``: config-owned outbound-webhook callbacks live in
-    the same ``_hooks`` dict that ``PluginManager.discover_and_load(force=True)`` clears via ``unload()``,
-    so without this the force-reloaded profile's outbound webhooks go silently inert (#92682 review).
+    Mirrors ``agent.shell_hooks.re_register_config_hooks``: config-owned
+    outbound-webhook callbacks live in the same ``_hooks`` dict that
+    ``PluginManager.discover_and_load(force=True)`` clears via ``unload()``,
+    so without this the force-reloaded profile's outbound webhooks go
+    silently inert (#92682 review). Only the current home's idempotence
+    keys are cleared so a force-reload in one profile cannot invalidate
+    another profile's still-live registration.
     """
     from hermes_cli.config import load_config
-    _forget_home_registrations(_registered, _registered_lock)
+    from hermes_constants import get_hermes_home
+
+    home_key = str(get_hermes_home().expanduser().resolve())
+    with _registered_lock:
+        _registered.difference_update(
+            {key for key in _registered if key[0] == home_key}
+        )
+
     register_from_config(load_config())
 
 
@@ -238,16 +259,37 @@ def _make_callback(event: str, target: WebhookTarget):
     return _callback
 
 
-def _serialize_payload(event: str, kwargs: Dict[str, Any], delivery_id: str) -> bytes:
-    """Render the POST body: shell-hooks stdin shape plus delivery metadata.  ``delivery_id``
-    (also the ``X-Hermes-Delivery`` header) and ``timestamp`` live inside the HMAC-signed
-    body, so they double as replay protection."""
-    # Profile resolved at fire time so a multiplexed gateway's receivers can tell which profile emitted.
-    # See #92674.
+def _serialize_payload(
+    event: str, kwargs: Dict[str, Any], delivery_id: str,
+) -> bytes:
+    """Render the POST body.  Same top-level shape as shell hooks' stdin
+    (documented in :mod:`agent.shell_hooks`), plus delivery metadata.
+
+    ``delivery_id`` is shared with the ``X-Hermes-Delivery`` header so
+    receivers can dedupe on either — and since it (plus ``timestamp``)
+    lives inside the HMAC-signed body, it doubles as replay protection.
+    """
+    extras = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        cwd = ""
+    # Resolved at fire time from the bound home so a multiplexed gateway's
+    # receivers can tell which profile emitted the event (#92674).
     from hermes_cli.profiles import get_active_profile_name
+
     payload = {
-        "hook_event_name": event, "profile": get_active_profile_name(), **_payload_fields(kwargs),
-        "delivery_id": delivery_id, "timestamp": _utc_now_iso(),
+        "hook_event_name": event,
+        "profile": get_active_profile_name(),
+        "tool_name": kwargs.get("tool_name"),
+        "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
+        "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
+        "cwd": cwd,
+        "extra": extras,
+        "delivery_id": delivery_id,
+        "timestamp": datetime.now(tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
     }
     return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
 

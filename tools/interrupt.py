@@ -75,34 +75,6 @@ def is_thread_interrupted(thread_id: int | None) -> bool:
         return thread_id in _interrupted_threads
 
 
-def request_yield(thread_id: int) -> None:
-    """Ask the tool running on *thread_id* to yield: a foreground terminal command hands
-    its live process to the background registry and returns at once, so a user's mid-turn
-    message (``redirect()`` during tool execution) is delivered instead of parked behind it.
-    The command itself is never killed; that is what ``set_interrupt`` is for."""
-    with _lock:
-        _yield_threads.add(thread_id)
-
-
-def is_thread_yield_requested(thread_id: int | None) -> bool:
-    """Whether a yield is pending for *thread_id* (``None`` never is)."""
-    if thread_id is None:
-        return False
-    with _lock:
-        return thread_id in _yield_threads
-
-
-def consume_yield(thread_id: int | None) -> bool:
-    """Atomically take the pending yield for *thread_id*; True if one was pending."""
-    if thread_id is None:
-        return False
-    with _lock:
-        if thread_id in _yield_threads:
-            _yield_threads.discard(thread_id)
-            return True
-        return False
-
-
 def run_if_not_interrupted(callback: Callable[[], None]) -> bool:
     """Run a state transition atomically with current-thread interruption.
 
@@ -116,12 +88,6 @@ def run_if_not_interrupted(callback: Callable[[], None]) -> bool:
             return False
         callback()
         return True
-
-
-def get_interrupt_reason() -> str | None:
-    """User-safe interrupt cause for the current thread, if known."""
-    with _lock:
-        return _interrupt_reasons.get(threading.current_thread().ident)
 
 
 def get_interrupt_reason() -> str | None:

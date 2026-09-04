@@ -1,10 +1,31 @@
 """Platform adapter registry.
 
-Adapters (built-in and plugin) self-register here so the gateway can discover and
-instantiate them without hardcoded if/elif chains. Plugins register via
-``PluginContext.register_platform()``; ``GatewayRunner._create_adapter()`` consults the
-registry first, then the legacy built-in path. Plugin side: ``platform_registry
-.register(PlatformEntry(...))``; gateway side: ``create_adapter("irc", platform_config)``.
+Allows platform adapters (built-in and plugin) to self-register so the gateway
+can discover and instantiate them without hardcoded if/elif chains.
+
+Built-in adapters continue to use the existing if/elif in _instantiate_adapter()
+for now.  Plugin adapters register here via PluginContext.register_platform()
+and are looked up first -- if nothing is found the gateway falls through to
+the legacy code path.  GatewayRunner._create_adapter() wraps both paths and
+binds every successful adapter to its runner.
+
+Usage (plugin side):
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+
+    platform_registry.register(PlatformEntry(
+        name="irc",
+        label="IRC",
+        adapter_factory=lambda cfg: IRCAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=lambda cfg: bool(cfg.extra.get("server")),
+        required_env=["IRC_SERVER"],
+        install_hint="pip install irc",
+    ))
+
+Usage (gateway side):
+
+    adapter = platform_registry.create_adapter("irc", platform_config)
 """
 
 import logging

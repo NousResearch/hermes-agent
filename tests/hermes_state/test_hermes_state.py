@@ -14,21 +14,14 @@ from unittest import mock
 import pytest
 
 import hermes_state
-import hermes_state_wal
-import hermes_state_common
-from agent.session_activity import ActivityProvenance, build_activity_snapshot
-from hermes_state import SessionDB
-from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
-
-
-def _activity_snapshot(db, session_id):
-    """Durable activity snapshot for *session_id* (what gateway/delegate readers build from the row)."""
-    row = db.get_session(session_id)
-    return build_activity_snapshot(
-        last_activity_at=row.get("last_activity_at"),
-        last_activity_description=row.get("last_activity_description"),
-        last_activity_provenance=row.get("last_activity_provenance"),
-    )
+from agent.session_activity import ActivityProvenance
+from hermes_state import (
+    FTS_SQL,
+    FTS_STORAGE_VERSION,
+    SCHEMA_SQL,
+    SCHEMA_VERSION,
+    SessionDB,
+)
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -3518,7 +3511,7 @@ class TestVacuum:
 
     def test_auto_maintenance_freelist_ratio_exactly_at_threshold_skips(self, db, monkeypatch):
         """Gate is strictly greater-than: 25.0% reclaimable does not VACUUM."""
-        from hermes_state_common import AUTO_VACUUM_MIN_FREELIST_RATIO
+        from hermes_state import AUTO_VACUUM_MIN_FREELIST_RATIO
 
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
         monkeypatch.setattr(db, "_freelist_ratio", lambda: AUTO_VACUUM_MIN_FREELIST_RATIO)
@@ -3558,7 +3551,7 @@ class TestVacuum:
 
     def test_freelist_ratio_reads_real_pragmas(self, db):
         """Real-DB check: freeing most of the file pushes the ratio past the gate."""
-        from hermes_state_common import AUTO_VACUUM_MIN_FREELIST_RATIO
+        from hermes_state import AUTO_VACUUM_MIN_FREELIST_RATIO
 
         db.create_session(session_id="keep", source="cli")
         db.append_message(session_id="keep", role="user", content="hi")
@@ -5469,12 +5462,12 @@ class TestGetMessagesPagination:
         assert db.get_resume_message_count("seg-5", tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as full:
             db.assert_resume_safe("seg-5", max_messages=10)
-        assert full.value.scope == "across its lineage"
+        assert "across its lineage" in str(full.value)
         assert db.assert_resume_safe("seg-5", max_messages=10, tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as tip:
             db.assert_resume_safe("seg-5", max_messages=3, tip_only=True)
         assert tip.value.message_count == 4
-        assert tip.value.scope == "in its tip segment"
+        assert "in its tip segment" in str(tip.value)
 
     def test_resume_guard_counts_exactly_what_a_branch_resume_loads(self, db):
         """An explicit /branch copy owns its transcript: the guard and the

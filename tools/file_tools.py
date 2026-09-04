@@ -223,7 +223,11 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    # Scope-aware: under gateway multiplexing the routed profile's cwd lives in
+    # the per-turn terminal scope, not the process env (#68559).
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    return _sentinel_free_abs_cwd(scope_terminal_cwd() or None)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -1009,6 +1013,27 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
 
+# Track files read per task to detect re-read loops and deduplicate reads.
+# Per task_id we store:
+#   "last_key":     the key of the most recent read/search call (or None)
+#   "consecutive":  how many times that exact call has been repeated in a row
+#   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
+#   "dedup":        dict mapping (resolved_path, offset, limit) → mtime float
+#                   Used to skip re-reads of unchanged files.  Survives
+#                   context compression so unchanged files can resume
+#                   returning lightweight stubs after one recovery read.
+#   "dedup_generation_reads": set of dedup keys whose full content has been
+#                   served since the latest compaction boundary. Cleared on
+#                   compression so the first post-compaction read can recover
+#                   exact bytes that the summary may have omitted.
+#   "read_timestamps": dict mapping resolved_path → modification-time float
+#                      recorded when the file was last read (or written) by
+#                      this task.  Used by write_file and patch to detect
+#                      external changes between the agent's read and write.
+#                      Updated after successful writes so consecutive edits
+#                      by the same task don't trigger false warnings.
+_read_tracker_lock = threading.Lock()
+_read_tracker: dict = {}
 
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
@@ -1018,36 +1043,257 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
-    config = _get_env_config()
-    env_type = config["env_type"]
-    overrides = resolve_task_overrides(raw_task_id)
-    try:
-        recorded_cwd = get_session_cwd(raw_task_id)
-    except Exception:
-        recorded_cwd = None
-    cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
-    # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
-    # path and ``docker run -w <host-path>`` makes search_files & co silently
-    # return nothing. Valid in-container overrides (/workspace, /root) pass.
-    # Re-apply the container cwd guard that _get_env_config() already ran on config["cwd"] (see #50636). A
-    # per-task cwd override registered by the gateway/TUI/ACP for workspace tracking is a raw host path
-    # (e.g. a Desktop session's /Users/<me>/workspace or C:\\Users\\<me>). On a container backend that
-    # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
-    # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
-    # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
-        if cwd != config["cwd"]:
-            logger.info(
-                "Ignoring host/relative cwd override %r for %s backend "
-                "(won't exist in sandbox). Using %r instead.",
-                cwd, env_type, config["cwd"])
-        cwd = config["cwd"]
-    logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
-    terminal_env = _create_configured_env(
-        config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
-        timeout=config["timeout"], task_id=task_id,
-        host_cwd=_resolve_task_host_cwd(config, raw_task_id),
-        local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
+
+def _record_patch_failure(task_id: str, resolved_path: str) -> int:
+    """Increment and return the consecutive-failure count for this path."""
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.setdefault(task_id, {})
+        # Cap dict size per task to avoid unbounded growth in long sessions
+        # where the agent fails on many distinct files.  64 distinct
+        # failing files per task is generous; older entries get evicted.
+        if len(task_failures) >= 64 and resolved_path not in task_failures:
+            try:
+                first_key = next(iter(task_failures))
+                del task_failures[first_key]
+            except StopIteration:
+                pass
+        task_failures[resolved_path] = task_failures.get(resolved_path, 0) + 1
+        return task_failures[resolved_path]
+
+
+def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
+    """Clear consecutive-failure counts for the given paths."""
+    if not resolved_paths:
+        return
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.get(task_id)
+        if not task_failures:
+            return
+        for rp in resolved_paths:
+            task_failures.pop(rp, None)
+
+# Per-task bounds for the containers inside each _read_tracker[task_id].
+# A CLI session uses one stable task_id for its lifetime; without these
+# caps, a 10k-read session would accumulate ~1.5MB of dict/set state that
+# is never referenced again (only the most recent reads matter for dedup,
+# loop detection, and external-edit warnings).  Hard caps bound the
+# accretion to a few hundred KB regardless of session length.
+_READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
+_DEDUP_CAP = 1000             # dict; skip-identical-reread guard
+_READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_NOT_FOUND_CAP = 500          # dict; per-task negative-result cache for missing paths
+_NOT_FOUND_TTL_SECONDS = 60.0 # short TTL — a path that didn't exist may be created soon
+_READ_DEDUP_STATUS_MESSAGE = (
+    "File unchanged since last read. The content from "
+    "the earlier read_file result in this conversation is "
+    "still current — refer to that instead of re-reading."
+)
+
+
+def _cap_read_tracker_data(task_data: dict) -> None:
+    """Enforce size caps on the per-task read-tracker sub-containers.
+
+    Must be called with ``_read_tracker_lock`` held.  Eviction policy:
+
+      * ``read_history`` (set): pop arbitrary entries on overflow.  This
+        is fine because the set only feeds diagnostic summaries; losing
+        old entries just trims the summary's tail.
+      * ``dedup`` / ``read_timestamps`` (dict): pop oldest by insertion
+        order (Python 3.7+ dicts).  Evicted entries lose their dedup
+        skip on a future re-read (the file gets re-sent once) and
+        external-edit mtime comparison (the write/patch falls back to
+        a non-mtime check).  Both are graceful degradations, not bugs.
+    """
+    rh = task_data.get("read_history")
+    if rh is not None and len(rh) > _READ_HISTORY_CAP:
+        excess = len(rh) - _READ_HISTORY_CAP
+        for _ in range(excess):
+            try:
+                rh.pop()
+            except KeyError:
+                break
+
+    dedup = task_data.get("dedup")
+    if dedup is not None and len(dedup) > _DEDUP_CAP:
+        excess = len(dedup) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                dedup.pop(next(iter(dedup)))
+            except (StopIteration, KeyError):
+                break
+
+    dedup_hits = task_data.get("dedup_hits")
+    if dedup_hits is not None and len(dedup_hits) > _DEDUP_CAP:
+        excess = len(dedup_hits) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                dedup_hits.pop(next(iter(dedup_hits)))
+            except (StopIteration, KeyError):
+                break
+
+    generation_reads = task_data.get("dedup_generation_reads")
+    if generation_reads is not None and len(generation_reads) > _DEDUP_CAP:
+        excess = len(generation_reads) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                generation_reads.pop()
+            except KeyError:
+                break
+
+    ts = task_data.get("read_timestamps")
+    if ts is not None and len(ts) > _READ_TIMESTAMPS_CAP:
+        excess = len(ts) - _READ_TIMESTAMPS_CAP
+        for _ in range(excess):
+            try:
+                ts.pop(next(iter(ts)))
+            except (StopIteration, KeyError):
+                break
+
+    nf = task_data.get("not_found")
+    if nf is not None and len(nf) > _NOT_FOUND_CAP:
+        excess = len(nf) - _NOT_FOUND_CAP
+        for _ in range(excess):
+            try:
+                nf.pop(next(iter(nf)))
+            except (StopIteration, KeyError):
+                break
+
+
+def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | None:
+    """Return cached not-found JSON for *(op, resolved_str)* if still fresh.
+
+    Skips the expensive subprocess + suggestion walk when the model retries
+    the same missing path. Observed in agent.log: a single typo'd path was
+    retried 13 times — each retry forked a shell to walk the parent directory
+    and score similar names.
+
+    *op* is "read" or "search" — kept separate because the two callers return
+    different error JSON shapes ("File not found:" vs "Path not found:").
+
+    Eviction: TTL or write_file/patch on the path (see invalidate_for_path).
+    """
+    import os as _os
+    import time
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if not task_data:
+            return None
+        nf = task_data.get("not_found")
+        if not nf:
+            return None
+        entry = nf.get((op, resolved_str))
+        if entry is None:
+            return None
+        ts, cached_json = entry
+        if time.monotonic() - ts > _NOT_FOUND_TTL_SECONDS:
+            nf.pop((op, resolved_str), None)
+            return None
+    # Existence guard: the path may have been created since we cached the
+    # miss — by a terminal command, another agent, or any external process
+    # (write_file/patch invalidate explicitly, but they're not the only
+    # writers). The agent pattern "check file → create it → read it" is
+    # common; serving a stale miss for up to the TTL breaks it. One stat is
+    # ~free next to the subprocess walk we're skipping.
+    #
+    # The stat runs OUTSIDE _read_tracker_lock (matching the dedup mtime
+    # check below in read_file_tool): the lock is global across all tasks,
+    # and a hung stat on a dead network mount must not stall every other
+    # task's read/search bookkeeping.
+    if _os.path.exists(resolved_str):
+        with _read_tracker_lock:
+            task_data = _read_tracker.get(task_id)
+            nf = task_data.get("not_found") if task_data else None
+            if nf:
+                nf.pop((op, resolved_str), None)
+        return None
+    return cached_json
+
+
+def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str) -> None:
+    """Cache a not-found error so the next *op* call for *resolved_str* skips I/O."""
+    import time
+    with _read_tracker_lock:
+        task_data = _read_tracker.setdefault(task_id, {
+            "last_key": None, "consecutive": 0,
+            "read_history": set(), "dedup": {},
+            "dedup_hits": {}, "read_timestamps": {},
+        })
+        nf = task_data.setdefault("not_found", {})
+        nf[(op, resolved_str)] = (time.monotonic(), error_json)
+        _cap_read_tracker_data(task_data)
+
+
+def _is_internal_file_status_text(content: str) -> bool:
+    """Return True when content looks like an internal file-tool status, not real file bytes.
+
+    The read_file dedup status message must never be persisted as file
+    content.  The obvious shape is the model echoing the message verbatim,
+    but in practice it also wraps it with small framing text (a leading
+    "Note:", a trailing newline + short comment, etc.) before calling
+    write_file.  We treat any short-ish write whose body is dominated by
+    the status message as the same class of corruption.
+
+    Heuristic:
+      * Strict equality (after strip) — the verbatim shape.
+      * OR the stripped content contains the full status message AND is
+        short enough that the status dominates it (<=2x the message length).
+        Short, status-dominated writes can't plausibly be real files —
+        legitimate docs/notes that happen to quote this internal message
+        are always dramatically longer.
+    """
+    if not isinstance(content, str):
+        return False
+    stripped = content.strip()
+    if not stripped:
+        return False
+    if stripped == _READ_DEDUP_STATUS_MESSAGE:
+        return True
+    if _READ_DEDUP_STATUS_MESSAGE in stripped and \
+            len(stripped) <= 2 * len(_READ_DEDUP_STATUS_MESSAGE):
+        return True
+    return False
+
+
+def _looks_like_read_file_line_numbered_content(content: str) -> bool:
+    """Return True for content dominated by read_file's ``LINE_NUM|CONTENT`` display.
+
+    ``read_file`` intentionally returns line-numbered text to the model. If
+    that display format is echoed into ``write_file``, config/source files are
+    silently corrupted with prefixes like `` 1|``.  We reject writes where the
+    non-empty lines are mostly consecutive read_file-style numbered lines, while
+    allowing sparse literal pipe content such as a single ``1|value`` line.
+    """
+    if not isinstance(content, str):
+        return False
+
+    lines = [line for line in content.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+
+    numbered: list[int] = []
+    for line in lines:
+        stripped = line.lstrip()
+        prefix, sep, _rest = stripped.partition("|")
+        if sep and prefix.isdigit():
+            numbered.append(int(prefix))
+
+    if len(numbered) < 2:
+        return False
+    if len(numbered) / len(lines) < 0.6:
+        return False
+
+    consecutive_pairs = sum(
+        1 for prev, current in zip(numbered, numbered[1:])
+        if current == prev + 1
+    )
+    return consecutive_pairs >= len(numbered) - 1
+
+
+def _is_internal_file_tool_content(content: str) -> bool:
+    """Return True when content is file-tool display text, not intended file bytes."""
+    return (
+        _is_internal_file_status_text(content)
+        or _looks_like_read_file_line_numbered_content(content)
     )
     return env_type, terminal_env
 
@@ -1230,13 +1476,6 @@ def clear_file_ops_cache(task_id: str = None):
         file_state.get_registry().forget_task(task_id)
     else:
         file_state.get_registry().clear()
-
-
-_SPECIAL_FILE_KINDS = (
-    (stat.S_ISFIFO, "a FIFO (named pipe)"),
-    (stat.S_ISSOCK, "a socket"),
-    (stat.S_ISCHR, "a character device"),
-    (stat.S_ISBLK, "a block device"))
 
 
 def _special_file_kind(path) -> str | None:
@@ -1476,15 +1715,57 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # lightweight stub instead of re-sending the content.
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
-            task_data = _task_data(task_id)
-            cached_mtime = task_data["dedup"].get(dedup_key)
-            # First unchanged read after a compaction boundary serves full content
-            # (the summary may have dropped exact bytes); later ones get the stub.
-            content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0,
+                "read_history": set(), "dedup": {},
+                "dedup_hits": {}, "dedup_generation_reads": set(),
+                "read_timestamps": {},
+            })
+            # Backward-compat for pre-existing tracker entries that predate
+            # dedup_hits/read_timestamps (long-lived task or crossed an
+            # upgrade boundary).
+            if "dedup_hits" not in task_data:
+                task_data["dedup_hits"] = {}
+            if "read_timestamps" not in task_data:
+                task_data["read_timestamps"] = {}
+            generation_reads = task_data.setdefault("dedup_generation_reads", set())
+            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            content_served_in_generation = dedup_key in generation_reads
+
         if cached_mtime is not None:
             try:
-                if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
-                    return _dedup_stub_or_block(task_data, dedup_key, path)
+                current_mtime = os.path.getmtime(resolved_str)
+                if current_mtime == cached_mtime and content_served_in_generation:
+                    # Count repeated stub returns so weak tool-followers that
+                    # ignore the "refer to earlier result" hint don't burn
+                    # their iteration budget in an infinite read loop.  After
+                    # 2 stubs for the same key we escalate to a hard block
+                    # mirroring the count>=4 path on real reads.
+                    with _read_tracker_lock:
+                        hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
+                        task_data["dedup_hits"][dedup_key] = hits
+                        _cap_read_tracker_data(task_data)
+
+                    if hits >= 2:
+                        return tool_error(
+                            f"BLOCKED: You have called read_file on this "
+                            f"exact region {hits + 1} times and the file "
+                            "has NOT changed. STOP calling read_file for "
+                            "this path — the content from your earlier "
+                            "read_file result in this conversation is "
+                            "still current. Proceed with your task using "
+                            "the information you already have.",
+                            path=path,
+                            already_read=hits + 1,
+                        )
+
+                    return json.dumps({
+                        "status": "unchanged",
+                        "message": _READ_DEDUP_STATUS_MESSAGE,
+                        "path": path,
+                        "dedup": True,
+                        "content_returned": False,
+                    }, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
 
@@ -1535,6 +1816,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             # reset its hit counter.  (File either changed or stat failed
             # earlier and we fell through.)
             task_data["dedup_hits"].pop(dedup_key, None)
+            task_data.setdefault("dedup_generation_reads", set()).add(dedup_key)
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -1608,8 +1890,75 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
 
-def _resolve_or_none(filepath: str, task_id: str) -> str | None:
-    """Task-resolved path string, or None when resolution fails for any reason."""
+
+def reset_file_dedup(task_id: str = None):
+    """Advance the read-dedup generation after context compression.
+
+    Called after context compression.  The per-key ``dedup`` mtime map is
+    preserved, but the generation-read set is cleared. The first unchanged
+    read of each key after compaction therefore returns full content that may
+    have been summarized away; later reads in the same generation return the
+    lightweight stub. Stub-hit counters are also cleared so the hard block
+    restarts fresh (issue #84857).
+
+    Call with a task_id to reset just that task, or without to reset all.
+    """
+    with _read_tracker_lock:
+        if task_id:
+            task_data = _read_tracker.get(task_id)
+            if task_data:
+                if "dedup_hits" in task_data:
+                    task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
+        else:
+            for task_data in _read_tracker.values():
+                if "dedup_hits" in task_data:
+                    task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
+
+
+def notify_other_tool_call(task_id: str = "default"):
+    """Reset consecutive read/search counter for a task.
+
+    Called by the tool dispatcher (model_tools.py) whenever a tool OTHER
+    than read_file / search_files is executed.  This ensures we only warn
+    or block on *truly consecutive* repeated reads — if the agent does
+    anything else in between (write, patch, terminal, etc.) the counter
+    resets and the next read is treated as fresh.
+    """
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if task_data:
+            task_data["last_key"] = None
+            task_data["consecutive"] = 0
+            # An intervening non-read tool call breaks any stub-loop in
+            # progress, so clear per-key dedup hit counters too.
+            if "dedup_hits" in task_data:
+                task_data["dedup_hits"].clear()
+            # Any other tool (terminal, delegate, ...) may have created a
+            # previously-missing path — a cached miss is no longer
+            # trustworthy. The serve-side existence guard in
+            # _check_not_found_cache already covers this, but clearing
+            # here keeps the cache honest and covers exotic cases the
+            # stat can't (e.g. permission flips).
+            nf = task_data.get("not_found")
+            if nf:
+                nf.clear()
+
+
+def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
+    """Remove all dedup cache entries whose resolved path matches *filepath*.
+
+    Called after write_file and patch so that a subsequent read_file on
+    the same path always returns fresh content instead of a stale
+    "File unchanged" stub.  The dedup cache keys are tuples of
+    ``(resolved_path, offset, limit)``; we must evict **all** offset/limit
+    combinations for the written path because any cached range could now
+    be stale.
+
+    Must be called with ``_read_tracker_lock`` **not** held — acquires it
+    internally.
+    """
     try:
         return str(_resolve_path_for_task(filepath, task_id))
     except Exception:
@@ -1897,9 +2246,19 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
-        # Pagination args (and order) are part of the key so paging through truncated
-        # results doesn't trip the repeated-search guard.
-        search_key = ("search", pattern, target, str(path), file_glob or "", limit, offset, order)
+        # Track searches to detect *consecutive* repeated search loops.
+        # Include pagination args so users can page through truncated
+        # results without tripping the repeated-search guard.
+        search_key = (
+            "search",
+            pattern,
+            target,
+            str(path),
+            file_glob or "",
+            limit,
+            offset,
+            order,
+        )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0, "read_history": set()})
@@ -1938,7 +2297,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         result = _get_file_ops(task_id).search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
+            limit=limit, offset=offset, output_mode=output_mode, context=context,
+            order=order,
+        )
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
@@ -2125,7 +2486,7 @@ def _is_openai_family_main() -> bool:
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
     "parameters": {
         "type": "object",
         "properties": {

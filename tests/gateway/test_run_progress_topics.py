@@ -292,11 +292,7 @@ class DuplicateNativeToolsAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        # Production (agent/tool_executor.py) fires these through _safe_callback, which skips a
-        # None callback; the card lane leaves them unset when cards are disabled for the turn.
-        start = self.tool_start_callback or (lambda *a, **k: None)
-        complete = self.tool_complete_callback or (lambda *a, **k: None)
-        start("call-a", "web_search", {"query": "alpha"})
+        self.tool_start_callback("call-a", "web_search", {"query": "alpha"})
         time.sleep(0.15)
         start("call-b", "web_search", {"query": "beta"})
         time.sleep(0.15)

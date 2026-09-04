@@ -321,20 +321,170 @@ class SharedMetricsStore:
                 yield connection
 
     def _ensure_schema(self) -> None:
-        # Serialize first-run creation and upgrades across Hermes processes.
-        with self._write(busy_timeout_ms=_SCHEMA_BUSY_TIMEOUT_MS) as connection:
-            connection.execute(_CREATE_TELEMETRY_STATE_SQL)
-            schema_row = connection.execute(
-                "SELECT value FROM telemetry_state WHERE key = 'schema_version'"
-            ).fetchone()
-            schema_version = str(schema_row["value"]) if schema_row is not None else None
-            if schema_version == "1":
-                for statement in _MIGRATE_V1_SQL:
-                    connection.execute(statement)
-                schema_version = _STORE_SCHEMA_VERSION
-            if schema_version is not None and schema_version != _STORE_SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"Unsupported shared-metrics store schema version: {schema_version}"
+        with self._connection(busy_timeout_ms=_SCHEMA_BUSY_TIMEOUT_MS) as connection:
+            # Serialize first-run creation and upgrades across Hermes processes.
+            with write_txn(connection):
+                self._ensure_schema_in_transaction(connection)
+
+    @staticmethod
+    def _ensure_schema_in_transaction(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        schema_row = connection.execute(
+            "SELECT value FROM telemetry_state WHERE key = 'schema_version'"
+        ).fetchone()
+        schema_version = str(schema_row["value"]) if schema_row is not None else None
+        if schema_version == "1":
+            SharedMetricsStore._migrate_v1_counter_aggregates(connection)
+            schema_version = _STORE_SCHEMA_VERSION
+        if schema_version is not None and schema_version != _STORE_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Unsupported shared-metrics store schema version: {schema_version}"
+            )
+        SharedMetricsStore._create_counter_aggregates_table(connection)
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS package_outbox (
+                package_id TEXT PRIMARY KEY,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                exported_at TEXT
+            )
+            """
+        )
+        SharedMetricsStore._add_send_columns(connection)
+        SharedMetricsStore._add_consent_tables(connection)
+        connection.execute(
+            """
+            INSERT INTO telemetry_state(key, value)
+            VALUES ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (_STORE_SCHEMA_VERSION,),
+        )
+
+    @staticmethod
+    def _add_send_columns(connection: sqlite3.Connection) -> None:
+        """Add transmission bookkeeping to ``package_outbox``, idempotently.
+
+        These columns are ADDITIVE and nullable, and the store schema version
+        is deliberately NOT bumped. ``_ensure_schema_in_transaction`` raises on
+        any version it does not recognise and has no forward-compatibility
+        branch, so bumping would make an older Hermes — a second profile on an
+        older build, or a rollback — hard-fail against the same database file.
+        Old readers select named columns and never ``SELECT *``, so extra
+        columns are invisible to them.
+        """
+        existing = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(package_outbox)")
+        }
+        for column, declaration in (
+            # When the 202 was received. NULL = never acknowledged.
+            ("sent_at", "TEXT"),
+            # NULL/'pending' = eligible, 'sent' = done, 'rejected' = permanent 400.
+            ("send_state", "TEXT"),
+            ("send_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            # Earliest next attempt; enforces backoff across process restarts.
+            ("next_attempt_at", "TEXT"),
+            ("last_error", "TEXT"),
+            # The identifier actually transmitted, frozen on the first
+            # attempt so retries stay byte-identical. Since the 2026-08-27
+            # product decision this is the stable install_id itself.
+            # Only the ~36-byte id is stored: the body is recomputed from
+            # payload_json, whose serialisation is deterministic.
+            ("sent_install_id", "TEXT"),
+            # NULL until first claimed; rewritten on every claim. Settlement
+            # and the pre-POST revalidation are compare-and-set on this, so a
+            # claimant whose lease lapsed loses authority the moment another
+            # process reclaims (PR-review finding: without it, a suspended
+            # sender resuming after a reclaim double-POSTs the package).
+            ("claim_token", "TEXT"),
+        ):
+            if column not in existing:
+                connection.execute(
+                    f"ALTER TABLE package_outbox ADD COLUMN {column} {declaration}"
+                )
+
+    @staticmethod
+    def _add_consent_tables(connection: sqlite3.Connection) -> None:
+        """Create the consent-window tables, idempotently.
+
+        Additive like ``_add_send_columns`` — the schema version is
+        deliberately NOT bumped, and old readers never touch these tables.
+
+        ``send_consent_windows`` records consent as explicit intervals rather
+        than a moving day-stamp: a window is opened when send consent is
+        observed, heartbeat-confirmed on every later observation, and closed
+        at the LAST CONFIRMED moment (never "now") when consent is observed
+        withdrawn. Consent is asserted only for time that was actually
+        observed, so unobserved gaps — a hand-edited config with no process
+        running — fail closed by construction.
+
+        ``consent_marks`` holds two monotonic high-water marks with strictly
+        separated roles:
+
+        - ``obs``: the latest observation stamp ever seen. Advanced only by
+          the reconciler. Confirms consent and clamps window closes.
+        - ``data``: the latest package ``period_end`` ever stored. Advanced
+          only by the package writer. Clamps window OPENS, so a rolled-back
+          clock can never open a window underneath packages that already
+          exist on disk.
+
+        The separation is load-bearing: letting data stamps confirm consent
+        re-created a refused-window leak (packages stored during an off
+        window would vouch for it), and letting observation stamps clamp
+        opens is not enough on its own to stop a rollback sliding a window
+        under existing refused data.
+        """
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS send_consent_windows (
+                opened_at TEXT NOT NULL,
+                last_confirmed_at TEXT NOT NULL,
+                closed_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS consent_marks (
+                name TEXT PRIMARY KEY CHECK (name IN ('obs', 'data')),
+                stamp TEXT NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
+    def _create_counter_aggregates_table(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS counter_aggregates (
+                period_start TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                hermes_version TEXT NOT NULL,
+                os_family TEXT NOT NULL,
+                architecture TEXT NOT NULL,
+                install_method TEXT NOT NULL,
+                dimensions_json TEXT NOT NULL,
+                value INTEGER NOT NULL,
+                packaged_value INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (
+                    period_start,
+                    metric_name,
+                    hermes_version,
+                    os_family,
+                    architecture,
+                    install_method,
+                    dimensions_json
                 )
             connection.execute(_CREATE_COUNTER_AGGREGATES_SQL)
             connection.execute(_CREATE_PACKAGE_OUTBOX_SQL)
@@ -442,12 +592,14 @@ class SharedMetricsStore:
                 _compact_json(payload), payload["generated_at"],
             ),
         )
-        # Advance the data high-water mark. This is the ONLY writer of the 'data' mark:
-        # it clamps consent-window opens so a rolled-back clock can never open a window
-        # underneath packages that already exist.
+        # Advance the data high-water mark. This is the ONLY writer of the
+        # 'data' mark: it clamps consent-window opens so a rolled-back clock
+        # can never open a window underneath packages that already exist.
         connection.execute(
-            "INSERT INTO consent_marks(name, stamp) VALUES ('data', ?)"
-            " ON CONFLICT(name) DO UPDATE SET stamp = MAX(stamp, excluded.stamp)",
+            """
+            INSERT INTO consent_marks(name, stamp) VALUES ('data', ?)
+            ON CONFLICT(name) DO UPDATE SET stamp = MAX(stamp, excluded.stamp)
+            """,
             (payload["period_end"],),
         )
         for row in rows:

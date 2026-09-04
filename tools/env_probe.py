@@ -131,12 +131,6 @@ def _build_probe_line() -> str:
     Emit only when SOMETHING is off — the goal is to save the model from
     hitting an avoidable wall, not to narrate a healthy environment.
     """
-    # Bail out if a remote terminal backend is configured; the host's
-    # Python state isn't where the agent's tools run.
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    if backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend):
-        return ""
-
     py3_ver = _python_version_of("python3")
     py_ver = _python_version_of("python")  # for systems with a `python` alias
     py3_has_pip = _has_pip_module("python3") if py3_ver else False
@@ -187,15 +181,22 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     """
     global _WAIT_ALREADY_TIMED_OUT
     if force_refresh:
-        _reset_cache_for_tests()
-    # Resolve the backend HERE, in the caller's context: under gateway multiplexing the
-    # routed profile's backend lives in the per-turn terminal scope, which the worker
-    # thread does not inherit. Remote backends answer "" without consulting the cache
-    # — the cached line describes the HOST toolchain.
-    # See #68559.
+        with _CACHE_LOCK:
+            _CACHED_LINE = None
+            _PROBE_DONE.clear()
+            _PROBE_THREAD = None
+            _PROBE_GEN += 1
+            _WAIT_ALREADY_TIMED_OUT = False
+
+    # Resolve the backend HERE, in the caller's context: under gateway
+    # multiplexing the routed profile's backend lives in the per-turn terminal
+    # scope, which the bare probe worker thread does not inherit (#68559). A
+    # remote backend answers "" without consulting the cache — the cached line
+    # describes the HOST toolchain, not where that profile's tools run.
     backend = _resolve_terminal_backend()
     if backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend):
         return ""
+
     if _PROBE_DONE.is_set():
         return _CACHED_LINE or ""
     _ensure_probe_started()

@@ -26,8 +26,30 @@ EXCLUDED_SKILL_DIRS = frozenset((
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
 
-# Progressive-disclosure support dirs inside a skill package: loaded explicitly
-# via skill_view(skill, file_path=...), never scanned as standalone skills.
+EXCLUDED_SKILL_DIRS = frozenset(
+    (
+        ".git",
+        ".github",
+        ".hub",
+        ".archive",
+        ".curator_backups",
+        ".venv",
+        "venv",
+        "node_modules",
+        "site-packages",
+        "__pycache__",
+        ".tox",
+        ".nox",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    )
+)
+
+# Supporting files live inside a skill package and are loaded explicitly via
+# skill_view(skill, file_path=...). They are not standalone skills and must not
+# be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
+# archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
 # Org mirrors live under skills/_org/<org_id>/ and are TOKEN-GATED: the sync
@@ -354,13 +376,37 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_skill_create_dir() -> Optional[Path]:
-    """Configured ``skills.create_dir`` (need not exist yet), or None when unset;
-    relative to HERMES_HOME; a value equal to the local skills dir counts as unset."""
-    raw = _skills_cfg_get("create_dir")
-    entry = str(raw).strip() if raw and isinstance(raw, (str, os.PathLike)) else ""
+    """Return the configured ``skills.create_dir``, or ``None`` when unset.
+
+    When set, agent-created skills (``skill_manage`` action=create) land in
+    this directory instead of the profile-local ``~/.hermes/skills/``, and
+    every user-facing instruction string that names the creation path renders
+    this directory instead of the default.
+
+    The entry is expanded (``~`` and ``${VAR}``); relative paths resolve
+    against HERMES_HOME.  A value that resolves to the local skills dir is
+    treated as unset (that is already the default behaviour).  The directory
+    does NOT need to exist yet — skill creation mkdirs it on first write.
+    """
+    parsed = _load_raw_config()
+    if not parsed:
+        return None
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+    raw = skills_cfg.get("create_dir")
+    if not raw or not isinstance(raw, (str, os.PathLike)):
+        return None
+    entry = str(raw).strip()
     if not entry:
         return None
-    p = _home_relative(_expand_path(entry))
+
+    from hermes_constants import get_hermes_home
+
+    expanded = os.path.expanduser(os.path.expandvars(entry))
+    p = Path(expanded)
+    if not p.is_absolute():
+        p = get_hermes_home() / p
     try:
         resolved = p.resolve()
     except OSError:
@@ -374,25 +420,45 @@ def get_skill_create_dir() -> Optional[Path]:
 
 
 def display_skill_create_dir() -> str:
-    """User-facing path where new skills are created (``~/`` shorthand when
-    possible); tool schema descriptions and prompts follow ``skills.create_dir``."""
+    """User-facing display string for where new skills are created.
+
+    Renders the configured ``skills.create_dir`` (with ``~/`` shorthand when
+    under the user's home) or the default ``<home>/skills/`` path.  Used by
+    instruction text (tool schema descriptions, prompts, docs strings) so a
+    configured creation dir changes every instruction that names the path.
+    """
     from hermes_constants import display_hermes_home
+
     create_dir = get_skill_create_dir()
     if create_dir is None:
         return f"{display_hermes_home()}/skills/"
-    if create_dir.is_relative_to(Path.home()):
+    try:
         return "~/" + create_dir.relative_to(Path.home()).as_posix() + "/"
-    return create_dir.as_posix() + "/"
+    except ValueError:
+        return create_dir.as_posix() + "/"
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Skill dirs: local ``~/.hermes/skills/`` first, then create_dir, then external.
-    Trusted project dirs are NOT included (higher precedence; see get_project_skills_dirs)."""
+    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+
+    The local dir is always first (and always included even if it doesn't exist
+    yet — callers handle that).  When ``skills.create_dir`` is configured, it
+    follows immediately after the local dir (so agent-created skills are
+    discovered, trusted, and modifiable).  External dirs follow in config order.
+
+    NOTE: trusted project-local dirs (``./.hermes/skills`` at the git root) are
+    NOT part of this list — they have *higher* precedence than the local dir,
+    so callers that need them use :func:`get_project_skills_dirs` and scan
+    those roots first. See ``get_scan_ordered_skills_dirs`` for the full
+    precedence-ordered list.
+    """
     dirs = [get_skills_dir()]
     create_dir = get_skill_create_dir()
     if create_dir is not None and create_dir.is_dir():
         dirs.append(create_dir)
-    dirs.extend(d for d in get_external_skills_dirs() if d not in dirs)
+    for d in get_external_skills_dirs():
+        if d not in dirs:
+            dirs.append(d)
     return dirs
 
 
@@ -421,6 +487,7 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     try:
         if start is None:
             from agent.runtime_cwd import scope_terminal_cwd
+
             env_cwd = scope_terminal_cwd()
             start = Path(env_cwd) if env_cwd else Path.cwd()
         cur = Path(start).resolve()
@@ -506,15 +573,30 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
 # cached under HERMES_HOME, never inside the repo); "dangerous" excludes the
 # skill from index, list, view and slash commands ("caution" loads, as on the hub).
 
-# ── Project skill quarantine (scan-time injection defense) ──────────────── Trust (`hermes skills trust`)
-# is a REPO-level decision made once; the repo's skill content keeps changing underneath it with every pull.
-# The hub install path runs skills_guard on install, but project skills are read straight from a checkout —
-# without this gate a `git pull` could inject a malicious skill into an already-trusted repo with no scan
-# anywhere (#48974). Every project SKILL.md's parent dir is scanned with the same skills_guard scanner the
-# hub uses (content-hash cached, so the cost is one scan per skill per content change). A "dangerous"
-# verdict quarantines the skill: it is excluded from the index, skills_list, skill_view, and slash commands.
-# "caution" loads (matches hub behavior for prose-level keyword hits) — the quarantine is for
-# high-confidence findings only. The scan cache lives under HERMES_HOME, never inside the repo (we don't
+    First-wins name deduplication over this order gives project skills
+    priority over profile-local and external ones.
+    """
+    dirs = list(get_project_skills_dirs())
+    dirs.extend(get_all_skills_dirs())
+    return dirs
+
+
+# ── Project skill quarantine (scan-time injection defense) ────────────────
+#
+# Trust (`hermes skills trust`) is a REPO-level decision made once; the repo's
+# skill content keeps changing underneath it with every pull. The hub install
+# path runs skills_guard on install, but project skills are read straight from
+# a checkout — without this gate a `git pull` could inject a malicious skill
+# into an already-trusted repo with no scan anywhere (#48974).
+#
+# Every project SKILL.md's parent dir is scanned with the same skills_guard
+# scanner the hub uses (content-hash cached, so the cost is one scan per
+# skill per content change). A "dangerous" verdict quarantines the skill: it
+# is excluded from the index, skills_list, skill_view, and slash commands.
+# "caution" loads (matches hub behavior for prose-level keyword hits) — the
+# quarantine is for high-confidence findings only.
+#
+# The scan cache lives under HERMES_HOME, never inside the repo (we don't
 # write artifacts into the user's checkout).
 _PROJECT_SCAN_SOURCE = "project-local"
 _PROJECT_QUARANTINE_CACHE: Dict[str, bool] = {}  # skill_dir -> quarantined
@@ -562,10 +644,16 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     identifier_path = Path(raw_identifier).expanduser()
     if not identifier_path.is_absolute():
         return raw_identifier.lstrip("/")
-    # Resolve the primary root via tools.skills_tool at CALL time: tests patch
-    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() enforces ``_skills_dir()``
-    # (which follows the live profile-scoped HERMES_HOME), so normalization
-    # must agree with that exact root. Import deferred (cycle).
+
+    # Look the primary skills root up on tools.skills_tool at CALL time
+    # (not via get_skills_dir()): callers and tests patch
+    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() itself resolves
+    # against ``_skills_dir()`` — which honors that patch and otherwise
+    # follows the live profile-scoped HERMES_HOME (the import-time
+    # SKILLS_DIR is frozen to the launch home, #67277) — so normalization
+    # must agree with the exact root skill_view() will enforce.  Import
+    # deferred to avoid a module cycle (tools.skills_tool imports
+    # agent.skill_utils).
     try:
         # See #67277.
         from tools import skills_tool as _skills_tool

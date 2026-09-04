@@ -191,6 +191,7 @@ export const zhHant = defineLocale({
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒絕了該 API 金鑰 (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
       codeSkewRestartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。'
     },
@@ -1209,13 +1210,9 @@ export const zhHant = defineLocale({
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
           '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
-        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。'
+        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。',
+        'least-painful-spilled': '沒有模型能完全裝入 GPU 記憶體——這是從系統記憶體執行表現最好的一個。'
       } as Record<string, string>,
-      noRecommendationTitle: '此裝置暫無自動推薦模型',
-      noRecommendationDetail:
-        '自動設定需要一個可完全放入 GPU 記憶體或統一記憶體的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
-      noRecommendationAction: '瀏覽模型',
-      quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
       downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
@@ -1229,7 +1226,8 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新組建。`,
+      updateToast: next => `本地引擎有新組建（${next}）。可在 設定 → 本地模型 中更新。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -1414,7 +1412,17 @@ export const zhHant = defineLocale({
         enabledMessage: '新工作階段將使用預設瀏覽器設定檔的快照進行瀏覽。',
         disabledTitle: '真實設定檔瀏覽：已關閉',
         disabledMessage: '設定檔快照將被刪除；新工作階段使用乾淨的瀏覽器。',
-        failedSave: '無法儲存真實設定檔設定'
+        failedSave: '無法儲存真實設定檔設定',
+        prompt: {
+          title: '讓網站保持登入狀態',
+          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，網站開啟時即已登入。',
+          bulletSnapshot: 'Cookie 與登入資訊會複製到受管理的快照中。',
+          bulletLiveProfile: '絕不會直接開啟你的真實瀏覽器設定檔。',
+          bulletLocal: '所有資料都不會離開這台電腦。',
+          dontShowAgain: '不再顯示',
+          notNow: '暫不',
+          enable: '使用我的設定檔'
+        }
       }
     }
   },
@@ -3541,9 +3549,10 @@ export const zhHant = defineLocale({
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
       },
-      'model-switch': {
-        title: '對話中隨時換模型',
-        text: '模型名稱就是按鈕。工作性質變了就換一個。'
+      'local-setup': {
+        title: '這台電腦可以本地執行模型',
+        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
+        action: '立即設定'
       },
       'right-pane': {
         title: '工作面板',

@@ -96,7 +96,30 @@ class TestClassification:
             assert not is_deferrable_tool_name(name), name
             assert name not in _HERMES_CORE_TOOLS
 
-    def test_gui_surface_alone_does_not_activate_the_bridge(self):
+    def test_gui_surface_defers_by_default(self):
+        """2026-08 core-deferral reversal: the curated defer set (GUI surface
+        included) hides behind the bridge BY DEFAULT. project tools not in
+        the defer set stay direct."""
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import ToolSearchConfig, assemble_tool_defs
+
+        discover_builtin_tools()
+        assembled = assemble_tool_defs(
+            [_td(name, f"GUI {name}") for name in
+             {"read_window_below", "apply_layout", "project_list"}],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert assembled.activated
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+        assert "read_window_below" not in names
+        assert "apply_layout" not in names
+        # project_list is NOT in the curated defer set → stays direct.
+        assert "project_list" in names
+
+    def test_defer_override_restores_legacy_direct_gui(self):
+        """tools.tool_search.defer: [] restores the everything-eager legacy:
+        GUI tools alone no longer activate the bridge."""
         from tools.registry import discover_builtin_tools
         from tools.tool_search import ToolSearchConfig, assemble_tool_defs
 
@@ -105,14 +128,15 @@ class TestClassification:
         assembled = assemble_tool_defs(
             [_td(name, f"GUI {name}") for name in names],
             context_length=200_000,
-            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+            config=ToolSearchConfig.from_raw({"enabled": "on", "defer": []}),
         )
         assert not assembled.activated
         assert {td["function"]["name"] for td in assembled.tool_defs} == names
 
-    def test_gui_surface_stays_direct_when_mcp_activates_the_bridge(self):
-        """MCP/plugin tools turn Tool Search on; the session's GUI tools stay
-        in the model-facing array so HUD can still name read_window_below."""
+    def test_core_working_set_never_defers_even_with_mcp_active(self):
+        """The bridge activates for MCP, but working-set core tools (terminal,
+        files, memory...) stay direct — the deferral set is the CURATED list,
+        not all of core."""
         from tools.registry import discover_builtin_tools, registry
         from tools.tool_search import (
             BRIDGE_TOOL_NAMES,
@@ -131,8 +155,8 @@ class TestClassification:
 
         assembled = assemble_tool_defs(
             [
-                _td("read_window_below", "Identify the window below"),
-                _td("apply_layout", "Apply a layout preset"),
+                _td("terminal", "Run a command"),
+                _td("memory", "Persistent memory"),
                 _td("computer_use", "Drive the OS"),
                 _td(mcp_name, "Deferred MCP capability"),
             ],
@@ -144,7 +168,38 @@ class TestClassification:
         assert assembled.activated
         assert mcp_name not in names
         assert BRIDGE_TOOL_NAMES <= names
-        assert {"read_window_below", "apply_layout", "computer_use"} <= names
+        assert {"terminal", "memory"} <= names
+        # computer_use IS in the curated defer set → behind the bridge.
+        assert "computer_use" not in names
+
+    def test_clarify_stays_eager_by_default(self):
+        """PR #97979 A/B verdict (288 runs, 3 model tiers): clarify deferred
+        collapsed structured ask-the-user usage 18/18 → 7/18 (gpt-terra 0/6);
+        models fell back to plain-text questions. The ask-the-user affordance
+        must stay ambient — clarify is NOT in the curated default defer set,
+        and assembles as a direct tool even when the bridge is active."""
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import (
+            _DEFAULT_DEFERRED_TOOLS,
+            ToolSearchConfig,
+            assemble_tool_defs,
+        )
+
+        assert "clarify" not in _DEFAULT_DEFERRED_TOOLS
+
+        discover_builtin_tools()
+        assembled = assemble_tool_defs(
+            [
+                _td("clarify", "Ask the user clarifying questions"),
+                _td("computer_use", "Drive the OS"),
+            ],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert assembled.activated  # computer_use still activates the bridge
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+        assert "clarify" in names
+        assert "computer_use" not in names
 
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must

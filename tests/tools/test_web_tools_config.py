@@ -360,6 +360,14 @@ class TestBackendSelection:
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
 
+    def test_managed_gateway_does_not_preempt_explicit_tavily(self):
+        """A Nous OAuth token must not beat an explicit TAVILY_API_KEY."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            assert _get_backend() == "tavily"
+
     def test_managed_gateway_only_falls_through_to_firecrawl(self):
         """When no explicit-credential backend is configured, a Nous-managed
         gateway token still selects firecrawl — the convenience path is
@@ -812,6 +820,28 @@ class TestSiblingProvidersEnvResolution:
                 f"{cls_name}.is_available() ignored {env_key} from the "
                 "config-aware env layer (get_env_value)"
             )
+
+    def test_tavily_request_reads_key_via_get_env_value(self, monkeypatch):
+        """Keyed Tavily must Bearer-auth with a key that lives only in .env."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"results": []}
+        mock_response.text = "{}"
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "tvly-from-dotenv" if k == "TAVILY_API_KEY" else None,
+        ), patch(
+            "plugins.web.tavily.provider.httpx.post", return_value=mock_response
+        ) as mock_post:
+            from plugins.web.tavily.provider import _tavily_request
+
+            _tavily_request("search", {"query": "q"})
+            headers = mock_post.call_args.kwargs["headers"]
+            assert headers["Authorization"] == "Bearer tvly-from-dotenv"
+            assert headers["X-Client-Name"] == "hermes-agent"
+            assert "X-Tavily-Access-Mode" not in headers
 
     def test_tavily_request_reads_key_via_get_env_value(self, monkeypatch):
         """Keyed Tavily must Bearer-auth with a key that lives only in .env."""

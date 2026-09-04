@@ -279,7 +279,7 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
-function projectProfile(): null | string {
+export function projectProfile(): null | string {
   const profile = normalizeProfileKey($activeGatewayProfile.get())
 
   return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile

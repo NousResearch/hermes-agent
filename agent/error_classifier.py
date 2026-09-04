@@ -1016,6 +1016,10 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
+# A reasoning-mandatory route answering ``reasoning: {enabled: false}``
+# (Nous Portal + OpenRouter wording; ``error_msg`` is lowercased upstream).
+_REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
+
 # Request parameters that Hermes sends on SOME routes only, paired with the
 # providers/hosts where sending them is deliberate.
 #
@@ -2139,6 +2143,20 @@ def _classify_400(
         return result_fn(
             FailoverReason.invalid_encrypted_content,
             retryable=True,
+            should_fallback=False,
+        )
+
+    # Reasoning-mandatory route rejecting a disable (Nous Portal / OpenRouter
+    # for GLM-5.3 etc.: "Reasoning is mandatory for this endpoint and cannot
+    # be disabled").  Deterministic for the request shape, but the only bad
+    # field is ``reasoning: {enabled: false}`` — the conversation_loop drops
+    # the disable and retries once.  Must precede the request-validation
+    # branch, which would abort the turn as a format_error.
+    if _REASONING_MANDATORY_PATTERN in error_msg:
+        return result_fn(
+            FailoverReason.reasoning_mandatory,
+            retryable=True,
+            should_compress=False,
             should_fallback=False,
         )
 

@@ -741,15 +741,11 @@ def auth_status_command(args) -> None:
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
     if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
-        load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
+        # load_pool() runs the forked-grant heal (#100339); do it before the
+        # status read so the report reflects the consolidated grant.
+        load_pool(provider)
     status = auth_mod.get_auth_status(provider)
     _print_oauth_heal_notices()
-    if status.get("free_tier"):
-        # Free tier: not an account login, so no account fields; point at the upgrade path.
-        label, hint = _free_tier_lines()
-        print(f"{provider}: {label}")
-        print(f"  {hint}")
-        return
     if not status.get("logged_in"):
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))

@@ -348,9 +348,9 @@ class RuntimeMode:
         prefix: list[str] = []
         if self.profile.guidance:
             brief = self.profile.guidance
-            if valid_tool_names is not None and "todo" not in valid_tool_names:
+            if valid_tool_names is not None and "todo_list" not in valid_tool_names:
                 brief = brief.replace(
-                    "- Track multi-step work with `todo`. Reference code as "
+                    "- Track multi-step work with `todo_list`. Reference code as "
                     "`path:line` instead of pasting whole files.",
                     "- Reference code as `path:line` instead of pasting "
                     "whole files.",

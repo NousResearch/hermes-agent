@@ -767,6 +767,11 @@ class GeminiNativeClient:
     # (No HERMES_SKIP_ASYNC_WRAP — the async path has a real conversion, AsyncGeminiNativeClient.)
     HERMES_SKIP_TRANSPORT_WRAP = True
 
+    # Declared for agent/auxiliary_client.py: already a complete client, so it
+    # is never re-dispatched through a wire adapter. (No HERMES_SKIP_ASYNC_WRAP
+    # — the async path has a real conversion, AsyncGeminiNativeClient.)
+    HERMES_SKIP_TRANSPORT_WRAP = True
+
     def __init__(
         self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[Dict[str, str]] = None,
         timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,

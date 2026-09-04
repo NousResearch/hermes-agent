@@ -71,14 +71,30 @@ def _reply_timeout() -> float:
         return 300.0
 
 
-def _orphan_timeout() -> float:
-    """Orphan grace must never expire before a configured reply window, but stays bounded."""
-    return min(float(_MAX_ORPHAN_TIMEOUT), max(float(_MIN_ORPHAN_TIMEOUT), _reply_timeout()))
+def _profile_scoped() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed inside ``_profile_runtime_scope``
+    (secret scope installed + multiplex active) — the same discriminator the
+    Buzz/SimpleX adapters use for this bug class (#98738). The DEFAULT profile
+    under multiplexing runs unscoped: ``os.environ`` holds its own bridge
+    output there and keeps its legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
 
 
 def _default_agent_name() -> str:
-    # Scope-aware: a secondary multiplex profile must not borrow the default profile's A2A_AGENT_NAME.
-    name = _get_scoped_secret("A2A_AGENT_NAME", "").strip()
+    # Scope-aware: inside a secondary multiplex profile, os.environ holds the
+    # DEFAULT profile's bridged A2A_AGENT_NAME — borrowing it would brand a
+    # secondary profile's Agent Card with another profile's identity. There
+    # is no per-profile config.yaml equivalent yet, so a scoped profile just
+    # falls through to the hostname-based default below instead.
+    name = "" if _profile_scoped() else os.getenv("A2A_AGENT_NAME", "").strip()
     if name:
         return name
     try:
@@ -199,7 +215,24 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         subpath = route["subpath"].rstrip("/") or "/"
         public_url = self._request_public_url() or None
         if subpath in ("/.well-known/agent.json", "/.well-known/agent-card.json"):
-            return self._json(200, adapter._build_card(public_url, agent=agent))
+            public_url = self._request_public_url() or None
+            self._json(200, self.adapter._build_card(public_url, agent=agent))
+            return
+        if subpath in ("/", "/health"):
+            payload = {
+                "status": "ok",
+                "agent": agent.get("name") or self.adapter.agent_name,
+            }
+            # Do not leak profile/tenant topology on remote unauthenticated GETs.
+            # Agent Cards are intentionally public; health topology is not.
+            if self.adapter._security_context.localhost_only() or self.adapter._security_context.authenticate(
+                self.headers.get("Authorization"),
+                self.client_address[0] if self.client_address else "",
+            ) is not None:
+                payload["served_agents"] = self.adapter._served_agent_summary(
+                    public_url=self._request_public_url() or None)
+            self._json(200, payload)
+            return
         if subpath == "/metrics":
             return self._json(200, protocol.metrics.snapshot())
         if subpath not in ("/", "/health"):
@@ -213,8 +246,13 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         adapter = self.adapter
-        # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
-        identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
+        client_ip = self.client_address[0] if self.client_address else ""
+
+        # Identity comes from the presented credential (or the socket in
+        # localhost-only mode) — never from the request body.
+        identity = adapter._security_context.authenticate(
+            self.headers.get("Authorization"), client_ip
+        )
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
         try:
@@ -247,7 +285,23 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
                     protocol.metrics.rate_limit_triggers += 1
                 return self._error(http, req_id, code, msg)
         agent = route["agent"]
-        if handler_name == "_rpc_message_send":
+
+        if not adapter._rate_limiter.allow(identity):
+            protocol.metrics.rate_limit_triggers += 1
+            self._json(429, protocol.jsonrpc_error(req_id, protocol.ERR_RATE_LIMITED, "rate limit exceeded"))
+            return
+
+        if not adapter._security_context.is_trusted_peer(identity):
+            self._json(403, protocol.jsonrpc_error(
+                req_id, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"))
+            return
+
+        if not operation:
+            self._json(200, protocol.jsonrpc_error(
+                req_id, protocol.ERR_METHOD_NOT_FOUND, f"method not found: {method}"))
+            return
+
+        if operation == "send":
             self._json(200, adapter._rpc_message_send(req_id, params, identity, agent=agent, v1_response=is_v1))
         elif handler_name == "_rpc_message_stream":
             adapter._rpc_message_stream(self, req_id, params, identity, agent=agent)
@@ -263,13 +317,15 @@ class A2AAdapter(BasePlatformAdapter):
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("a2a"))
         extra = getattr(config, "extra", {}) or {}
-        # Scope-aware: a secondary multiplex profile must not borrow the default profile's bridged
-        # A2A_PORT (falls closed to the module default). advertised_toolsets is deliberately unscoped.
-        # (advertised_toolsets has the same env-leak shape but is left unscoped here — see the "Scope note"
-        # in this fix's PR description: open PR #98937 is actively rewriting this field's None-vs-empty-list
-        # semantics.)
+        # Scope-aware: a secondary multiplex profile must not borrow the
+        # default profile's bridged A2A_PORT (mirrors the Buzz/SimpleX fix
+        # for #98738) — an unconfigured profile falls closed to the module
+        # default port instead. (advertised_toolsets has the same env-leak
+        # shape but is left unscoped here — see the "Scope note" in this
+        # fix's PR description: open PR #98937 is actively rewriting this
+        # field's None-vs-empty-list semantics.)
         self._security_context = security.A2ASecurityContext.capture()
-        _port_env = _get_scoped_secret("A2A_PORT")
+        _port_env = None if _profile_scoped() else os.getenv("A2A_PORT")
         self.port = int(_port_env or extra.get("port", _DEFAULT_PORT))
         self.host = self._security_context.resolve_bind_host()
         self.agent_name = _default_agent_name()
@@ -329,7 +385,11 @@ class A2AAdapter(BasePlatformAdapter):
         self._watchdog_thread = _daemon_thread(self._watchdog_loop, "a2a-watchdog")
         self._mark_connected()
 
-        exposure = "localhost-only" if security.localhost_only() else "REMOTE (bearer auth)"
+        exposure = (
+            "localhost-only"
+            if self._security_context.localhost_only()
+            else "REMOTE (bearer auth)"
+        )
         logger.info(
             "A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)",
             self.host, self.port, exposure, self.agent_name, len(self._agents),
@@ -385,12 +445,29 @@ class A2AAdapter(BasePlatformAdapter):
                 cfg = {}
             cfg = cfg if isinstance(cfg, dict) else {}
             raw = cfg.get("a2a_served_agents") or (cfg.get("a2a") or {}).get("served_agents")
-        # Scope-aware like port: a secondary profile must not inherit A2A_AGENT_DESCRIPTION.
-        default_desc = _get_scoped_secret("A2A_AGENT_DESCRIPTION", _DEFAULT_DESCRIPTION)
-        agents: dict[str, dict] = {"": {
-            "slug": "", "path": "", "tenant": "", "profile": self._active_profile, "local": True,
-            "name": self.agent_name, "description": default_desc, "advertised_toolsets": self._advertised_toolsets,
-        }}
+
+        agents: dict[str, dict] = {}
+        # Scope-aware for the same reason as port/toolsets above: a secondary
+        # profile must not inherit the default profile's A2A_AGENT_DESCRIPTION.
+        default_desc = (
+            "Hermes Agent — a general-purpose agent reachable over A2A."
+            if _profile_scoped()
+            else os.getenv(
+                "A2A_AGENT_DESCRIPTION",
+                "Hermes Agent — a general-purpose agent reachable over A2A.",
+            )
+        )
+        agents[""] = {
+            "slug": "",
+            "path": "",
+            "tenant": "",
+            "profile": self._active_profile,
+            "local": True,
+            "name": self.agent_name,
+            "description": default_desc,
+            "advertised_toolsets": self._advertised_toolsets,
+        }
+
         reserved = {"health", "metrics", ".well-known"}
         tenants: dict[str, str] = {}
         items = raw.items() if isinstance(raw, dict) else enumerate(raw or []) if isinstance(raw, list) else []
@@ -459,10 +536,14 @@ class A2AAdapter(BasePlatformAdapter):
         # Per-request public URL beats the bind host so peers behind a reverse proxy can call back.
         agent = agent or self._agents[""]
         return protocol.build_agent_card(
-            name=agent.get("name") or self.agent_name, url=_join_url(self._base_url(public_url), agent.get("path", "")),
-            description=agent.get("description") or _DEFAULT_DESCRIPTION, skills=self._advertised_skills(agent),
-            streaming=bool(agent.get("local", True)), push_notifications=True,
-            auth_required=not self._security_context.localhost_only(), tenant=str(agent.get("tenant") or ""),
+            name=agent.get("name") or self.agent_name,
+            url=url,
+            description=agent.get("description") or "Hermes Agent — a general-purpose agent reachable over A2A.",
+            skills=self._advertised_skills(agent),
+            streaming=bool(agent.get("local", True)),
+            push_notifications=True,
+            auth_required=not self._security_context.localhost_only(),
+            tenant=str(agent.get("tenant") or ""),
         )
 
     def _advertised_skills(self, agent: Optional[dict] = None) -> list[dict]:
@@ -813,9 +894,20 @@ class A2AAdapter(BasePlatformAdapter):
         callback_url = self.tasks.pop_push_url(task_id)
         if not callback_url:
             return
-        if not security.is_safe_callback_url(callback_url, localhost_mode=self._security_context.localhost_only()):
-            return fail("blocked — unsafe callback URL: %s", callback_url)
+
+        if not security.is_safe_callback_url(
+            callback_url,
+            localhost_mode=self._security_context.localhost_only(),
+        ):
+            logger.warning("A2A: push notification for task %s blocked — unsafe callback URL: %s",
+                           task_id, callback_url)
+            protocol.metrics.push_failed += 1
+            return
+
+        # Push payload uses the StreamResponse format (same as streaming).
         payload = protocol.status_update(task_id, context_id, state, (reply or "")[:2000])
+
+        signature = self._security_context.sign_push_payload(payload)
         headers = {"Content-Type": "application/json"}
         if signature := self._security_context.sign_push_payload(payload):
             headers["X-A2A-Signature"] = signature

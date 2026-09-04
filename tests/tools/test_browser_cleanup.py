@@ -128,13 +128,13 @@ class TestInactivityJanitorMultiplex:
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
         p1 = tmp_path / "profiles" / "p1"
         p1.mkdir(parents=True)
-        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n", encoding="utf-8")
+        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n")
 
         # Profile p1's turn opens the session; the janitor later runs unscoped.
         home_tok = set_hermes_home_override(str(p1))
         scope_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(p1))
         try:
-            bt_lifecycle._update_session_activity("t1")
+            self.bt._update_session_activity("t1")
             self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": None}
         finally:
             secret_scope.reset_secret_scope(scope_tok)
@@ -149,11 +149,11 @@ class TestInactivityJanitorMultiplex:
             return {"success": True}
 
         with (
-            patch("tools.browser_tool_session._run_browser_command", side_effect=fake_close),
+            patch("tools.browser_tool._run_browser_command", side_effect=fake_close),
             patch("tools.browser_camofox._delete", return_value={}),
             patch("tools.browser_tool.os.path.exists", return_value=False),
         ):
-            bt_lifecycle._cleanup_inactive_browser_sessions()
+            self.bt._cleanup_inactive_browser_sessions()
 
         assert seen == {"home": str(p1), "url": "http://127.0.0.1:1"}
         assert "t1" not in self.bt._session_last_activity
@@ -168,38 +168,22 @@ class TestInactivityJanitorMultiplex:
         provider = MagicMock()
 
         with (
-            patch("tools.browser_tool_lifecycle.cleanup_browser", side_effect=RuntimeError("boom")),
-            patch("tools.browser_tool_cloud._get_cloud_provider", return_value=provider),
+            patch("tools.browser_tool.cleanup_browser", side_effect=RuntimeError("boom")),
+            patch("tools.browser_tool._get_cloud_provider", return_value=provider),
             patch("tools.browser_tool.os.path.exists", return_value=False),
         ):
             for _ in range(self.bt.MAX_INACTIVITY_CLEANUP_FAILURES - 1):
-                bt_lifecycle._cleanup_inactive_browser_sessions()
+                self.bt._cleanup_inactive_browser_sessions()
             # An activity touch must NOT reset the failure budget.
-            bt_lifecycle._update_session_activity("t1")
+            self.bt._update_session_activity("t1")
             self.bt._session_last_activity["t1"] = 1.0
             assert self.bt._cleanup_failures["t1"] == self.bt.MAX_INACTIVITY_CLEANUP_FAILURES - 1
             assert "t1" in self.bt._active_sessions
             provider.close_session.assert_not_called()
 
-            bt_lifecycle._cleanup_inactive_browser_sessions()
+            self.bt._cleanup_inactive_browser_sessions()
 
         provider.close_session.assert_called_once_with("bb-1")
         assert "t1" not in self.bt._active_sessions
         assert "t1" not in self.bt._session_last_activity
         assert "t1" not in self.bt._cleanup_failures
-
-
-class TestAtexitStopSwallowsInterrupt:
-    def test_second_ctrl_c_during_join_does_not_propagate(self, monkeypatch):
-        """A second Ctrl+C while the atexit hook waits on the janitor must not escape as a
-        traceback (#10764): the thread is a daemon, the interpreter is already exiting."""
-        from tools import browser_tool
-
-        class _InterruptedJoin:
-            def join(self, timeout=None):
-                raise KeyboardInterrupt
-
-        monkeypatch.setattr(browser_tool, "_cleanup_thread", _InterruptedJoin())
-        monkeypatch.setattr(browser_tool, "_cleanup_running", True)
-        bt_lifecycle._stop_browser_cleanup_thread()  # must not raise
-        assert browser_tool._cleanup_running is False

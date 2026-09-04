@@ -163,27 +163,46 @@ def _is_pausable_gateway(cmdline: str) -> bool:
 
 
 def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
-    """True when *pid* is a Hermes backend the CLI updater can stop (positive ledger identity).
+    """Return True when *pid* is a Hermes backend the CLI updater can stop.
 
-    The gateway exemption above keeps ``gateway run`` holders out of the blocker list because the updater's
-    own pause machinery stops and resumes them. ``hermes serve`` / ``hermes dashboard`` backends had no such
-    deferral, so a leaked serve child (or a Desktop-owned backend the teardown lost track of) dead-ended the
-    hand-off with ``venv-blocked`` — or, worse, survived the hand-off and made the shim quarantine fail with
-    ``os error 32`` (#98336) — even though the updater downstream owns exactly this case with its ledger
-    rungs (`_ledger_reapable_backend_pids` reaps dead-spawner orphans; `_ledger_manual_serve_holders` stops
-    manual serves and relaunches them on their recorded host/port).
-    Positive identity only — never name/substring matching (#90778, and the 99558 identity-guard contract):
+    The gateway exemption above keeps ``gateway run`` holders out of the
+    blocker list because the updater's own pause machinery stops and resumes
+    them. ``hermes serve`` / ``hermes dashboard`` backends had no such
+    deferral, so a leaked serve child (or a Desktop-owned backend the
+    teardown lost track of) dead-ended the hand-off with ``venv-blocked`` —
+    or, worse, survived the hand-off and made the shim quarantine fail with
+    ``os error 32`` (#98336) — even though the updater downstream owns
+    exactly this case with its ledger rungs (`_ledger_reapable_backend_pids`
+    reaps dead-spawner orphans; `_ledger_manual_serve_holders` stops manual
+    serves and relaunches them on their recorded host/port).
+
+    Positive identity only — never name/substring matching (#90778, and the
+    #99558 identity-guard contract):
+
+    - the argv's parsed SUBCOMMAND (token-based) is ``serve``/``dashboard``;
+    - the machine spawn ledger has a live-verified ``(pid, create_time)``
+      entry for the process with a matching purpose;
+    - ownership is provable: the recorded spawner is dead or unrecorded
+      (the updater's rungs stop/relaunch those), or the spawner is an
+      ancestor of THIS scan — i.e. the Desktop app performing the hand-off,
+      which exits before the updater runs, turning the backend into exactly
+      the dead-spawner orphan the ledger rung reaps.
+
+    A backend whose recorded spawner is alive and is NOT this hand-off's
+    Desktop (a second Desktop window, another supervisor) keeps blocking:
+    that supervisor would respawn whatever the updater kills. Anything
+    unprovable → not exempt (fail closed, pre-exemption behavior).
     """
     return _updater_owned_backend_entry(pid, cmdline) is not None
 
 
 def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
-    """Ledger entry for a deferred serve/dashboard backend, or ``None`` when it must block.
+    """Ledger entry for a deferred backend, or ``None`` when it must block.
 
-    Returning the entry lets ``main()`` emit sanitized decision evidence — structured identity
-    fields only, never argv, which can carry tokens or private endpoints.
-
-    See #98350.
+    Same decision logic as ``_is_updater_owned_backend`` (which delegates
+    here); returning the matched ledger entry lets ``main()`` emit sanitized
+    decision evidence — structured identity fields only, never argv, which
+    can carry tokens or private endpoints (#98350).
     """
     try:
         from hermes_cli.update_cmd import _hermes_holder_subcommand  # noqa: PLC0415
@@ -191,10 +210,13 @@ def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
         purpose = _hermes_holder_subcommand(cmdline)
     except Exception:
         return None
-    if purpose not in _UPDATER_STOPPABLE_PURPOSES:
+    if purpose not in ("serve", "dashboard"):
         return None
     try:
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead  # noqa: PLC0415
+        from hermes_cli.process_identity import (  # noqa: PLC0415
+            ledger_entries,
+            spawner_is_dead,
+        )
 
         entries = ledger_entries()
     except Exception:
@@ -202,33 +224,44 @@ def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
     for entry in entries:
         if entry.get("pid") != pid:
             continue
-        if entry.get("purpose") not in _UPDATER_STOPPABLE_PURPOSES:
+        if entry.get("purpose") not in ("serve", "dashboard"):
             return None
-        # Spawner dead, unrecorded, or unprovable-but-registered: the updater's ledger rungs own
-        # this holder (reap or stop+relaunch).
-        if spawner_is_dead(entry) is not False or _spawner_is_this_handoff_desktop(entry):
+        dead = spawner_is_dead(entry)
+        if dead is not False:
+            # Spawner dead, unrecorded, or unprovable-but-registered: the
+            # updater's ledger rungs own this holder (reap or stop+relaunch).
+            return entry
+        if _spawner_is_this_handoff_desktop(entry):
             return entry
         return None
     return None
 
 
 def _deferred_backend_evidence(entries: list[dict]) -> list[dict]:
-    """Sanitized evidence (pid, purpose, recorded port — never argv) for deferred backends.
+    """Sanitized decision evidence for deferred serve/dashboard backends.
 
-    Structured ledger fields only — pid, purpose, recorded port — never the command line, which can carry
-    tokens or private endpoints. Lets the scan result explain *why* a holder disappeared from ``processes``
+    Structured ledger fields only — pid, purpose, recorded port — never the
+    command line, which can carry tokens or private endpoints. Lets the
+    scan result explain *why* a holder disappeared from ``processes``
     without echoing argv (#98350).
     """
-    return [{"pid": entry.get("pid"), "purpose": entry.get("purpose"), "port": entry.get("port")}
-            for entry in entries if isinstance(entry.get("pid"), int)]
+    evidence = []
+    for entry in entries:
+        pid = entry.get("pid")
+        if not isinstance(pid, int):
+            continue
+        evidence.append(
+            {"pid": pid, "purpose": entry.get("purpose"), "port": entry.get("port")}
+        )
+    return evidence
 
 
 def _spawner_is_this_handoff_desktop(entry: dict) -> bool:
     """True when the entry's live spawner is an ancestor of this scan.
 
-    The scan is spawned by the Desktop app's update preflight, so the Desktop performing the
-    hand-off is in our ancestor chain. Identity is ``(pid, create_time)`` — a recycled PID cannot
-    forge the pair.
+    The scan subprocess is spawned by the Desktop app's update preflight, so
+    the Desktop performing the hand-off is in our ancestor chain. Identity is
+    verified by ``(pid, create_time)`` — a recycled PID cannot forge the pair.
     """
     spawner_pid = entry.get("spawner_pid")
     if not isinstance(spawner_pid, int) or spawner_pid <= 0:
@@ -270,6 +303,13 @@ def main() -> None:
             continue
         deferred_entry = _updater_owned_backend_entry(pid, cmdline)
         if deferred_entry is not None:
+            # Ledger-verified serve/dashboard backend the CLI updater's own
+            # rungs stop (and relaunch) downstream — reporting it here would
+            # dead-end the hand-off before that machinery can run (#98336).
+            deferred_entries.append(deferred_entry)
+            continue
+        deferred_entry = _updater_owned_backend_entry(pid, cmdline)
+        if deferred_entry is not None:
             # Ledger-verified backend the updater's own rungs stop (and relaunch) downstream —
             # reporting it here would dead-end the hand-off before that machinery can run.
             # See #98336.
@@ -281,17 +321,18 @@ def main() -> None:
         process.update(_local_preview_metadata(pid, name))
         processes.append(process)
 
-    # pausable_gateways / deferred_backends / deferred_backend_evidence are diagnostic only.
     data = {
         "ok": True,
         "blocked": bool(processes),
         "processes": processes,
+        # Diagnostic only: gateway processes present but not counted as
+        # blockers because the downstream updater pauses them itself.
         "pausable_gateways": exempted_gateways,
-        # Diagnostic only: ledger-verified serve/dashboard backends deferred to the updater's stop/relaunch
-        # rungs (#98336).
+        # Diagnostic only: ledger-verified serve/dashboard backends deferred
+        # to the updater's stop/relaunch rungs (#98336).
         "deferred_backends": len(deferred_entries),
-        # Diagnostic only: sanitized evidence (structured ledger identity, never argv) explaining which
-        # holders the deferral consumed (#98350).
+        # Diagnostic only: sanitized evidence (structured ledger identity,
+        # never argv) explaining which holders the deferral consumed (#98350).
         "deferred_backend_evidence": _deferred_backend_evidence(deferred_entries),
     }
     print(json.dumps(data))

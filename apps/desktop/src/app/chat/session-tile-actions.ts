@@ -520,7 +520,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(state.messages)
+            durableRowIdsForRebind(messages)
           )
         )
       } catch (err) {

@@ -656,11 +656,30 @@ def _served_by_running_multiplexer(profile_name: str) -> bool:
         return False
 
 
-# In-process skill-count cache. ``rglob("SKILL.md")`` walks every skill's sub-trees; the
-# default profile alone has ~270 skills and ``list_profiles`` counts EVERY profile (16+), so
-# an uncached scan costs ~6s — enough for the desktop's per-request calls to time out and
-# the sidebar to render "全部智能体 0". Keyed by skills dir, invalidated when the tree
-# signature changes (skill add/remove) or after a short TTL (deep edits).
+def _served_by_running_multiplexer(profile_name: str) -> bool:
+    """True when the live default gateway multiplexes ``profile_name``.
+
+    A served named profile has no gateway.pid of its own, so
+    ``_check_gateway_running`` alone reports it stopped while the default
+    multiplexer is actually its inbound process. Single shared lookup with the
+    named-profile start guard and cron liveness (#97120).
+    """
+    try:
+        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+
+        return named_profile_served_by_running_multiplexer(profile_name)
+    except Exception:
+        return False
+
+
+# In-process cache for skill counts. Walking ``skills_dir.rglob("SKILL.md")``
+# recurses the entire skill tree (each skill carries references/scripts/assets
+# sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
+# calls this for EVERY profile (16+), so an uncached scan costs ~6s — long
+# enough that the desktop's per-request backend calls time out and the sidebar
+# renders "全部智能体 0". We cache the count keyed by the skills dir, invalidated
+# when the dir tree's signature (skills_dir + immediate category dirs mtimes)
+# changes (catches skill add/remove) or after a short TTL (catches deep edits).
 _SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
 _SKILL_COUNT_TTL_SECONDS = 30.0
 
@@ -872,7 +891,10 @@ def list_profiles() -> List[ProfileInfo]:
                 name=name,
                 path=entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
+                gateway_running=(
+                    _check_gateway_running(entry)
+                    or _served_by_running_multiplexer(name)
+                ),
                 model=model,
                 provider=provider,
                 has_env=(entry / ".env").exists(),
@@ -1122,14 +1144,34 @@ def create_profile(
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    # Inside a container under s6, register the gateway as a runtime s6 service so
-    # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
-    # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
-    _maybe_register_gateway_service(canon)
-    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
-    # rescans periodically, so a missed signal only delays serving).
-    _notify_multiplexer(canon)
-    return profile_dir
+    if clone_all and source_dir:
+        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+        shutil.copytree(
+            source_dir,
+            profile_dir,
+            symlinks=True,
+            ignore=_clone_all_copytree_ignore(source_dir),
+        )
+        # Strip runtime files
+        for stale in _CLONE_ALL_STRIP:
+            (profile_dir / stale).unlink(missing_ok=True)
+        # A clone-all copies auth.json and .anthropic_oauth.json verbatim.
+        # Single-use OAuth grants (Anthropic / Codex / xAI) forked that way
+        # are one credential with two owners: the first profile to refresh
+        # revokes the pair for every sibling (#100339). Drop the copies; the
+        # clone reads the root grant through the credential-pool fallback.
+        from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+        stripped = strip_cloned_single_use_oauth_grants(profile_dir)
+        if any(stripped.values()):
+            logger.info(
+                "profile %s: dropped cloned single-use OAuth grants %s "
+                "(inherits the root grant instead)", canon, stripped,
+            )
+    else:
+        # Bootstrap directory structure
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        for subdir in _PROFILE_DIRS:
+            (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
 
         if source_dir is None:
             _seed_model_config(profile_dir)
@@ -1657,10 +1699,12 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        # Cross-profile kill refusal: the record's hermes_home stamp names the gateway's TRUE
-        # owner. A poisoned gateway.pid in this dir can point at another profile's live
-        # gateway — killing it starts a mutual SIGTERM restart loop.
-        from gateway.status import get_process_start_time, recorded_gateway_home_conflicts, terminate_pid
+        # Cross-profile kill refusal (#89315): the record's hermes_home stamp
+        # names the gateway's TRUE owner. A contaminated/poisoned gateway.pid
+        # inside this profile dir can point at another profile's live gateway
+        # — killing it starts the mutual SIGTERM restart loop from the issue.
+        from gateway.status import recorded_gateway_home_conflicts
+
         if recorded_gateway_home_conflicts(data, expected_home=profile_dir):
             print(
                 f"✗ Refusing to stop PID {pid}: its recorded HERMES_HOME "
@@ -1668,8 +1712,13 @@ def _stop_gateway_process(profile_dir: Path) -> None:
                 "(stale/poisoned PID record, #89315)."
             )
             return
-        # terminate_pid picks the Windows primitive (taskkill /T cascades to children; raw
-        # os.kill with SIGKILL fails at import on Windows).
+        # Route through terminate_pid so Windows uses the appropriate
+        # primitive (taskkill / TerminateProcess) — raw os.kill with
+        # _signal.SIGKILL raises AttributeError at import time on Windows,
+        # and raw os.kill with SIGTERM doesn't cascade to child processes
+        # the same way taskkill /T does.
+        from gateway.status import terminate_pid as _terminate_pid
+        from gateway.status import _pid_exists
         expected_start_time = data.get("start_time")
         if expected_start_time is None:
             expected_start_time = get_process_start_time(pid)
@@ -1797,6 +1846,88 @@ def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Pa
     stamp = timestamp or time.strftime("%Y%m%d-%H%M%S")
     return export_dir / f"{canon}-{stamp}.tar.gz"
 
+
+def _inside_git_checkout(path: Path) -> bool:
+    """Return True when *path* lies inside a Git checkout.
+
+    Walks the path's OWN resolved ancestry for a ``.git`` marker (a directory
+    for normal clones, a file for worktrees/submodules).  Anchoring on the
+    candidate path — not on ``Path.cwd()`` — keeps the safety proof valid when
+    ``HERMES_HOME`` points inside a checkout but the process runs from
+    somewhere else entirely (cron, a service manager, an absolute-path
+    invocation).  On resolution failure we conservatively report True so the
+    caller falls through to a provably safe candidate.
+    """
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        # RuntimeError: symlink loops on Python <= 3.12; fail closed either way.
+        return True
+    return any(
+        (candidate / ".git").exists() for candidate in (resolved, *resolved.parents)
+    )
+
+
+def _profile_export_directory() -> Path:
+    """Choose an export directory that cannot become source-tree input."""
+    import tempfile
+
+    export_dir = _get_default_hermes_home() / "profile-exports"
+    if not _inside_git_checkout(export_dir):
+        return export_dir
+
+    # A custom deployment may point HERMES_HOME at its source checkout.  Do
+    # not put the automatic archive under that tree; use a sibling store and
+    # fall back to the OS temp directory only for the unusual case where the
+    # user's home itself is a checkout (e.g. a dotfiles repo).
+    # Per-uid temp name: a fixed /tmp/hermes-profile-exports is a predictable
+    # shared path another local user could pre-create (or symlink) before us.
+    uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
+    candidates = (
+        Path.home() / ".hermes-profile-exports",
+        Path(tempfile.gettempdir()) / f"hermes-profile-exports{uid_suffix}",
+    )
+    for candidate in candidates:
+        if not _inside_git_checkout(candidate):
+            return candidate
+    # Fail closed: writing a secret-bearing archive into a source tree is the
+    # incident this helper exists to prevent (#92457). A warning on stderr
+    # would not stop a scripted export from recreating it.
+    raise ValueError(
+        "No safe automatic export destination: every candidate directory is "
+        "inside a Git checkout. Provide an explicit output path outside the "
+        "checkout (CLI: -o /path/outside/repo/profile.tar.gz)."
+    )
+
+
+def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Path:
+    """Return a managed destination for an export with no explicit output.
+
+    Keep automatic exports outside the current working directory and outside
+    every named profile.  The CLI is commonly run from a source checkout; its
+    old ``<name>.tar.gz`` default therefore made a profile snapshot look like
+    a repository artifact and allowed it to be committed accidentally.
+    """
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    export_dir = _profile_export_directory()
+    export_dir.mkdir(parents=True, exist_ok=True)
+    # exist_ok=True would silently accept a directory (or symlink) another
+    # local user pre-created at a predictable path; refuse to write a
+    # secret-bearing archive anywhere we don't own.
+    if export_dir.is_symlink():
+        raise ValueError(
+            f"Export directory {export_dir} is a symlink; refusing to write "
+            "a profile archive through it. Provide an explicit output path."
+        )
+    if hasattr(os, "getuid") and export_dir.stat().st_uid != os.getuid():
+        raise ValueError(
+            f"Export directory {export_dir} is owned by another user; "
+            "refusing to write a profile archive there. Provide an explicit "
+            "output path."
+        )
+    stamp = timestamp or time.strftime("%Y%m%d-%H%M%S")
+    return export_dir / f"{canon}-{stamp}.tar.gz"
 
 def _default_export_ignore(root_dir: Path):
     """copytree ignore for the default-profile export: root-level allow-list

@@ -19,10 +19,12 @@ except ImportError:
     aiohttp = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms.base import (
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,8 +112,15 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         try:
             if not await self._ws_connect():
                 return False
-            self._rest_session = self._new_session()  # dedicated REST session for send()
-            if not (self._watch_domains or self._watch_entities or self._watch_all):
+
+            # Dedicated REST session for send() calls
+            self._rest_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30),
+                trust_env=gateway_trust_env(),
+            )
+
+            # Warn if no event filters are configured
+            if not self._watch_domains and not self._watch_entities and not self._watch_all:
                 logger.warning(
                     "[%s] No watch_domains, watch_entities, or watch_all configured. "
                     "All state_changed events will be dropped. Configure filters in "
@@ -130,8 +139,15 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     async def _ws_connect(self) -> bool:
         """Open the WebSocket, authenticate, and subscribe to ``state_changed``."""
         ws_url = self._hass_url.replace("https://", "wss://").replace("http://", "ws://")
-        self._session = self._new_session()
-        self._ws = await self._session.ws_connect(f"{ws_url}/api/websocket", heartbeat=30, timeout=30)
+        ws_url = f"{ws_url}/api/websocket"
+
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=gateway_trust_env(),
+        )
+        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+
+        # Step 1: Receive auth_required
         msg = await self._ws.receive_json()
         if msg.get("type") != "auth_required":
             return await self._handshake_failed("Expected auth_required, got: %s", msg.get("type"))
@@ -287,9 +303,31 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
         try:
             if self._rest_session:
-                return await _post(self._rest_session)
-            async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
-                return await _post(session)
+                async with self._rest_session.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status < 300:
+                        return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+                    else:
+                        body = await resp.text()
+                        return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
+            else:
+                async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
+                    async with session.post(
+                        url,
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status < 300:
+                            return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+                        else:
+                            body = await resp.text()
+                            return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
+
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending notification to HA")
         except Exception as e:
@@ -328,8 +366,11 @@ async def _standalone_send(
     url = f"{hass_url}/api/services/notify/notify"
     payload = {"message": message, "target": chat_id}
     try:
-        async with HomeAssistantAdapter._new_session() as session:
-            async with session.post(url, headers=_auth_headers(token), json=payload) as resp:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=gateway_trust_env(),
+        ) as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:
                     return send_error(f"Home Assistant API error ({resp.status}): {await resp.text()}")
         return {"success": True, "platform": "homeassistant", "chat_id": chat_id}

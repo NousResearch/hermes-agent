@@ -94,24 +94,28 @@ def _response_message_id(resp) -> str:
     except Exception:
         return uuid.uuid4().hex[:12]
 
-
-def _server_url(extra: Dict[str, Any]) -> str:
-    return _extra_or_secret(extra, "server", "NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/")
-
-
-def check_requirements() -> bool:
-    """Installable and minimally configured (reads NTFY_TOPIC directly — no full config load)."""
-    return HTTPX_AVAILABLE and bool(_get_scoped_secret("NTFY_TOPIC", "").strip())
+    Reads ``NTFY_TOPIC`` directly to avoid the cost of a full
+    ``load_gateway_config()`` (which also writes to ``os.environ``) on
+    every pre-flight check.
+    """
+    if not HTTPX_AVAILABLE:
+        return False
+    topic = _get_scoped_secret("NTFY_TOPIC", "").strip()
+    return bool(topic)
 
 
 def validate_config(config) -> bool:
-    """True when a topic is configured (config.yaml ``extra`` or env)."""
-    return bool(_extra_or_secret(getattr(config, "extra", {}) or {}, "topic", "NTFY_TOPIC"))
+    """Validate that the configured ntfy platform has a topic set."""
+    extra = getattr(config, "extra", {}) or {}
+    topic = extra.get("topic") or _get_scoped_secret("NTFY_TOPIC", "")
+    return bool(topic)
 
 
 def is_connected(config) -> bool:
     """Check whether ntfy is configured (env or config.yaml)."""
-    return bool(_get_scoped_secret("NTFY_TOPIC") or (getattr(config, "extra", {}) or {}).get("topic", ""))
+    extra = getattr(config, "extra", {}) or {}
+    topic = _get_scoped_secret("NTFY_TOPIC") or extra.get("topic", "")
+    return bool(topic)
 
 
 class NtfyAdapter(BasePlatformAdapter):
@@ -122,10 +126,18 @@ class NtfyAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform("ntfy"))
         extra = config.extra or {}
-        self._server: str = _server_url(extra)
-        self._topic: str = _extra_or_secret(extra, "topic", "NTFY_TOPIC")
-        self._publish_topic: str = _extra_or_secret(extra, "publish_topic", "NTFY_PUBLISH_TOPIC") or self._topic
-        self._token: str = _extra_or_secret(extra, "token", "NTFY_TOKEN")
+        self._server: str = (
+            extra.get("server")
+            or _get_scoped_secret("NTFY_SERVER_URL", DEFAULT_SERVER)
+        ).rstrip("/")
+        self._topic: str = extra.get("topic") or _get_scoped_secret("NTFY_TOPIC", "")
+        self._publish_topic: str = (
+            extra.get("publish_topic")
+            or _get_scoped_secret("NTFY_PUBLISH_TOPIC", "")
+            or self._topic
+        )
+        self._token: str = extra.get("token") or _get_scoped_secret("NTFY_TOKEN", "")
+
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
@@ -308,17 +320,41 @@ class NtfyAdapter(BasePlatformAdapter):
 
 
 def _env_enablement() -> dict | None:
-    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before adapter
-    construction; ``None`` when ``NTFY_TOPIC`` is unset."""
+    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
+
+    Called by the platform registry's env-enablement hook BEFORE adapter
+    construction, so ``gateway status`` and ``get_connected_platforms()``
+    reflect env-only configuration without instantiating the HTTP client.
+    Returns ``None`` when ntfy isn't minimally configured; the caller skips
+    auto-enabling.
+
+    The special ``home_channel`` key in the returned dict is handled by the
+    core hook — it becomes a proper ``HomeChannel`` dataclass on the
+    ``PlatformConfig`` rather than being merged into ``extra``.
+    """
     topic = _get_scoped_secret("NTFY_TOPIC", "").strip()
     if not topic:
         return None
-    seed = _seed_extra_from_env((
-        ("NTFY_SERVER_URL", "server", lambda v: v.rstrip("/")), ("NTFY_PUBLISH_TOPIC", "publish_topic", None),
-        ("NTFY_TOKEN", "token", None), ("NTFY_MARKDOWN", "markdown", lambda v: v.lower() in _MARKDOWN_TRUTHY),
-    ), home_env="NTFY_HOME_CHANNEL", home_default=topic)
-    return {"topic": topic, "server": seed.pop("server", DEFAULT_SERVER), **seed}
-
+    seed: dict = {
+        "topic": topic,
+        "server": _get_scoped_secret("NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/"),
+    }
+    publish_topic = _get_scoped_secret("NTFY_PUBLISH_TOPIC", "").strip()
+    if publish_topic:
+        seed["publish_topic"] = publish_topic
+    token = _get_scoped_secret("NTFY_TOKEN", "").strip()
+    if token:
+        seed["token"] = token
+    markdown = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
+    if markdown:
+        seed["markdown"] = markdown in ("1", "true", "yes")
+    home = _get_scoped_secret("NTFY_HOME_CHANNEL", "").strip() or topic
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": _get_scoped_secret("NTFY_HOME_CHANNEL_NAME", home),
+        }
+    return seed
 
 
 async def _standalone_send(
@@ -334,16 +370,28 @@ async def _standalone_send(
     if not HTTPX_AVAILABLE:
         return send_error("ntfy standalone send: httpx not installed")
     extra = getattr(pconfig, "extra", {}) or {}
-    server = _server_url(extra)
+    server = (
+        extra.get("server")
+        or _get_scoped_secret("NTFY_SERVER_URL", DEFAULT_SERVER)
+    ).rstrip("/")
     publish_topic = (
-        chat_id or extra.get("publish_topic") or _get_scoped_secret("NTFY_PUBLISH_TOPIC", "").strip()
-        or extra.get("topic") or _get_scoped_secret("NTFY_TOPIC", "").strip())
+        chat_id
+        or extra.get("publish_topic")
+        or _get_scoped_secret("NTFY_PUBLISH_TOPIC", "").strip()
+        or extra.get("topic")
+        or _get_scoped_secret("NTFY_TOPIC", "").strip()
+    )
     if not publish_topic:
-        return send_error("ntfy standalone send: NTFY_TOPIC not configured")
-    token = _extra_or_secret(extra, "token", "NTFY_TOKEN")
+        return {"error": "ntfy standalone send: NTFY_TOPIC not configured"}
+
+    token = extra.get("token") or _get_scoped_secret("NTFY_TOKEN", "")
     markdown_env = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
-    markdown = bool(extra.get("markdown")) or markdown_env in _MARKDOWN_TRUTHY
-    headers = _publish_headers(token, markdown, auth_first=False)
+    markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
+
+    headers = {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ECHO_TAG, **_build_auth_header(token)}
+    if markdown_enabled:
+        headers["X-Markdown"] = "true"
+
     body = _truncate_body(message, context="ntfy standalone")
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

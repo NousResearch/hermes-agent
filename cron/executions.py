@@ -61,6 +61,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              error TEXT
            )"""
     )
+    from hermes_cli.sqlite_util import add_column_if_missing
+
     add_column_if_missing(
         conn, "executions", "handoff_pending",
         "handoff_pending INTEGER NOT NULL DEFAULT 0",
@@ -164,20 +166,6 @@ def create_execution(
     return record  # type: ignore[return-value]
 
 
-def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
-    """Bind the store-claimed snapshot before a provider hands it to a worker."""
-    from cron.occurrences import scheduled_instant
-
-    with _transaction() as conn:
-        cur = conn.execute(
-            "UPDATE executions SET scheduled_instant=? WHERE id=? AND status='claimed' "
-            "AND handoff_pending=0 AND process_id=? AND pid=?",
-            (scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
-        )
-        if cur.rowcount != 1:
-            raise RuntimeError("Cron occurrence could not be bound before dispatch")
-
-
 def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:
     """Fence restart recovery while an external worker is adopting a claim."""
     with _transaction() as conn:
@@ -190,7 +178,9 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]
         )
         if cur.rowcount != 1:
             return None
-        record = _fetch(conn, execution_id)
+        record = _record(conn.execute(
+            "SELECT * FROM executions WHERE id=?", (execution_id,)
+        ).fetchone())
     _emit_execution_state(record)
     return record
 
@@ -216,7 +206,9 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         )
         if cur.rowcount != 1:
             return None
-        record = _fetch(conn, execution_id)
+        record = _record(conn.execute(
+            "SELECT * FROM executions WHERE id=?", (execution_id,)
+        ).fetchone())
     _emit_execution_state(record)
     return record
 
@@ -252,10 +244,10 @@ def finish_execution(
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL, delivery_outcome=?
+                   handoff_started_at=NULL
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
+            (status, now, detail, execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None

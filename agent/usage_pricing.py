@@ -1321,33 +1321,6 @@ def get_pricing_entry(
     return None
 
 
-# Usage-field candidate paths per API shape: (input/prompt total, output, cache
-# read, cache write); the first non-zero path wins.
-_ANTHROPIC_USAGE_SHAPE = (
-    (("input_tokens",),), (("output_tokens",),), (("cache_read_input_tokens",),), (("cache_creation_input_tokens",),)
-)
-# OpenAI's documented GPT-5.6+ field is `cache_write_tokens` (billed at 1.25x);
-# `cache_creation_tokens` is a fallback for older endpoints.
-_CODEX_USAGE_SHAPE = (
-    (("input_tokens",),), (("output_tokens",),), (("input_tokens_details", "cached_tokens"),),
-    (("input_tokens_details", "cache_write_tokens"), ("input_tokens_details", "cache_creation_tokens")),
-)
-# OpenAI-style names first, then Anthropic-style: local OpenAI-compatible
-# servers (e.g. mlx_vlm.server) emit input_tokens/output_tokens and the OpenAI
-# client preserves them as extra attributes. Cache reads: nested OpenAI shape,
-# then Anthropic-style top-level fields exposed by proxies routing Claude
-# (OpenRouter, Vercel AI Gateway, Cline), then DeepSeek's prompt_cache_hit_tokens,
-# then Kimi/Moonshot's cached_tokens — without these, direct sessions show 0
-# hits and bill hits at the full input rate.
-_CHAT_USAGE_SHAPE = (
-    (("prompt_tokens",), ("input_tokens",)),
-    (("completion_tokens",), ("output_tokens",)),
-    (("prompt_tokens_details", "cached_tokens"), ("cache_read_input_tokens",), ("prompt_cache_hit_tokens",), ("cached_tokens",)),
-    (("prompt_tokens_details", "cache_write_tokens"), ("prompt_tokens_details", "cache_creation_input_tokens"),
-     ("cache_creation_input_tokens",), ("cache_write_tokens",)),
-)
-
-
 def normalize_usage(
     response_usage: Any, *, provider: Optional[str] = None, api_mode: Optional[str] = None
 ) -> CanonicalUsage:

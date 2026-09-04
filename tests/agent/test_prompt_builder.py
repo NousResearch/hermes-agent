@@ -70,7 +70,12 @@ class TestGuidanceConstants:
         assert "declarative facts" in MEMORY_GUIDANCE
         assert "imperative phrasing" in MEMORY_GUIDANCE
         assert "stale within a week" in MEMORY_GUIDANCE
-        assert "Save proactively" in MEMORY_GUIDANCE  # positive posture leads
+        # Skills are the default home for task-learned knowledge (incl. the
+        # user's preferences/corrections for that work); memory is the narrow
+        # every-session exception. The routing rule must LEAD, not trail.
+        assert MEMORY_GUIDANCE.index("Skills come first") < MEMORY_GUIDANCE.index("Memory is the narrow exception")
+        assert "preferences and corrections" in MEMORY_GUIDANCE
+        assert "Save proactively" not in MEMORY_GUIDANCE
         assert "workflows belong" in MEMORY_GUIDANCE
         # The category/SKIP curricula must NOT be re-taught here.
         assert "PR numbers" not in MEMORY_GUIDANCE
@@ -868,7 +873,7 @@ class TestEnvironmentHints:
             def cleanup(self, *, force_remove=False):
                 cleaned["force_remove"] = force_remove
 
-        import tools.terminal_tool_backends as _tt
+        import tools.terminal_tool as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _FakeEnv())
 
         assert _pb._probe_remote_backend("docker") is not None
@@ -892,7 +897,7 @@ class TestEnvironmentHints:
             def cleanup(self, *, force_remove=False):
                 cleaned.append(force_remove)
 
-        import tools.terminal_tool_backends as _tt
+        import tools.terminal_tool as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _ExplodingEnv())
 
         assert _pb._probe_remote_backend("docker") is None
@@ -921,26 +926,24 @@ class TestEnvironmentHints:
             def cleanup(self):
                 calls.append("bare")
 
-        import tools.terminal_tool_backends as _tt
+        import tools.terminal_tool as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
 
         assert _pb._probe_remote_backend("singularity") is not None
         assert calls == ["bare"]
 
-    def test_probe_remote_backend_ssh_is_probe_only_and_torn_down(self, monkeypatch):
-        """SSH probe: a normal SSHEnvironment would create remote dirs, force-upload
-        ~/.hermes and snapshot a session just to run `uname`, and its __del__ would
-        later sync_back() and close the ControlMaster shared with the agent's real
-        environment. The probe must request a probe-only instance (own socket, no
-        setup/sync) and tear it down itself."""
+    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
+        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
+        socket shared with the agent's real environment, so the probe must
+        leave it alone (nothing leaks — ControlPersist expires the master)."""
         import agent.prompt_builder as _pb
 
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         _pb._clear_backend_probe_cache()
 
-        created, calls = {}, []
+        calls = []
 
-        class _ProbeSshEnv:
+        class _SharedSshEnv:
             def execute(self, cmd, timeout=None):
                 return {
                     "returncode": 0,
@@ -953,17 +956,12 @@ class TestEnvironmentHints:
             def cleanup(self):
                 calls.append("cleanup")
 
-        import tools.terminal_tool_backends as _tt
-
-        def _fake_create(**kw):
-            created.update(kw)
-            return _ProbeSshEnv()
-
-        monkeypatch.setattr(_tt, "_create_environment", _fake_create)
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
 
         assert _pb._probe_remote_backend("ssh") is not None
-        assert created["probe_only"] is True
-        assert calls == ["cleanup"]
+        assert calls == []
+
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
@@ -1129,6 +1127,13 @@ class TestExecutionGuidanceModels:
         from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
         for fam in ("deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral"):
             assert fam in EXECUTION_GUIDANCE_MODELS
+
+    def test_muse_spark_gets_both_guidance_blocks(self):
+        # Muse Spark closes the turn after a chat-only response on defaults
+        # (#96550) — it needs tool-use enforcement AND execution guidance.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in TOOL_USE_ENFORCEMENT_MODELS)
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in EXECUTION_GUIDANCE_MODELS)
 
     def test_excludes_google_and_claude(self):
         # Gemini/Gemma get GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead;

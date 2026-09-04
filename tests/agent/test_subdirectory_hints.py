@@ -157,7 +157,7 @@ class TestSubdirectoryHintTracker:
     def test_timeout_skips_slow_hint_files(self, project, monkeypatch, caplog):
         """Slow hint reads time out instead of blocking the turn."""
         backend = project / "backend"
-        (backend / "AGENTS.md").write_text("Backend-specific instructions", encoding="utf-8")
+        (backend / "AGENTS.md").write_text("Backend-specific instructions")
         import sys
 
         from agent import subdirectory_hints as sh_mod

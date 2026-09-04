@@ -74,12 +74,46 @@ _RAFT_TURN_IDS: set[str] = set()
 _RAFT_PROMPT_TURN_IDS: set[str] = set()
 
 
+def _profile_scoped() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed, connected, and reloaded
+    inside ``_profile_runtime_scope`` (secret scope installed + multiplex
+    active) — the same discriminator the Buzz/SimpleX adapters use for this
+    bug class (#98738). The DEFAULT profile under multiplexing runs
+    unscoped: ``os.environ`` holds its own bridge output there and keeps its
+    legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 def _resolve_raft_profile() -> str:
-    """Scope-aware ``RAFT_PROFILE``: a secondary multiplex profile configures Raft only via its own ``.env``
-    (secret scope) — ``os.environ`` would return the DEFAULT profile's value. Unscoped ``get_secret()`` raises."""
+    """Scope-aware resolution of the ``RAFT_PROFILE`` slug.
+
+    Raft has no ``config.yaml`` equivalent for this value (env-only), so a
+    secondary multiplex profile's only way to configure Raft is via its own
+    ``.env`` file — which the installed secret scope (built from that
+    profile's ``.env`` by ``_profile_runtime_scope``) already carries.
+    Reading raw ``os.environ.get("RAFT_PROFILE")`` here would instead return
+    the DEFAULT profile's bridged value, misdirecting the bridge subprocess
+    or CLI hint at another profile's external Raft workspace/agent identity.
+
+    ``get_secret()`` is only called when ``_profile_scoped()`` is True — the
+    callers of this helper (``connect()``/``register()``) run inside
+    ``_profile_runtime_scope`` for secondary profiles, but the DEFAULT
+    profile's own startup path never installs a scope, where ``get_secret()``
+    would raise ``UnscopedSecretError``; the guard keeps that path on the
+    unchanged ``os.environ`` read.
+    """
     if _profile_scoped():
         try:
             from agent.secret_scope import get_secret
+
             return (get_secret("RAFT_PROFILE") or "").strip()
         except Exception:
             return ""
@@ -371,7 +405,9 @@ class RaftAdapter(BasePlatformAdapter):
         if not (raft_bin := shutil.which("raft")):
             logger.warning("[raft] raft CLI not found in PATH; bridge not spawned — wake-only polling mode")
             return
-        if not (profile := _resolve_raft_profile()):
+
+        profile = _resolve_raft_profile()
+        if not profile:
             logger.warning("[raft] RAFT_PROFILE not set; bridge not spawned")
             return
         endpoint = f"http://{self._host}:{port}{self._path}"
@@ -519,12 +555,16 @@ def _is_connected(config: PlatformConfig) -> bool:
 def _env_enablement() -> Optional[dict]:
     """Auto-enable during gateway config load when the scope-aware RAFT_PROFILE is set.
 
-    Auto-enables when RAFT_PROFILE is set (the adapter needs it anyway). Scope-aware: consults the active
-    profile's own RAFT_PROFILE (env, or a secondary profile's own .env via the secret scope) instead of the
-    default profile's bridged env value (mirrors the Buzz/SimpleX fix for 98738) — see
-    ``_resolve_raft_profile``. See #98738.
+    Auto-enables when RAFT_PROFILE is set (the adapter needs it anyway).
+    Scope-aware: consults the active profile's own RAFT_PROFILE (env, or a
+    secondary profile's own .env via the secret scope) instead of the
+    default profile's bridged env value (mirrors the Buzz/SimpleX fix for
+    #98738) — see ``_resolve_raft_profile``.
     """
-    return {"enabled": True} if _resolve_raft_profile() else None
+    if not _resolve_raft_profile():
+        return None
+
+    return {"enabled": True}
 
 
 def interactive_setup() -> None:
@@ -565,24 +605,23 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,
         emoji="🔔",
-        # Scope-aware: register() runs inside _profile_runtime_scope for a secondary multiplex
-        # profile, so this resolves that profile's own RAFT_PROFILE (see _resolve_raft_profile).
+        # Scope-aware (mirrors _resolve_raft_profile's docstring): register()
+        # runs inside _profile_runtime_scope for a secondary multiplex
+        # profile (via discover_plugins() in
+        # gateway/run.py::_start_one_profile_adapters), so this resolves
+        # that profile's own RAFT_PROFILE instead of the default profile's
+        # bridged env value baked into a shared registry entry.
         platform_hint=(
             "You are connected to Raft via an external-agent channel. "
             "Run `raft --profile {profile} profile show` to confirm which agent profile is active. "
             "Run `raft --profile {profile} manual get raft-cli-overview` to learn available Raft commands. "
             "Always pass `--profile {profile}` to every raft CLI call."
-        ).format(profile=_resolve_raft_profile() or "your-agent-profile"))
-    for hook_name, callback in (("on_session_start", _on_session_start), ("pre_llm_call", _on_pre_llm_call),
-                                ("pre_tool_call", _on_pre_tool_call), ("post_tool_call", _on_post_tool_call),
-                                ("post_llm_call", _on_post_llm_call), ("on_session_end", _on_session_end),
-                                ("on_session_finalize", _on_session_finalize)):
-        ctx.register_hook(hook_name, callback)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import asyncio  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----
+        ).format(profile=_resolve_raft_profile() or "your-agent-profile"),
+    )
+    ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
+    ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("on_session_finalize", _on_session_finalize)

@@ -295,20 +295,64 @@ def _(rid, params: dict) -> dict:
     # (generation-only coalescing).
     req_rev = str(params.get("rev") or "")
 
-    def _refresh_session_agent() -> None:
-        """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
-        re-read the registry). The MCP pool is process-global, so refreshing only the requester
-        would leave sibling sessions on stale tools until /new — and a request without a
-        resolvable session_id (desktop passes ``activeSessionId ?? undefined``) would refresh
-        nothing while still answering "reloaded". Runs under _mcp_reload_lock so a concurrent
-        reload can't tear the registry down mid-refresh."""
-        with _sessions_lock:
-            live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None]
-        for sid, sess in live:
-            agent = sess["agent"]
-            try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-                with _session_profile_runtime_scope(sess):
-                    _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
+                _cfg = _load_config()
+                _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
+                _confirm_required = True
+                if isinstance(_approvals, dict):
+                    _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
+            except Exception:
+                _confirm_required = True
+            if _confirm_required:
+                # Return a structured response the Ink client can surface
+                # as a warning/confirmation without actually reloading yet.
+                # Ink's ops.ts reads ``status`` and prints ``message`` to
+                # the transcript; a follow-up invocation with confirm=true
+                # (or an `always` choice that flips the config) proceeds.
+                return _ok(
+                    rid,
+                    {
+                        "status": "confirm_required",
+                        "message": (
+                            "⚠️  /reload-mcp invalidates the prompt cache (next "
+                            "message re-sends full input tokens). Reply `/reload-mcp "
+                            "now` to proceed, or `/reload-mcp always` to proceed and "
+                            "silence this prompt permanently."
+                        ),
+                    },
+                )
+
+        if session and _session_uses_compute_host(session):
+            try:
+                ack = _get_compute_host_supervisor().reload_mcp(
+                    str(params.get("session_id") or ""),
+                    request_id=f"reload-mcp-{rid}",
+                )
+            except Exception as exc:
+                return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
+            return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
+
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, reprobe_tool_availability
+
+        def _refresh_session_agent() -> None:
+            """Rebuild THIS session's cached tool snapshot from the live
+            registry and push session.info. The agent snapshots tools once at
+            build and never re-reads the registry, so an explicit rebuild is
+            required (mirrors gateway/run.py::_execute_mcp_reload). Runs under
+            _mcp_reload_lock so the registry it reads can't be torn down by a
+            concurrent reload mid-refresh."""
+            if not session:
+                return
+            agent = session["agent"]
+            try:
+                from tools.mcp_tool import refresh_agent_mcp_tools
+
+                # Explicit reload: re-resolve enabled toolsets so a server the
+                # user just enabled in config this session is picked up.
+                refresh_agent_mcp_tools(
+                    agent,
+                    enabled_override=_load_enabled_toolsets(),
+                    quiet_mode=True,
+                )
             except Exception as _exc:
                 logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, _exc)
             _emit("session.info", sid, _session_info(agent, sess))
@@ -318,21 +362,50 @@ def _(rid, params: dict) -> dict:
         can change WHILE discover connects: re-hash and repeat until stable so the marked
         generation matches what loaded."""
         global _mcp_reload_gen, _mcp_reload_loaded_rev
-        loaded = _compute_mcp_rev()
-        for _ in range(_MCP_RELOAD_MAX_PASSES):
-            _mcp_lifecycle.shutdown_mcp_servers()
-            _mcp_agent.reprobe_tool_availability()
-            _mcp_discovery.discover_mcp_tools()
-            after = _compute_mcp_rev()
-            if after == loaded:
-                break
-            loaded = after
-        # The unscoped shutdown tore down every profile's servers, but discover_mcp_tools() above
-        # only rebuilt the launch profile's overlay; a secondary-profile session refreshed against
-        # that registry would lose its MCP tools until its own reload.
-        with _sessions_lock:
-            homes = {sess.get("profile_home") for sess in _sessions.values() if sess.get("agent") is not None}
-        for home in sorted(homes - {None}):
+
+        # The revision the CALLER is asking to load (the mcp_rev its poll
+        # observed). Empty on legacy clients and manual /reload-mcp — those
+        # coalesce on generation alone, as before.
+        req_rev = str(params.get("rev") or "")
+
+        def _do_full_reload() -> None:
+            """shutdown+discover+refresh under the lock, then mark a completed
+            generation. The lock spans the refresh too: releasing after
+            discover would let a second reload tear the registry down while
+            this one is still reading it to rebuild the session snapshot.
+
+            Config can change WHILE discover is connecting servers (a slow
+            reload racing a config edit): re-hash after discovery and repeat
+            until the hash is stable, so the generation we mark completed
+            always reflects the config that was actually loaded."""
+            global _mcp_reload_gen, _mcp_reload_loaded_rev
+
+            loaded = _compute_mcp_rev()
+            for _ in range(_MCP_RELOAD_MAX_PASSES):
+                shutdown_mcp_servers()
+                reprobe_tool_availability()
+                discover_mcp_tools()
+                after = _compute_mcp_rev()
+                if after == loaded:
+                    break
+                loaded = after
+
+            _refresh_session_agent()
+            _mcp_reload_loaded_rev = loaded
+            _mcp_reload_gen += 1
+
+        # Serialize reloads. The LEADER (won the non-blocking acquire) runs the
+        # full reload. A FOLLOWER (lock busy) snapshots the generation, waits,
+        # then — still holding the lock — checks whether a reload that
+        # actually COMPLETED while it waited satisfies ITS request: the
+        # generation must have advanced (leader didn't throw) AND the loaded
+        # revision must match the one this follower was asked to apply. Both
+        # true → just refresh its own agent against the fresh registry
+        # (coalesced). Leader threw, or leader loaded an older revision than
+        # this request observed → re-run the full reload, so a failed or
+        # stale leader can never leave a follower acking a revision that was
+        # never loaded.
+        if _mcp_reload_lock.acquire(blocking=False):
             try:
                 with _session_profile_runtime_scope({"profile_home": home}):
                     _mcp_discovery.discover_mcp_tools()
@@ -1495,12 +1568,31 @@ def _(rid, params: dict) -> dict:
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
+            _late_session = session
+
+            def _on_late_ack(late: dict, _sid=sid) -> None:
+                _adopt_late_compute_host_compress_ack(_sid, _late_session, late, route_name="slash.compress")
+
             try:
                 ack = _send_compute_host_control(
                     sid,
                     route_name="slash.compress",
                     command=command,
                     wait=True,
+                    timeout=_compute_host_compress_wait_seconds(),
+                    on_late_ack=_on_late_ack,
+                )
+            except queue.Empty:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "status": "pending",
+                        "output": (
+                            "compression still running in the background; "
+                            "the transcript will refresh when it finishes"
+                        ),
+                    },
                 )
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host slash.compress failed: {exc}")

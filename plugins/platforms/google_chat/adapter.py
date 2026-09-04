@@ -24,24 +24,59 @@ from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
 from agent.secret_scope import is_multiplex_active
-from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
-)
 
-from .cards import card_spec_to_cards_v2, format_message as _format_message
+
+def _get_scoped_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Scope-aware config/credential read with the default-profile fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and connects
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash startup/reconnect (#70652 class); there
+    ``os.environ`` is that profile's own value, so fall back to it. Same
+    pattern as ``whatsapp_common._get_wsecret`` and the WeCom/IRC/ntfy
+    plugin adapters.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
 
 
 def _adc_would_borrow_foreign_credentials() -> bool:
-    """True when ADC would read another profile's SA from the process env under
-    multiplexing (``google.auth.default()`` consults ``os.environ`` directly)."""
+    """True when ADC would silently read another profile's SA from process env.
+
+    ``google.auth.default()`` consults ``os.environ`` directly. Under
+    multiplexing a scoped profile only reaches the ADC branch after its own
+    scope had no service-account setting -- if the process env still carries
+    one (the default profile's), ADC would authenticate this profile as that
+    other identity. Fail closed instead.
+    """
     return is_multiplex_active() and bool(
-        os.environ.get("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        os.environ.get("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     )
 
-# Heavy google imports are deferred to first adapter use (~110ms / ~33MB on every CLI
-# start). ``_load_google_modules()`` rebinds these; ``HttpError = Exception`` keeps
-# ``except HttpError`` valid meanwhile.
+# Heavy google-cloud + googleapiclient imports are deferred to first
+# adapter use. Importing them eagerly here added ~110ms wall and ~33MB
+# RSS to *every* CLI invocation (the plugin loader imports this module at
+# ``model_tools`` import time, so ``hermes status``, ``hermes chat``, etc.
+# all paid the cost even though they never instantiate the adapter).
+#
+# All names below are module globals that ``_load_google_modules()``
+# rebinds on first call. The ``HttpError = Exception`` placeholder is
+# important: ``except HttpError as exc:`` clauses elsewhere in this
+# module bind the *current* module-global at try/except evaluation time,
+# so as long as ``_load_google_modules()`` runs before any such
+# ``try`` block executes (which it does — ``__init__`` calls it), the
+# rebound real ``googleapiclient.errors.HttpError`` is what actually
+# matches at runtime.
 GOOGLE_CHAT_AVAILABLE: bool = False
 httplib2 = pubsub_v1 = gax_exceptions = service_account = AuthorizedHttp = build_service = MediaFileUpload = None  # type: ignore
 HttpError: Any = Exception  # type: ignore
@@ -127,8 +162,15 @@ from gateway.config import Platform, PlatformConfig
 Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
-    cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -412,19 +454,50 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._typing_card_inflight: Dict[str, asyncio.Event] = {}
         # Typing cards that lost a race with send(); patched away at end of turn.
         self._orphan_typing_messages: Dict[str, List[str]] = {}
-        # Snapshot profile-scoped settings now: Pub/Sub callbacks run on threads
-        # where the ContextVar secret scope is unavailable.
+        # Snapshot profile-scoped settings while adapter construction still
+        # runs inside _profile_runtime_scope. Pub/Sub invokes callbacks from
+        # its own threads, where the ContextVar secret scope is intentionally
+        # unavailable; callbacks must use these instance values rather than
+        # consulting process-global environment state.
         extra = self.config.extra
-        self._max_messages = self._int_setting(extra, "max_messages", "GOOGLE_CHAT_MAX_MESSAGES", 1)
-        self._max_bytes = self._int_setting(extra, "max_bytes", "GOOGLE_CHAT_MAX_BYTES", 16 * 1024 * 1024)
+        try:
+            self._max_messages = int(
+                extra.get("max_messages")
+                or _get_scoped_secret("GOOGLE_CHAT_MAX_MESSAGES", "1")
+            )
+        except (ValueError, TypeError):
+            self._max_messages = 1
+        try:
+            self._max_bytes = int(
+                extra.get("max_bytes")
+                or _get_scoped_secret("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024))
+            )
+        except (ValueError, TypeError):
+            self._max_bytes = 16 * 1024 * 1024
         self._bootstrap_spaces = str(
-            extra.get("bootstrap_spaces") or _get_scoped_secret("GOOGLE_CHAT_BOOTSTRAP_SPACES", "") or "").strip()
-        self._debug_raw = bool(extra.get("debug_raw") or _get_scoped_secret("GOOGLE_CHAT_DEBUG_RAW"))
-        self._http_events_url = self._str_setting(extra, "http_events_url", "GOOGLE_CHAT_HTTP_EVENTS_URL")
-        self._http_events_audience = self._str_setting(
-            extra, "http_events_audience", "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", self._http_events_url)
-        self._http_events_service_account_email = self._str_setting(
-            extra, "http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL").lower()
+            extra.get("bootstrap_spaces")
+            or _get_scoped_secret("GOOGLE_CHAT_BOOTSTRAP_SPACES", "")
+            or ""
+        ).strip()
+        self._debug_raw = bool(
+            extra.get("debug_raw")
+            or _get_scoped_secret("GOOGLE_CHAT_DEBUG_RAW")
+        )
+        self._http_events_url = (
+            extra.get("http_events_url")
+            or _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_URL", "")
+            or ""
+        ).strip()
+        self._http_events_audience = (
+            extra.get("http_events_audience")
+            or _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", "")
+            or self._http_events_url
+        ).strip()
+        self._http_events_service_account_email = (
+            extra.get("http_events_service_account_email")
+            or _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL", "")
+            or ""
+        ).strip().lower()
 
     @staticmethod
     def _int_setting(extra: Dict[str, Any], key: str, env_name: str, default: int) -> int:
@@ -446,7 +519,47 @@ class GoogleChatAdapter(BasePlatformAdapter):
         identity attached, or locally via ``gcloud auth application-default login``. Lets operators run the
         gateway in GCP without managing SA key files. Pattern lifted from PR #14965.
         """
-        sa_path = self.config.extra.get("service_account_json") or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")
+        sa_path = (
+            self.config.extra.get("service_account_json")
+            or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")
+        )
+        if sa_path:
+            # Inline JSON (rare, but supported).
+            if sa_path.lstrip().startswith("{"):
+                try:
+                    info = json.loads(sa_path)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Inline SA JSON is not valid JSON: {exc}"
+                    ) from exc
+                return service_account.Credentials.from_service_account_info(
+                    info, scopes=_CHAT_SCOPES
+                )
+            if not os.path.exists(sa_path):
+                raise FileNotFoundError(
+                    "Service Account JSON file not found at configured path."
+                )
+            # Validate file parses before handing to google-auth for nicer error.
+            try:
+                with open(sa_path, "r", encoding="utf-8") as fh:
+                    info = json.load(fh)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Service Account JSON file is not valid JSON: {exc}"
+                ) from exc
+            return service_account.Credentials.from_service_account_info(
+                info, scopes=_CHAT_SCOPES
+            )
+
+        # No explicit SA configured — try ADC. This is the Cloud Run / GCE
+        # path; google-auth picks up the workload identity automatically.
+        if _adc_would_borrow_foreign_credentials():
+            raise ValueError(
+                "Google Chat ADC skipped for this profile: service-account "
+                "credentials are set in the process environment but not in "
+                "this profile's secret scope. Set "
+                "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON in this profile's .env."
+            )
         try:
             credentials = _load_sa_credentials_from(sa_path)
         except _SACredentialError as err:
@@ -519,8 +632,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     # -- bot identity --------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
-        """Resolved at call time so multiplexed profiles don't share one cache file."""
+        """Location where the resolved bot user_id is cached across restarts."""
+        # Resolve at call time (connect() runs inside the profile scope) so
+        # multiplexed profiles do not share one bot-identity cache file; the
+        # thread-count store above already resolves the same way.
         from hermes_constants import get_hermes_home as _get_hermes_home
+
         return _get_hermes_home() / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:
@@ -543,8 +660,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         candidate_spaces: List[str] = []
         if self.config.home_channel and self.config.home_channel.chat_id:
             candidate_spaces.append(self.config.home_channel.chat_id)
-        if self._bootstrap_spaces:
-            candidate_spaces.extend(s.strip() for s in self._bootstrap_spaces.split(",") if s.strip())
+        # Env-configured allowed spaces (comma-separated). Optional.
+        extra_spaces = self._bootstrap_spaces
+        if extra_spaces:
+            candidate_spaces.extend(
+                s.strip() for s in extra_spaces.split(",") if s.strip()
+            )
         for space in candidate_spaces:
             try:
                 members = await asyncio.to_thread(
@@ -810,10 +931,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.exception("[GoogleChat] Could not parse Pub/Sub envelope")
             message.ack()
             return
-        ce_type = dict(getattr(message, "attributes", {}) or {}).get("ce-type") or ""
-        logger.debug("[GoogleChat] Envelope keys=%s, ce-type=%s", list(envelope.keys()), ce_type)
+
+        attrs = dict(getattr(message, "attributes", {}) or {})
+        ce_type = attrs.get("ce-type") or ""
+        logger.debug(
+            "[GoogleChat] Envelope keys=%s, ce-type=%s",
+            list(envelope.keys()),
+            ce_type,
+        )
         if self._debug_raw:
-            # Contains message text + sender email: redact and gate at DEBUG.
+            # Dangerous flag: contains message text and sender email. Route
+            # through the global redaction filter and gate at DEBUG level so
+            # default log configurations never surface it. Operators must
+            # enable DEBUG logging AND set this env var to see the dump.
             try:
                 from agent.redact import redact_sensitive_text
                 dump = redact_sensitive_text(json.dumps(envelope))
@@ -1014,11 +1144,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return None, mime
         # cache_* helpers take ``ext`` for media and a positional filename for docs.
         filename = name.split("/")[-1] if name else "attachment"
-        ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        for prefix, cache_fn, default_ext in _MEDIA_CACHERS:
-            if mime.startswith(prefix):
-                return await cache_fn(data, ext=ext or default_ext), mime
-        return await cache_document_from_bytes_async(data, filename), mime
+        if "." in filename:
+            ext = "." + filename.rsplit(".", 1)[-1].lower()
+        else:
+            ext = ""
+        if mime.startswith("image/"):
+            local = await cache_image_from_bytes_async(data, ext=ext or ".jpg")
+        elif mime.startswith("audio/"):
+            local = await cache_audio_from_bytes_async(data, ext=ext or ".ogg")
+        elif mime.startswith("video/"):
+            local = await cache_video_from_bytes_async(data, ext=ext or ".mp4")
+        else:
+            local = await cache_document_from_bytes_async(data, filename)
+        return local, mime
 
     # -- outbound ------------------------------------------------------------
     def _note_rate_limit(self, chat_id: str) -> int:
@@ -1560,9 +1698,28 @@ def _env_inbound_configured() -> bool:
 
 
 def _check_for_registry() -> bool:
-    """``check_fn`` for the registry pass: deps installed AND minimum inbound env set,
-    so an unconfigured user never sees ``google_chat`` auto-enabled."""
-    return check_google_chat_requirements() and _env_inbound_configured()
+    """``check_fn`` for the platform registry pass — stricter than the
+    deps-only ``check_google_chat_requirements``.
+
+    The registry pass at ``gateway/config.py:_apply_env_overrides`` adds
+    the platform to ``cfg.platforms`` whenever ``check_fn`` returns True.
+    For backward compat with the pre-plugin behavior, we ALSO require
+    the minimum Pub/Sub env vars so an unconfigured user doesn't
+    accidentally see ``google_chat`` enabled. This matches the legacy
+    ``if gc_project and gc_subscription`` gate.
+    """
+    if not check_google_chat_requirements():
+        return False
+    project = (
+        _get_scoped_secret("GOOGLE_CHAT_PROJECT_ID")
+        or _get_scoped_secret("GOOGLE_CLOUD_PROJECT")
+    )
+    subscription = (
+        _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION_NAME")
+        or _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION")
+    )
+    http_events_url = _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    return bool(http_events_url or (project and subscription))
 
 
 def _is_connected(config: PlatformConfig) -> bool:
@@ -1579,16 +1736,64 @@ _ENV_SEED_KEYS = (  # (env var, extra key, conv) for seed_extra_from_env
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:
-    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before the adapter exists
-    (so ``gateway status`` reflects env-only config); ``None`` when the minimum inbound settings are absent."""
-    if not _env_inbound_configured():
+    """Seed ``PlatformConfig.extra`` from env vars during
+    ``_apply_env_overrides``.
+
+    The registry's env-enablement hook is called BEFORE the adapter is
+    constructed, so ``gateway status`` and ``get_connected_platforms()``
+    reflect env-only configuration without instantiating the Pub/Sub client.
+    Returns ``None`` when the required Pub/Sub project/subscription aren't
+    set; the caller then skips auto-enabling the platform.
+
+    The special ``home_channel`` key in the returned dict is handled by the
+    core hook — it becomes a proper ``HomeChannel`` dataclass on the
+    ``PlatformConfig`` rather than being merged into ``extra``.
+    """
+    project = (
+        _get_scoped_secret("GOOGLE_CHAT_PROJECT_ID")
+        or _get_scoped_secret("GOOGLE_CLOUD_PROJECT")
+    )
+    subscription = (
+        _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION_NAME")
+        or _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION")
+    )
+    http_events_url = _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    if not (http_events_url or (project and subscription)):
         return None
-    project, subscription, http_events_url = _env_inbound_settings()
-    values = [("project_id", project), ("subscription_name", subscription), ("http_events_url", http_events_url),
-              ("service_account_json", _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
-               or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS"))]
-    seed = {extra_name: value for extra_name, value in values if value}
-    seed.update(_seed_extra_from_env(_ENV_SEED_KEYS, home_env="GOOGLE_CHAT_HOME_CHANNEL"))
+    seed: Dict[str, Any] = {}
+    if project:
+        seed["project_id"] = project
+    if subscription:
+        seed["subscription_name"] = subscription
+    if http_events_url:
+        seed["http_events_url"] = http_events_url
+    http_events_audience = _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE")
+    if http_events_audience:
+        seed["http_events_audience"] = http_events_audience
+    http_events_sa_email = _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL")
+    if http_events_sa_email:
+        seed["http_events_service_account_email"] = http_events_sa_email
+    for env_name, extra_name in (
+        ("GOOGLE_CHAT_MAX_MESSAGES", "max_messages"),
+        ("GOOGLE_CHAT_MAX_BYTES", "max_bytes"),
+        ("GOOGLE_CHAT_BOOTSTRAP_SPACES", "bootstrap_spaces"),
+        ("GOOGLE_CHAT_DEBUG_RAW", "debug_raw"),
+    ):
+        value = _get_scoped_secret(env_name)
+        if value:
+            seed[extra_name] = value
+    sa_json = (
+        _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+        or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    if sa_json:
+        seed["service_account_json"] = sa_json
+    home = _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL")
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home"),
+        }
     return seed
 
 
@@ -1689,7 +1894,8 @@ async def _standalone_send(
         return _standalone_error(f"thread_id {thread_id!r} must match 'spaces/<id>/threads/<id>'")
     extra = getattr(pconfig, "extra", {}) or {}
     sa_value = (
-        extra.get("service_account_json") or _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+        extra.get("service_account_json")
+        or _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
         or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")
     )
     if service_account is None:
@@ -1699,9 +1905,46 @@ async def _standalone_send(
     except Exception as e:
         return _standalone_error(f"google-auth import failed: {e}")
     try:
-        creds = _load_sa_credentials_from(sa_value)
-    except _SACredentialError as err:
-        return _standalone_error(_STANDALONE_SA_ERRORS[err.kind].format(exc=err.detail, path=sa_value))
+        if sa_value:
+            stripped = sa_value.lstrip()
+            if stripped.startswith("{"):
+                try:
+                    info = json.loads(sa_value)
+                except json.JSONDecodeError as exc:
+                    return {"error": f"Google Chat standalone send: inline SA JSON is invalid: {exc}"}
+                creds = service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+            else:
+                if not os.path.exists(sa_value):
+                    return {"error": f"Google Chat standalone send: SA JSON file not found at {sa_value}"}
+                try:
+                    with open(sa_value, "r", encoding="utf-8") as fh:
+                        info = json.load(fh)
+                except json.JSONDecodeError as exc:
+                    return {"error": f"Google Chat standalone send: SA JSON file is invalid: {exc}"}
+                creds = service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+        else:
+            if _adc_would_borrow_foreign_credentials():
+                return {"error": (
+                    "Google Chat standalone send: ADC skipped for this profile: "
+                    "service-account credentials are set in the process environment "
+                    "but not in this profile's secret scope"
+                )}
+            try:
+                import google.auth as _google_auth
+            except ImportError:
+                return {"error": (
+                    "Google Chat standalone send: no SA credentials configured "
+                    "and google-auth is not installed for ADC fallback"
+                )}
+            try:
+                creds, _project = _google_auth.default(scopes=_CHAT_SCOPES)
+            except Exception as exc:
+                return {"error": (
+                    f"Google Chat standalone send: no SA credentials configured "
+                    f"and Application Default Credentials are unavailable: {exc}"
+                )}
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         return _standalone_error(f"credential load failed: {e}")
     # Bound the synchronous token refresh so a hung STS endpoint can't stall cron.

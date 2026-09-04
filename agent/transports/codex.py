@@ -43,26 +43,11 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     return key if len(key) <= 64 else "pck_" + hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
 
 
-def _bound_prompt_cache_key_field(container: Any) -> None:
-    """Bound (or drop, when empty) an in-place ``prompt_cache_key`` entry."""
-    if isinstance(container, dict) and "prompt_cache_key" in container:
-        bounded = _bounded_prompt_cache_key(container["prompt_cache_key"])
-        if bounded:
-            container["prompt_cache_key"] = bounded
-        else:
-            container.pop("prompt_cache_key", None)
-
-
-def _merge_extra_headers(kwargs: dict[str, Any], **headers: str) -> None:
-    """Merge ``headers`` into a str-coerced copy of ``kwargs['extra_headers']`` (SDK kwarg -> HTTP headers)."""
-    existing = kwargs.get("extra_headers")
-    merged = {str(k): str(v) for k, v in existing.items() if k and v is not None} if isinstance(existing, dict) else {}
-    merged.update(headers)
-    kwargs["extra_headers"] = merged
-
-
-# Client-side ``web_search`` on xAI Responses collides with Grok's native tool
-# (incomplete hang / HTTP 400); it goes on the wire under this alias.
+# Wire-name used when Hermes keeps client-side web_search on xAI Responses.
+# A function literally named ``web_search`` collides with Grok's native
+# server-side tool (incomplete hang or HTTP 400 duplicate names); this alias
+# avoids that while still dispatching through Hermes's configured provider
+# (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 
 # OpenCode's /v1/responses endpoints (Zen and Go, including custom providers

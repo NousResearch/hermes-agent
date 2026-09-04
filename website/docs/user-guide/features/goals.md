@@ -145,7 +145,7 @@ How it works, each turn:
 
 1. **Gates run before the judge.** If any gate fails, the judge is *not called* — a red gate is deterministic evidence the goal isn't done. The gate's exit code and output tail (last ~3 KB) become the continuation prompt, so the agent iterates against the actual failure instead of a vibe.
 2. **All gates pass → normal judging.** The LLM judge then decides done/blocked/continue/wait exactly as before.
-3. **Every boundary re-runs a failed gate.** The command executes against the current inputs each time; a stale result is never replayed, so a gate whose input you just repaired passes on the next boundary. The retry cap bounds a genuinely stuck red suite.
+3. **Unchanged workspace → no re-run.** If a gate failed and nothing changed in the workspace since (tracked via a git fingerprint of HEAD + working-tree status), the gate is not re-run — the recorded failure is replayed and the attempt count advances. A stuck agent can't burn wall-clock re-running an identical red suite. Outside a git repo, gates simply always re-run.
 4. **Retries are bounded.** Each gate defaults to 3 retries and a 5-minute timeout. When a gate exhausts its retries the goal auto-pauses (like the turn budget) with a message telling you to fix it manually, remove the gate, or `/goal resume`.
 
 Gates persist with the goal in `SessionDB.state_meta` (they survive `/resume` and context compression), and gate management (`/goal gate …`) is safe mid-run on the gateway — gates only run at turn boundary.

@@ -341,7 +341,7 @@ class TestWebServerEndpoints:
         def boom(*_args, **_kwargs):
             raise sqlite3.OperationalError("disk I/O error")
 
-        monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", boom)
+        monkeypatch.setattr(web_server, "_open_session_db_for_profile", boom)
         assert self.client.get("/api/sessions?limit=1&offset=0").status_code == 503
 
     def test_get_sessions_non_transient_operational_error_is_500(self, monkeypatch):
@@ -352,7 +352,7 @@ class TestWebServerEndpoints:
         def boom(*_args, **_kwargs):
             raise sqlite3.OperationalError("no such table: sessions")
 
-        monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", boom)
+        monkeypatch.setattr(web_server, "_open_session_db_for_profile", boom)
         assert self.client.get("/api/sessions?limit=1&offset=0").status_code == 500
 
     def test_get_status_loads_gateway_config_off_event_loop(self, monkeypatch):

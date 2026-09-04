@@ -13,9 +13,28 @@ GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 # See #51228.
 GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 
-# Set by ``hermes gateway run --external-supervisor``. Unlike systemd's INVOCATION_ID
-# and launchd's XPC_SERVICE_NAME, this survives wrappers that replace the child
-# environment (e.g. ``sudo env -i``).
+
+def is_global_startup_conflict(error_code: str | None) -> bool:
+    """Return True when an adapter's fatal error is a single-writer ownership conflict.
+
+    ``BasePlatformAdapter._acquire_platform_lock`` emits ``{scope}_lock``
+    with ``retryable=True`` on purpose: a *mid-run* reconnect must be able to
+    recover once the live holder exits or a stale record is cleared (#54167).
+    At startup, though, a live foreign holder is a configuration conflict —
+    two gateways cannot poll one bot token — so the startup router must not
+    treat that flag as "transient blip, retry-queue forever".  This matches by
+    error CODE only (the ``{scope}_lock`` / ``lock_conflict`` families every
+    adapter emits for scoped-lock and identity conflicts), never by message
+    text.
+    """
+    code = (error_code or "").strip().lower()
+    if not code:
+        return False
+    return code == "lock_conflict" or code.endswith("_lock")
+
+# Set by ``hermes gateway run --external-supervisor``. Unlike systemd's
+# INVOCATION_ID and launchd's XPC_SERVICE_NAME, this survives wrappers that
+# intentionally replace the child environment (for example ``sudo env -i``).
 EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
 
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(DEFAULT_CONFIG["agent"]["restart_drain_timeout"])

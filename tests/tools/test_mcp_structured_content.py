@@ -213,10 +213,10 @@ class TestReservedMetaKeyPredicate:
         assert _mcp_content._is_reserved_mcp_meta_key("tools.mcp.com/x")
 
     def test_vendor_and_unprefixed_not_reserved(self):
-        assert not _mcp_content._is_reserved_mcp_meta_key("com.example.mcp/x")  # trailing label
-        assert not _mcp_content._is_reserved_mcp_meta_key("com.example/x")
-        assert not _mcp_content._is_reserved_mcp_meta_key("plain-key")
-        assert not _mcp_content._is_reserved_mcp_meta_key("/leading-slash")
+        assert not mcp_tool._is_reserved_mcp_meta_key("com.example.mcp/x")  # trailing label
+        assert not mcp_tool._is_reserved_mcp_meta_key("com.example/x")
+        assert not mcp_tool._is_reserved_mcp_meta_key("plain-key")
+        assert not mcp_tool._is_reserved_mcp_meta_key("/leading-slash")
 
 
 class TestContentStructuredArbitration:
@@ -237,7 +237,7 @@ class TestContentStructuredArbitration:
                 structuredContent=payload,
             )
         )
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert data == {"result": json.dumps(payload)}
 
@@ -250,7 +250,7 @@ class TestContentStructuredArbitration:
                 structuredContent={"items": [1, 2, 3]},
             )
         )
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert data == {"result": "3 item(s) found"}
 
@@ -264,7 +264,7 @@ class TestContentStructuredArbitration:
                 structuredContent=payload,
             )
         )
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert data["structuredContent"] == payload
 
@@ -278,7 +278,7 @@ class TestContentStructuredArbitration:
                 structuredContent=payload,
             )
         )
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert data["result"] == payload
 
@@ -301,7 +301,7 @@ class TestDroppedBlockNotice:
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(content=[weird])
         )
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert "[MCP content dropped: unsupported block" in data["result"]
         assert "type=hologram" in data["result"]
@@ -318,13 +318,13 @@ class TestDroppedBlockNotice:
                 content=[weird], structuredContent=payload,
             )
         )
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert data["structuredContent"] == payload
         assert "[MCP content dropped" in data["result"]
 
     def test_notice_helper_minimal_block(self):
-        notice = _mcp_content._render_mcp_dropped_block_notice(
+        notice = mcp_tool._render_mcp_dropped_block_notice(
             SimpleNamespace(), "mystery"
         )
         assert notice == "[MCP content dropped: unsupported block (type=mystery)]"

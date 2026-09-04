@@ -78,6 +78,56 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
     raise value  # type: ignore[misc]
 
 
+# Default read deadline for context files (SOUL.md, AGENTS.md, .cursorrules,
+# ...); overridable via ``context_file_read_timeout`` in config.yaml.
+# Intentionally short: network-backed filesystems (iCloud Drive, OneDrive,
+# NFS) can fault-in an evicted file and block a cold read indefinitely, which
+# stalls system-prompt assembly before the first turn.
+_CONTEXT_FILE_READ_TIMEOUT_SECS = 5.0
+
+
+def _get_context_file_read_timeout() -> float:
+    """``context_file_read_timeout`` from config.yaml, else the 5s default."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        val = load_config_readonly().get("context_file_read_timeout")
+        if isinstance(val, (int, float)) and val > 0:
+            return float(val)
+    except Exception as e:
+        logger.debug("Could not read context_file_read_timeout from config: %s", e)
+    return _CONTEXT_FILE_READ_TIMEOUT_SECS
+
+
+def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+    """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
+
+    Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
+    the orphaned reader thread finishes on its own). Read errors propagate to
+    the caller exactly as a direct ``read_text`` would, so existing
+    ``try/except`` handling at each site is unchanged.
+    """
+    if timeout is None:
+        timeout = _get_context_file_read_timeout()
+    result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
+
+    def _reader() -> None:
+        try:
+            result.put((True, path.read_text(encoding="utf-8")))
+        except Exception as exc:  # re-raised on the caller thread
+            result.put((False, exc))
+
+    threading.Thread(target=_reader, daemon=True, name=f"context-read:{path.name}").start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty:
+        logger.warning("Context file %s read timed out after %.1fs; skipping", path, timeout)
+        return None
+    if ok:
+        return value  # type: ignore[return-value]
+    raise value  # type: ignore[misc]
+
+
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
 
@@ -210,14 +260,20 @@ def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = T
             "disabled, so never target='memory'. "
         )
     return frame + (
-        "Save proactively — storage has a hard character budget, and when "
-        "it fills, replace or consolidate stale entries in the same batch "
+        "Skills come first: when you learn something while doing a task — a "
+        "procedure, a pitfall, and the user's preferences and corrections "
+        "for that kind of work — record it in the skill you used or built "
+        "for the task (skill_manage), where it loads only when relevant. "
+        "Memory is the narrow exception for facts that apply to EVERY "
+        "session regardless of task (who the user is, environment facts, "
+        "standing conventions with no task home); it has a hard character "
+        "budget, so when it fills, replace or consolidate stale entries "
         "rather than skipping the save. Write entries as declarative facts, "
         "not instructions to yourself: 'User prefers concise responses' ✓ — "
         "'Always respond concisely' ✗ (imperative phrasing gets re-read as "
         "a directive in later sessions and can override the user's current "
-        "request). Route by longevity: a fact stale within a week belongs "
-        "in session history; procedures and workflows belong in skills."
+        "request). A fact stale within a week belongs in session history; "
+        "procedures and workflows belong in skills."
     )
 
 
@@ -355,8 +411,10 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "user. Responses that only describe intentions without acting are not acceptable."
 )
 
-# "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls and the turn closes on
-# finish_reason=stop (#96550).
+# Model name substrings that trigger tool-use enforcement guidance.
+# Add new patterns here when a model family needs explicit steering.
+# "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls
+# and the turn closes on finish_reason=stop (#96550).
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
 # Model name substrings whose sessions receive OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -369,13 +427,14 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # failure modes on those families (financial math in prose, no read-back after
 # external writes, identifier "repair", completeness claims despite count
 # mismatches). GLM's tool-calls-as-plain-text stall (#53847) and MiMo (#41874)
-# are covered here too. Gemini/Gemma are excluded — they get the more specific
+# are covered here too. Muse Spark (#96550) stops after a chat-only turn on
+# defaults. Gemini/Gemma are excluded — they get the more specific
 # GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead. Claude is excluded because
 # it does not exhibit these failure modes; users can opt any model in via
 # config.yaml `agent.execution_guidance: true` or a substring list.
 EXECUTION_GUIDANCE_MODELS = (
     "gpt", "codex", "grok",
-    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral",
+    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral", "muse",
 )
 
 # Universal "finish the job" guidance — applied to ALL models, not gated
@@ -1028,9 +1087,16 @@ _WINDOWS_BASH_SHELL_HINT = (
 
 
 def _tenv_read(name: str, default: str = "") -> str:
-    """Scope-aware TERMINAL_* read: the multiplexing gateway's per-turn scope carries
-    the active profile's settings (raw os.getenv could read a previous profile's value).
-    Only an import failure falls back — an active refusal scope must raise."""
+    """Scope-aware TERMINAL_* read (tools.terminal_scope.terminal_env).
+
+    The per-turn terminal scope installed by the multiplexing gateway carries
+    the active profile's terminal settings; a raw os.getenv would read a value
+    a previous profile's turn pinned into the process env.
+
+    Only an import failure falls back: an active refusal scope must raise —
+    swapping it for the ambient process value would defeat the fail-closed
+    boundary.
+    """
     try:
         from tools.terminal_scope import terminal_env
     except ImportError:
@@ -1038,73 +1104,44 @@ def _tenv_read(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-_BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
-# (config key, default) pairs forwarded to _create_environment's container_config.
-# Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
-_BACKEND_PROBE_CMD = (
-    "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
-    "\"$(uname -r 2>/dev/null || echo unknown)\" "
-    "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
-)
-
-
-def _run_backend_probe(env_type: str, terminal_tool) -> str:
-    """Execute the probe command inside a freshly built backend; "" when it yields nothing."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
-    from tools.terminal_tool_lifecycle import _cleanup_env
-
-    config = terminal_tool._get_env_config()
-    # Same container_config shaper as the live terminal path: a private copy of the key table here
-    # drifted (no docker_network) and gave the probe a bridge-networked container under lockdown.
-    env = _create_environment(
-        env_type=env_type, image=config.get(_BACKEND_IMAGE_KEYS[env_type], "") if env_type in _BACKEND_IMAGE_KEYS else "", cwd=config.get("cwd", ""),
-        timeout=config.get("timeout", 180),
-        ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-        container_config=(_container_config_from_config(config)
-                          if terminal_tool._is_container_backend(env_type) else None),
-        task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
-        # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
-        # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,
-        # and its later __del__ would sync_back() and close the master shared with the agent's own env.
-        probe_only=True,
-    )
-    try:
-        result = env.execute(_BACKEND_PROBE_CMD, timeout=4)
-    finally:
-        # One-shot `uname`; without teardown the backend leaves a second idle sandbox
-        # (task_id="prompt-backend-probe") running for the whole process next to the agent's own.
-        try:
-            _cleanup_env(env, force_remove=True)
-        except Exception:
-            logger.debug("Backend probe cleanup failed", exc_info=True)
-    if result.get("returncode") != 0:
-        logger.debug("Backend probe returned non-zero: %r", result)
-        return ""
-    return (result.get("output") or "").strip()
-
-
-def _format_backend_probe(output: str) -> str:
-    """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
-    parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
-    known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
-    fields = (
-        ("OS", " ".join(x for x in (known("os"), known("kernel")) if x)),
-        ("User", known("user")), ("Home", parsed.get("home")), ("Working directory", parsed.get("cwd")),
-    )
-    return "\n".join(f"  {label}: {value}" for label, value in fields if value)
-
-
 def _probe_remote_backend(env_type: str) -> str | None:
-    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
-    from hermes_constants import hermes_home_key
-    cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
-    formatted = _BACKEND_PROBE_CACHE.get(cache_key)
-    if formatted is None:
-        formatted = ""
-        try:
-            import tools.terminal_tool as terminal_tool  # heavy; only needed for non-local backends
-        except Exception as e:
-            logger.debug("Backend probe unavailable (import failed): %s", e)
+    """Run a tiny introspection command inside the active terminal backend.
+
+    Returns a pre-formatted multi-line string describing the backend's OS,
+    $HOME, cwd, and user — or None if the probe failed. Result is cached
+    per process. Used only for non-local backends where the agent's tools
+    operate on a different machine than the host Hermes runs on.
+    """
+    cwd_hint = _tenv_read("TERMINAL_CWD", "")
+    cache_key = (env_type, cwd_hint)
+    cached = _BACKEND_PROBE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached or None
+
+    try:
+        # Import locally: tools/ imports are heavy and only relevant when a
+        # non-local backend is actually configured.
+        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
+    except Exception as e:
+        logger.debug("Backend probe unavailable (import failed): %s", e)
+        _BACKEND_PROBE_CACHE[cache_key] = ""
+        return None
+
+    env = None
+    try:
+        config = _get_env_config()
+        # Build the environment the same way tools/terminal_tool.py does for a
+        # live command: select the backend image, then assemble ssh/container
+        # config from the env-derived dict. (There is no `get_environment`
+        # factory — the real entry point is `_create_environment`.)
+        if env_type == "docker":
+            image = config.get("docker_image", "")
+        elif env_type == "singularity":
+            image = config.get("singularity_image", "")
+        elif env_type == "modal":
+            image = config.get("modal_image", "")
+        elif env_type == "daytona":
+            image = config.get("daytona_image", "")
         else:
             image = ""
 
@@ -1171,6 +1208,20 @@ def _probe_remote_backend(env_type: str) -> str | None:
         logger.debug("Backend probe failed: %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
+    finally:
+        # The probe only needs a one-shot `uname`; without teardown the
+        # backend leaves a second idle sandbox (task_id="prompt-backend-probe")
+        # running for the whole process lifetime next to the agent's own one.
+        # ssh is left alone: it has no task-scoped sandbox and its cleanup()
+        # closes a ControlMaster socket (keyed by user@host:port) shared with
+        # the agent's real environment; ControlPersist expires it anyway.
+        if env is not None and env_type != "ssh":
+            try:
+                from tools.terminal_tool import _cleanup_env
+
+                _cleanup_env(env, force_remove=True)
+            except Exception:
+                logger.debug("Backend probe cleanup failed", exc_info=True)
 
     # Parse key=value lines back into a tidy summary.
     parsed: dict[str, str] = {}
@@ -1228,7 +1279,7 @@ def _local_host_hints() -> list[str]:
     # Windows-local terminal runs bash, not PowerShell — without this the model issues PowerShell syntax.
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
 
 def _remote_backend_hint(backend: str) -> str:
@@ -1516,10 +1567,24 @@ def build_skills_system_prompt(
 ) -> str:
     """Compact skill index for the system prompt.
 
-    External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
-    ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
-    ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
-    ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    Two-layer cache:
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
+      2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
+         mtime/size manifest — survives process restarts
+
+    Falls back to a full filesystem scan when both layers miss.
+
+    External skill directories (``skills.external_dirs`` in config.yaml) are
+    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
+    are read-only — they appear in the index but new skills are always created
+    in the local dir (or ``skills.create_dir`` when configured).  Local skills
+    take precedence when names collide.
+
+    ``compact_categories`` (e.g. from the coding posture — see
+    agent/coding_context.py) demotes whole categories to a names-only line in
+    the rendered index. Nothing is ever hidden: every skill name stays
+    visible and loadable via ``skill_view`` / ``skills_list``; only the
+    descriptions are dropped, and a footer note explains the demotion.
     """
     _home_token = None
     if skills_dir_override is not None:
@@ -2021,11 +2086,6 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
         return None
     try:
         content = (_read_text_with_timeout(soul_path) or "").strip()
-        if content:
-            # Plugin-era desktop builds appended a frozen Bot Mode roster to SOUL.md; the server
-            # now injects the live section in Bot Chat only, so the copy is dead weight everywhere.
-            from tools.bot_mode_probe import strip_legacy_protocol
-            content = strip_legacy_protocol(content).strip()
         if not content:
             return None
         return _truncate_content(_scan_context_content(content, "SOUL.md"), "SOUL.md", context_length=context_length,
@@ -2040,7 +2100,21 @@ def _read_context_file(path: Path) -> str:
     if not path.exists():
         return ""
     try:
-        return (_read_text_with_timeout(path) or "").strip()
+        content = (_read_text_with_timeout(hermes_md_path) or "").strip()
+        if not content:
+            return ""
+        content = _strip_yaml_frontmatter(content)
+        rel = hermes_md_path.name
+        try:
+            rel = str(hermes_md_path.relative_to(cwd_path))
+        except ValueError:
+            pass
+        content = _scan_context_content(content, rel)
+        result = f"## {rel}\n\n{content}"
+        return _truncate_content(
+            result, ".hermes.md", context_length=context_length,
+            read_path=str(hermes_md_path),
+        )
     except Exception as e:
         logger.debug("Could not read %s: %s", path, e)
         return ""
@@ -2161,8 +2235,20 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """
     sections: list[str] = []
     seen_content: set = set()
-    for label, candidate, content in _agents_md_candidates(cwd_path):
-        if content and content not in seen_content:  # else: empty, or an identical copy along the chain
+    for directory in _agents_md_directory_chain(cwd_resolved):
+        for name in ["AGENTS.override.md", "AGENTS.md", "agents.md"]:
+            candidate = directory / name
+            if not candidate.exists():
+                continue
+            try:
+                content = (_read_text_with_timeout(candidate) or "").strip()
+            except Exception as e:
+                logger.debug("Could not read %s: %s", candidate, e)
+                continue
+            if not content:
+                continue
+            if content in seen_content:
+                break  # identical copy along the chain — skip duplicate
             seen_content.add(content)
             sections.append(_context_section(content, label, label, candidate, context_length))
     if len(sections) <= 1:
@@ -2174,18 +2260,48 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """CLAUDE.md / claude.md — cwd only."""
-    for name, path, content in _claude_md_candidates(cwd_path):
-        if content:
-            return _context_section(content, name, "CLAUDE.md", path, context_length)
+    for name in ["CLAUDE.md", "claude.md"]:
+        candidate = cwd_path / name
+        if candidate.exists():
+            try:
+                content = (_read_text_with_timeout(candidate) or "").strip()
+                if content:
+                    content = _scan_context_content(content, name)
+                    result = f"## {name}\n\n{content}"
+                    return _truncate_content(
+                        result, "CLAUDE.md", context_length=context_length,
+                        read_path=str(candidate),
+                    )
+            except Exception as e:
+                logger.debug("Could not read %s: %s", candidate, e)
     return ""
 
 
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
-    cursorrules_content = "".join(
-        f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
-    )
+    """.cursorrules + .cursor/rules/*.mdc — cwd only."""
+    cursorrules_content = ""
+    cursorrules_file = cwd_path / ".cursorrules"
+    if cursorrules_file.exists():
+        try:
+            content = (_read_text_with_timeout(cursorrules_file) or "").strip()
+            if content:
+                content = _scan_context_content(content, ".cursorrules")
+                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
+        except Exception as e:
+            logger.debug("Could not read .cursorrules: %s", e)
+
+    cursor_rules_dir = cwd_path / ".cursor" / "rules"
+    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
+        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
+        for mdc_file in mdc_files:
+            try:
+                content = (_read_text_with_timeout(mdc_file) or "").strip()
+                if content:
+                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
+                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
+            except Exception as e:
+                logger.debug("Could not read %s: %s", mdc_file, e)
+
     if not cursorrules_content:
         return ""
     return _truncate_content(cursorrules_content, ".cursorrules", context_length=context_length,

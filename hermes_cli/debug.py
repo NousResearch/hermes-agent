@@ -366,17 +366,48 @@ def collect_debug_report(
     buf.write(dump_text or _capture_dump())
     if log_snapshots is None:
         log_snapshots = _capture_default_log_snapshots(log_lines)
-    # In-process sanitiser heal counters: populated only inside a process that ran agent turns
-    # (gateway /debug share); a fresh CLI's errors.log tail carries the same escalation lines.
-    with contextlib.suppress(Exception):
-        # See #96870.
+
+    # ── Sanitiser heal counters (#96870) ─────────────────────────────────
+    # In-process, in-memory counters: populated when this report is built
+    # inside a process that ran agent turns (gateway /debug share); empty
+    # from a fresh CLI process, where the errors.log tail below carries the
+    # same escalation lines instead.
+    try:
         from agent.agent_runtime_helpers import get_sanitizer_heal_stats
+
         heal_stats = get_sanitizer_heal_stats()
         if heal_stats:
             buf.write("\n\n--- transcript sanitiser heal counters ---\n")
             for sess, st in sorted(heal_stats.items()):
-                buf.write(f"session {sess}: {st['heal_events']} heal events, "
-                          f"{st['messages_healed']} messages healed, escalated={st['escalated']}\n")
+                buf.write(
+                    f"session {sess}: {st['heal_events']} heal events, "
+                    f"{st['messages_healed']} messages healed, "
+                    f"escalated={st['escalated']}\n"
+                )
+    except Exception:
+        pass
+
+    # ── Recent log tails (summary only) ──────────────────────────────────
+    buf.write("\n\n")
+    buf.write(f"--- agent.log (last {log_lines} lines) ---\n")
+    buf.write(log_snapshots["agent"].tail_text)
+    buf.write("\n\n")
+
+    errors_lines = min(log_lines, 100)
+    buf.write(f"--- errors.log (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["errors"].tail_text)
+    buf.write("\n\n")
+
+    buf.write(f"--- gateway.log (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["gateway"].tail_text)
+    buf.write("\n\n")
+
+    buf.write(f"--- gui.log (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["gui"].tail_text)
+    buf.write("\n\n")
+
+    buf.write(f"--- desktop.log (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["desktop"].tail_text)
     buf.write("\n")
     for name in _REPORT_LOGS:
         buf.write(f"\n--- {name}.log (last {_tail_budget(name, log_lines)} lines) ---\n"

@@ -18,8 +18,6 @@ import * as SessionStates from '@/store/session-states'
 
 import { deferred } from '../../../test/deferred'
 
-import { deferred } from '../../../test/deferred'
-
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
@@ -378,7 +376,7 @@ describe('useModelControls', () => {
       confirm_expensive_model: true,
       key: 'model',
       session_id: 'session-1',
-      value: 'muse-spark-1.2-contributor --provider opencode-go --global'
+      value: 'muse-spark-1.2-contributor --provider opencode-go'
     })
     expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
     expect($currentProvider.get()).toBe('opencode-go')
@@ -534,10 +532,8 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('custom:local')
   })
 
-  it('keeps a sticky manual pick even when its provider row does not list the model', async () => {
-    // Rows are hints: a custom endpoint serves ids the picker row lacks. The
-    // pick is the user's selection and must not be reseeded to the default.
-    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash-0731', provider: 'custom:hyper' })
+  it('reseeds a sticky manual pick that was removed from the catalog', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
 
     const queryClient = new QueryClient()
     queryClient.setQueryData(modelOptionsQueryKey('default'), {

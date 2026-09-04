@@ -21,11 +21,13 @@ import {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
-  openGatewayForProfile
+  openGatewayForProfile,
+  openSecondaryCount
 } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
-import { setConnection } from '@/store/session'
+import { clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -475,9 +477,8 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
     return
   }
 
-  prewarmedAt.set(scope, now)
-  const dial = connection ? openGatewayForAgent(connection, key) : openGatewayForProfile(key)
-  dial.catch(() => undefined)
+  prewarmedAt.set(key, now)
+  openGatewayForProfile(key).catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null
@@ -544,38 +545,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  // Fast path: only when the REGISTRY's active route — the authority that
-  // selects the socket in applyActive — already serves the target. The
-  // renderer-side $activeGatewayProfile mirror is not proof of the socket:
-  // applyActive can decline an epoch-losing publication while call sites
-  // publish the atom anyway, leaving "atom says X, socket serves Y" (the
-  // #89206 split-brain — observed live as atom 'default' over a hermes-setup
-  // socket during the guided-onboarding handoff). Verify the leg we're about
-  // to rely on; on disagreement fall through to the full ensure path, which
-  // re-activates the socket and leaves the atom and route agreeing. The one
-  // sanctioned divergence is the shared-primary (global-remote) route: the
-  // registry route stays on the primary while the atom carries the request
-  // scope — recognized via the active descriptor so global-remote keeps its
-  // fast path instead of re-running the swap on every create.
-  const routeAgrees = (): boolean => {
-    if (normalizeProfileKey($activeGatewayProfile.get()) !== target || $gateway.get()?.connectionState !== 'open') {
-      return false
-    }
-
-    const routeKey = normalizeProfileKey(activeGatewayProfileKey())
-
-    if (routeKey === target) {
-      return true
-    }
-
-    const descriptor = $connection.get()
-
-    return Boolean(
-      descriptor && descriptor.sharedPrimary === true && normalizeProfileKey(descriptor.profile) === target
-    )
-  }
-
-  if (routeAgrees()) {
+  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()?.connectionState === 'open') {
     return
   }
 
@@ -587,7 +557,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     await gatewaySwitch.catch(() => undefined)
   }
 
-  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()?.connectionState === 'open') {
     return
   }
 
@@ -607,11 +577,13 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // descriptor become visible together; a null descriptor (no bridge, or a
     // failed best-effort lookup) keeps the previous one — fail open.
     batch(() => {
-      $activeGatewayProfile.set(target)
-
       if (connection) {
         setConnection(connection)
+      } else {
+        clearComposerSelectionOwner()
       }
+
+      $activeGatewayProfile.set(target)
     })
   })()
 
@@ -794,11 +766,15 @@ export async function ensureGatewayAgent(
     // descriptor keeps the previous one — fail open, resynced by
     // boot/reconnect later.
     batch(() => {
-      $activeGatewayProfile.set(target)
-
       if (descriptor) {
         setConnection(descriptor)
       }
+
+      // The activated registry coordinate is authoritative even when the
+      // best-effort descriptor lookup failed. Publish it before the profile
+      // atom wakes forced model reseeds or a picker can persist a selection.
+      setComposerSelectionOwner(connection, target)
+      $activeGatewayProfile.set(target)
     })
   })()
 
@@ -935,6 +911,18 @@ function activateOnCurrentSource(target: string): Promise<void> {
   return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
 
+// Pin the next new chat to `name` (legacy profile-only door) so session.create
+// reads the profile the user clicked "+" under, not whatever
+// $activeGatewayProfile holds once an in-flight profile swap settles (#79005).
+export function pinNewChatProfile(name: string): string {
+  const target = normalizeProfileKey(name)
+  $newChatProfile.set(target)
+  $newChatRoute.set(null)
+  captureNewChatSource(profilePickConnectionId(target))
+
+  return target
+}
+
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
 // view. Unlike selectProfile, it leaves $showAllProfiles untouched, so the
 // unified sidebar stays put — used by the per-profile "+" in the all-profiles
@@ -942,10 +930,7 @@ function activateOnCurrentSource(target: string): Promise<void> {
 // is in. Points new chats at the profile and opens its backend so the next
 // message lands in the right place.
 export function newSessionInProfile(name: string): void {
-  const target = normalizeProfileKey(name)
-  $newChatProfile.set(target)
-  $newChatRoute.set(null)
-  captureNewChatSource(profilePickConnectionId(target))
+  const target = pinNewChatProfile(name)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void activateOnCurrentSource(target).catch((error: unknown) => {

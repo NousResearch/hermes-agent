@@ -122,9 +122,7 @@ def test_terminate_tree_terminates_children_too(monkeypatch):
             assert recursive is True
             return children
 
-    import psutil
-    fake_psutil = types.SimpleNamespace(Process=_FakeParentProc,
-                                        TimeoutExpired=psutil.TimeoutExpired, Error=psutil.Error)
+    fake_psutil = types.SimpleNamespace(Process=_FakeParentProc)
     monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
 
     class _FakeRouter:
@@ -210,8 +208,6 @@ def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):
     sup = LlamaServerSupervisor.__new__(LlamaServerSupervisor)
     sup.install_dir = tmp_path
     sup.proc = None
-    sup._job = None
     sup._reap_orphaned_children()
 
-    expected = [] if __import__("sys").platform == "win32" else [300]
-    assert reaped == expected  # Windows uses retained job handles, never binary scans.
+    assert reaped == [300], f"reaped {reaped}; wanted only the orphan (300)"

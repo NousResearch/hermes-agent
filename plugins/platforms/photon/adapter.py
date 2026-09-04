@@ -216,9 +216,11 @@ def check_requirements() -> bool:
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or "node"
-    if not shutil.which(node_bin):
-        logger.warning("photon: node binary '%s' not found on PATH", node_bin)
+    if not shutil.which(_get_scoped_secret("PHOTON_NODE_BIN") or "node"):
+        logger.warning(
+            "photon: node binary '%s' not found on PATH",
+            _get_scoped_secret("PHOTON_NODE_BIN") or "node",
+        )
         return False
     if not sidecar_deps_installed():
         # Self-install is possible at connect time (npm on PATH + writable sidecar dir):
@@ -271,11 +273,13 @@ def _reinstall_sidecar_deps() -> None:
 
 def validate_config(cfg: PlatformConfig) -> bool:
     extra = cfg.extra or {}
-    if (extra.get("project_id") or _get_scoped_secret("PHOTON_PROJECT_ID")) and (
-            extra.get("project_secret") or _get_scoped_secret("PHOTON_PROJECT_SECRET")):
-        return True
-    stored_id, stored_sec = load_project_credentials()  # auth.json fallback
-    return bool(stored_id and stored_sec)
+    project_id = extra.get("project_id") or _get_scoped_secret("PHOTON_PROJECT_ID")
+    project_secret = extra.get("project_secret") or _get_scoped_secret("PHOTON_PROJECT_SECRET")
+    if not project_id or not project_secret:
+        # Fall back to auth.json
+        stored_id, stored_sec = load_project_credentials()
+        return bool(stored_id and stored_sec)
+    return True
 
 
 def is_connected(cfg: PlatformConfig) -> bool:
@@ -287,14 +291,27 @@ def _env_enablement() -> Optional[dict]:
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    return {"project_id": project_id, "project_secret": project_secret,
-            **_seed_extra_from_env((), home_env="PHOTON_HOME_CHANNEL")}
-
+    seed: dict = {"project_id": project_id, "project_secret": project_secret}
+    home = _get_scoped_secret("PHOTON_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": _get_scoped_secret("PHOTON_HOME_CHANNEL_NAME", "Home"),
+        }
+    return seed
 
 
 def _markdown_enabled() -> bool:
-    """Replies go out as markdown; ``PHOTON_MARKDOWN=false`` is the kill-switch to plain text."""
-    return _get_scoped_secret("PHOTON_MARKDOWN", "true").strip().lower() not in {"false", "0", "no"}
+    """Send agent replies as markdown (spectrum-ts ``markdown()`` builder).
+
+    iMessage renders it natively; other Spectrum platforms degrade to
+    readable plain text. On-device rendering can't be unit-tested, so
+    ``PHOTON_MARKDOWN=false`` is the kill-switch back to stripped plain
+    text without a release.
+    """
+    return _get_scoped_secret("PHOTON_MARKDOWN", "true").strip().lower() not in {
+        "false", "0", "no",
+    }
 
 
 def _url_only_candidate(text: str) -> Optional[str]:
@@ -466,27 +483,67 @@ class PhotonAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         # Project credentials: env wins, then config.extra, then auth.json.
         stored_id, stored_sec = load_project_credentials()
-        self._project_id: str = _get_scoped_secret("PHOTON_PROJECT_ID") or extra.get("project_id") or stored_id or ""
+        self._project_id: str = (
+            _get_scoped_secret("PHOTON_PROJECT_ID")
+            or extra.get("project_id")
+            or stored_id
+            or ""
+        )
         self._project_secret: str = (
             _get_scoped_secret("PHOTON_PROJECT_SECRET") or extra.get("project_secret") or stored_sec or "")
         self._sidecar_port = _coerce_port(
-            extra.get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"), _DEFAULT_SIDECAR_PORT)
+            extra.get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"),
+            _DEFAULT_SIDECAR_PORT,
+        )
         self._sidecar_bind = _DEFAULT_SIDECAR_BIND
-        self._sidecar_token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
-        autostart = str(_get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")).lower()
-        self._autostart_sidecar = autostart not in ("0", "false", "no")
+        self._sidecar_token = (
+            _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
+        )
+        self._autostart_sidecar = str(
+            _get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")
+        ).lower() not in ("0", "false", "no")
         self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or shutil.which("node") or "node"
-        # Presence watchdog (second layer behind the sidecar's own zombie-stream detection):
-        # respawns only when the sidecar's HTTP loop hangs; 10-min interval because shared
-        # lines are quiet for hours. Config key wins, then env; None-aware so 0 disables it.
-        def _setting(key: str, env: str, default: Any, cast: Callable[[Any], Any]) -> Any:
-            try:
-                return cast(_extra_or_secret(extra, key, env, None))
-            except (TypeError, ValueError):
-                return default
-        self._probe_interval = _setting("probe_interval_seconds", "PHOTON_PROBE_INTERVAL_SECONDS", 600.0, float)
-        self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
-        self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
+
+        # Presence watchdog. spectrum-ts only reconnects when its inbound
+        # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
+        # iterator hang forever (no error, no end), so inbound silently dies
+        # until the sidecar is restarted. The sidecar owns primary zombie
+        # detection (stream-staleness + upstream probe -> degraded -> exit 75;
+        # surfaced here via /healthz in _monitor_sidecar_health). This adapter-
+        # side watchdog is a conservative second layer that only respawns the
+        # sidecar when the sidecar's own HTTP loop stops responding (probe
+        # HTTP call hangs) — an "inconclusive" probe (sidecar answered but
+        # could not prove upstream liveness) NEVER counts toward a respawn:
+        # the network may simply be down, and restarting cannot fix that.
+        # Thresholds are deliberately conservative (10 min interval) — shared
+        # lines can be legitimately quiet for hours, so we never restart on
+        # silence alone.
+        # Behavioural settings -> config.yaml (extra), bridged to env.
+        # Use _first_set (not ``or``) so an explicit 0 is honored — ``0 or X``
+        # would silently fall through to the default and you could never
+        # disable the watchdog with probe_interval_seconds: 0.
+        self._probe_interval = _coerce_float(
+            _first_set(
+                extra.get("probe_interval_seconds"),
+                _get_scoped_secret("PHOTON_PROBE_INTERVAL_SECONDS"),
+            ),
+            600.0,
+        )
+        self._probe_timeout = _coerce_float(
+            _first_set(
+                extra.get("probe_timeout_seconds"),
+                _get_scoped_secret("PHOTON_PROBE_TIMEOUT_SECONDS"),
+            ),
+            10.0,
+        )
+        self._probe_max_failures = _coerce_int(
+            _first_set(
+                extra.get("probe_max_failures"),
+                _get_scoped_secret("PHOTON_PROBE_MAX_FAILURES"),
+            ),
+            3,
+        )
+        # A non-positive interval disables the watchdog entirely (escape hatch).
         self._probe_enabled = self._probe_interval > 0
         self.supports_code_blocks = _markdown_enabled()  # markdown on => fences pass through
         self._sidecar_proc: Optional[subprocess.Popen] = None
@@ -504,14 +561,21 @@ class PhotonAdapter(BasePlatformAdapter):
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
-        # Group-chat mention gating (parity with BlueBubbles); DMs are never gated.
-        require_mention = extra.get("require_mention")
-        if require_mention is None:
-            require_mention = _get_scoped_secret("PHOTON_REQUIRE_MENTION")
-        self.require_mention = str(require_mention).strip().lower() in {"true", "1", "yes", "on"}
+
+        # Group-chat mention gating (parity with BlueBubbles). When enabled,
+        # group messages are ignored unless they match a wake word; DMs are
+        # always processed. Config key wins, then env var.
+        _require_mention = extra.get("require_mention")
+        if _require_mention is None:
+            _require_mention = _get_scoped_secret("PHOTON_REQUIRE_MENTION")
+        self.require_mention = str(_require_mention).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
         self._mention_patterns = self._compile_mention_patterns(
-            extra["mention_patterns"] if "mention_patterns" in extra
-            else _get_scoped_secret("PHOTON_MENTION_PATTERNS"))
+            extra["mention_patterns"]
+            if "mention_patterns" in extra
+            else _get_scoped_secret("PHOTON_MENTION_PATTERNS")
+        )
 
     # -- Group-mention gating (parity with BlueBubbles) ----------------------------
 
@@ -728,8 +792,61 @@ class PhotonAdapter(BasePlatformAdapter):
             return
         chat_type = "group" if space.get("type") == "group" else "dm"
         sender_id = sender.get("id") or space.get("phone") or space_id
-        timestamp = _parse_timestamp(event.get("timestamp") or "")
-        message_id = event.get("messageId")
+
+        ts_str = event.get("timestamp") or ""
+        try:
+            timestamp = (
+                datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts_str
+                else datetime.now(tz=timezone.utc)
+            )
+        except ValueError:
+            timestamp = datetime.now(tz=timezone.utc)
+
+        # Media attachments (local cached paths) handed to the agent via the
+        # gateway's image-routing path, exactly like the BlueBubbles channel.
+        media_urls: List[str] = []
+        media_types: List[str] = []
+
+        async def _normalize_binary_payload(
+            payload: Dict[str, Any]
+        ) -> tuple[str, MessageType, List[str], List[str]]:
+            is_voice = payload.get("type") == "voice"
+            name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
+            mime = payload.get("mimeType") or ""
+            # Promote CAF attachments to VOICE (iMessage voice notes use CAF).
+            # Check both filename and MIME: the sidecar may send "(unnamed)"
+            # when no name is supplied, so the MIME type is the reliable signal.
+            if not is_voice and (name.lower().endswith(".caf") or mime == "audio/x-caf"):
+                is_voice = True
+            mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
+            # Base64 decode + media-cache write (fsync-free but still disk
+            # I/O on possibly multi-MB payloads) — keep it off the event loop.
+            cached = await asyncio.to_thread(
+                _cache_inbound_attachment, payload, name, mime, force_audio=is_voice
+            )
+            if cached:
+                return (
+                    "(voice)" if is_voice else "(attachment)",
+                    mtype,
+                    [cached],
+                    [mime or ("audio/mp4" if is_voice else "application/octet-stream")],
+                )
+            label = "voice" if is_voice else "attachment"
+            duration = payload.get("duration")
+            duration_text = (
+                f", duration: {duration}s"
+                if isinstance(duration, (int, float))
+                else ""
+            )
+            return (
+                f"[Photon {label} received: {name} "
+                f"({mime or 'unknown MIME'}{duration_text})]",
+                mtype,
+                [],
+                [],
+            )
+
         ctype = content.get("type")
         if ctype in {"read", "read_receipt"}:
             # Read receipts are presence signals, not a user turn. The sidecar
@@ -785,9 +902,50 @@ class PhotonAdapter(BasePlatformAdapter):
                 return
             await self.handle_message(_event(choice))
             return
-        if ctype in _BINARY_CONTENT_TYPES:
-            # Base64 decode + media-cache write of possibly multi-MB payloads — keep it off the event loop.
-            text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
+        if ctype == "text":
+            text = content.get("text") or ""
+            mtype = MessageType.TEXT
+        elif ctype in {"attachment", "voice"}:
+            text, mtype, media_urls, media_types = await _normalize_binary_payload(content)
+        elif ctype == "richlink":
+            text = _format_richlink_content(content)
+            mtype = MessageType.TEXT
+        elif ctype == "group":
+            text_parts: List[str] = []
+            mtype = MessageType.TEXT
+            for item in content.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                item_content = item.get("content") or {}
+                if not isinstance(item_content, dict):
+                    continue
+                item_type = item_content.get("type")
+                if item_type == "text":
+                    item_text = item_content.get("text") or ""
+                    if item_text:
+                        text_parts.append(item_text)
+                    continue
+                if item_type == "richlink":
+                    text_parts.append(_format_richlink_content(item_content))
+                    continue
+                if item_type in {"attachment", "voice"}:
+                    marker, item_mtype, item_urls, item_types = await _normalize_binary_payload(
+                        item_content
+                    )
+                    if mtype == MessageType.TEXT:
+                        mtype = item_mtype
+                    media_urls.extend(item_urls)
+                    media_types.extend(item_types)
+                    if not item_urls:
+                        text_parts.append(marker)
+                    continue
+                if item_type:
+                    text_parts.append(f"[Photon content type not handled: {item_type}]")
+            if media_urls and mtype == MessageType.TEXT:
+                mtype = MessageType.DOCUMENT
+            text = "\n".join(part for part in text_parts if part).strip()
+            if not text:
+                text = "(attachment)" if media_urls else "[Photon empty group received]"
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
         if chat_type == "group" and self.require_mention:
@@ -1225,7 +1383,9 @@ class PhotonAdapter(BasePlatformAdapter):
         return True
 
     def _reactions_enabled(self) -> bool:
-        return _get_scoped_secret("PHOTON_REACTIONS", "false").strip().lower() in {"true", "1", "yes", "on"}
+        return _get_scoped_secret("PHOTON_REACTIONS", "false").strip().lower() in {
+            "true", "1", "yes", "on",
+        }
 
     async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Tapback ``emoji`` onto a message. Soft-fails (False), never raises."""
@@ -1478,7 +1638,9 @@ async def _standalone_send(
     if not HTTPX_AVAILABLE:
         return send_error("httpx not installed")
     port = _coerce_port(
-        (pconfig.extra or {}).get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"), _DEFAULT_SIDECAR_PORT)
+        (pconfig.extra or {}).get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"),
+        _DEFAULT_SIDECAR_PORT,
+    )
     token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN")
     if not token:
         token, port, error = _standalone_token_from_record(port)

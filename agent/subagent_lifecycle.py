@@ -13,7 +13,6 @@ import math
 import secrets
 import threading
 import time
-import contextlib
 import weakref
 from contextlib import contextmanager
 from concurrent.futures import Future, TimeoutError
@@ -186,52 +185,6 @@ def get_active_subagent_parent() -> Any:
     """Return the parent bound to this execution context, if any."""
     ref = _ACTIVE_PARENT_AGENT.get()
     return ref() if ref is not None else None
-
-
-def _opt_str(value: Any) -> bool:
-    return value is None or isinstance(value, str)
-
-
-def _session_id_of(agent: Any) -> Optional[str]:
-    return str(getattr(agent, "session_id", "") or "") or None
-
-
-def _clip(value: Any) -> Optional[str]:
-    return str(value)[:_MAX_RESULT_CHARS] if value is not None else None
-
-
-# Per-field shape check applied to a (possibly deserialized) handle before trusting it.
-_HANDLE_FIELD_CHECKS: tuple[tuple[str, Callable[[Any], bool]], ...] = (
-    ("contract_version", lambda v: type(v) is int and v == PUBLIC_CONTRACT_VERSION),
-    ("subagent_id", lambda v: isinstance(v, str) and bool(v)),
-    ("parent_session_id", _opt_str),
-    ("correlation_id", _opt_str),
-    ("created_at", lambda v: not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)),
-    ("provider", _opt_str),
-    ("model", _opt_str),
-    ("role", lambda v: isinstance(v, str)),
-    ("depth", lambda v: type(v) is int),
-    ("capability", lambda v: isinstance(v, str)),
-)
-
-# Launch-request rejections in check order: (predicate, error). The type check leads so later predicates may
-# dereference request fields.
-_REQUEST_REJECTIONS: tuple[tuple[Callable[[Any], bool], str], ...] = (
-    (lambda r: not isinstance(r, SubagentLaunchRequest) or not isinstance(r.goal, str) or not r.goal.strip() or len(r.goal) > _MAX_GOAL_CHARS,
-     "goal must be a non-empty string of at most 16000 characters."),
-    (lambda r: r.context is not None and (not isinstance(r.context, str) or len(r.context) > _MAX_CONTEXT_CHARS),
-     "context must be a string of at most 32000 characters."),
-    (lambda r: r.role not in {"leaf", "orchestrator"}, "role must be 'leaf' or 'orchestrator'."),
-    (lambda r: r.timeout_seconds is not None, "Per-launch timeout is not supported; configure delegation timeout explicitly."),
-    (lambda r: r.working_directory is not None,
-     "working_directory is not supported because Hermes delegates use isolated task environments."),
-    (lambda r: bool(r.blocked_tools),
-     "Per-tool blocking is not supported; use allowed_toolsets. Hermes always blocks unsafe child tools."),
-)
-
-
-def _handle_is_well_formed(handle: Any) -> bool:
-    return isinstance(handle, SubagentHandle) and all(check(getattr(handle, field)) for field, check in _HANDLE_FIELD_CHECKS)
 
 
 class SubagentLifecycleService:

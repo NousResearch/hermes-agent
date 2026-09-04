@@ -1008,7 +1008,7 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
-        delegationId: p.delegation_id ?? undefined,
+        delegationId: p.delegation_id,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
@@ -1039,6 +1039,7 @@ class TurnController {
       const next: SubagentProgress = {
         ...base,
         apiCalls: p.api_calls ?? base.apiCalls,
+        costUsd: p.cost_usd ?? base.costUsd,
         delegationId: p.delegation_id ?? base.delegationId,
         depth: p.depth ?? base.depth,
         filesRead: p.files_read ?? base.filesRead,

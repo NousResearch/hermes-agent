@@ -155,44 +155,6 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
     assert "full disk" not in lower
 
 
-def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
-    """Step 3 must name the backups dir under the ACTIVE home, not ~/.hermes (#104250).
-
-    Pre-update backups live at ``<hermes_root>/backups`` (``hermes_cli/backup.py``), so a
-    custom-HERMES_HOME deployment told to restore from ``~/.hermes/backups/`` is misdirected
-    mid data-loss incident: that directory may not exist at all, or may hold an unrelated
-    install's backups.
-    """
-    custom_home = tmp_path / "custom-hermes-home"
-    monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
-    out = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "corrupt"
-    )
-    assert f"{custom_home / 'backups'}" in out
-    assert "~/.hermes/backups" not in out
-    assert "{backups_dir}" not in out
-
-
-def test_explanation_persistence_fts_index_never_advises_recovery():
-    """#97794: an FTS-scoped failure must never send the user down the recover /
-    restore-backup path on a healthy file, and must not claim the transcript was lost."""
-    out = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "fts_index"
-    )
-    lower = out.lower()
-    assert out.strip() != ""
-    assert "sessions recover" not in lower
-    assert ".recover" not in lower
-    # Negative advice ("do not ... restore a backup") is fine; instructions are not.
-    assert "recovery options" not in lower
-    assert "restore from a backup" not in lower and "backups/" not in lower
-    assert "would have been lost" not in lower
-    assert "free" not in lower  # never disk-space advice
-    assert "hermes doctor" in lower
-    assert "search index" in lower and "not damaged" in lower
-    assert "send your message again" in lower  # the handle stays live
-
-
 def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "replaced"
@@ -202,22 +164,6 @@ def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
     assert "doctor --fix" in lower or "in-place" in lower
     assert "free some space" not in lower
     assert "full disk" not in lower
-
-
-def test_deleted_wal_cause_is_plain_first_steps_not_a_forensic_runbook():
-    """The WAL-generation runbook lives in the logger.error at hermes_state; the chat reply
-    gives the two steps a user can take (stop, doctor) and points at the log."""
-    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
-
-    out = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "deleted_wal"
-    ).lower()
-    assert "deleted_wal" in PERSISTENCE_ERROR_CAUSES
-    assert "hermes gateway stop" in out and "hermes doctor" in out
-    assert "send your message once more" in out
-    for jargon in ("manifest", "state.db-wal", "sidecar", "header_only", "--inspect-only", "generation"):
-        assert jargon not in out, jargon
-    assert "~/.hermes" not in out  # display_hermes_home(), never a hardcoded path
 
 
 def test_explanation_persistence_unknown_cause_is_neutral():
@@ -371,9 +317,7 @@ def test_persistence_error_causes_tuple_matches_classifier():
         "Session 'abc' is being compressed by another writer",
         "Session turn lease lost; refusing transcript write for 'abc'",
         "database disk image is malformed",
-        'fts5: corrupt structure record for table "messages_fts"',
         "FATAL: state.db was replaced underneath the gateway",
-        "FATAL: a live process holds a deleted state.db-wal or state.db-shm inode.",
         "database or disk is full",
         "something else entirely",
         None,

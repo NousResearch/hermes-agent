@@ -33,13 +33,18 @@ _MAX_SIBLING_PROBES = 4
 
 
 def stamp_profile(projects: list[dict], profile: str) -> None:
-    """Stamp every session row with the request-scope profile (authoritative even for legacy
-    rows whose ``profile_name`` is NULL) for cross-profile routing."""
+    """Make every session row self-describing for cross-profile routing.
+
+    A scoped project tree is built from one profile's state.db, so the request
+    scope is authoritative even for legacy rows whose ``profile_name`` is NULL.
+    """
     for project in projects:
-        lanes = [g for repo in project.get("repos") or [] for g in repo.get("groups") or []]
-        for session in (project.get("previewSessions") or []) + [
-                s for g in lanes for s in g.get("sessions") or []]:
+        for session in project.get("previewSessions") or []:
             session["profile"] = profile
+        for repo in project.get("repos") or []:
+            for group in repo.get("groups") or []:
+                for session in group.get("sessions") or []:
+                    session["profile"] = profile
 
 
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:

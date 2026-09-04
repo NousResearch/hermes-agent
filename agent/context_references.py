@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
-from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    IS_WINDOWS,
+    harden_git_argv,
+    noninteractive_git_env,
+    windows_hide_flags,
+)
 from hermes_cli.sizefmt import format_bytes
 
 # ── Plugin context-reference provider API ────────────────────────────────────
@@ -308,8 +313,16 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
     try:
-        # Repo-supplied config/attributes must never execute code (GHSA-7x36-8jrh-v4pw).
-        result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=noninteractive_git_env())
+        result = subprocess.run(
+            ["git", *harden_git_argv(args)],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
+            **_popen_kwargs,
+        )
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
     if result.returncode != 0:

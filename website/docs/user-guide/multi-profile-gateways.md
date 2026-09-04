@@ -167,26 +167,17 @@ An unknown or unconfigured profile in the prefix returns `404`. The shared
 listener is the default profile's `api_server` port (or its `webhook` port when
 no API server is enabled); it serves three kinds of profile-prefixed paths:
 
-- **`api_server` and `webhook` are mirrored**, never duplicated. `/p/coder/v1/...`
-  and `/p/coder/webhooks/<route>` are answered by the default profile's own
-  adapter under coder's scope. A secondary must therefore **not** enable
-  `api_server` or `webhook` itself (the dashboard refuses with `409`; an
-  `API_SERVER_KEY` or `WEBHOOK_ENABLED` in the secondary's `.env` wires the
-  credential without starting a listener).
-- **Every other inbound-port platform runs in shared-listener mode.** A
-  secondary that configures Twilio SMS, LINE, Teams, BlueBubbles, Microsoft
-  Graph, WhatsApp Cloud, WeCom callback or Feishu webhook mode gets its **own**
-  adapter instance built without a port; the default listener forwards
-  `/p/<profile>/<the adapter's usual path>` to it. See
-  [Inbound-port platforms under the multiplexer](#inbound-port-platforms-under-the-multiplexer).
-- **WhatsApp (bridge) and Relay are shared ingress owned by the default profile.**
-  The multiplexer never starts them for a secondary: `WHATSAPP_ENABLED=true` in
-  `profiles/work/.env` does nothing on its own. Enable and configure them on the
-  default profile (their inbound is routed to profiles via `profile_routes`), or
-  disable them in the secondary. The gateway logs one INFO line per skipped
-  secondary platform, and if **no** profile runs it a WARNING says the platform
-  is not being served; `hermes gateway status --profile work` shows
-  `whatsapp: not served under multiplex (shared ingress owned by default)`.
+```
+Skipping secondary profile 'coder' due to port-binding config error: Profile
+'coder' enables port-binding platform(s) webhook, but gateway.multiplex_profiles
+is on. ... Remove these platform entries from profile 'coder's config.yaml or
+configure them only on the default profile.
+```
+
+Port-binding platforms covered by this rule: `webhook`, `api_server`,
+`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`,
+`whatsapp_cloud`, `line`, `teams`. Configure any of these **only on the default profile**;
+every profile is reachable through its `/p/<profile>/` prefix.
 
 Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.
@@ -336,44 +327,16 @@ written under a secondary profile's home.
 
 Per-profile `.env` credential isolation is preserved and, if anything,
 stricter: a profile's keys are resolved from its own scope and are never unioned
-into a shared environment. Subprocesses like MCP servers and Kanban workers only
-ever see their own profile's secrets — including credentials injected by an
-external secret source (1Password, Bitwarden, …): a stdio MCP server started for
-profile B receives B's value for such a name, or nothing if B has none, never the
-default profile's. MCP servers are connected **per profile**: two profiles that
-both name a server `github` with their own token get two connections and each
-sees only its own tools; profiles whose `mcp_servers` entry is identical (same
-route *and* credentials, including mTLS `client_cert`/`client_key`) share one
-connection, and an owner's `/reload-mcp`
-re-registers the sharing profiles' tools without them reloading. `auth: oauth`
-servers are never shared across profiles: each profile holds its own token under
-its own `mcp-tokens/` and opens its own connection. Trust policy stays per
-profile: a `trust: untrusted` profile sharing a `trust: full` profile's
-connection is still asked before every write-capable call, and
-`supports_parallel_tool_calls` applies only to the profile that set it. Terminal settings
+into a shared environment (this also means subprocesses like MCP servers and
+Kanban workers only ever see their own profile's secrets). Terminal settings
 (`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
 `terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
 per profile on every routed turn: a profile that omits a terminal key gets the
 documented default, never the launch profile's value, and a profile whose
 `config.yaml`/`.env` cannot be parsed has terminal execution refused rather than
-run under another profile's sandbox policy. The media-delivery credential
-guard (the denylist behind `MEDIA:` attachments — `.env`, `auth.json`,
-`config.yaml`, `state.db`, session transcripts, OAuth token stores) covers every
-profile under `profiles/`, so no profile's turn can attach another profile's
-secrets or chat history to a reply. Authorization is per profile too:
-`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS` and every platform allowlist
-or allow-all opt-in are read from the owning profile's `.env` — the default
-profile opting into open access never opens a secondary profile's bot, and a
-secondary that opts in only in its own `.env` is honored. The same holds for
-per-bot behaviour written in a profile's `config.yaml` (`require_mention`,
-`mention_patterns`, `allow_bots`, `reactions`, `auto_thread`, `dm_policy`,
-`ignored_channels`, Matrix `session_scope`, …): a secondary profile's YAML never
-lands in the shared process environment, so it cannot become the default
-profile's policy, and the default profile's YAML never governs a secondary
-bot. The `terminal.env_passthrough` allowlist, the Yuanbao auto-designated
-home channel, and the write guards protecting each profile's own `config.yaml`
-are resolved per profile as well. Kanban, profile-scoped skills/memory/SOUL, and
-model routing all behave per-profile exactly as they do with separate gateways.
+run under another profile's sandbox policy. Kanban,
+profile-scoped skills/memory/SOUL, and model routing all behave per-profile
+exactly as they do with separate gateways.
 
 Outbound identity is per profile too. A turn running for profile `P` that calls
 the `send_message` tool (send, react, media) posts through `P`'s own bot;
@@ -525,29 +488,6 @@ no route stay on the default/active profile. The routed profile gets the full
 per-profile isolation described above (config, skills, memory, credentials,
 session namespace). Routing works on every platform adapter, not just Discord.
 
-A route applies only to messages received by the **default profile's bot**
-unless it names another bot with `bot_profile: <profile>`. Telegram DMs use the
-same `chat_id` for every bot (the user's id), so without this a
-`chat_id` route meant for the shared bot would also capture that user's DMs
-with a secondary profile's dedicated bot. Messages arriving at a secondary
-profile's own bot stay in that profile:
-
-```yaml
-    # Pin one user's DM with team_b's OWN bot to a third profile
-    - name: teamb-owner-dm
-      platform: telegram
-      bot_profile: team_b
-      chat_id: "72719239"
-      profile: ops-for-team-b
-```
-
-Authorization for a routed message is always decided by the **receiving bot's
-profile** (its token and allowlist), including follow-ups sent while the agent
-is busy and mid-turn checks such as `/topic` or `/stop`; the routed profile
-itself needs no copy of the allowlist. A routed profile without a bot of its
-own also receives background notifications (process completions, heartbeats,
-async delegation results) through the shared bot after a gateway restart.
-
 On WhatsApp and WhatsApp Cloud, a `chat_id` route matches across user-identity
 forms: a bare phone number (`15551234567`), a JID
 (`15551234567@s.whatsapp.net`), and a LID (`…@lid`) all refer to the same
@@ -568,12 +508,9 @@ default-profile behavior.
 
 Cron jobs owned by a routed profile deliver through the shared bot too, but
 only to targets an enabled route with a `chat_id`/`thread_id` maps to that
-profile (a `guild_id + chat_id` route qualifies its channel) — a routed
-profile's job targeting an unrouted chat (or a chat routed to another profile)
-is never sent through the shared bot. Guild-only routes do not qualify a cron
-target; add a `chat_id` route for the delivery channel. The routed profile does
-not need its own `platforms.<platform>` block for this: the shared bot's
-authorization comes from the route, not from the satellite's config.
+profile — a routed profile's job targeting an unrouted chat (or a chat routed
+to another profile) is never sent through the shared bot. Guild-only routes do
+not qualify a cron target; add a `chat_id` route for the delivery channel.
 
 ## Start, stop, or restart all gateways at once
 

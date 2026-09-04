@@ -244,7 +244,7 @@ def test_render_large_db_legacy_trigram_suggests_optimize():
 
 
 def test_render_large_db_v1_trigram_suggests_optimize():
-    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+    from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 
     lines = _render_state_db_stats(
         _base_stats(

@@ -114,16 +114,18 @@ def nearest_root(
                     return True
             except OSError:
                 continue
-        return False
-
-    for cur in _walk_up(start_path):
-        # Excludes are checked before markers at each level.
-        if present(cur, excludes_list):
-            return None
-        # A directory holding __init__.py is a Python package, never a project root (hermes_cli/setup.py
-        # matched the python marker list and gave every package dir its own pyright).
-        if not present(cur, ["__init__.py"]) and present(cur, markers_list):
-            return str(cur)
+        # Then check markers. A directory holding __init__.py is a Python
+        # package, never a project root: hermes_cli/setup.py matched the
+        # python marker list and gave every package dir its own pyright,
+        # doubling servers per worktree (Sep 2026).
+        if not (cur / "__init__.py").exists():
+            for marker in markers_list:
+                try:
+                    if (cur / marker).exists():
+                        return str(cur)
+                except OSError:
+                    continue
+        # Stop conditions.
         if ceiling_path is not None and cur == ceiling_path:
             return None
     return None

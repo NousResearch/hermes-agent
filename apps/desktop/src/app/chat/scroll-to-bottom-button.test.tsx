@@ -35,7 +35,6 @@ describe('ScrollToBottomButton', () => {
 
   it('shows the messages below the viewport when scrolled up with no approval', () => {
     setThreadAtBottom(false)
-    publishThreadMessagesBelow(12, { paneVisible: true })
     render(<ScrollToBottomButton sessionId={null} />)
 
     expect(screen.getByRole('button', { name: 'Scroll to bottom · 12 messages' }).textContent).toBe('12 messages')
@@ -45,7 +44,7 @@ describe('ScrollToBottomButton', () => {
   it('morphs into the approval pill when scrolled up with a pending approval', () => {
     pendingApproval()
     setThreadAtBottom(false)
-    render(<ScrollToBottomButton sessionId="sess-1" />)
+    render(<ScrollToBottomButton sessionId={null} />)
 
     expect(screen.getByRole('button', { name: 'Approval needed' })).toBeTruthy()
     expect(screen.getByText('Approval needed')).toBeTruthy()

@@ -146,6 +146,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("agent", "max_turns"),
         ("agent", "gateway_timeout"),
         ("agent", "session_stall_timeout"),
+        ("agent", "sanitizer_heal_escalation_threshold"),
         ("agent", "tool_use_enforcement"),
         ("agent", "execution_guidance"),
         ("terminal", "backend"),
@@ -216,6 +217,68 @@ def _effective_terminal_backend(config: dict) -> str:
         return f"{env_backend}  (TERMINAL_ENV overrides config.yaml terminal.backend={config_backend})"
     return config_backend
 
+    # OpenAI SDK version
+    try:
+        import openai
+        openai_ver = openai.__version__
+    except ImportError:
+        openai_ver = "not installed"
+
+    # OS info
+    os_info = f"{platform.system()} {platform.release()} {platform.machine()}"
+
+    lines = []
+    lines.append("--- hermes dump ---")
+    # Identify the build by commit + the date that commit was made, resolved
+    # live via git.  __release_date__ (the package release date) is
+    # intentionally NOT shown here — it reads like a wall-clock timestamp and
+    # confuses support triage.  The commit date is the real "as-of" date.
+    ver_str = f"{__version__}"
+    ver_str += f" [{commit}]"
+    if commit_date:
+        ver_str += f" ({commit_date})"
+    lines.append(f"version:          {ver_str}")
+    lines.append(f"os:               {os_info}")
+    lines.append(f"python:           {sys.version.split()[0]}")
+    lines.append(f"openai_sdk:       {openai_ver}")
+    lines.append(f"profile:          {profile}")
+    lines.append(f"hermes_home:      {display_hermes_home()}")
+    lines.append(f"model:            {model}")
+    lines.append(f"provider:         {provider}")
+    lines.append(f"terminal:         {backend}")
+
+    # API keys
+    lines.append("")
+    lines.append("api_keys:")
+    api_keys = [
+        ("OPENROUTER_API_KEY", "openrouter"),
+        ("OPENAI_API_KEY", "openai"),
+        ("ANTHROPIC_API_KEY", "anthropic"),
+        ("ANTHROPIC_TOKEN", "anthropic_token"),
+        ("NOUS_API_KEY", "nous"),
+        ("GOOGLE_API_KEY", "google/gemini"),
+        ("GEMINI_API_KEY", "gemini"),
+        ("GLM_API_KEY", "glm/zai"),
+        ("ZAI_API_KEY", "zai"),
+        ("KIMI_API_KEY", "kimi"),
+        ("MINIMAX_API_KEY", "minimax"),
+        ("DEEPSEEK_API_KEY", "deepseek"),
+        ("DASHSCOPE_API_KEY", "dashscope"),
+        ("HF_TOKEN", "huggingface"),
+        ("NVIDIA_API_KEY", "nvidia"),
+        ("AI_GATEWAY_API_KEY", "ai_gateway"),
+        ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
+        ("OPENCODE_GO_API_KEY", "opencode_go"),
+        ("COMMANDCODE_API_KEY", "commandcode"),
+        ("KILOCODE_API_KEY", "kilocode"),
+        ("FIRECRAWL_API_KEY", "firecrawl"),
+        ("TAVILY_API_KEY", "tavily"),
+        ("KEENABLE_API_KEY", "keenable"),
+        ("BROWSERBASE_API_KEY", "browserbase"),
+        ("FAL_KEY", "fal"),
+        ("ELEVENLABS_API_KEY", "elevenlabs"),
+        ("GITHUB_TOKEN", "github"),
+    ]
 
 def _api_key_lines(show_keys: bool) -> list[str]:
     dotenv_keys = _dotenv_key_names()

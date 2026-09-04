@@ -372,44 +372,28 @@ def _goal_judge_available() -> bool:
     return client is not None and bool(model)
 
 
-# Per-tool guidance for a judge rejection: verdict -> message. ``{reason}``/``{tid}`` are filled in.
-_GOAL_GATE_MESSAGES = {
-    "kanban_complete": {
-        "blocked": (
-            "Goal completion rejected: judge ruled the goal unachievable — {reason}. The task "
-            "will NOT complete silently. Either re-scope the task with kanban_edit, or record "
-            "the block with kanban_block and hand the decision to a human / reviewer."),
-        "continue": (
-            "Goal completion rejected by judge: {reason}. To proceed, either: (1) provide "
-            "explicit acceptance evidence in your summary matching the task's criteria, or (2) "
-            "create continuation tasks with parents=[{tid}] and keep this task alive.")},
-    "kanban_request_review": {
-        "blocked": (
-            "Goal review handoff rejected: judge ruled the goal unachievable — {reason}. "
-            "Record the block with kanban_block instead of requesting review."),
-        "continue": (
-            "Goal review handoff rejected by judge: {reason}. Provide acceptance evidence "
-            "matching the card before requesting review.")}}
+def _goal_mode_handoff_rejection(task, evidence: str):
+    """Return ``(verdict, reason_or_None)`` for a goal-mode terminal handoff.
 
-
-def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
-    """Goal-mode pre-handoff judge gate: a worker must not complete / request
-    review before acceptance criteria are met. ``blocked`` gets its own
-    guidance; any other non-``done`` verdict gets the ``continue`` guidance.
-    A broken judge fails open (logged) so it cannot permanently wedge work."""
+    ``{"done", None}`` means the judge allows the handoff; anything else is
+    a rejection whose verdict disambiguates the guidance the caller gives
+    the worker (``continue`` = not done yet, ``blocked`` = judged
+    unachievable — see #100954).
+    """
     if not task or not task.goal_mode or not _goal_judge_available():
-        return
+        return ("done", None)
+    verdict = "done"
+    reason = ""
     try:
         verdict, reason, _, _, _ = judge_goal(
             goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
     except Exception as judge_exc:
         logger.warning(
-            "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
-        return
-    if verdict == "done":
-        return
-    key = "blocked" if verdict == "blocked" else "continue"
-    raise _Reject(_GOAL_GATE_MESSAGES[tool_name][key].format(reason=reason, tid=tid))
+            "goal judge check failed, allowing lifecycle handoff: %s",
+            judge_exc,
+            exc_info=True,
+        )
+    return (verdict, None if verdict == "done" else reason)
 
 
 # --- Runtime-activity → board bridges (auto-heartbeat, live comment injection) ---
@@ -584,35 +568,80 @@ def _handle_complete(args: dict, **kw) -> str:
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
-            ok = kb.complete_task(
-                conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
-        except kb.ArtifactPreservationError as artifact_err:
-            # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
-            # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
-            # gate runs before the write txn), so the worker can simply call kanban_complete again. Spell
-            # that out — without it the model often interprets a tool_error as a terminal failure and either
-            # blocks or crashes the run instead of retrying. See #22923.
-            return tool_error(
-                f"kanban_complete could not preserve the declared artifacts: {artifact_err}. "
-                f"Your task is still in-flight and its scratch workspace was kept. Fix the "
-                f"artifact path or storage error, then retry kanban_complete with the same "
-                f"handoff.")
-        except kb.HallucinatedCardsError as hall_err:
-            # The gate runs before the write txn, so the task was NOT mutated;
-            # say so explicitly or the model treats the error as terminal and
-            # blocks/crashes instead of retrying. Audit event already landed.
-            return tool_error(
-                f"kanban_complete blocked: the following created_cards do not exist or were not "
-                f"created by this worker: {', '.join(hall_err.phantom)}. Your task is still "
-                f"in-flight (no state change). Retry kanban_complete with the same "
-                f"summary/metadata and either drop these ids from created_cards, or pass "
-                f"created_cards=[] to skip the card-claim check entirely.")
-        task = kb.get_task(conn, tid)
-        _check(ok, (task.last_failure_error if task else None) or
-               f"could not complete {tid} (unknown id, stale run, or already terminal)")
-        run = kb.latest_run(conn, tid)
-        return _ok(task_id=tid, run_id=run.id if run else None)
+            # Goal-mode pre-completion judge gate (Issue #38367).
+            # Prevent workers from bypassing the auxiliary judge by
+            # calling kanban_complete before acceptance criteria are met.
+            # Only enforce when a judge is actually reachable — see
+            # _goal_judge_available for why an unavailable judge fails open.
+            task = kb.get_task(conn, tid)
+            gate_verdict, rejection = _goal_mode_handoff_rejection(
+                task,
+                (summary or result or "").strip(),
+            )
+            if gate_verdict == "blocked":
+                return tool_error(
+                    f"Goal completion rejected: judge ruled the goal "
+                    f"unachievable — {rejection}. The task will NOT complete "
+                    f"silently. Either re-scope the task with kanban_edit, "
+                    f"or record the block with kanban_block and hand the "
+                    f"decision to a human / reviewer."
+                )
+            if rejection is not None:
+                return tool_error(
+                    f"Goal completion rejected by judge: {rejection}. "
+                    f"To proceed, either: (1) provide explicit acceptance "
+                    f"evidence in your summary matching the task's criteria, "
+                    f"or (2) create continuation tasks with parents=[{tid}] "
+                    f"and keep this task alive."
+                )
+
+            try:
+                ok = kb.complete_task(
+                    conn, tid,
+                    result=result, summary=summary, metadata=metadata,
+                    created_cards=created_cards,
+                    expected_run_id=_worker_run_id(tid),
+                )
+            except kb.ArtifactPreservationError as artifact_err:
+                return tool_error(
+                    f"kanban_complete could not preserve the declared artifacts: "
+                    f"{artifact_err}. Your task is still in-flight and its "
+                    f"scratch workspace was kept. Fix the artifact path or "
+                    f"storage error, then retry kanban_complete with the same handoff."
+                )
+            except kb.HallucinatedCardsError as hall_err:
+                # Structured rejection — surface the phantom ids so the
+                # worker can retry with a corrected list or drop the
+                # field. Audit event already landed in the DB.
+                #
+                # The task itself was NOT mutated (the gate runs before
+                # the write txn), so the worker can simply call
+                # kanban_complete again. Spell that out — without it the
+                # model often interprets a tool_error as a terminal
+                # failure and either blocks or crashes the run instead
+                # of retrying. See #22923.
+                return tool_error(
+                    f"kanban_complete blocked: the following created_cards "
+                    f"do not exist or were not created by this worker: "
+                    f"{', '.join(hall_err.phantom)}. "
+                    f"Your task is still in-flight (no state change). "
+                    f"Retry kanban_complete with the same summary/metadata "
+                    f"and either drop these ids from created_cards, or pass "
+                    f"created_cards=[] to skip the card-claim check entirely."
+                )
+            if not ok:
+                return tool_error(
+                    f"could not complete {tid} (unknown id or already terminal)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(task_id=tid, run_id=run.id if run else None)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_complete: {e}")
+    except Exception as e:
+        logger.exception("kanban_complete failed")
+        return tool_error(f"kanban_complete: {e}")
 
 
 @_kanban_handler("kanban_block")
@@ -675,6 +704,20 @@ def _handle_request_review(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         try:
+            task = kb.get_task(conn, tid)
+            gate_verdict, rejection = _goal_mode_handoff_rejection(task, summary)
+            if gate_verdict == "blocked":
+                return tool_error(
+                    f"Goal review handoff rejected: judge ruled the goal "
+                    f"unachievable — {rejection}. Record the block with "
+                    f"kanban_block instead of requesting review."
+                )
+            if rejection is not None:
+                return tool_error(
+                    f"Goal review handoff rejected by judge: {rejection}. "
+                    "Provide acceptance evidence matching the card before "
+                    "requesting review."
+                )
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
                 expected_run_id=_worker_run_id(tid), with_reason=True)

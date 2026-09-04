@@ -351,7 +351,22 @@ def _kill_stale_dashboard_processes(
     function runs. Without excluding them, a Serve-only install's freshly restarted process is found again
     here and restarted a second time for no benefit (review on #83595).
     """
-    from hermes_cli import main_dashboard as _dash
+    if restart_managed and _m()._restart_managed_dashboard_service(reason):
+        # The dashboard unit is handled; every OTHER backend is not (#92145).
+        # This used to return here, which meant a host running BOTH
+        # ``hermes-dashboard.service`` and ``hermes-serve.service`` -- the
+        # exact unit set in the report -- restarted only the dashboard and
+        # never even scanned for the serve backend that hosts
+        # ``tui_gateway``. That backend then kept its pre-update
+        # ``sys.modules`` while the checkout moved on. Record the unit as
+        # already handled (the filter below drops PIDs it owns, including
+        # the one systemd just replaced) and keep scanning.
+        _dash_unit = getattr(
+            _m(), "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service"
+        )
+        already_restarted_units = set(already_restarted_units or ()) | {
+            str(_dash_unit).removesuffix(".service")
+        }
 
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update

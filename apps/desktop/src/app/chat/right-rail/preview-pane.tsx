@@ -6,6 +6,7 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { Tip } from '@/components/ui/tooltip'
@@ -14,6 +15,16 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
+import {
+  addAnnotatePin,
+  beginAnnotateMode,
+  clearAnnotatePins,
+  compactIdentity,
+  emptyAnnotateSession,
+  emptyAnnotateStack,
+  endAnnotateMode,
+  flushAnnotateStack
+} from '@/lib/preview-annotate'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -27,6 +38,7 @@ import {
   popOutBrowserTab,
   type PreviewTarget
 } from '@/store/preview'
+import { $selectedStoredSessionId } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
@@ -57,6 +69,7 @@ import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
+import { RealProfileConsentDialog } from './real-profile-consent-dialog'
 
 type PreviewWebview = HTMLElement & {
   canGoBack?: () => boolean
@@ -1272,12 +1285,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
         {isWebPreview && !isRemoteHtml && (
           <PreviewBrowserBar
+            annotateMode={annotate.mode}
             canGoBack={history.back}
             canGoForward={history.forward}
+            commentCount={annotate.stack.pins.length}
             consoleOpen={consoleOpen}
             devToolsOpen={devtoolsOpen}
             loading={loading}
             onBack={goBack}
+            onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}
             onOpenExternal={
@@ -1290,11 +1306,16 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
               isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
+            onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
             url={currentUrl}
           />
         )}
+
+        {/* First-open real-profile consent offer — Browser tabs only (URL
+            vessels the user browses with), never file/HTML previews. */}
+        {target.kind === 'url' && tabId && <RealProfileConsentDialog tabId={tabId} />}
 
         <div
           className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"

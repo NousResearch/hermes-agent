@@ -725,7 +725,6 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
-| `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
 
 And the two auxiliary LLM slots:
@@ -1001,21 +1000,6 @@ bot> ✓ t_9fc1a3 completed by transcriber
 ```
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
-
-Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
-copy the owning task's durable notification subscriptions even without `parents`
-dependency links. Destinations, route anchors, and delivery modes are preserved;
-a passive subscription is not upgraded to a wake by auto-subscribe. This copies
-existing subscriptions independently of `auto_subscribe_on_create`, which controls
-adding the current conversation as a new destination. No destination is invented
-for a bare CLI session or a worker whose owning task has no subscriptions.
-
-For `kanban_create`, session lineage resolves in this order: explicit `session_id`,
-the owning worker task's durable session, request-scoped API origin, then the
-current process session. Built-in decomposition also inherits its root's durable
-session. Session lineage is not itself a notification destination: changing
-`session_id` does not replace existing subscriptions; use `notify-subscribe` and
-`notify-unsubscribe` to change where events are delivered.
 
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 

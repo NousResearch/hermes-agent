@@ -21,8 +21,13 @@ import urllib.parse
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base import (
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
 from gateway.platforms.helpers import redact_phone, strip_markdown
 from gateway.platforms._shared import (
     env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
@@ -132,10 +137,15 @@ class SmsAdapter(BasePlatformAdapter):
         app = web.Application(client_max_size=_TWILIO_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
-        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/webhooks/twilio.
-        from gateway.platforms.shared_ingress import bind_listener
-        self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, "/webhooks/twilio")
-        self._http_session = _new_session(trust_env=gateway_trust_env())
+
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, self._webhook_host, self._webhook_port)
+        await site.start()
+        self._http_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=gateway_trust_env(),
+        )
         self._running = True
 
         logger.info(
@@ -164,8 +174,16 @@ class SmsAdapter(BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         last_result = SendResult(success=True)
-        url, headers = _messages_endpoint(self._account_sid, self._auth_token)
-        session = self._http_session or _new_session(trust_env=gateway_trust_env())
+
+        url = f"{TWILIO_API_BASE}/{self._account_sid}/Messages.json"
+        headers = {
+            "Authorization": self._basic_auth_header(),
+        }
+
+        session = self._http_session or aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=gateway_trust_env(),
+        )
         try:
             for chunk in self.truncate_message(self.format_message(content)):
                 form_data = _twilio_form(self._from_number, chat_id, chunk)

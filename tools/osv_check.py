@@ -19,19 +19,27 @@ logger = logging.getLogger(__name__)
 _OSV_ENDPOINT = os.getenv("OSV_ENDPOINT", "https://api.osv.dev/v1/query")
 _TIMEOUT = 10  # seconds
 
-# Result cache: (ecosystem, package, version) -> (expiry_wallclock, result). Reconnect
-# ladders, parked-server self-probes and repeated `hermes mcp test` runs re-run the preflight
-# for the SAME package on every spawn; uncached, a flapping server becomes a sustained OSV/DNS
-# query stream. Clean AND blocked verdicts are reusable; network failures are NOT cached
-# (fail-open covers them and caching one could mask a real advisory later).
-# The cache is also persisted under the Hermes home so separate processes and gateway
-# restarts reuse warm verdicts; expiry is absolute wall-clock time so it survives restarts.
-# Trade-off: a MAL advisory published right after a clean verdict is noticed at TTL expiry
-# (<= 1h by default) rather than at next process start — lower OSV_CHECK_CACHE_TTL to tighten.
-# Without a cache, a flapping server turns into a sustained OSV query/DNS stream — the #75485 incident
-# logged 779K api.osv.dev DNS queries in 16h from revival loops. Malware advisories don't appear or vanish
-# on second-to-second timescales, so a successful verdict (clean OR blocked) is reusable. The window is the
-# same one the in-process cache already accepted; it just now spans restarts.
+# Result cache: (ecosystem, package, version) -> (expiry_timestamp, result).
+# MCP reconnect ladders, stdio recycles, parked-server self-probes, and
+# repeated `hermes mcp test` invocations re-run the preflight for the SAME
+# package on every spawn attempt. Without a cache, a flapping server turns
+# into a sustained OSV query/DNS stream — the #75485 incident logged 779K
+# api.osv.dev DNS queries in 16h from revival loops. Malware advisories don't
+# appear or vanish on second-to-second timescales, so a successful verdict
+# (clean OR blocked) is reusable. Network failures are NOT cached: fail-open
+# already covers them, and caching a failure could mask a real advisory once
+# connectivity returns.
+#
+# The cache is also persisted to disk inside the Hermes home so that separate
+# `hermes mcp test` processes (and gateway restarts) reuse a warm verdict
+# instead of re-querying OSV. Expiry is stored as absolute wall-clock time so
+# it survives process restarts and monotonic-clock skew.
+#
+# Trade-off: persisting *clean* verdicts means a MAL advisory published right
+# after a clean query is noticed at TTL expiry (<= 1h by default) instead of
+# at the next process start. The window is the same one the in-process cache
+# already accepted; it just now spans restarts. Lower OSV_CHECK_CACHE_TTL to
+# tighten it.
 _CACHE_TTL_S = float(os.getenv("OSV_CHECK_CACHE_TTL", "3600"))
 _CACHE_MAX_ENTRIES = 256
 _cache: dict = {}
@@ -144,10 +152,13 @@ def _cache_get(key) -> Tuple[bool, Optional[str]]:
     with _cache_lock:
         _load_disk_cache()
         entry = _cache.get(key)
-        if entry is not None and time.time() < entry[0]:
-            return True, entry[1]
-        _cache.pop(key, None)  # absent or expired
-        return False, None
+        if entry is None:
+            return False, None
+        expiry, result = entry
+        if time.time() >= expiry:
+            del _cache[key]
+            return False, None
+        return True, result
 
 
 def _cache_put(key, result: Optional[str]) -> None:

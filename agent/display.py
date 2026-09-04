@@ -458,10 +458,132 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if not args:
         return None
     args = redact_tool_args_for_display(tool_name, args) or args
-    builder = _PREVIEW_BUILDERS.get(tool_name)
-    if builder is not None:
-        return builder(args, max_len)
-    key = _PRIMARY_ARGS.get(tool_name) or next((k for k in _FALLBACK_PREVIEW_KEYS if k in args), None)
+    primary_args = {
+        "terminal": "command", "web_search": "query", "web_extract": "urls",
+        "read_file": "path", "write_file": "path", "patch": "path",
+        "search_files": "pattern", "browser_navigate": "url",
+        "browser_click": "ref", "browser_type": "text",
+        "image_generate": "prompt", "text_to_speech": "text",
+        "vision_analyze": "question",
+        "skill_view": "name", "skills_list": "category",
+        "cronjob_manage": "action",
+        "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
+        "clarify": "question", "skill_manage": "name",
+    }
+
+    # browser_exec: prefer the leading `# …` comment as a friendly step label
+    if tool_name == "browser_exec":
+        label = _browser_exec_step_label(args)
+        if label is not None:
+            return _truncate_preview(label, max_len)
+        preview = _oneline(str(args.get("code", "") or ""))
+        return _truncate_preview(preview, max_len) if preview else None
+
+    # delegate_task: show goal (single) or individual task goals (batch)
+    if tool_name == "delegate_task":
+        action = str(args.get("action") or "").strip().lower()
+        if action in ("list", "steer", "stop"):
+            sid = str(args.get("subagent_id") or "").strip()
+            preview = f"{action} {sid}".strip()
+            return _truncate_preview(preview, max_len)
+        tasks = args.get("tasks")
+        if tasks and isinstance(tasks, list):
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=40)
+            preview = (
+                f"{task_count} tasks: " + " | ".join(goals)
+                if goals else f"{len(tasks)} parallel tasks"
+            )
+            return _truncate_preview(preview, max_len)
+        goal = args.get("goal", "")
+        if goal is None:
+            return None
+        preview = _oneline(str(goal))
+        return _truncate_preview(preview, max_len) if preview else None
+
+    if tool_name == "process_manage":
+        action = args.get("action", "")
+        sid = args.get("session_id", "")
+        data = args.get("data", "")
+        timeout_val = args.get("timeout")
+        parts = [str(action) if action else ""]
+        if sid:
+            parts.append(str(sid)[:16])
+        if data:
+            parts.append(f'"{_oneline(str(data)[:20])}"')
+        if timeout_val and action == "wait":
+            parts.append(f"{timeout_val}s")
+        parts = [p for p in parts if p]
+        return " ".join(parts) if parts else None
+
+    if tool_name == "todo_list":
+        todos_arg = args.get("todos")
+        merge = args.get("merge", False)
+        if todos_arg is None:
+            return "reading task list"
+        elif merge:
+            return f"updating {len(todos_arg)} task(s)"
+        else:
+            return f"planning {len(todos_arg)} task(s)"
+
+    if tool_name in {"terminal", "execute_code"}:
+        key = "code" if tool_name == "execute_code" else "command"
+        command = args.get(key)
+        if command is None:
+            return None
+        preview = summarize_shell_command(str(command))
+        return _truncate_preview(preview, max_len) if preview else None
+
+    if tool_name == "read_file":
+        path = args.get("path") or args.get("file") or args.get("filepath")
+        if path is None:
+            return None
+        label = Path(str(path).replace("\\", "/")).name or str(path)
+        line_label = _read_file_line_label(args)
+        preview = f"{label} {line_label}".strip()
+        return _truncate_preview(preview, max_len) if preview else None
+
+    if tool_name == "session_search":
+        query = _oneline(args.get("query", ""))
+        return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
+
+    if tool_name == "memory":
+        action = args.get("action", "")
+        target = args.get("target", "")
+        if action == "add":
+            content = _oneline(args.get("content", ""))
+            return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
+        elif action == "replace":
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"~{target}: \"{old[:20]}\""
+        elif action == "remove":
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"-{target}: \"{old[:20]}\""
+        return action
+
+    if tool_name == "send_message":
+        target = args.get("target", "?")
+        msg = _oneline(args.get("message", ""))
+        if len(msg) > 20:
+            msg = msg[:17] + "..."
+        return f"to {target}: \"{msg}\""
+
+    if tool_name == "skill_view":
+        name = _oneline(str(args.get("name") or ""))
+        file_path = args.get("file_path")
+        if file_path:
+            file_path = _oneline(str(file_path))
+            preview = f"{name} → {file_path}" if name else file_path
+        else:
+            preview = name
+        return _truncate_preview(preview, max_len) if preview else None
+
+    key = primary_args.get(tool_name)
+    if not key:
+        for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
+            if fallback_key in args:
+                key = fallback_key
+                break
+
     if not key or key not in args:
         return None
     value = args[key]
@@ -491,9 +613,14 @@ _TOOL_VERBS: dict[str, str] = {
     "image_generate": "Generating image", "video_generate": "Generating video",
     "text_to_speech": "Generating speech", "vision_analyze": "Looking at the image",
     "session_search": "Searching past sessions",
-    "skill_view": "Reading skill", "skills_list": "Listing skills", "skill_manage": "Updating skill",
-    "delegate_task": "Delegating", "cronjob_manage": "Scheduling", "clarify": "Asking",
-    "memory": "Updating memory", "todo_list": "Updating tasks",
+    "skill_view": "Reading skill",
+    "skills_list": "Listing skills",
+    "skill_manage": "Updating skill",
+    "delegate_task": "Delegating",
+    "cronjob_manage": "Scheduling",
+    "clarify": "Asking",
+    "memory": "Updating memory",
+    "todo_list": "Updating tasks",
 }
 # Verbs that read better without the argument preview appended.
 _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({"skills_list", "session_search"})
@@ -1085,10 +1212,180 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
     failure suffix from :func:`_detect_tool_failure`; the leading ``┊`` becomes the skin's tool prefix."""
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
-    render = _CUTE_LINES.get(tool_name)
-    body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
-    line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
-    return f"{line}{failure_suffix}" if is_failure else line
+    skin_prefix = get_skin_tool_prefix()
+
+    def _trunc(s, n=40):
+        s = str(s)
+        if _tool_preview_max_len == 0:
+            return s  # no limit
+        limit = _tool_preview_max_len
+        return (s[:limit-3] + "...") if len(s) > limit else s
+
+    def _path(p, n=35):
+        p = str(p)
+        if _tool_preview_max_len == 0:
+            return p  # no limit
+        limit = _tool_preview_max_len
+        return ("..." + p[-(limit-3):]) if len(p) > limit else p
+
+    def _wrap(line: str) -> str:
+        """Apply skin tool prefix and failure suffix."""
+        if skin_prefix != "┊":
+            line = line.replace("┊", skin_prefix, 1)
+        if not is_failure:
+            return line
+        return f"{line}{failure_suffix}"
+
+    if tool_name == "web_search":
+        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
+    if tool_name == "web_extract":
+        urls = args.get("urls", [])
+        if urls:
+            url = _display_url(urls[0] if isinstance(urls, list) else urls)
+            if not url:
+                return _wrap(f"┊ 📄 fetch     pages  {dur}")
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            extra = f" +{len(urls)-1}" if isinstance(urls, list) and len(urls) > 1 else ""
+            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ 📄 fetch     pages  {dur}")
+    if tool_name == "terminal":
+        return _wrap(f"┊ 💻 $         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
+    if tool_name == "process_manage":
+        action = args.get("action", "?")
+        sid = args.get("session_id", "")[:12]
+        labels = {"list": "ls processes", "poll": f"poll {sid}", "log": f"log {sid}",
+                  "wait": f"wait {sid}", "kill": f"kill {sid}", "write": f"write {sid}", "submit": f"submit {sid}"}
+        return _wrap(f"┊ ⚙️  proc      {labels.get(action, f'{action} {sid}')}  {dur}")
+    if tool_name == "read_file":
+        return _wrap(f"┊ 📖 read      {_trunc(build_tool_preview(tool_name, args) or args.get('path', ''), 42)}  {dur}")
+    if tool_name == "write_file":
+        return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
+    if tool_name == "patch":
+        return _wrap(f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}")
+    if tool_name == "search_files":
+        pattern = _trunc(args.get("pattern", ""), 35)
+        target = args.get("target", "content")
+        verb = "find" if target == "files" else "grep"
+        return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
+    if tool_name == "browser_navigate":
+        url = args.get("url", "")
+        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+        return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
+    if tool_name == "browser_snapshot":
+        mode = "full" if args.get("full") else "compact"
+        return _wrap(f"┊ 📸 snapshot  {mode}  {dur}")
+    if tool_name == "browser_click":
+        return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
+    if tool_name == "browser_type":
+        return _wrap(f"┊ ⌨️  type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
+    if tool_name == "browser_scroll":
+        d = args.get("direction", "down")
+        arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
+        return _wrap(f"┊ {arrow}  scroll    {d}  {dur}")
+    if tool_name == "browser_back":
+        return _wrap(f"┊ ◀️  back      {dur}")
+    if tool_name == "browser_press":
+        return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
+    if tool_name == "browser_get_images":
+        return _wrap(f"┊ 🖼️  images    extracting  {dur}")
+    if tool_name == "browser_vision":
+        return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
+    if tool_name == "todo_list":
+        todos_arg = args.get("todos")
+        merge = args.get("merge", False)
+        # Parse result for completion progress
+        total = 0
+        done = 0
+        if result:
+            try:
+                data = safe_json_loads(result)
+                if data:
+                    s = data.get("summary", {})
+                    total = s.get("total", 0)
+                    done = s.get("completed", 0)
+            except Exception:
+                pass
+        if todos_arg is None:
+            if total > 0:
+                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
+            return _wrap(f"┊ 📋 plan      reading tasks  {dur}")
+        elif merge:
+            if total > 0 and done > 0:
+                return _wrap(f"┊ 📋 plan      update {done}/{total} ✓  {dur}")
+            return _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
+        else:
+            if total > 0 and done > 0:
+                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
+            return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
+    if tool_name == "session_search":
+        return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
+    if tool_name == "memory":
+        action = args.get("action", "?")
+        target = args.get("target", "")
+        if action == "add":
+            return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
+        elif action == "replace":
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
+        elif action == "remove":
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
+        return _wrap(f"┊ 🧠 memory    {action}  {dur}")
+    if tool_name == "skills_list":
+        return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
+    if tool_name == "skill_view":
+        label = args.get("name", "")
+        file_path = args.get("file_path")
+        if file_path:
+            label = f"{label} → {file_path}" if label else str(file_path)
+        return _wrap(f"┊ 📚 skill     {_trunc(label, 44)}  {dur}")
+    if tool_name == "image_generate":
+        return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
+    if tool_name == "text_to_speech":
+        return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
+    if tool_name == "vision_analyze":
+        return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
+    if tool_name == "send_message":
+        return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
+    if tool_name == "cronjob_manage":
+        action = args.get("action", "?")
+        if action == "create":
+            skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
+            label = args.get("name") or (skills[0] if skills else None) or args.get("prompt", "task")
+            return _wrap(f"┊ ⏰ cron      create {_trunc(label, 24)}  {dur}")
+        if action == "list":
+            return _wrap(f"┊ ⏰ cron      listing  {dur}")
+        return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
+    if tool_name == "execute_code":
+        code = args.get("code", "")
+        first_line = code.strip().split("\n")[0] if code.strip() else ""
+        return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+    if tool_name == "browser_exec":
+        label = _browser_exec_step_label(args)
+        if label is not None:
+            # Leading `# …` comment (the tool description asks for one):
+            # surface it as the user-facing step label; the code itself stays
+            # collapsed behind display.tool_preview_length.
+            return _wrap(f"┊ 🌐 browser   {label}  {dur}")
+        code = " ".join(str(args.get("code", "") or "").split())
+        return _wrap(f"┊ 🌐 browser   {_trunc(code, 35)}  {dur}")
+    if tool_name == "delegate_task":
+        _action = str(args.get("action") or "").strip().lower()
+        if _action in ("list", "steer", "stop"):
+            _sid = str(args.get("subagent_id") or "").strip()
+            return _wrap(f"┊ 🔀 delegate  {_trunc(f'{_action} {_sid}'.strip(), 35)}  {dur}")
+        tasks = args.get("tasks")
+        if tasks and isinstance(tasks, list):
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
+            detail = " | ".join(goals) if goals else "parallel"
+            count_label = task_count or len(tasks)
+            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
+        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+
+    preview = build_tool_preview(tool_name, args) or ""
+    return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
 
 
 def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:

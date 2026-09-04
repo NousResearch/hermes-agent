@@ -123,7 +123,8 @@ Both absent ⇒ byte-identical to today. A connector that never sends them, or a
 `dm`, or a no-context platform, yields no `channel_context`.
 
 `PassthroughForward` is the wire form of a forwarded passthrough-plane request
-(Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method, path, headers: [[k,v],…], bodyB64, profile?}`. `profile` is optional — the
+(Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method,
+path, headers: [[k,v],…], bodyB64, profile?}`. `profile` is optional — the
 connector stamps it when NAS resolves the target profile for a Team-Gateway
 interaction; omitting it (single-profile gateways) preserves legacy routing to
 the default `agent:main` session namespace, mirroring the `profile` field the

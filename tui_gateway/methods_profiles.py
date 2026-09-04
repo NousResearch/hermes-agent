@@ -172,10 +172,13 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
 
         Exact-lookup semantics, deliberately different from the listing:
         hidden rows still resolve (canonical chats are always hidden),
-        compression lineages resolve to the live tip with the same resolver
-        ``session.resume`` uses, and denied internal sources (tool/kanban)
-        count as absent. The reported ``id`` stays the durable registry row
-        while ``resolved_id`` names the live tip. Best-effort: any failure
+        compression lineages resolve to the live tip via
+        ``get_compression_tip`` (not the generic resume walker, whose
+        unmarked-child fallback can select an ordinary child).
+        ``session.resume`` uses that same tip resolver when the target is
+        titled ``Bot Chat``. Denied internal sources (tool/kanban) count as
+        absent. The reported ``id`` stays the durable registry row while
+        ``resolved_id`` names the live tip. Best-effort: any failure
         degrades to None rather than failing the whole profiles.list call.
         """
         if db is None:
@@ -202,7 +205,11 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
                 if not _resurrect_recoverable_canonical(db, profile_path, session_id):
                     return None
             try:
-                tip = db.resolve_resume_session_id(session_id) or session_id
+                # Canonical Bot Chat identity may advance only across a proven
+                # compression edge.  The generic resume resolver also carries
+                # a legacy unmarked-child fallback, which is intentionally too
+                # broad for this exact-title registry lookup.
+                tip = db.get_compression_tip(session_id) or session_id
             except Exception:
                 tip = session_id
             tip_row = db.get_session(tip) or row
@@ -245,7 +252,7 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
                 return False
             tip = row
             try:
-                tip_id = db.resolve_resume_session_id(session_id) or session_id
+                tip_id = db.get_compression_tip(session_id) or session_id
                 if tip_id != session_id:
                     tip = db.get_session(tip_id) or row
             except Exception:
@@ -257,12 +264,14 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
 
             from pathlib import Path
 
-            wdb = SessionDB(db_path=Path(profile_path) / "state.db")
+            from hermes_state import get_shared_session_db
+            wdb = get_shared_session_db(Path(profile_path) / "state.db")
             try:
                 return bool(wdb.unarchive_recoverable_session(session_id))
             finally:
                 try:
-                    wdb.close()
+                    from hermes_state import release_or_close
+                    release_or_close(wdb)
                 except Exception:
                     pass
         except Exception:
@@ -576,10 +585,74 @@ def _(rid, params: dict) -> dict:
     if not is_truthy_value(params.get("no_alias", False)):
         _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
     soul = params.get("soul")
-    soul_written = isinstance(soul, str) and bool(soul.strip()) and _best_effort(
-        lambda: (path / "SOUL.md").write_text(soul, encoding="utf-8"))
-    mirrored = _mirror_launch_credentials(path, params)
-    model, provider = _model_provider_params(params)
+    soul_written = False
+    if isinstance(soul, str) and soul.strip():
+        try:
+            (path / "SOUL.md").write_text(soul, encoding="utf-8")
+            soul_written = True
+        except Exception:
+            pass
+
+    # Credential + provider mirroring (default ON): a headless-created
+    # profile must be able to run a first turn. Copy the launch profile's
+    # .env (only over the seeded comment-only stub — never clobber real
+    # secrets a clone brought along) and auth.json (only when absent), then
+    # inherit model.provider/model.default unless the caller pinned a model.
+    #
+    # ``share_auth`` (default false): SKIP the auth.json copy so the new
+    # profile reads OAuth/token state through the global-root fallback
+    # instead (hermes_cli.auth: profile reads fall back to the global
+    # store, and token refreshes write THROUGH to it). A copy forks token
+    # state — the first refresh in either store invalidates the other
+    # for single-use refresh tokens. Sharing keeps one live token pool
+    # for the main profile and every bot. Static .env keys still copy
+    # (no refresh semantics, so copying is safe).
+    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
+    share_auth = is_truthy_value(params.get("share_auth", False))
+    if share_auth:
+        mirrored["auth"] = "shared"
+    if is_truthy_value(params.get("mirror_credentials", True)):
+        import shutil
+
+        from hermes_constants import get_hermes_home
+
+        launch_home = get_hermes_home()
+        try:
+            src_env = launch_home / ".env"
+            dst_env = path / ".env"
+            if src_env.is_file() and _has_real_env_content(src_env) and not _has_real_env_content(dst_env):
+                shutil.copy2(src_env, dst_env)
+                try:
+                    os.chmod(str(dst_env), 0o600)
+                except OSError:
+                    pass
+                mirrored["env"] = True
+        except Exception:
+            pass
+        try:
+            src_auth = launch_home / "auth.json"
+            dst_auth = path / "auth.json"
+            if not share_auth and src_auth.is_file() and not dst_auth.exists():
+                shutil.copy2(src_auth, dst_auth)
+                try:
+                    os.chmod(str(dst_auth), 0o600)
+                except OSError:
+                    pass
+                # Mirroring must not fork single-use OAuth grants (Anthropic /
+                # Codex / xAI): the first profile to refresh strands every
+                # sibling (#100339). API keys stay; OAuth rows are dropped
+                # and read from the root grant via the pool fallback.
+                try:
+                    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+                    strip_cloned_single_use_oauth_grants(path)
+                except Exception:
+                    pass
+                mirrored["auth"] = True
+        except Exception:
+            pass
+
+    model = str(params.get("model") or "").strip()
+    provider = str(params.get("provider") or "").strip()
     model_set = False
     if model and provider:
         model_set = _best_effort(lambda: _pin_profile_model(path, provider, model))

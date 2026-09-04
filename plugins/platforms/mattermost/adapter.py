@@ -21,13 +21,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
-    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    send_error
+from gateway.platforms.base import (
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,8 +90,10 @@ def check_mattermost_requirements() -> bool:
 
 def validate_mattermost_config(config: PlatformConfig) -> bool:
     """Return True when Mattermost has enough config to connect."""
-    url, token = _url_and_token(config)
-    if not token.strip():
+    extra = getattr(config, "extra", {}) or {}
+    token = (getattr(config, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
+    url = (extra.get("url", "") or _get_scoped_secret("MATTERMOST_URL", "")).strip()
+    if not token:
         logger.debug("Mattermost: MATTERMOST_TOKEN not set")
         return False
     if not url.strip():
@@ -108,9 +109,17 @@ class MattermostAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
-        self._base_url, self._token = _url_and_token(config)
-        self._base_url = self._base_url.rstrip("/")
-        self._bot_user_id = self._bot_username = ""
+
+        self._base_url: str = (
+            config.extra.get("url", "")
+            or _get_scoped_secret("MATTERMOST_URL", "")
+        ).rstrip("/")
+        self._token: str = config.token or _get_scoped_secret("MATTERMOST_TOKEN", "")
+
+        self._bot_user_id: str = ""
+        self._bot_username: str = ""
+
+        # aiohttp session + websocket handle
         self._session: Any = None  # aiohttp.ClientSession
         self._ws: Any = None  # aiohttp.ClientWebSocketResponse
         self._ws_task: Optional[asyncio.Task] = None
@@ -118,8 +127,11 @@ class MattermostAdapter(BasePlatformAdapter):
         self._closing = False
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
-            config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
-        self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
+            config.extra.get("reply_mode", "")
+            or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")
+        ).lower()
+
+        self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
 
@@ -234,7 +246,11 @@ class MattermostAdapter(BasePlatformAdapter):
         if not self._base_url or not self._token:
             logger.error("Mattermost: URL or token not configured")
             return False
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), trust_env=gateway_trust_env())
+
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=gateway_trust_env(),
+        )
         self._closing = False
         me = await self._api_get("users/me")
         if not me or "id" not in me:
@@ -514,25 +530,154 @@ class MattermostAdapter(BasePlatformAdapter):
                 message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
         return message_text
 
-    async def _download_attachments(self, file_ids: List[str]) -> Tuple[List[str], List[str]]:
-        """Download attachments now (URLs need auth headers downstream tools lack) → (paths, mime types)."""
-        import aiohttp
-        from gateway.platforms.base import (
-            cache_audio_from_bytes_async,
-            cache_document_from_bytes_async,
-            cache_image_from_bytes_async,
-        )
-        media_urls, media_types = [], []
-        cache_fns = {"image/": cache_image_from_bytes_async, "audio/": cache_audio_from_bytes_async}
+        data = event.get("data", {})
+        raw_post_str = data.get("post")
+        if not raw_post_str:
+            return
+
+        try:
+            post = json.loads(raw_post_str)
+        except (json.JSONDecodeError, TypeError):
+            return
+
+        # Ignore own messages.
+        if post.get("user_id") == self._bot_user_id:
+            return
+
+        # Ignore system posts.
+        if post.get("type"):
+            return
+
+        post_id = post.get("id", "")
+
+        # Dedup.
+        if self._dedup.is_duplicate(post_id):
+            return
+
+        # Build message event.
+        channel_id = post.get("channel_id", "")
+        channel_type_raw = data.get("channel_type", "O")
+        chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
+
+        # For DMs, user_id is sufficient.  For channels, check for @mention.
+        message_text = post.get("message", "")
+
+        # Mention-gating for non-DM channels.
+        # Config (config.yaml `mattermost.*` with env-var fallback):
+        #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
+        #   free_response_channels / MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
+        #   allowed_channels / MATTERMOST_ALLOWED_CHANNELS: If set, bot ONLY responds in these channels (whitelist)
+        if channel_type_raw != "D":
+            # allowed_channels check (whitelist — must pass before other gating).
+            # When set, messages from channels NOT in this list are silently
+            # ignored, even if @mentioned.  DMs are already excluded above.
+            allowed_raw = self.config.extra.get("allowed_channels") if self.config.extra else None
+            if allowed_raw is None:
+                allowed_raw = _get_scoped_secret("MATTERMOST_ALLOWED_CHANNELS", "")
+            if isinstance(allowed_raw, list):
+                allowed_channels = {str(c).strip() for c in allowed_raw if str(c).strip()}
+            else:
+                allowed_channels = {
+                    c.strip() for c in str(allowed_raw).split(",") if c.strip()
+                }
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.debug(
+                    "Mattermost: ignoring message in non-allowed channel: %s",
+                    channel_id,
+                )
+                return
+
+            require_mention_raw = self.config.extra.get("require_mention") if self.config.extra else None
+            if require_mention_raw is None:
+                require_mention_raw = _get_scoped_secret("MATTERMOST_REQUIRE_MENTION", "true")
+            require_mention = str(require_mention_raw).lower() not in {"false", "0", "no"}
+
+            free_channels_raw = self.config.extra.get("free_response_channels") if self.config.extra else None
+            if free_channels_raw is None:
+                free_channels_raw = _get_scoped_secret("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
+            if isinstance(free_channels_raw, list):
+                free_channels = {str(ch).strip() for ch in free_channels_raw if str(ch).strip()}
+            else:
+                free_channels = {ch.strip() for ch in str(free_channels_raw).split(",") if ch.strip()}
+            is_free_channel = channel_id in free_channels
+
+            mention_patterns = [
+                f"@{self._bot_username}",
+                f"@{self._bot_user_id}",
+            ]
+            has_mention = any(
+                pattern.lower() in message_text.lower()
+                for pattern in mention_patterns
+            )
+
+            if require_mention and not is_free_channel and not has_mention:
+                logger.debug(
+                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                    channel_id,
+                )
+                return
+
+            # Strip @mention from the message text so the agent sees clean input.
+            if has_mention:
+                for pattern in mention_patterns:
+                    message_text = re.sub(
+                        re.escape(pattern), "", message_text, flags=re.IGNORECASE
+                    ).strip()
+
+        # Resolve sender info.
+        sender_id = post.get("user_id", "")
+        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
+
+        # Thread support: if the post is in a thread, use root_id. In
+        # thread mode, top-level channel posts are valid roots for progress.
+        thread_id = post.get("root_id") or None
+        if (
+            not thread_id
+            and self._reply_mode == "thread"
+            and channel_type_raw != "D"
+            and post_id
+        ):
+            thread_id = post_id
+
+        # Determine message type.
+        file_ids = post.get("file_ids") or []
+        msg_type = MessageType.TEXT
+        if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
+            message_text = message_text.lstrip()
+        if message_text.startswith("/"):
+            msg_type = MessageType.COMMAND
+
+        # Download file attachments immediately (URLs require auth headers
+        # that downstream tools won't have).
+        media_urls: List[str] = []
+        media_types: List[str] = []
         for fid in file_ids:
             try:
                 file_info = await self._api_get(f"files/{fid}/info")
                 fname = file_info.get("name", f"file_{fid}")
                 mime = file_info.get("mime_type", "application/octet-stream")
                 async with self._session.get(
-                    f"{self._base_url}/api/v4/files/{fid}", headers=self._auth_header(),
-                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status >= 400:
+                    dl_url,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status < 400:
+                        file_data = await resp.read()
+                        from gateway.platforms.base import cache_image_from_bytes_async, cache_document_from_bytes_async
+                        if mime.startswith("image/"):
+                            local_path = await cache_image_from_bytes_async(file_data, ext or ".png")
+                            media_urls.append(local_path)
+                            media_types.append(mime)
+                        elif mime.startswith("audio/"):
+                            from gateway.platforms.base import cache_audio_from_bytes_async
+                            local_path = await cache_audio_from_bytes_async(file_data, ext or ".ogg")
+                            media_urls.append(local_path)
+                            media_types.append(mime)
+                        else:
+                            local_path = await cache_document_from_bytes_async(file_data, fname)
+                            media_urls.append(local_path)
+                            media_types.append(mime)
+                    else:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
                         continue
                     file_data = await resp.read()
@@ -604,8 +749,11 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     except ImportError:
         return send_error("aiohttp not installed. Run: pip install aiohttp")
 
-    base_url, token = _url_and_token(pconfig)
-    base_url, token = base_url.rstrip("/"), token.strip()
+    base_url = (
+        (getattr(pconfig, "extra", {}) or {}).get("url")
+        or _get_scoped_secret("MATTERMOST_URL", "")
+    ).rstrip("/")
+    token = (getattr(pconfig, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
     if not base_url or not token:
         return send_error("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
@@ -704,10 +852,62 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_cha
     ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
 
 
+def _profile_scoped_config_load() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed and connected inside
+    ``_profile_runtime_scope`` (secret scope installed + multiplex active) --
+    the same discriminator the Buzz/Discord/Telegram/WhatsApp/LINE/DingTalk
+    adapters use for this bug class (#98738 / #72348 / #80099). The DEFAULT
+    profile under multiplexing runs unscoped: ``os.environ`` holds its own
+    bridge output there and keeps its legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` (#24836 / #25443): ``config.yaml`` ``mattermost:`` keys → env vars (env wins;
-    skipped under a multiplexed secondary profile) + ``PlatformConfig.extra`` (extra-first readers)."""
-    return _apply_yaml_bridge(mattermost_cfg, _YAML_BRIDGE)
+    """Translate ``config.yaml`` ``mattermost:`` keys into env vars and
+    ``PlatformConfig.extra`` entries.
+
+    Implements the ``apply_yaml_config_fn`` contract (#24836 / #25443).
+    Mirrors the legacy ``mattermost_cfg`` block that used to live in
+    ``gateway/config.py::load_gateway_config()`` before this migration.
+
+    Env vars take precedence over YAML for single-profile deployments --
+    each env write is guarded by ``not os.getenv(...)`` so an explicit env
+    var survives a config.yaml update. Under a multiplexed secondary
+    profile's scope, the env write is skipped entirely (it would otherwise
+    leak into the process-global ``os.environ`` and be inherited by every
+    other profile); instead the values are returned so the caller merges
+    them into this profile's own ``PlatformConfig.extra``, which the
+    require_mention/free_response_channels/allowed_channels read sites now
+    check first.
+    """
+    _skip_env_bridge = _profile_scoped_config_load()
+    seeded: dict = {}
+    if "require_mention" in mattermost_cfg:
+        seeded["require_mention"] = mattermost_cfg["require_mention"]
+        if not _skip_env_bridge and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
+            os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    frc = mattermost_cfg.get("free_response_channels")
+    if frc is not None:
+        seeded["free_response_channels"] = frc
+        if not _skip_env_bridge and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
+            _frc = ",".join(str(v) for v in frc) if isinstance(frc, list) else str(frc)
+            os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = _frc
+    # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+    ac = mattermost_cfg.get("allowed_channels")
+    if ac is not None:
+        seeded["allowed_channels"] = ac
+        if not _skip_env_bridge and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
+            _ac = ",".join(str(v) for v in ac) if isinstance(ac, list) else str(ac)
+            os.environ["MATTERMOST_ALLOWED_CHANNELS"] = _ac
+    return seeded or None
 
 
 

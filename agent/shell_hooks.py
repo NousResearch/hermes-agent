@@ -48,8 +48,17 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # kwargs promoted to top-level payload keys; everything else lands under ``extra``.
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
-# (home, event, matcher, command) wired in this process: matcher in the key (one script may register
-# per-tool under one event), home so multiplexed-gateway profiles can register identical triples.
+
+# (home, event, matcher, command) tuples that have been wired to the plugin
+# manager in the current process.  Matcher is part of the key because
+# the same script can legitimately register for different matchers under
+# the same event (e.g. one entry per tool the user wants to gate). Home is
+# part of the key so a multiplexed gateway's secondary profiles — each with
+# their own plugin manager (see hermes_cli.plugins.get_plugin_manager) — can
+# register identical hook triples without the first profile's registration
+# silently shadowing the rest.
+# Second registration attempts for the exact same tuple become no-ops
+# so the CLI and gateway can both call register_from_config() safely.
 _registered: Set[Tuple[str, str, Optional[str], str]] = set()
 _registered_lock = threading.Lock()
 # Non-POSIX fallback for allowlist read-modify-write. Must be separate from _registered_lock, which
@@ -151,9 +160,19 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
     specs = _parse_hooks_block(cfg.get("hooks"))
     if not specs:
         return []
-    from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
-    manager, home_key, registered = get_plugin_manager(), _home_key(), []
-    # Idempotence + allowlist read under the lock; TTY prompt outside it; mutation re-takes the lock and re-checks.
+
+    registered: List[ShellHookSpec] = []
+
+    # Import lazily — avoids circular imports at module-load time.
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    home_key = str(get_hermes_home().expanduser().resolve())
+
+    # Idempotence + allowlist read happen under the lock; the TTY
+    # prompt runs outside so other threads aren't parked on a blocking
+    # input().  Mutation re-takes the lock with a defensive idempotence
+    # re-check in case two callers ever race through the prompt.
     for spec in specs:
         key = (home_key, spec.event, spec.matcher, spec.command)
         with _registered_lock:
@@ -185,17 +204,28 @@ def re_register_config_hooks() -> None:
     """Re-register after a plugin force-reload cleared the manager's hooks; only this home's keys
     are cleared (profile A's reload never drops B), never re-prompts.
 
-    ``PluginManager.discover_and_load(force=True)`` unloads via the ownership ledger and clears the
-    manager's ``_hooks`` dict, which silently drops shell hooks that were registered from ``config.yaml`` at
-    startup (they are config-owned, not plugin-owned, so the ledger cannot restore them). Clear the
-    idempotence set and re-run ``register_from_config()`` so hooks are wired again (#60036 / PR #60267;
-    tracking #64178 — salvaged from PR #64188).
-    Only the idempotence keys for the *current* Hermes home are cleared — ``discover_and_load(force=True)``
-    only unloads the manager scoped to that one home, so clearing every home's keys would make a
-    force-reload in profile A drop profile B's still-live registration from the ledger and duplicate it on
-    B's next registration call (#92682 review).
+    ``PluginManager.discover_and_load(force=True)`` unloads via the ownership
+    ledger and clears the manager's ``_hooks`` dict, which silently drops
+    shell hooks that were registered from ``config.yaml`` at startup (they
+    are config-owned, not plugin-owned, so the ledger cannot restore them).
+    Clear the idempotence set and re-run ``register_from_config()`` so hooks
+    are wired again (#60036 / PR #60267; tracking #64178 — salvaged from
+    PR #64188).
+
+    Only the idempotence keys for the *current* Hermes home are cleared —
+    ``discover_and_load(force=True)`` only unloads the manager scoped to
+    that one home, so clearing every home's keys would make a force-reload
+    in profile A drop profile B's still-live registration from the ledger
+    and duplicate it on B's next registration call (#92682 review).
+
+    Commands already allowlisted stay allowlisted, so this never re-prompts
+    at a TTY for hooks the user previously approved.
     """
-    _forget_home_registrations(_registered, _registered_lock)
+    home_key = str(get_hermes_home().expanduser().resolve())
+    with _registered_lock:
+        _registered.difference_update(
+            {key for key in _registered if key[0] == home_key}
+        )
     from hermes_cli.config import load_config
     register_from_config(load_config())
 

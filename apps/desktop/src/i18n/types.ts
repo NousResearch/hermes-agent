@@ -7,7 +7,7 @@
 
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -284,13 +284,6 @@ export interface Translations {
       openaiRejectedApiKey: string
       openaiTtsNeedsKey: string
       codeSkewRestartRequired: string
-      restartHermesFailed: string
-    }
-    actions: {
-      restartHermes: string
-      openKeys: string
-      openGateways: string
-      openMaintenance: string
     }
     voice: {
       configureSpeechToText: string
@@ -1232,9 +1225,6 @@ export interface Translations {
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer
        *  backend) simply show no tooltip. */
       recommendedReason: Record<string, string>
-      noRecommendationTitle: string
-      noRecommendationDetail: string
-      noRecommendationAction: string
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
@@ -1258,6 +1248,7 @@ export interface Translations {
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string
+      updateToast: (next: string) => string
       activeDetail: string
       activeNotLoaded: string
       loadedPill: string
@@ -1481,6 +1472,16 @@ export interface Translations {
         disabledTitle: string
         disabledMessage: string
         failedSave: string
+        prompt: {
+          title: string
+          body: string
+          bulletSnapshot: string
+          bulletLiveProfile: string
+          bulletLocal: string
+          dontShowAgain: string
+          notNow: string
+          enable: string
+        }
       }
     }
   }
@@ -1536,45 +1537,6 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
-    tabPlugins: string
-    plugins: {
-      agentTitle: string
-      agentBlurb: string
-      pageBlurb: string
-      halfDesktop: string
-      halfDesktopHint: string
-      halfAgent: string
-      halfAgentIn: (profile: string) => string
-      defaultProfile: string
-      kindAgent: string
-      kindDesktop: string
-      kindBoth: string
-      installAgentHere: string
-      installAgentHereTip: (profile: string) => string
-      installAgentHereNoOrigin: string
-      desktopHalfPending: string
-      desktopHalfPendingTip: string
-      emptyAll: string
-      empty: string
-      emptyHint: string
-      loadFailed: string
-      toggleFailed: (name: string) => string
-      legacyBackend: string
-      portableBadge: string
-      catalogTitle: string
-      catalogBrowse: string
-      catalogHide: string
-      catalogHint: string
-      alreadyInstalled: (name: string) => string
-      catalogProvenance: (sha: string) => string
-      pinnedProvenance: (sha: string) => string
-      pinnedBadge: (sha: string) => string
-      tierOfficial: string
-      tierCommunity: string
-      updateToPin: (sha: string) => string
-      updateFailed: (name: string) => string
-      updated: (name: string) => string
-    }
     officialCatalog: string
     officialPill: string
     hub: {
@@ -2959,10 +2921,6 @@ export interface Translations {
     connectedPicking: (provider: string) => string
     signInFailed: string
     signInExpired: string
-    signInDidNotFinish: (provider: string) => string
-    tryAgain: string
-    useApiKeyInstead: string
-    errorDetails: string
     pickDifferentProvider: string
     signInWith: (provider: string) => string
     openedBrowser: (provider: string) => string
@@ -3744,8 +3702,12 @@ export interface Translations {
 
   tips: {
     close: string
-    /** Keyed by `TipId`, so a new tip without copy is a type error. */
-    items: Record<TipId, { title: string; text: string }>
+    /** Keyed by `TipId`, so a new tip without copy is a type error. Plus the
+     *  campaign tips, which live outside the rotation's catalog: they carry
+     *  a button, and `action` is its label. */
+    items: Record<TipId, { title: string; text: string }> & {
+      'local-setup': { title: string; text: string; action: string }
+    }
   }
 
   errors: {

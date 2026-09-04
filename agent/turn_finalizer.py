@@ -106,8 +106,32 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
 
 def _clone_background_review_messages(messages):
     """Copy the review input without aliasing the live transcript."""
-    # Lazy: conversation_loop imports this module (cycle).
+    # Import lazily: conversation_loop imports this module during turn
+    # finalization, so a module-level import would create a cycle.
     from agent.conversation_loop import _clone_message_for_send
+
+    return [_clone_message_for_send(message) for message in messages]
+
+
+def finalize_turn(
+    agent,
+    *,
+    final_response,
+    api_call_count,
+    interrupted,
+    failed,
+    messages,
+    conversation_history,
+    effective_task_id,
+    turn_id,
+    user_message,
+    original_user_message,
+    _should_review_memory,
+    _turn_exit_reason,
+    _pending_verification_response=None,
+    _pending_verification_response_previewed=False,
+):
+    """Run the post-loop finalization and return the turn ``result`` dict.
 
     return [_clone_message_for_send(message) for message in messages]
 
@@ -750,13 +774,17 @@ def finalize_turn(
             "session storage could not be written — check the state database "
             "health (`hermes doctor`), then send your message again"
         )
-        _cause = getattr(agent, "_last_persistence_error_cause", None)
-        result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
-    elif _exit_failure is not None:
-        if failed:
-            result["error"] = final_response or str(_turn_exit_reason)
-        stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
-    # Cleanup failures are surfaced, but the response is returned either way (#8049).
+        # Machine-readable cause for the gateway/desktop: exactly
+        # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|replaced|disk|unknown>'.
+        # Never clobber a failure_reason another path already stamped.
+        if "failure_reason" not in result:
+            _cause = getattr(agent, "_last_persistence_error_cause", None)
+            result["failure_reason"] = (
+                "session_persistence_failed:" + (_cause or "unknown")
+            )
+    # Surface any post-loop cleanup failures so the caller can distinguish a
+    # clean turn from one whose trajectory/session/resource teardown raised
+    # (the response is still returned either way — #8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
     # A /steer landing after the final assistant turn has no tool batch to drain into;
@@ -795,7 +823,9 @@ def finalize_turn(
         and not getattr(agent, "skip_background_review", False)
         and (_should_review_memory or _should_review_skills)
     ):
-        with suppress(Exception):
+        try:
+            # _spawn_background_review clones the snapshot structurally so
+            # the fork's in-place sanitizers can't reach the live transcript.
             agent._spawn_background_review(
                 messages_snapshot=list(messages), review_memory=_should_review_memory,
                 review_skills=_should_review_skills,

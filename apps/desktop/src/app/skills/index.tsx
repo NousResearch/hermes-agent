@@ -22,6 +22,7 @@ import {
   getSkills,
   getToolsets,
   getUsageAnalytics,
+  previewSkillHub,
   type ProfileScope,
   profileScopeKey,
   setSkillEnabled,
@@ -29,12 +30,14 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
+import { compactNumber } from '@/lib/format'
 import { Loader2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
+import { $hubActions, installHubSkill, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import type { OfficialSkillInfo, SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -545,9 +548,7 @@ export function SkillsView({
   // catalog section into the installed section with the normal toggle.
   function handleInstallOfficial(skill: OfficialSkillInfo) {
     notify({ kind: 'success', title: t.skills.hub.installStarted(skill.name), message: t.skills.hub.actionLog })
-    void installHubSkill(skill.identifier, scopeProfile).catch(err =>
-      notifyHubActionFailed(err, t.skills.hub.actionFailed, skill.name, scopeProfile)
-    )
+    void installHubSkill(skill.identifier, scopeProfile).catch(err => notifyError(err, t.skills.hub.actionFailed))
   }
 
   async function handleToggleToolset(toolset: ToolsetInfo, enabled: boolean) {

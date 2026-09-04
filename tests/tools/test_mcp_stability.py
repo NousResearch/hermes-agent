@@ -77,7 +77,7 @@ class TestStdioPidTracking:
         import sys as _sys
         import threading
 
-        from tools.mcp_tool_lifecycle import _snapshot_child_pids
+        from tools.mcp_tool import _snapshot_child_pids
 
         procs = []
         started = threading.Event()

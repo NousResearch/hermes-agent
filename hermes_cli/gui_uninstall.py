@@ -55,17 +55,35 @@ def packaged_gui_app_paths() -> "list[Path]":
         local_base = _env_dir("LOCALAPPDATA", home / "AppData" / "Local")
         # NSIS per-user install (perMachine=false), an older/alternate layout, NSIS per-machine (needs admin).
         program_files = os.environ.get("ProgramFiles")
-        return [local_base / "Programs" / "Hermes", local_base / "hermes-desktop"] + (
-            [Path(program_files) / "Hermes"] if program_files else [])
-    # Linux: an AppImage lives wherever the user put it and deb/rpm files belong to the package manager
-    # (see the hint in ``uninstall_gui``), so only the desktop entry + hicolor icons are cleaned here.
-    from hermes_cli.linux_desktop_entry import desktop_entry_path
-    data_base = _env_dir("XDG_DATA_HOME", home / ".local" / "share")
-    icons = data_base / "icons" / "hicolor"
-    # "scalable" plus every fixed-size dir the installer may have written (panel sizes + older native copies).
-    return [desktop_entry_path(), data_base / "applications" / "Hermes.desktop"] + [
-        icons / size / "apps" / "hermes.png"
-        for size in ("scalable", "24x24", "32x32", "48x48", "256x256", "512x512", "1024x1024")]
+        if program_files:
+            # NSIS per-machine fallback (needs admin to remove).
+            paths.append(Path(program_files) / "Hermes")
+    else:
+        # Linux: AppImage is a single file the user placed somewhere; we can
+        # only reliably clean the desktop entry + icon we know the name of.
+        # The AppImage itself lives wherever the user put it, so we surface a
+        # hint rather than guessing. deb/rpm installs are owned by the system
+        # package manager and must be removed via apt/dnf — see the message in
+        # ``uninstall_gui``.
+        from hermes_cli.linux_desktop_entry import desktop_entry_path
+
+        data = os.environ.get("XDG_DATA_HOME")
+        data_base = Path(data) if data else (home / ".local" / "share")
+        paths += [
+            # The launcher entry `hermes desktop` installs. Its icon is
+            # also copied into the hicolor tree (see
+            # linux_desktop_entry._install_icon_to_hicolor) — remove
+            # every size dir the installer could have written.
+            desktop_entry_path(),
+            # Some packaged builds emit this casing.
+            data_base / "applications" / "Hermes.desktop",
+            data_base / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png",
+        ]
+        # Fixed-size hicolor dirs the installer may have written (resized
+        # panel sizes plus leftover native-size copies from older builds).
+        for size in ("24x24", "32x32", "48x48", "256x256", "512x512", "1024x1024"):
+            paths.append(data_base / "icons" / "hicolor" / size / "apps" / "hermes.png")
+    return paths
 
 
 def agent_is_installed(hermes_home: Path) -> bool:

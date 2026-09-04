@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from contextlib import nullcontext, suppress
+from contextlib import nullcontext
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -590,6 +590,21 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Skill loading failed: %s", e)
         return prompt
 
+    @staticmethod
+    def _profile_scope(profile: Optional[str]):
+        """Enter the URL-resolved profile's runtime scope, or a no-op.
+
+        Only a resolved ``/p/<profile>/`` prefix enters a scope (same helper
+        the runner wraps ``handle_message`` in); bare routes keep serving the
+        launch profile exactly as before.
+        """
+        if not profile or not isinstance(profile, str):
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.profiles import get_profile_dir
+
+        return _profile_runtime_scope(get_profile_dir(profile))
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         route_name, route_config, profile, error_response = self._resolve_route(request)
@@ -608,33 +623,110 @@ class WebhookAdapter(BasePlatformAdapter):
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
-            logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,
-                         allowed_events)
-            return web.json_response({"status": "ignored", "event": event_type})
-        if not self._route_processor.route_filters_match(route_config, payload, event_type, request.headers):
-            logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
-            return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
-        # Script, prompt render and skill lookup read the profile's home (skills/, config); the runner
-        # only enters the routed profile's scope later around handle_message, so enter it here.
-        # See #67277.
+            logger.debug(
+                "[webhook] Ignoring event %s for route %s (allowed: %s)",
+                event_type,
+                route_name,
+                allowed_events,
+            )
+            return web.json_response(
+                {"status": "ignored", "event": event_type}
+            )
+
+        if not self._route_processor.route_filters_match(
+            route_config, payload, event_type, request.headers
+        ):
+            logger.info(
+                "[webhook] filtered event=%s route=%s",
+                event_type,
+                route_name,
+            )
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "reason": "filter",
+                    "route": route_name,
+                }
+            )
+
+        # The route script, prompt render and skill lookup below read the
+        # profile's home (skills/, config). The runner only enters the routed
+        # profile's scope later, around handle_message, so without this they
+        # ran against the launch (default) profile (#67277). Only a resolved
+        # /p/<profile>/ enters a scope; bare routes are unchanged.
         with self._profile_scope(profile):
-            script = route_config.get("script")
-            if script:
-                # Shells out (up to its timeout) — worker thread so the loop isn't blocked; to_thread
-                # copies contextvars so the profile scope follows.
+            if route_config.get("script"):
+                # run_route_script shells out (subprocess.run, up to its
+                # timeout); run it in a worker thread so it can't block the
+                # gateway event loop. to_thread copies the contextvars, so
+                # the profile scope follows it.
                 keep, transformed_payload = await asyncio.to_thread(
-                    self._route_processor.run_route_script, script, payload)
+                    self._route_processor.run_route_script,
+                    route_config.get("script"),
+                    payload,
+                )
                 if not keep:
-                    logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
-                    return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
+                    logger.info(
+                        "[webhook] script ignored event=%s route=%s",
+                        event_type,
+                        route_name,
+                    )
+                    return web.json_response(
+                        {
+                            "status": "ignored",
+                            "reason": "script",
+                            "route": route_name,
+                        }
+                    )
                 payload = transformed_payload or payload
-            prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
-            # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
-            if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
-                prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
-        now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
+
+            # Format prompt from template
+            prompt_template = route_config.get("prompt", "")
+            prompt = self._render_prompt(
+                prompt_template, payload, event_type, route_name
+            )
+
+            # Inject skill content if configured.
+            # We call build_skill_invocation_message() directly rather than
+            # using /skill-name slash commands — the gateway's command parser
+            # would intercept those and break the flow.
+            skills = route_config.get("skills", [])
+            if skills:
+                try:
+                    from agent.skill_commands import (
+                        build_skill_invocation_message,
+                        get_skill_commands,
+                    )
+
+                    skill_cmds = get_skill_commands()
+                    for skill_name in skills:
+                        cmd_key = f"/{skill_name}"
+                        if cmd_key in skill_cmds:
+                            skill_content = build_skill_invocation_message(
+                                cmd_key, user_instruction=prompt
+                            )
+                            if skill_content:
+                                prompt = skill_content
+                                break  # Load the first matching skill
+                        else:
+                            logger.warning(
+                                "[webhook] Skill '%s' not found", skill_name
+                            )
+                except Exception as e:
+                    logger.warning("[webhook] Skill loading failed: %s", e)
+
+        # Build a unique delivery ID
+        delivery_id = request.headers.get(
+            "X-GitHub-Delivery",
+            request.headers.get(
+                "svix-id",
+                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+            ),
+        )
+
+        # ── Idempotency ─────────────────────────────────────────
+        # Skip duplicate deliveries (webhook retries).
+        now = time.time()
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)

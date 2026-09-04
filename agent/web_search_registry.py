@@ -7,13 +7,23 @@ Active selection, in precedence order (the ``supports_search`` /
 ``supports_extract`` capability filter applies at every step, so a search-only
 provider configured as ``web.extract_backend`` falls through):
 
-1. ``web.search_backend`` / ``web.extract_backend``, then ``web.backend``.
-2. The single capability-eligible provider that is registered AND available.
-3. Legacy preference walk (``_LEGACY_PREFERENCE``) filtered by availability —
-   the historic ``tools.web_tools._get_backend()`` order, so installs that never
-   set a config key keep landing on the same provider.
-4. Keyless free-tier walk (``_KEYLESS_PREFERENCE``), last resort.
-5. ``None`` — the tool points the user at ``hermes tools``.
+1. ``web.search_backend`` / ``web.extract_backend``
+   (per-capability override).
+2. ``web.backend`` (shared fallback).
+3. If exactly one capability-eligible provider is registered AND available,
+   use it.
+4. Legacy preference order — ``firecrawl`` → ``parallel`` → ``tavily`` →
+   ``exa`` → ``searxng`` → ``brave-free`` → ``ddgs`` — filtered by
+   availability. Matches the historic ``tools.web_tools._get_backend()``
+   candidate order so installs that never set a config key keep landing
+   on the same provider they did before the plugin migration.
+5. Otherwise ``None`` — the tool surfaces a helpful error pointing at
+   ``hermes tools``.
+
+The capability filter (``supports_search`` / ``supports_extract``) is
+applied at every step so a search-only provider (``brave-free``)
+configured as ``web.extract_backend`` correctly falls through to an
+extract-capable backend.
 """
 
 from __future__ import annotations
@@ -50,38 +60,25 @@ def _read_config_key(*path: str) -> Optional[str]:
     return None
 
 
-def _configured_backend(capability: str) -> Optional[str]:
-    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback)."""
-    return _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
-
-
-# Paid providers first so existing paid setups don't get downgraded to a free
-# tier on upgrade; filtered by ``is_available()`` at walk time.
-_LEGACY_PREFERENCE = ("firecrawl", "parallel", "tavily", "perplexity", "exa", "searxng", "brave-free", "ddgs")
-
-# Anonymous public free tiers (see plugins/web/keyless_mcp.py); strictly last
-# resort, i.e. zero web credentials and no importable ddgs. Unpinned keyless
-# traffic round-robins across the ring per request; an explicit `hermes tools`
-# pick bypasses this walk. Disable with ``web.keyless_fallback: false``.
-_KEYLESS_PREFERENCE = ("exa", "parallel", "firecrawl", "keenable")
-
-
-def _keyless_preference() -> tuple:
-    """Keyless walk order, starting at the ring cursor in
-    :mod:`plugins.web.keyless_mcp` so resolution and dispatch agree on which
-    vendor a fresh install starts at; the rest follow in ring order."""
-    try:
-        from plugins.web.keyless_mcp import _KEYLESS_RING, _ring_cursor
-
-        start = _ring_cursor % len(_KEYLESS_RING)
-        return tuple(_KEYLESS_RING[start:] + _KEYLESS_RING[:start])
-    except Exception as exc:  # noqa: BLE001 — ring optional in stripped envs
-        logger.debug("keyless ring order unavailable: %s", exc)
-    return _KEYLESS_PREFERENCE
+# Legacy preference order — preserves behaviour for users who set no
+# ``web.backend`` / ``web.<capability>_backend`` config key at all. Matches
+# the historic candidate order in :func:`tools.web_tools._get_backend`
+# (paid providers first so existing paid setups don't get downgraded to
+# a free tier on upgrade). Filtered by ``is_available()`` at walk time so
+# we don't surface a provider the user has no credentials for.
+_LEGACY_PREFERENCE = (
+    "firecrawl",
+    "parallel",
+    "tavily",
+    "exa",
+    "searxng",
+    "brave-free",
+    "ddgs",
+)
 
 # Keyless free-tier walk — strictly LAST-resort, tried only after the
 # availability-filtered legacy walk finds nothing (i.e. the user has zero
-# web credentials and no importable ddgs). All five vendors expose public
+# web credentials and no importable ddgs). Ring vendors expose public
 # anonymous free tiers (see plugins/web/keyless_mcp.py). Unpinned keyless
 # traffic round-robins across the ring per request (the ring cursor lives
 # in keyless_mcp; an explicit `hermes tools` pick bypasses this walk
@@ -121,11 +118,32 @@ def _keyless_preference() -> tuple:
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
     """Resolve the active provider for a capability ("search" | "extract").
 
-    Rules, in order (see module docstring): explicit config wins even when
-    ``is_available()`` is False (the dispatcher surfaces a precise
-    "X_API_KEY is not set" error instead of a silent switch); then the single
-    available capable provider; then the availability-filtered legacy walk;
-    then the keyless free-tier walk; else None.
+    Resolution rules (in order):
+
+    1. **Explicit config wins, ignoring availability.** If
+       ``web.{capability}_backend`` or ``web.backend`` names a registered
+       provider that supports *capability*, return it even if its
+       :meth:`is_available` returns False — the dispatcher will surface a
+       precise "X_API_KEY is not set" error to the user instead of silently
+       routing somewhere else. Matches legacy
+       :func:`tools.web_tools._get_backend` behavior for configured names.
+
+    2. **Single-provider shortcut.** When only one registered provider
+       supports *capability* AND ``is_available()`` reports True, return it.
+
+    3. **Legacy preference walk, filtered by availability.** Walk the
+       :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel → tavily →
+       exa → searxng → brave-free → ddgs) looking for a provider whose
+       ``supports_<capability>()`` is True AND whose ``is_available()`` is
+       True. Matches the historic ``tools.web_tools._get_backend()``
+       candidate order so users with credentials but no explicit config
+       key keep landing on the same provider as pre-migration. This is
+       the path that fires when no config key is set — pick the
+       highest-priority backend the user actually has credentials for.
+
+    Returns None when no provider is configured AND no available provider
+    matches the legacy preference; the dispatcher then returns a "set up a
+    provider" error to the user.
     """
     snapshot = _registry.merged()
 

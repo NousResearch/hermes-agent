@@ -2,7 +2,6 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
-import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 import { ambientRequestFor } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
@@ -189,7 +188,6 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     return
   }
 
-  const previous = approval.$all.get()[keyFor(sessionId)]
   let rawResult: unknown
 
   try {

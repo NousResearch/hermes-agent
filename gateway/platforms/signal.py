@@ -30,9 +30,9 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    cache_image_from_bytes,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
     cache_image_from_url,
     utf16_len,
 )
@@ -645,11 +645,42 @@ class SignalAdapter(BasePlatformAdapter):
                  else cache_audio_from_bytes_async if _is_audio_ext(ext) else cache_document_from_bytes_async)
         return await cache(raw_data, ext), ext
 
-    async def _rpc(self, method: str, params: dict, rpc_id: str = None, *, log_failures: bool = True,
-                   raise_on_rate_limit: bool = False, timeout: float = 30.0) -> Any:
-        """Send a JSON-RPC 2.0 request to signal-cli. ``log_failures=False`` logs failures at DEBUG (typing
-        path: silence NETWORK_FAILURE spam); ``raise_on_rate_limit=True`` raises ``SignalRateLimitError``
-        on a 429 / RateLimitException instead of swallowing it."""
+        if _is_image_ext(ext):
+            path = await cache_image_from_bytes_async(raw_data, ext)
+        elif _is_audio_ext(ext):
+            path = await cache_audio_from_bytes_async(raw_data, ext)
+        else:
+            path = await cache_document_from_bytes_async(raw_data, ext)
+
+        return path, ext
+
+    # ------------------------------------------------------------------
+    # JSON-RPC Communication
+    # ------------------------------------------------------------------
+
+    async def _rpc(
+        self,
+        method: str,
+        params: dict,
+        rpc_id: str = None,
+        *,
+        log_failures: bool = True,
+        raise_on_rate_limit: bool = False,
+        timeout: float = 30.0,
+    ) -> Any:
+        """Send a JSON-RPC 2.0 request to signal-cli daemon.
+
+        When ``log_failures=False``, error and exception paths log at DEBUG
+        instead of WARNING — used by the typing-indicator path to silence
+        repeated NETWORK_FAILURE spam for unreachable recipients while
+        still preserving visibility for the first occurrence and for
+        unrelated RPCs.
+
+        When ``raise_on_rate_limit=True``, a Signal ``[429]`` /
+        ``RateLimitException`` response raises ``SignalRateLimitError``
+        instead of being swallowed — lets callers (multi-attachment send)
+        opt into backoff-retry without changing default behaviour.
+        """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
             return None

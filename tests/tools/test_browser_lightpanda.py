@@ -235,16 +235,14 @@ class TestChromeFallback:
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._write_owner_pid") as write_owner, \
              patch("subprocess.Popen", return_value=mock_proc):
-            bt._run_chrome_fallback_command(
-                "task1", "screenshot", [], timeout=30
-            )
+            bt._run_chrome_fallback_command("task1", "screenshot", [], timeout=30)
 
         write_owner.assert_called_once()
         socket_dir, session_name = write_owner.call_args.args
         assert session_name.startswith("h_cfb_")
         assert socket_dir == str(tmp_path / f"agent-browser-{session_name}")
 
-    def test_chrome_fallback_injects_required_sandbox_args(self):
+    def test_chrome_fallback_injects_required_sandbox_args(self, tmp_path):
         import tools.browser_tool as bt
 
         captured_envs = []
@@ -261,13 +259,13 @@ class TestChromeFallback:
         # sibling pytest processes (atexit _emergency_cleanup_all_sessions),
         # which rmtree'd the fresh pidless dir mid-command — the CI flake
         # this test kept hitting before the reaper grace fix.
-        with patch("tools.browser_tool_session._run_browser_command", return_value={
+        with patch("tools.browser_tool._run_browser_command", return_value={
                  "success": True, "data": {"url": "https://example.com/"}
              }), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool_install._chromium_installed", return_value=True), \
-             patch("tools.browser_tool_session._needs_chromium_sandbox_bypass", return_value=True), \
+             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._needs_chromium_sandbox_bypass", return_value=True), \
              patch("subprocess.Popen", side_effect=capture_popen):
             result = bt_lightpanda_fallback._run_chrome_fallback_command(
                 "task1", "screenshot", [], timeout=30

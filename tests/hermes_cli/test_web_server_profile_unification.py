@@ -8,7 +8,6 @@ stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
 import json
 from contextlib import contextmanager
-from pathlib import Path
 
 import pytest
 import yaml
@@ -497,9 +496,9 @@ class TestProfileScopedModel:
             yield object()
 
         monkeypatch.setattr(
-            _web_server_profiles, "_config_profile_scope", _recording_config_scope
+            web_server, "_config_profile_scope", _recording_config_scope
         )
-        monkeypatch.setattr(_web_server_profiles, "_profile_scope", _recording_profile_scope)
+        monkeypatch.setattr(web_server, "_profile_scope", _recording_profile_scope)
         monkeypatch.setattr(
             "hermes_cli.inventory.load_picker_context", lambda: object()
         )

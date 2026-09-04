@@ -18,10 +18,11 @@ from typing import Any, Dict, Iterator, List, Optional
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
-# Optional test override. Production resolves the path at transaction time so multiplexed profile
-# ticks (set_hermes_home_override) cannot leak one profile's notepad rows into the import-time home
-# — and remove_job's clear_notepad cannot wipe the wrong profile's DB.
-# Same pattern as cron/executions.py. See #86519.
+# Optional test override. Production resolves the path at transaction time so
+# multiplexed profile ticks (set_hermes_home_override) cannot leak one
+# profile's notepad rows into the import-time home — and remove_job's
+# clear_notepad cannot wipe the wrong profile's DB (#86519). Same pattern as
+# cron/executions.py.
 NOTEPAD_FILE: Optional[Path] = None
 MAX_VALUE_BYTES = 16 * 1024
 MAX_KEY_CHARS = 128
@@ -36,8 +37,9 @@ def _current_notepad_file() -> Path:
 def _connect() -> sqlite3.Connection:
     from cron.jobs import _ensure_cron_dir
 
-    _ensure_cron_dir(NOTEPAD_FILE.parent)
-    return sqlite3.connect(NOTEPAD_FILE, timeout=5)
+    path = _current_notepad_file()
+    _ensure_cron_dir(path.parent)
+    return sqlite3.connect(path, timeout=5)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -130,8 +132,11 @@ def list_notes(job_id: str) -> List[Dict[str, Any]]:
 
 
 def clear_notepad(job_id: str) -> int:
-    """Delete every key for one job (called from ``cron.jobs.remove_job``). Returns row count;
-    no-ops without creating the DB when no notepad file exists yet."""
+    """Delete every key for one job (e.g. on job removal). Returns row count.
+
+    Called from ``cron.jobs.remove_job`` so deleted jobs don't orphan their
+    rows. No-ops without creating the DB when no notepad file exists yet.
+    """
     if not _current_notepad_file().exists():
         return 0
     with _transaction() as conn:

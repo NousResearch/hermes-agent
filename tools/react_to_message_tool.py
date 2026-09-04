@@ -15,8 +15,9 @@ from tools.registry import registry, tool_error
 def _open_session_db():
     """Open the SessionDB for the profile owning this turn, or ``None``."""
     try:
-        from hermes_state_registry import acquire
-        return acquire()
+        from hermes_state import get_shared_session_db
+
+        return get_shared_session_db()
     except Exception:
         return None
 
@@ -42,24 +43,18 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
         else:
             target_role = db.get_message_role(session_key, int(row_id)) or "user"
         try:
-            reactions = db.set_message_reaction(session_key, int(row_id), emoji or None, author="agent")
-        except Exception as exc:
-            return tool_error(f"Failed to set the reaction: {exc}")
-        if reactions is None:
-            return tool_error(f"Message {row_id} is not part of this conversation.")
-        # Paint it live; a missing bridge (non-desktop) is not an error — the reaction is
-        # persisted. `role` lets the renderer match a live message without a durable row id.
-        with contextlib.suppress(Exception):
-            desktop_ui.emit("message.reaction", {"row_id": int(row_id), "reactions": reactions, "role": target_role})
-        return json.dumps({"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False)
-    finally:
-        with contextlib.suppress(Exception):
-            from hermes_state_registry import release_or_close
+            from hermes_state import release_or_close
             release_or_close(db)
+        except Exception:
+            pass
 
 
 def check_react_requirements() -> bool:
-    """Opt-in flag (Settings → Appearance); ``desktop_ui`` already restricts to GUI sessions."""
+    """Opt-in feature flag — surface eligibility is the toolset's job.
+
+    ``desktop_ui`` already restricts this to GUI sessions. What's left is the
+    user's own toggle (Settings → Appearance).
+    """
     return desktop_ui.user_enabled("message_reactions", default=False)
 
 

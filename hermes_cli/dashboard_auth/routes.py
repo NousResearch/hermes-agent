@@ -92,11 +92,33 @@ def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
     return dict(seg.split("=", 1) for seg in flat.split(";") if "=" in seg)
 
 
-def _validate_post_login_target(raw: str) -> str:
-    """``raw`` (URL-decoded) if it is a safe same-origin path, else ``""``. Re-validated
-    at every hop because a ``next=`` value can re-enter via a crafted URL."""
-    decoded = unquote(raw) if raw else ""
-    return decoded if decoded and is_safe_next_path(decoded) else ""
+def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
+    """Segment dict from a provider's ``LoginStart.cookie_payload``.
+
+    Providers serialise their PKCE material as the flat
+    ``state=…;verifier=…`` string documented on
+    :class:`~hermes_cli.dashboard_auth.base.LoginStart` (values are
+    ``token_urlsafe`` — never containing ``;`` or ``=``). This is the ONE
+    place that flat provider string is parsed; from here on the payload
+    is a dict all the way to :func:`set_pkce_cookie`'s base64url(JSON)
+    wire encoding.
+    """
+    flat = cookie_payload.get("hermes_session_pkce", "")
+    return dict(
+        seg.split("=", 1) for seg in flat.split(";") if "=" in seg
+    )
+
+
+def _prefix(request: Request) -> str:
+    """Resolve the X-Forwarded-Prefix header for the active request.
+
+    Local indirection so the routes pass a consistent value to the
+    cookie helpers (cookie name + Path attribute) and the gate's
+    redirect builders (login_url construction). See
+    ``hermes_cli.dashboard_auth.prefix`` for the normalisation rules.
+    """
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+    return prefix_from_request(request)
 
 
 def _set_pkce(resp, request: Request, payload: dict[str, str]) -> None:
@@ -210,9 +232,49 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         if safe_next:
             login_url = f"{login_url}?next={quote(safe_next, safe='')}"
         return RedirectResponse(url=login_url, status_code=302)
-    resp = _start_upstream_login(
-        request, p, audit_failure=True, extra_pkce={"next": safe_next} if safe_next else {})
-    _audit(request, AuditEvent.LOGIN_START, provider=provider)
+
+    try:
+        ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except ProviderError as e:
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            provider=provider,
+            reason="provider_unreachable",
+            ip=_client_ip(request),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Provider unreachable: {e}",
+        )
+
+    audit_log(
+        AuditEvent.LOGIN_START,
+        provider=provider,
+        ip=_client_ip(request),
+    )
+
+    resp = RedirectResponse(url=ls.redirect_url, status_code=302)
+    # Pack the provider name into the PKCE cookie so the callback can
+    # find it without a separate cookie. Provider may or may not have
+    # already included a ``provider`` segment.
+    pkce = _provider_pkce_segments(ls.cookie_payload)
+    pkce.setdefault("provider", provider)
+    # Carry ``next=`` through the round trip in the PKCE cookie. Real
+    # IDPs only echo back ``code`` + ``state`` on the callback URL, so
+    # query-string transport would lose the value — the cookie is the
+    # only server-controlled channel that survives. Validate before we
+    # store it so an attacker who reaches /auth/login directly with
+    # ``next=//evil.example`` can't poison the cookie. Stored as the
+    # validator's decoded path VERBATIM — JSON has no delimiter to
+    # collide with, so no extra encoding layer (the callback validator's
+    # single unquote stays symmetric with the query-string decode).
+    safe_next = _validate_post_login_target(next)
+    if safe_next:
+        pkce["next"] = safe_next
+    set_pkce_cookie(
+        resp, payload=pkce, use_https=detect_https(request),
+        prefix=_prefix(request),
+    )
     return resp
 
 
@@ -280,13 +342,52 @@ async def auth_native_authorize(
     except native_flow.NativeFlowError as e:
         raise _http(503, str(e))
     if getattr(p, "supports_password", False):
-        _audit(request, AuditEvent.NATIVE_AUTHORIZE_START, provider=p.name)
-        resp = RedirectResponse(url=f"{_prefix(request)}/login", status_code=302)
-        _set_pkce(resp, request, {"provider": p.name, "broker": broker_state})
+        # Password provider: no IDP to redirect through. Land the system
+        # browser on the interactive /login form with the broker_state in
+        # the PKCE cookie (the same server-controlled channel the OAuth
+        # branch uses); /auth/password-login picks it up on success and
+        # 302s the browser to the desktop's loopback redirect_uri. The
+        # desktop's challenge/state never touch the cookie — only our
+        # opaque broker_state does.
+        audit_log(
+            AuditEvent.NATIVE_AUTHORIZE_START,
+            provider=p.name,
+            ip=_client_ip(request),
+        )
+        resp = RedirectResponse(
+            url=f"{_prefix(request)}/login", status_code=302
+        )
+        set_pkce_cookie(
+            resp,
+            payload={"provider": p.name, "broker": broker_state},
+            use_https=detect_https(request),
+            prefix=_prefix(request),
+        )
         return resp
-    resp = _start_upstream_login(
-        request, p, audit_failure=False, extra_pkce={"broker": broker_state})
-    _audit(request, AuditEvent.NATIVE_AUTHORIZE_START, provider=p.name)
+
+    try:
+        ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except ProviderError as e:
+        raise HTTPException(status_code=503, detail=f"Provider unreachable: {e}")
+
+    audit_log(
+        AuditEvent.NATIVE_AUTHORIZE_START,
+        provider=p.name,
+        ip=_client_ip(request),
+    )
+
+    resp = RedirectResponse(url=ls.redirect_url, status_code=302)
+    # Thread the provider name + broker_state through the gateway's OWN PKCE
+    # cookie so the callback can (a) dispatch to the right provider and (b)
+    # find the pending native authorization. The desktop's challenge/state
+    # never touch this cookie — only our opaque broker_state does.
+    pkce = _provider_pkce_segments(ls.cookie_payload)
+    pkce.setdefault("provider", p.name)
+    pkce["broker"] = broker_state
+    set_pkce_cookie(
+        resp, payload=pkce, use_https=detect_https(request),
+        prefix=_prefix(request),
+    )
     return resp
 
 
@@ -306,13 +407,11 @@ async def auth_callback(
             detail="Missing PKCE state cookie",
         )
 
-    # Parse ``provider=...;state=...;verifier=...;next=...`` — the
-    # ``next`` segment is optional (only present when /auth/login was
-    # given a next= query). All keys live in the same flat namespace;
-    # ``next`` carries a URL-encoded path so it never contains ``;``.
-    # parse_pkce_payload URL-decodes the wire value (the setter encodes
-    # the whole payload so no raw ``;``/``"``/``\`` reaches the wire)
-    # before the ``;`` split.
+    # Parse the segment dict (``provider`` / ``state`` / ``verifier`` /
+    # ``next`` — ``next`` only present when /auth/login was given a
+    # next= query). parse_pkce_payload decodes the base64url(JSON) wire
+    # value, with a compatibility ladder for the two legacy flat formats
+    # (see its docstring).
     parts = parse_pkce_payload(pkce_raw)
     provider_name = parts.get("provider", "")
     p = get_provider(provider_name)

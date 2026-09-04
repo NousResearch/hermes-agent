@@ -322,14 +322,15 @@ class PassthroughForward:
     path: str
     headers: list[tuple[str, str]]
     body: bytes
-    # Multiplex-mode target profile, mirroring the inbound frame's SessionSource;
-    # None keeps the legacy ``agent:main`` namespace. Without it a relayed Discord
-    # slash-command/button/modal fell back to agent:main even when the equivalent
-    # plain message routed to the right profile.
-    # Mirrors the ``profile`` field _event_from_wire already carries on the ``inbound`` frame's
-    # SessionSource (#60586) — the connector stamps it when NAS resolves the target profile for a
-    # Team-Gateway interaction; absent for a single-profile gateway, where it stays None and session keys
-    # keep the legacy ``agent:main`` namespace.
+    # The HERMES profile this interaction is routed to (multiplex mode).
+    # Mirrors the ``profile`` field _event_from_wire already carries on the
+    # ``inbound`` frame's SessionSource (#60586) — the connector stamps it
+    # when NAS resolves the target profile for a Team-Gateway interaction;
+    # absent for a single-profile gateway, where it stays None and session
+    # keys keep the legacy ``agent:main`` namespace. Without this, a Discord
+    # slash-command/button/modal relayed through the passthrough plane always
+    # fell back to agent:main even when the equivalent plain message would
+    # have been routed to the correct profile.
     profile: Optional[str] = None
 
 
@@ -348,9 +349,13 @@ def _passthrough_from_wire(raw: Dict[str, Any]) -> PassthroughForward:
         if isinstance(pair, (list, tuple)) and len(pair) == 2
     ]
     return PassthroughForward(
-        platform=str(raw.get("platform", "")), bot_id=str(raw.get("botId", "")),
-        method=str(raw.get("method", "")), path=str(raw.get("path", "")), headers=headers,
-        body=body, profile=raw.get("profile"),
+        platform=str(raw.get("platform", "")),
+        bot_id=str(raw.get("botId", "")),
+        method=str(raw.get("method", "")),
+        path=str(raw.get("path", "")),
+        headers=headers,
+        body=body,
+        profile=raw.get("profile"),
     )
 
 

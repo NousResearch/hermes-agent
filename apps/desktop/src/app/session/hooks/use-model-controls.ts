@@ -36,7 +36,12 @@ interface ModelSwitchResponse {
   deferred?: boolean
 }
 
-export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
+export function useModelControls({
+  cacheOwnerConnectionId,
+  cacheProfile,
+  queryClient,
+  requestGateway
+}: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
   const profileRefreshEpochRef = useRef(0)
@@ -68,10 +73,10 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return { ...prev, provider, model, providers }
       }
 
-      queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
+      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
+        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
       }
     },
     [cacheOwnerConnectionId, cacheProfile, queryClient]
@@ -120,14 +125,67 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return
       }
 
-      // A manual pick is sticky. It is never diffed against the catalog: rows
-      // are hints, and a custom slug the row lacks is still the user's choice
-      // (the gateway validates it on switch).
-      const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
+      const profileRefreshEpoch = profileRefreshEpochRef.current
+      const profile = $activeGatewayProfile.get()
 
-      if (keepManualPick()) {
-        return
+      try {
+        if ($activeSessionId.get()) {
+          return
+        }
+
+        // A manual pick stays sticky UNLESS it was removed from the catalog (its
+        // model no longer exists on the provider), in which case keeping it would
+        // 404 every new chat — fall through to reseed from the profile default.
+        // Reads the model-options cache the composer already populated; an
+        // unknown/not-yet-loaded catalog conservatively preserves the pick.
+        const keepManualPick = () => {
+          if (force || !$currentModel.get() || getCurrentModelSource() !== 'manual') {
+            return false
+          }
+
+          const options = queryClient.getQueryData<ModelOptionsResponse>(
+            modelOptionsQueryKey(cacheProfile || $activeGatewayProfile.get(), null, cacheOwnerConnectionId)
+          )
+
+          return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())
+        }
+
+        if (keepManualPick()) {
+          return
+        }
+
+        // Snapshot the selection generation before awaiting so a picker click
+        // that lands while getGlobalModelInfo is in flight wins over this older
+        // default — value comparisons alone miss re-selecting the same row.
+        const selectionGeneration = getComposerSelectionGeneration()
+        const result = await getGlobalModelInfo(profile)
+
+        if (
+          profileRefreshEpochRef.current !== profileRefreshEpoch ||
+          $activeSessionId.get() ||
+          getComposerSelectionGeneration() !== selectionGeneration ||
+          keepManualPick()
+        ) {
+          return
+        }
+
+        if (typeof result.model === 'string') {
+          setCurrentModel(result.model)
+        }
+
+        if (typeof result.provider === 'string') {
+          setCurrentProvider(result.provider)
+        }
+
+        if (typeof result.model === 'string' || typeof result.provider === 'string') {
+          setCurrentModelSource('default')
+        }
+      } catch {
+        // The delayed session.info event still updates this once the agent is ready.
       }
+    },
+    [cacheOwnerConnectionId, cacheProfile, queryClient]
+  )
 
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
@@ -205,13 +263,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return true
       }
 
-      // The PRIMARY profile's main agent is the profile's default — its
-      // model/provider choice IS the default, so persist it to config.yaml
-      // (model.default + model.provider) via --global. This is what makes
-      // the selection "stick": a set model.provider outranks a leftover
-      // OPENAI_API_KEY env var in resolve_provider(), so the main agent
-      // keeps the chosen (e.g. subscription) provider across restarts
-      // instead of silently falling back to an env key.
+      // The PRIMARY profile's main agent lets the gateway decide persistence
+      // (resolve_persist_behavior): session-only by default, persisted when
+      // model.persist_switch_by_default is true or when no default has ever
+      // been configured (the first-ever pick, so resolve_provider never falls
+      // through to a leftover OPENAI_API_KEY env var — #86414). A plain pick
+      // no longer silently rewrites config.yaml (#90235); Settings → Model
+      // remains the explicit "set as default" door.
       //
       // Two things stay --session, deliberately:
       //  - a SECONDARY chat tile: picking a model there must not rewrite the
@@ -219,14 +277,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       //  - MoA (mixture-of-agents) presets: a transient orchestration choice
       //    that must never become the persisted global gateway default.
       const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
-      const persistsAsDefault = touchesPrimary && !isSessionOnlyPreset
-      const scope = persistsAsDefault ? '--global' : '--session'
+      const scope = touchesPrimary && !isSessionOnlyPreset ? '' : ' --session'
 
       const requestSwitch = (confirmExpensiveModel = false) =>
         requestGateway<ModelSwitchResponse>('config.set', {
           session_id: liveSessionId,
           key: 'model',
-          value: `${selection.model} --provider ${selection.provider} ${scope}`,
+          value: `${selection.model} --provider ${selection.provider}${scope}`,
           ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
         })
 
@@ -237,7 +294,9 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         // the switch publishes session.info when it lands, and that is what
         // re-syncs every surface.
         if (!result?.deferred) {
-          void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
+          void queryClient.invalidateQueries({
+            queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
+          })
         }
       }
 
@@ -296,7 +355,15 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return false
       }
     },
-    [copy.modelSwitchFailed, queryClient, requestGateway, t.common.confirm, updateModelOptionsCache]
+    [
+      cacheOwnerConnectionId,
+      cacheProfile,
+      copy.modelSwitchFailed,
+      queryClient,
+      requestGateway,
+      t.common.confirm,
+      updateModelOptionsCache
+    ]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

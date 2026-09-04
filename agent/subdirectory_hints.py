@@ -11,7 +11,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from agent.prompt_builder import _read_text_with_timeout, _scan_context_content
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
@@ -28,8 +28,12 @@ _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 _COMMAND_TOOLS = {"terminal"}
 _MAX_ANCESTOR_WALK = 5  # ancestor levels walked per path — bounds deep-path scans
 
-# Shared with broad recursive search probes so context discovery and search never drift into
-# different dependency/cache/build trees (those hold *copies* of context files, never authoritative ones).
+# How many parent directories to walk up when looking for hints.
+# Prevents scanning all the way to / for deeply nested paths.
+_MAX_ANCESTOR_WALK = 5
+
+# Shared with broad recursive search probes so context discovery and search do
+# not drift into different dependency/cache/build trees.
 _EXCLUDED_DIR_NAMES = SEARCH_PRUNE_DIR_NAMES
 
 
@@ -100,9 +104,39 @@ class SubdirectoryHintTracker:
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
 
-    def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
-        """Return formatted hint text for newly visited directories, or None."""
-        if not self.enabled:
+    def _seed_working_dir_digest(self) -> None:
+        """Record the CWD context file's digest so it is never re-injected.
+
+        ``prompt_builder`` already loads the working directory's context file at
+        startup.  Seeding its digest here means the same content reached through
+        a different path (a symlink farm, a shared workspace) is recognised as a
+        duplicate instead of being sent a second time.
+        """
+        for filename in _HINT_FILENAMES:
+            candidate = self.working_dir / filename
+            try:
+                if not candidate.is_file():
+                    continue
+                content = (_read_text_with_timeout(candidate) or "").strip()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if content:
+                self._loaded_digests.add(
+                    hashlib.sha256(content.encode("utf-8")).hexdigest()
+                )
+            break  # first match wins, mirroring startup loading
+
+    def check_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[str]:
+        """Check tool call arguments for new directories and load any hint files.
+
+        Returns formatted hint text to append to the tool result, or None.
+        """
+        dirs = self._extract_directories(tool_name, tool_args)
+        if not dirs:
             return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None

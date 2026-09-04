@@ -399,15 +399,48 @@ class CLIAgentSetupMixin:
         provider. With `/fast` on (service_tier == "priority") attach request_overrides;
         auto/cold tiers are applied per request by agent.fast_mode instead."""
         from hermes_cli.models import resolve_fast_mode_overrides
-        runtime = _current_runtime(self)
-        route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
-        overrides = None
-        if getattr(self, "service_tier", None) == "priority":
-            try:
-                overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
-            except Exception:
-                pass
+
+        runtime = {
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "provider": self.provider,
+            "requested_provider": getattr(
+                self, "requested_provider", self.provider
+            ),
+            "api_mode": self.api_mode,
+            "command": self.acp_command,
+            "args": list(self.acp_args or []),
+            "credential_pool": getattr(self, "_credential_pool", None),
+        }
+        route = {
+            "model": self.model,
+            "runtime": runtime,
+            "signature": (
+                self.model,
+                runtime["provider"],
+                runtime["requested_provider"],
+                runtime["base_url"],
+                runtime["api_mode"],
+                runtime["command"],
+                tuple(runtime["args"]),
+            ),
+        }
+
+        service_tier = getattr(self, "service_tier", None)
+        if service_tier != "priority":
+            # None (normal) or auto/cold — the bounded window is applied per
+            # request by agent.fast_mode, not pinned into request_overrides.
+            route["request_overrides"] = None
+            return route
+
+        try:
+            overrides = resolve_fast_mode_overrides(
+                route["model"],
+                provider=runtime["provider"],
+                base_url=runtime["base_url"],
+            )
+        except Exception:
+            overrides = None
         route["request_overrides"] = overrides
         return route
 
@@ -630,13 +663,18 @@ class CLIAgentSetupMixin:
         tip. Generic guard failures fail OPEN; only a genuine over-limit result blocks."""
         if not self._session_db:
             return None
-        from cli import logger
-        from hermes_state import SessionResumeTooLargeError
+        from hermes_state import (
+            SessionResumeTooLargeError,
+        )
+
         try:
             safety_check = getattr(self._session_db, "assert_resume_safe", None)
             if not callable(safety_check):
                 return None
-            safety_check(self.session_id, **({"tip_only": True} if tip_only else {}))
+            if tip_only:
+                safety_check(self.session_id, tip_only=True)
+            else:
+                safety_check(self.session_id)
         except SessionResumeTooLargeError as exc:
             return str(exc)
         except Exception as exc:

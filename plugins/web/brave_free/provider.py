@@ -20,9 +20,31 @@ _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 class BraveFreeWebSearchProvider(BaseWebSearchProvider):
     """Search-only Brave provider using the free-tier Data-for-Search API."""
 
-    NAME = "brave-free"
-    DISPLAY_NAME = "Brave Search (Free)"
-    KEY_ENV = "BRAVE_SEARCH_API_KEY"
+    Free tier is 2,000 queries/month (1 qps). No content-extraction capability —
+    users pair this with Firecrawl/Tavily/Exa for ``web_extract``.
+    """
+
+    @property
+    def name(self) -> str:
+        # Hyphen form preserved for backward compat with the existing
+        # ``web.search_backend: "brave-free"`` config keys users have set.
+        return "brave-free"
+
+    @property
+    def display_name(self) -> str:
+        return "Brave Search (Free)"
+
+    def is_available(self) -> bool:
+        """Return True when ``BRAVE_SEARCH_API_KEY`` is set to a non-empty value."""
+        from agent.web_search_provider import get_provider_env
+
+        return bool(get_provider_env("BRAVE_SEARCH_API_KEY"))
+
+    def supports_search(self) -> bool:
+        return True
+
+    def supports_extract(self) -> bool:
+        return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         api_key = provider_env("BRAVE_SEARCH_API_KEY")

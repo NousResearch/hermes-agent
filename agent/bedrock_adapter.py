@@ -6,7 +6,6 @@ and responses normalized back to OpenAI-shaped objects.
 """
 
 import base64
-import importlib
 import json
 import logging
 import os
@@ -982,12 +981,129 @@ def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Di
             system_blocks.extend(_system_blocks(content))
         elif role == "tool":
             result_content = content if isinstance(content, str) else json.dumps(content)
-            append_turn("user", [{"toolResult": {
-                "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
-        elif role == "assistant":
-            append_turn("assistant", _assistant_blocks(msg, content) or [dict(_PLACEHOLDER_BLOCK)])
-        elif role == "user":
-            append_turn("user", _convert_content_to_converse(content))
+            tool_result_block = {
+                "toolResult": {
+                    "toolUseId": tool_call_id,
+                    "content": [{"text": _safe_text(result_content)}],
+                }
+            }
+            # In Converse, tool results go in a "user" role message
+            if converse_msgs and converse_msgs[-1]["role"] == "user":
+                converse_msgs[-1]["content"].append(tool_result_block)
+            else:
+                converse_msgs.append({
+                    "role": "user",
+                    "content": [tool_result_block],
+                })
+            continue
+
+        if role == "assistant":
+            content_blocks = []
+            ordered_blocks = msg.get("bedrock_content_blocks")
+            if isinstance(ordered_blocks, list) and ordered_blocks:
+                # Rebuild the exact Bedrock block sequence captured at
+                # normalization time. Redacted bytes are stored as base64 so
+                # the sidecar remains JSON-safe in assistant history.
+                for block in ordered_blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if "text" in block and isinstance(block["text"], str):
+                        content_blocks.append({"text": block["text"]})
+                    elif "reasoningContent" in block:
+                        reasoning = block["reasoningContent"]
+                        if not isinstance(reasoning, dict):
+                            continue
+                        replay = {}
+                        if isinstance(reasoning.get("text"), str):
+                            replay["text"] = reasoning["text"]
+                        encoded = reasoning.get("redactedContentBase64")
+                        if isinstance(encoded, str) and encoded:
+                            try:
+                                replay["redactedContent"] = base64.b64decode(encoded, validate=True)
+                            except (ValueError, TypeError):
+                                continue
+                        if replay:
+                            content_blocks.append({"reasoningContent": replay})
+                    elif "toolUse" in block and isinstance(block["toolUse"], dict):
+                        tu = block["toolUse"]
+                        content_blocks.append({"toolUse": {
+                            "toolUseId": tu.get("toolUseId", ""),
+                            "name": tu.get("name", ""),
+                            "input": tu.get("input", {}),
+                        }})
+
+                if not content_blocks:
+                    ordered_blocks = None
+
+            if content_blocks:
+                # Ordered replay is authoritative; do not append parallel
+                # reasoning/text/tool lists a second time.
+                pass
+            else:
+                # Bedrock may return opaque encrypted reasoning instead of text.
+                # Preserve the payload in the provider-neutral reasoning_details
+                # envelope so the next tool turn can replay it byte-for-byte.
+                for detail in (msg.get("reasoning_details") or []):
+                    if not isinstance(detail, dict) or detail.get("type") != "redacted_thinking":
+                        continue
+                    encoded = detail.get("data") or detail.get("redactedContentBase64")
+                    if not isinstance(encoded, str) or not encoded:
+                        continue
+                    try:
+                        redacted = base64.b64decode(encoded, validate=True)
+                    except (ValueError, TypeError):
+                        continue
+                    content_blocks.append({"reasoningContent": {"redactedContent": redacted}})
+
+                # Convert text content
+                if isinstance(content, str) and content.strip():
+                    content_blocks.append({"text": content})
+                elif isinstance(content, list):
+                    content_blocks.extend(_convert_content_to_converse(content))
+
+                # Convert tool calls
+                tool_calls = msg.get("tool_calls", [])
+                for tc in (tool_calls or []):
+                    fn = tc.get("function", {})
+                    args_str = fn.get("arguments", "{}")
+                    try:
+                        args_dict = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    except (json.JSONDecodeError, TypeError):
+                        args_dict = {}
+                    content_blocks.append({
+                        "toolUse": {
+                            "toolUseId": tc.get("id", ""),
+                            "name": fn.get("name", ""),
+                            "input": args_dict,
+                        }
+                    })
+
+            if not content_blocks:
+                content_blocks = [{"text": _EMPTY_TEXT_PLACEHOLDER}]
+
+            # Merge with previous assistant message if needed (strict alternation)
+            if converse_msgs and converse_msgs[-1]["role"] == "assistant":
+                converse_msgs[-1]["content"].extend(content_blocks)
+            else:
+                converse_msgs.append({
+                    "role": "assistant",
+                    "content": content_blocks,
+                })
+            continue
+
+        if role == "user":
+            content_blocks = _convert_content_to_converse(content)
+            # Merge with previous user message if needed (strict alternation)
+            if converse_msgs and converse_msgs[-1]["role"] == "user":
+                converse_msgs[-1]["content"].extend(content_blocks)
+            else:
+                converse_msgs.append({
+                    "role": "user",
+                    "content": content_blocks,
+                })
+            continue
+
+    # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
         converse_msgs.insert(0, {"role": "user", "content": [dict(_PLACEHOLDER_BLOCK)]})
     if converse_msgs and converse_msgs[-1]["role"] != "user":
@@ -1067,25 +1183,117 @@ class _ResponseParts:
 
 
 def normalize_converse_response(response: Dict) -> SimpleNamespace:
-    """Bedrock Converse response → OpenAI ``ChatCompletion``-shaped SimpleNamespace (``.choices[0].message.
-    {content,tool_calls,reasoning_content,reasoning_details,bedrock_content_blocks}``, ``finish_reason``, ``.usage``)."""
-    parts = _ResponseParts()
+    """Convert a Bedrock Converse API response to an OpenAI-compatible object.
+
+    The agent loop in ``run_agent.py`` expects responses shaped like
+    ``openai.ChatCompletion`` — this function bridges the gap.
+
+    Returns a SimpleNamespace with:
+      - ``.choices[0].message.content`` — text response
+      - ``.choices[0].message.tool_calls`` — tool call list (if any)
+      - ``.choices[0].finish_reason`` — stop/tool_calls/length
+      - ``.usage`` — token usage stats
+    """
+    output = response.get("output", {})
+    message = output.get("message", {})
+    content_blocks = message.get("content", [])
+    stop_reason = response.get("stopReason", "end_turn")
+
+    text_parts = []
+    reasoning_parts = []
+    reasoning_details = []
     ordered_blocks = []
-    for block in response.get("output", {}).get("message", {}).get("content", []):
+    tool_calls = []
+
+    for block in content_blocks:
         if "text" in block:
-            parts.text_parts.append(block["text"])
+            text_parts.append(block["text"])
             ordered_blocks.append({"text": block["text"]})
         elif "reasoningContent" in block:
-            ordered_reasoning: Dict[str, Any] = {}
-            parts.absorb_reasoning(block["reasoningContent"], ordered_reasoning)
-            if ordered_reasoning:
-                ordered_blocks.append({"reasoningContent": ordered_reasoning})
+            reasoning = block["reasoningContent"]
+            if isinstance(reasoning, dict):
+                thinking_text = reasoning.get("text", "")
+                encoded = None
+                if thinking_text:
+                    reasoning_parts.append(str(thinking_text))
+                redacted = reasoning.get("redactedContent")
+                if redacted is not None:
+                    if isinstance(redacted, (bytes, bytearray)):
+                        encoded = base64.b64encode(bytes(redacted)).decode("ascii")
+                    elif isinstance(redacted, str):
+                        encoded = redacted
+                    else:
+                        encoded = None
+                    if encoded:
+                        reasoning_details.append({
+                            "type": "redacted_thinking",
+                            "data": encoded,
+                        })
+                if thinking_text or encoded:
+                    ordered_reasoning = {}
+                    if thinking_text:
+                        ordered_reasoning["text"] = str(thinking_text)
+                    if encoded:
+                        ordered_reasoning["redactedContentBase64"] = encoded
+                    ordered_blocks.append({"reasoningContent": ordered_reasoning})
         elif "toolUse" in block:
             tu = block["toolUse"]
-            ordered_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
-            parts.tool_calls.append(_tool_call_ns(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
-    return parts.build(
-        ordered_blocks, response.get("usage", {}), response.get("stopReason", "end_turn"), response.get("modelId", ""),
+            ordered_blocks.append({"toolUse": {
+                "toolUseId": tu.get("toolUseId", ""),
+                "name": tu.get("name", ""),
+                "input": tu.get("input", {}),
+            }})
+            tool_calls.append(SimpleNamespace(
+                id=tu.get("toolUseId", ""),
+                type="function",
+                function=SimpleNamespace(
+                    name=tu.get("name", ""),
+                    arguments=json.dumps(tu.get("input", {})),
+                ),
+            ))
+
+    # Build the message object
+    msg = SimpleNamespace(
+        role="assistant",
+        content="\n".join(text_parts) if text_parts else None,
+        tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
+        reasoning_details=reasoning_details or None,
+        bedrock_content_blocks=ordered_blocks or None,
+    )
+
+    # Build usage stats. Converse's inputTokens excludes cache read/write
+    # tokens (unlike OpenAI's prompt_tokens, which includes them) — restore
+    # the OpenAI-style "total includes cache" convention here so downstream
+    # normalize_usage() can subtract them back out consistently, and surface
+    # the Anthropic-named fields it already falls back to for cache reads.
+    usage_data = response.get("usage", {})
+    input_tokens = usage_data.get("inputTokens", 0)
+    cache_read_tokens = usage_data.get("cacheReadInputTokens", 0)
+    cache_write_tokens = usage_data.get("cacheWriteInputTokens", 0)
+    output_tokens = usage_data.get("outputTokens", 0)
+    usage = SimpleNamespace(
+        prompt_tokens=input_tokens + cache_read_tokens + cache_write_tokens,
+        completion_tokens=output_tokens,
+        total_tokens=input_tokens + cache_read_tokens + cache_write_tokens + output_tokens,
+        cache_read_input_tokens=cache_read_tokens,
+        cache_creation_input_tokens=cache_write_tokens,
+    )
+
+    finish_reason = _converse_stop_reason_to_openai(stop_reason)
+    if tool_calls and finish_reason == "stop":
+        finish_reason = "tool_calls"
+
+    choice = SimpleNamespace(
+        index=0,
+        message=msg,
+        finish_reason=finish_reason,
+    )
+
+    return SimpleNamespace(
+        choices=[choice],
+        usage=usage,
+        model=response.get("modelId", ""),
     )
 
 
@@ -1100,11 +1308,39 @@ def stream_converse_with_callbacks(
     event_stream, on_text_delta=None, on_tool_start=None, on_reasoning_delta=None,
     on_interrupt_check=None, on_event=None,
 ) -> SimpleNamespace:
-    """boto3 ``converse_stream()`` response + callbacks → the ``normalize_converse_response()`` shape.
-    ``on_text_delta`` only fires while no toolUse block has been seen (as on the Anthropic/chat_completions
-    paths); ``on_interrupt_check`` True stops streaming; ``on_event`` fires for EVERY event before branching
-    and its exceptions are swallowed so a watchdog hook can never abort the stream."""
-    parts = _ResponseParts()
+    """Process a Bedrock ConverseStream event stream with real-time callbacks.
+
+    This is the core streaming function that powers both the CLI's live token
+    display and the gateway's progressive message updates.
+
+    Args:
+        event_stream: The boto3 ``converse_stream()`` response containing a
+            ``stream`` key with an iterable of events.
+        on_text_delta: Called with each text chunk as it arrives. Only fires
+            when no tool_use blocks have been seen (same semantics as the
+            Anthropic and chat_completions streaming paths).
+        on_tool_start: Called with the tool name when a toolUse block begins.
+            Lets the TUI show a spinner while tool arguments are generated.
+        on_reasoning_delta: Called with reasoning/thinking text chunks.
+            Bedrock surfaces thinking via ``reasoning`` content block deltas
+            on supported models (Claude 4.6+).
+        on_interrupt_check: Called on each event. Should return True if the
+            agent has been interrupted and streaming should stop.
+        on_event: Called once at the top of the loop body for EVERY yielded
+            Bedrock event (text/tool-input/reasoning/metadata deltas alike),
+            before any branching. Provides a wire-level liveness signal so an
+            external watchdog can distinguish "still receiving events" from
+            "stream wedged with no data". Errors raised by the callback are
+            swallowed so a liveness hook can never abort the stream.
+
+    Returns:
+        An OpenAI-compatible SimpleNamespace response, identical in shape to
+        ``normalize_converse_response()``.
+    """
+    text_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    reasoning_details: List[Dict[str, Any]] = []
+    tool_calls: List[SimpleNamespace] = []
     stream_blocks: Dict[int, Dict[str, Any]] = {}
     current_block_index: Optional[int] = None
     current_tool: Optional[Dict] = None
@@ -1134,16 +1370,27 @@ def stream_converse_with_callbacks(
             start = start_event.get("start", {})
             if "toolUse" in start:
                 has_tool_use = True
-                flush_text()
-                current_tool = {"toolUseId": start["toolUse"].get("toolUseId", ""), "name": start["toolUse"].get("name", ""), "input_json": ""}
-                stream_blocks[current_block_index] = _tool_use_block(current_tool["toolUseId"], current_tool["name"], {})
+                # Flush any accumulated text
+                if current_text_buffer:
+                    text_parts.append("".join(current_text_buffer))
+                    current_text_buffer = []
+                current_tool = {
+                    "toolUseId": start["toolUse"].get("toolUseId", ""),
+                    "name": start["toolUse"].get("name", ""),
+                    "input_json": "",
+                }
+                stream_blocks[current_block_index] = {"toolUse": {
+                    "toolUseId": current_tool["toolUseId"],
+                    "name": current_tool["name"],
+                    "input": {},
+                }}
                 if on_tool_start:
                     on_tool_start(current_tool["name"])
         elif "contentBlockDelta" in event:
             delta = event["contentBlockDelta"].get("delta", {})
             if "text" in delta:
                 text = delta["text"]
-                block = current_block({"text": ""})
+                block = stream_blocks.setdefault(current_block_index if current_block_index is not None else len(stream_blocks), {"text": ""})
                 block["text"] = block.get("text", "") + text
                 current_text_buffer.append(text)
                 if on_text_delta and not has_tool_use:
@@ -1152,13 +1399,44 @@ def stream_converse_with_callbacks(
                 current_tool["input_json"] += delta["toolUse"].get("input", "")
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
-                if isinstance(reasoning, dict) and (reasoning.get("text", "") or _encode_redacted(reasoning.get("redactedContent"))):
-                    block = current_block({"reasoningContent": {}}).setdefault("reasoningContent", {})
-                    parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
+                if isinstance(reasoning, dict):
+                    thinking_text = reasoning.get("text", "")
+                    if thinking_text:
+                        reasoning_parts.append(str(thinking_text))
+                        if on_reasoning_delta:
+                            on_reasoning_delta(thinking_text)
+                        block = stream_blocks.setdefault(current_block_index if current_block_index is not None else len(stream_blocks), {"reasoningContent": {}})
+                        block.setdefault("reasoningContent", {})["text"] = block["reasoningContent"].get("text", "") + str(thinking_text)
+                    redacted = reasoning.get("redactedContent")
+                    if redacted is not None:
+                        if isinstance(redacted, (bytes, bytearray)):
+                            encoded = base64.b64encode(bytes(redacted)).decode("ascii")
+                        elif isinstance(redacted, str):
+                            encoded = redacted
+                        else:
+                            encoded = None
+                        if encoded:
+                            reasoning_details.append({
+                                "type": "redacted_thinking",
+                                "data": encoded,
+                            })
+                            block = stream_blocks.setdefault(current_block_index if current_block_index is not None else len(stream_blocks), {"reasoningContent": {}})
+                            block.setdefault("reasoningContent", {})["redactedContentBase64"] = encoded
+
         elif "contentBlockStop" in event:
             if current_tool is not None:
-                input_dict = _parse_tool_args(current_tool["input_json"])  # "" → {} via the JSON-error path
-                parts.tool_calls.append(_tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict))
+                try:
+                    input_dict = json.loads(current_tool["input_json"]) if current_tool["input_json"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    input_dict = {}
+                tool_calls.append(SimpleNamespace(
+                    id=current_tool["toolUseId"],
+                    type="function",
+                    function=SimpleNamespace(
+                        name=current_tool["name"],
+                        arguments=json.dumps(input_dict),
+                    ),
+                ))
                 if current_block_index is not None and current_block_index in stream_blocks:
                     stream_blocks[current_block_index]["toolUse"]["input"] = input_dict
                 current_tool = None
@@ -1168,9 +1446,53 @@ def stream_converse_with_callbacks(
             stop_reason = event["messageStop"].get("stopReason", "end_turn")
         elif "metadata" in event:
             meta_usage = event["metadata"].get("usage", {})
-            usage_data = {key: meta_usage.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")}
-    flush_text()
-    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason, "")
+            usage_data = {
+                "inputTokens": meta_usage.get("inputTokens", 0),
+                "outputTokens": meta_usage.get("outputTokens", 0),
+                "cacheReadInputTokens": meta_usage.get("cacheReadInputTokens", 0),
+                "cacheWriteInputTokens": meta_usage.get("cacheWriteInputTokens", 0),
+            }
+
+    # Flush remaining text
+    if current_text_buffer:
+        text_parts.append("".join(current_text_buffer))
+
+    msg = SimpleNamespace(
+        role="assistant",
+        content="\n".join(text_parts) if text_parts else None,
+        tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
+        reasoning_details=reasoning_details or None,
+        bedrock_content_blocks=[stream_blocks[i] for i in sorted(stream_blocks)] or None,
+    )
+
+    input_tokens = usage_data.get("inputTokens", 0)
+    cache_read_tokens = usage_data.get("cacheReadInputTokens", 0)
+    cache_write_tokens = usage_data.get("cacheWriteInputTokens", 0)
+    output_tokens = usage_data.get("outputTokens", 0)
+    usage = SimpleNamespace(
+        prompt_tokens=input_tokens + cache_read_tokens + cache_write_tokens,
+        completion_tokens=output_tokens,
+        total_tokens=input_tokens + cache_read_tokens + cache_write_tokens + output_tokens,
+        cache_read_input_tokens=cache_read_tokens,
+        cache_creation_input_tokens=cache_write_tokens,
+    )
+
+    finish_reason = _converse_stop_reason_to_openai(stop_reason)
+    if tool_calls and finish_reason == "stop":
+        finish_reason = "tool_calls"
+
+    choice = SimpleNamespace(
+        index=0,
+        message=msg,
+        finish_reason=finish_reason,
+    )
+
+    return SimpleNamespace(
+        choices=[choice],
+        usage=usage,
+        model="",
+    )
 
 
 # --- High-level API: call Bedrock Converse ---

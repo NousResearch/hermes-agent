@@ -119,13 +119,15 @@ DEFAULT_CONFIG = {
             # drops from 3 to 1. Unknown pricing / missing usage leaves it untouched.
             "cost_threshold_usd": 0.25,
         },
-        # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
-        # turn), "cold" (first turn of a session only).
+        # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first
+        # fast_auto_seconds of every turn), "cold" (first turn of a session only).
         "service_tier": "",
         "fast_auto_seconds": 60,
-        # System-prompt guidance telling the model to call tools instead of describing actions.
-        # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
-        # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        # Tool-use enforcement: injects system prompt guidance that tells the
+        # model to actually call tools instead of describing intended actions.
+        # Values: "auto" (default — applies to gpt/codex models), true/false
+        # (force on/off for all models), or a list of model-name substrings
+        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
         # Execution-discipline guidance: injects a system prompt block covering
         # tool persistence, mandatory tool use for arithmetic/system facts,
@@ -218,15 +220,19 @@ DEFAULT_CONFIG = {
         # (kills the turn) and gateway_notify_interval. 0 = disable.
         # See #76354.
         "session_stall_timeout": 300,
-        # Transcript-sanitiser heal escalation: after this many pre-send heal passes within a
-        # 10-minute window, log one ERROR and queue a ONE-TIME out-of-band notice pointing at /debug
-        # share or `hermes doctor` (status channel only; prompt cache untouched). 0 = no escalation
-        # (per-window WARNINGs still fire).
-        # See #96870.
+        # Transcript-sanitiser repeated-heal escalation threshold (#96870).
+        # After this many pre-send heal passes within a 10-minute session
+        # window, log one ERROR (session id + heal pattern) and queue a
+        # ONE-TIME out-of-band user notice pointing at /debug share or
+        # `hermes doctor`. Delivered via the status channel only —
+        # conversation context / prompt caching untouched. 0 = disable
+        # escalation (per-window WARNINGs still fire).
         "sanitizer_heal_escalation_threshold": 3,
-        # Seconds of continuous reconnect failure before a platform gets needs_attention flagged in
-        # gateway status (`hermes status` / fleet monitoring). Retries never stop — a signal, not a
-        # circuit breaker. 0 = disable.
+        # Long-lived reconnect-loop escalation (seconds). A platform that has
+        # been continuously failing/reconnecting for this long gets
+        # needs_attention flagged in gateway runtime status (visible in
+        # `hermes status` / fleet monitoring). Retries never stop — this is a
+        # signal, not a circuit breaker. 0 = disable.
         "reconnect_attention_after": 7200,
         # Freshness window (seconds) for the auto-continue note. After a crash/restart mid-run the
         # next user message gets "[System note: your previous turn was interrupted...]" prepended;
@@ -273,6 +279,20 @@ DEFAULT_CONFIG = {
         # ``false`` keeps the historical strict-provider behavior (Mistral,
         # Groq, Cerebras reject the field with HTTP 400).
         "reasoning_echo": False,
+        # Turn liveness watchdog (#95548): a turn that shows no observable
+        # progress (activity-clock idle, never touched by lease renewal) for
+        # `timeout_s` seconds is logged loudly, force-interrupted so the UI
+        # can retry it, and its durable turn lease stops renewing so TTL
+        # expiry lets stale-turn cleanup reclaim the session even when the
+        # hard interrupt cannot unwind a wedged frame. `timeout_s` <= 0
+        # disables the watchdog; `poll_s` is the sampling interval. Invalid
+        # values (typo, NaN, Inf, non-positive poll) warn and fall back to
+        # the default instead of crashing startup or silently disabling the
+        # watchdog. See agent/turn_liveness.py.
+        "turn_liveness": {
+            "timeout_s": 600.0,
+            "poll_s": 15.0,
+        },
     },
 
     "terminal": {
@@ -382,8 +402,8 @@ DEFAULT_CONFIG = {
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
         # Keyless free-tier ring: with NO web backend configured or keyed,
-        # web_search/web_extract rotate round-robin across five vendors'
-        # public free tiers (exa, parallel, tavily, firecrawl, keenable),
+        # web_search/web_extract rotate round-robin across four vendors'
+        # public free tiers (exa, parallel, firecrawl, keenable),
         # failing over to the next ring vendor on rate limits. Never
         # pre-empts a configured or keyed backend. Set false to disable.
         "keyless_fallback": True,
@@ -392,10 +412,11 @@ DEFAULT_CONFIG = {
         # free-tier ring — the next call attempts the chosen backend again
         # (no sticky failover). Off when keyless_fallback is false.
         "keyless_rescue": True,
-        # Per-provider tier selection for ring vendors with both a keyless
-        # free endpoint and a keyed paid path (exa, parallel, tavily,
-        # firecrawl, keenable). Set by the `hermes tools` picker's
-        # "Free (keyless)" / "Paid (API key)" rows.
+        # Per-provider tier selection for vendors with both a keyless
+        # free endpoint and a keyed paid path (exa, parallel,
+        # firecrawl, keenable on the ring; tavily is opt-in keyless via
+        # `hermes tools`, not a ring member). Set by the `hermes tools`
+        # picker's "Free (keyless)" / "Paid (API key)" rows.
         #   free  — always use the anonymous free endpoint (even with a key)
         #   paid  — always use the keyed path (missing key = error; vendor
         #           is also excluded from the keyless ring)
@@ -532,11 +553,15 @@ DEFAULT_CONFIG = {
     # .cursorrules) before head/tail truncation. null = scale with the model's context window (floor
     # 20K, ceiling 500K); a positive int pins a fixed cap. Separate from read_file limits.
     "context_file_max_chars": None,
-    # Seconds to wait for a single context file read before skipping it with a warning. Guards startup
-    # against network-backed filesystems (iCloud Drive, OneDrive, NFS) that can block a cold read.
+
+    # Seconds to wait for a single context file read before skipping it with a
+    # warning. Guards startup against network-backed filesystems (iCloud Drive,
+    # OneDrive, NFS) that can block a cold read on an evicted file.
     "context_file_read_timeout": 5.0,
-    # Max chars per read_file call; larger reads are rejected with offset+limit guidance. 100K chars
-    # ≈ 25–35K tokens.
+
+    # Maximum characters returned by a single read_file call.  Reads that
+    # exceed this are rejected with guidance to use offset+limit.
+    # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
     # Seconds the first agent build waits for background MCP discovery before snapshotting its tool
     # list. Returns the instant discovery completes (no MCP servers → ~0s); the bound only bites
@@ -565,10 +590,15 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
-        # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
-        # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
+        # Unattended gateway/cron platforms get hard stops by default (nobody
+        # is present to /stop a model that ignores loop warnings); interactive
+        # cli/tui/desktop/acp stay warning-only unless hard_stop_enabled.
         "non_interactive_hard_stop_enabled": True,
-        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
+        "warn_after": {
+            "exact_failure": 2,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 2,
+        },
         "hard_stop_after": {
             "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
         },
@@ -693,6 +723,10 @@ DEFAULT_CONFIG = {
                                       # waiting. Kept well under chat-transport idle timeouts
                                       # (Telegram ~30s). On expiry the turn proceeds
                                       # uncompressed — an availability boundary, not a failure.
+                                      # The detached worker keeps its commit admission when its
+                                      # commit is watermark-fenced, so the finished summary is
+                                      # adopted at the next safe boundary instead of being
+                                      # discarded (#97963 — thinking summary models).
         "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
                                       # (conversation loop, /compress, preflight, etc.).
                                       # Same progress-aware semantics as hygiene_timeout_seconds:
@@ -1134,14 +1168,22 @@ DEFAULT_CONFIG = {
         # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
         # HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
-        # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
+        # When true (default), the Desktop app reopens the last chat (or
+        # last page) on cold start. Set false to always land on a fresh
+        # new chat. Also a switch in Desktop Settings → Appearance.
         "resume_last_session": True,
-        # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
+        # When true (default), `hermes --tui` drops a one-time hint
+        # ("subagents working · /agents to watch live") the first time a turn
+        # starts delegating, nudging the user toward the live spawn-tree
+        # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
-        "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
-        # Stream reasoning live before the response; otherwise thinking models show only a spinner
-        # for tens of seconds.
+        # Bell when a blocking prompt opens (clarify/approval/sudo/secret).
+        "bell_on_prompt": False,
+        # Stream the model's reasoning/thinking live before the response.
+        # Default ON: on thinking models the reasoning phase can run tens of
+        # seconds, and with this off the user stares at a spinner the whole
+        # time even though tokens are streaming. Set false for quiet output.
         "show_reasoning": True,
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).
@@ -1321,6 +1363,15 @@ DEFAULT_CONFIG = {
         # override for backward compatibility. 0 disables the reap
         # (park forever).
         "ws_orphan_reap_grace_s": 20.0,
+        # Activity-staleness threshold (seconds) gating the WS-orphan
+        # interrupt of a detached RUNNING turn (#98028/#100325). A
+        # client-absent turn is only interrupted once its agent activity
+        # clock (the same one the agent.turn_liveness watchdog samples —
+        # stamped by API waits, stream tokens, tool heartbeats) has been
+        # idle at least this long; an actively-working detached turn runs
+        # to completion. Default matches agent.turn_liveness.timeout_s.
+        # 0 restores the old interrupt-at-grace-regardless behavior.
+        "ws_orphan_activity_stale_s": 600.0,
         # Startup sweep of session rows orphaned by a dead gateway process
         # (#65194).  The ws-orphan grace timer above is in-process, so a
         # gateway restart (update, crash, systemd) leaves disconnected
@@ -1762,17 +1813,26 @@ DEFAULT_CONFIG = {
             }
         },
     },
-    # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
-    # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
+
+    # Skills — external skill directories for sharing skills across tools/agents.
+    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
+    # goes to ~/.hermes/skills/ unless create_dir (below) redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
-        # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
-        # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
-        # HERMES_HOME, scanned alongside the local dir.
+        # Where agent-created skills (skill_manage action=create) are written.
+        # Empty = the profile-local skills dir (~/.hermes/skills/). When set,
+        # new skills land here AND every agent-facing instruction that names
+        # the creation path (tool schema text, prompts) renders this directory
+        # instead of the default. Expanded (~, ${VAR}); relative paths resolve
+        # against HERMES_HOME. The directory is scanned for skills alongside
+        # the local dir. e.g. "/opt/brain/skills"
         "create_dir": "",
-        # In a git checkout, <root>/.hermes/skills/ and <root>/.agents/skills/ load as the
-        # highest-precedence tier — ONLY if the root is in trusted_project_dirs. false = no scan, no
-        # untrusted-skills notice.
+        # Project-local skill discovery: when a session starts inside a git
+        # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
+        # are sourced as the highest-precedence skill tier — but ONLY when the
+        # project root is listed in trusted_project_dirs below. Trust a repo
+        # with ``hermes skills trust`` (run from inside it). Set to false to
+        # disable discovery entirely (no scan, no untrusted-skills notice).
         "project_discovery": True,
         # Trusted project roots; managed by `hermes skills trust` / `untrust`.
         "trusted_project_dirs": [],
@@ -2146,19 +2206,35 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a task-name header and "The agent cannot see this
         # message" footer. False = clean output.
         "wrap_response": True,
-        "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
-            # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
-            # otherwise sends with disable_notification=True and briefs look undelivered). False =
-            # silent, no-push deliveries.
+        # Delivery behaviour for cron output sent through a live gateway adapter.
+        "delivery": {
+            # Mark cron deliveries as FINAL notifications so the platform pushes
+            # them (Telegram's "important" notification mode otherwise sends
+            # every non-notify message with disable_notification=True, and users
+            # report the silent brief as "never delivered"). Set to false to
+            # restore silent (no-push) cron deliveries.
             "notify": True,
         },
-        # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
-        # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.
-        # Thread-capable platforms (Telegram topics, Discord/Slack threads) get a seeded thread per
-        # job via create_handoff_thread; DM-only platforms mirror the brief into the target DM
-        # session. Appended at a turn boundary via mirror_to_session, cached system prompt
-        # untouched. User-written bare platforms address home conversations, unlike `all`
-        # broadcast expansions, which do not gain mirror eligibility.
+        # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
+        # and the agent has it in context (no "what is Task #2?" amnesia).
+        # Default False preserves the historical isolation guarantee (cron
+        # deliveries live only in the cron job's own session). Per-job
+        # `attach_to_session` overrides this for a single job.
+        #
+        # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
+        #   - Thread-capable platforms (Telegram forum/DM topics, Discord
+        #     threads, Slack threads): a dedicated thread is opened for the job
+        #     via the adapter's create_handoff_thread, the brief is delivered
+        #     into it, and that thread's session is seeded so the user's reply
+        #     in-thread continues with full context. Each continuable job gets
+        #     its own scrollback, isolated from the parent channel.
+        #   - DM-only platforms (WhatsApp / Signal / SMS): no threads exist, so
+        #     the brief is mirrored into the origin DM session instead — the
+        #     DM itself is the continuation surface.
+        # Both paths ride the shipped gateway.mirror.mirror_to_session and are
+        # alternation- and cache-safe (appended at a turn boundary, never
+        # mid-loop, never mutating the cached system prompt). Only the origin
+        # chat is ever touched — fan-out / broadcast targets are never mirrored.
         "mirror_delivery": False,
         # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
         # Env override: HERMES_CRON_MAX_PARALLEL.
@@ -2397,12 +2473,18 @@ DEFAULT_CONFIG = {
     "model_catalog": {
         "enabled": True,
         "url": "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json",
-        # Disk cache TTL in minutes. The gateway refreshes in the background on this cadence; the
-        # CLI refetches on the next /model or `hermes model` once the cache is older. Network
-        # failures silently use the stale cache. Legacy `ttl_hours` is honoured if set.
+        # Disk cache TTL in minutes.  The gateway refreshes the catalogs on
+        # this cadence in the background; the CLI refetches on the next
+        # /model or `hermes model` invocation once the cache is older than
+        # this.  Network failures silently fall back to the stale cache.
+        # (Legacy `ttl_hours` is still honoured when set explicitly.)
         "ttl_minutes": 20,
-        # Per-provider override URLs for self-hosted curation lists using the same schema, e.g.
-        # providers: {openrouter: {url: https://example.com/my-curation.json}}.
+        # Optional per-provider override URLs for third parties that want
+        # to self-host their own curation list using the same schema.
+        # Example:
+        #   providers:
+        #     openrouter:
+        #       url: https://example.com/my-curation.json
         "providers": {},
     },
     # Per-model metadata overrides. Fields: context_window, supports_tools,
@@ -2486,6 +2568,18 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
 
+        # Startup-liveness watchdog (OOF-298): plain daemon thread armed at
+        # process entry for gateway runs, hard-exits 75 if the event loop is
+        # not confirmed live within the deadline. The watchdog module itself
+        # is stdlib-only and armed before config can load, so run_gateway()
+        # bridges these keys to the internal HERMES_STARTUP_WATCHDOG /
+        # HERMES_STARTUP_WATCHDOG_TIMEOUT_S env vars AND applies them to the
+        # already-armed handle (disarm on disable, disarm+re-arm on a config
+        # timeout) — config.yaml is the user-facing surface; explicit env
+        # values win as operator override.
+        "startup_watchdog": True,
+        "startup_watchdog_timeout_seconds": 300,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with
@@ -2565,17 +2659,32 @@ DEFAULT_CONFIG = {
         # (gateway/platforms/base.py), so the cap holds across every platform
         # adapter. ``0`` disables the cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
-        # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
-        # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must
-        # not use (e.g. a scheduled task picking up a Clash/V2Ray HTTP_PROXY -> "Cannot connect to
-        # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, TELEGRAM_PROXY, ...) are still
-        # honored.
+
+        # Whether gateway platform adapters let aiohttp read proxy settings
+        # (HTTP_PROXY / HTTPS_PROXY / NO_PROXY, plus SSL_CERT_FILE) from the
+        # process environment, and whether generic proxy env / the macOS
+        # system proxy are auto-detected for adapter clients. Set to false
+        # when the gateway inherits a proxy it must not use — e.g. a Windows
+        # Scheduled Task picking up a Clash/V2Ray HTTP_PROXY the interactive
+        # shell never sees, producing "Cannot connect to host 127.0.0.1:7890"
+        # poll loops (#48820). Explicit per-platform vars (DISCORD_PROXY,
+        # TELEGRAM_PROXY, ...) are still honored. One knob for every adapter.
         "trust_env": True,
-        # Media delivery. False: any emitted file path is delivered natively unless under the
-        # credential/system denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env, auth.json). True:
-        # files must be under the Hermes cache, media_delivery_allow_dirs, or fresher than
-        # trust_recent_files_seconds — recommended for public-facing gateways so prompt injection
-        # can't exfiltrate host secrets. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
+
+        # When false (default), any file path the agent emits is delivered
+        # as a native attachment as long as it isn't under the credential /
+        # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
+        # auth.json, etc.). This matches the symmetry of inbound delivery
+        # — we accept any document type the user uploads, and the agent
+        # can hand back any file that isn't a credential.
+        #
+        # When true, fall back to the older allowlist+recency-window
+        # behavior: files must live under the Hermes cache, under
+        # ``media_delivery_allow_dirs``, or be freshly produced inside the
+        # ``trust_recent_files_seconds`` window. Recommended for
+        # public-facing gateways where prompt injection from one user
+        # shouldn't be able to exfiltrate the host's secrets to that same
+        # user. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
         "strict": False,
         # Extra roots (project/scratch dirs, mounted shares) from which bare file paths may be
         # uploaded; the Hermes cache is always trusted. List of absolute paths or one
@@ -2617,30 +2726,34 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # Prune ENDED sessions inactive for retention_days (activity = latest message, else
-        # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
-        # are never deleted; stale automation sessions whose process died are *closed*, then get a
-        # full retention window before removal.
+        # When true, prune ENDED sessions inactive for retention_days once
+        # per (roughly) min_interval_hours at CLI/gateway/cron startup.
+        # Activity is the latest message timestamp, falling back to creation
+        # time for empty sessions. Sessions that are still open, pinned, or
+        # mid-turn are never deleted — the only open rows the sweep touches
+        # are stale automation sessions (cron/kanban/subagent/one-shot CLI)
+        # whose process died without closing them; those are *closed*, not
+        # deleted, and get a further full retention window before removal.
+        # Default true since #54189: without it state.db grows without bound
+        # (multi-GB installs reported within weeks).  Set false to keep every
+        # ended session forever.
         "auto_prune": True,
-        # Inactive days of ended-session history to keep (= `hermes sessions prune`).
-        # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the latest message timestamp, falling back to creation
-        # time for empty sessions. Sessions that are still open, pinned, or mid-turn are never deleted — the
-        # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
-        # whose process died without closing them; those are *closed*, not deleted, and get a further full
-        # retention window before removal. Default true since #54189: without it state.db grows without
-        # bound (multi-GB installs reported within weeks).
+        # How many inactive days of ended-session history to keep. Matches
+        # the default of ``hermes sessions prune``.
         "retention_days": 90,
         # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
         # once per min_interval_hours. Pinned sessions are exempt.
         "auto_archive": False,
         # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
-        # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE). VACUUM
-        # blocks writes (~seconds per 100MB), so it runs only at startup, only when ≥1 session was
-        # deleted AND freelist/page_count > 25%.
-        # SQLite does not reclaim disk space on DELETE — freed pages are just reused on subsequent INSERTs —
-        # so without VACUUM the file stays bloated even after pruning. See #54189.
+        # VACUUM after a prune that actually deleted rows.  SQLite does not
+        # reclaim disk space on DELETE — freed pages are just reused on
+        # subsequent INSERTs — so without VACUUM the file stays bloated
+        # even after pruning.  VACUUM blocks writes for a few seconds per
+        # 100MB, so it only runs at startup, and only when prune deleted
+        # ≥1 session AND the reclaimable fraction of the file
+        # (PRAGMA freelist_count / page_count) exceeds 25% — a dense DB
+        # never pays for a full rewrite to reclaim a few MB (#54189).
         "vacuum_after_prune": True,
         # Minimum days between VACUUM rewrites; pruning keeps its normal cadence.
         "min_vacuum_interval_days": 30,
@@ -2679,17 +2792,28 @@ DEFAULT_CONFIG = {
         # reads connected accounts silently); off = plain intro only.
         "profile_build": "ask",
     },
-    # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
-    # and transmission to Nous (`send`) are SEPARATE opt-ins; see
-    # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
+
+    # Privacy-safe aggregate metrics written to this profile's local telemetry
+    # directory. Collection is opt-in (``enabled``). Transmission to the Nous
+    # telemetry service is a SEPARATE opt-in (``send``) and is off by default;
+    # see docs/observability/relay-shared-metrics.md, Appendix A, for the
+    # consent, identity, rotation, retention, and deletion decisions.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
-            # Requires `enabled` (`send` alone logs an error). A package is sent only if its whole
-            # period is inside a recorded consent window.
+            # Transmit exported packages to the Nous telemetry service.
+            # Requires ``enabled``: it never switches collection on by itself,
+            # and ``send`` without ``enabled`` is logged as an error rather
+            # than silently doing nothing. A package is only sent when its
+            # whole period falls inside a recorded consent window, so data
+            # collected before consent — or while it was withdrawn — stays
+            # local.
             "send": False,
-            # Ingest endpoint (override for staging/local). Deliberately NOT env- overridable.
-            # Non-HTTPS refused unless the host is localhost.
+            # Ingest endpoint. Production by default; override for staging or
+            # a local test server. Deliberately NOT overridable by an
+            # environment variable: that would let an inherited value silently
+            # redirect telemetry a user consented to send to Nous. Non-HTTPS
+            # is refused unless the host is localhost.
             "endpoint": "https://telemetry.nousresearch.com/v1/telemetry",
         },
     },
@@ -2865,8 +2989,8 @@ DEFAULT_CONFIG = {
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,
         "native_wayland": False,
-        # Cap driver screenshot longest edge (pixels) via set_config at session start; shrinks SOM
-        # multimodal payloads. 0 disables.
+        # Cap driver screenshot longest edge (pixels) via set_config on
+        # session start. Shrinks SOM multimodal payloads; 0 disables.
         "max_image_dimension": 1456,
         # capture_after mode: som = screenshot + overlays; ax = elements only, no PNG (faster);
         # vision = pixels only.
@@ -2976,29 +3100,24 @@ DEFAULT_CONFIG = {
         },
     },
 
+
+    # Google Vertex AI provider (Gemini via the OpenAI-compatible endpoint).
+    # Auth is OAuth2 (short-lived access tokens minted from a service-account
+    # JSON or Application Default Credentials) — NOT a static API key. The
+    # credential *path* is a secret-adjacent pointer and lives in .env
+    # (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS); these two
+    # settings are non-secret routing config and live here. Both are bridged to
+    # the VERTEX_PROJECT_ID / VERTEX_REGION env vars the adapter reads, so an
+    # explicit env var still wins over config.yaml.
     "nous": {
-        # Upper bound (seconds) on the Nous auth keepalive tick, which derives from the
-        # server-issued credential lifetime (raising above it has no effect). 0 disables the
-        # keepalive thread.
+        # Upper bound on the Nous auth keepalive tick, in seconds. The tick
+        # actually used derives from the credential lifetime the server issued
+        # and is capped by this value, so lowering it makes the keepalive more
+        # frequent while raising it has no effect below the derived tick.
+        # 0 disables the keepalive thread entirely.
         "keepalive_interval_seconds": 900,
-        # anthropic_wire: which Portal route carries anthropic/* models. "chat" =
-        # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
-        # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
-        # start on chat and, per session, switch to native from the first response when the
-        # Portal upstream serving the model is one where native is known clean. Native is the
-        # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
-        # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
-        # NousResearch/api#227), so chat is the default until that is fixed.
-        "anthropic_wire": "chat",
-        # Nous free tier: with no other provider configured, Hermes sets up a free Nous identity on
-        # first use (inference on nous/welcome + connectors) and offers `/login` (terminal:
-        # `hermes auth upgrade`) to sign in. false turns the free tier off entirely: nothing is set
-        # up and nothing is used.
-        "guest": True,
     },
-    # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
-    # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
-    # Bridged to VERTEX_PROJECT_ID / VERTEX_REGION.
+
     "vertex": {
         # GCP project ID. Empty → project_id from the service-account JSON (or ADC).
         "project_id": "",
@@ -3007,8 +3126,31 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
 
+    # Managed llama.cpp local runtime (see docs: user-guide/local-models).
+    # Hermes downloads official llama.cpp release binaries, then spawns and
+    # supervises one llama-server in router mode. Context sizing is policy,
+    # not preference: there are deliberately no context/VRAM knobs here.
+    "local_runtime": {
+        # Master switch for the managed runtime. Off = detection-only
+        # (Hermes still finds an external llama-server you run yourself).
+        "enabled": False,
+        # Pinned llama.cpp release tag (rolling bNNNN). Bumped by Hermes
+        # releases after the validation suite re-runs, not tracked live.
+        "tag": "b10679",
+        # Inference backend: auto = CUDA on NVIDIA, Metal on macOS, Vulkan on
+        # other GPUs, else CPU. Explicit values: cuda|metal|vulkan|hip|cpu.
+        "backend": "auto",
+        # Router process: how many models may be resident at once.
+        "models_max": 4,
+        # Port for the managed server. 0 = pick a free port at spawn.
+        "port": 0,
+        # Extra ports detection probes for an external llama-server, in
+        # addition to the default 8080.
+        "detect_ports": [],
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 39,
+    "_config_version": 40,
 }
 
 
@@ -3232,7 +3374,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "TAVILY_API_KEY": {
-        "description": "Tavily API key for AI-native web search and extract (optional — keyless works without it)",
+        "description": "Tavily API key for AI-native web search and extract (optional — keyless works when Tavily is selected)",
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
         "tools": ["web_search", "web_extract"],

@@ -447,6 +447,43 @@ def _lookup_supports_vision(
     if not provider or not model:
         return None
 
+    # Managed local runtime: the server that would receive the image is
+    # the authority on whether it can see (its /props reports modalities
+    # when a vision projector is loaded; the catalog covers staged-but-
+    # unloaded models). Cloud catalogs have never heard of a local GGUF,
+    # so without this answer every local model reads as text-only and
+    # images detour to a cloud auxiliary — wrong twice for a local-first
+    # user (broken feature, and a screenshot leaving the machine).
+    try:
+        from hermes_cli.local_runtime.capabilities import (
+            is_managed_provider,
+            managed_model_supports_vision,
+        )
+
+        if is_managed_provider(provider, _resolve_inference_base_url(cfg, provider) or ""):
+            managed = managed_model_supports_vision(model)
+            if managed is not None:
+                return managed
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("image_routing: managed-runtime caps lookup failed for %s:%s — %s",
+                     provider, model, exc)
+
+    caps = None
+    try:
+        from agent.models_dev import get_model_capabilities
+        # allow_network=True on purpose: vision-capability lookup runs when
+        # an image actually needs routing (not per turn), and the #31179
+        # text-only-main guard depends on catalog data — a cold cache
+        # returning "unknown" would fall back to attempting the call and
+        # reintroduce the bug. This preserves the historical
+        # network-on-cold-cache behavior for this one path; the fetch is
+        # cached (4h TTL) and backoff-limited after failures.
+        caps = get_model_capabilities(provider, model, allow_network=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
+    if caps is not None:
+        return bool(caps.supports_vision)
+
     base_url = _resolve_inference_base_url(cfg, provider)
     if not base_url and (provider or "").strip().lower() == "ollama":
         base_url = "http://localhost:11434/v1"
@@ -640,11 +677,33 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
-    if mime not in _accepted_mimes():
-        if (transcoded := _transcode_to_png(raw)) is None:
+    accepted = _UNIVERSALLY_SUPPORTED_MIMES
+    # The managed local server decodes fewer formats than cloud providers
+    # (no WebP — and a WebP part fails SILENTLY: the model never sees an
+    # image and confabulates a description). When the active main model is
+    # served by the managed runtime, narrow the accepted set so those
+    # formats transcode to PNG here instead of vanishing server-side.
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+        from hermes_cli.local_runtime.capabilities import (
+            ACCEPTED_IMAGE_MIMES,
+            is_managed_provider,
+        )
+
+        if is_managed_provider(
+                str(_runtime_main_value("provider") or ""),
+                str(_runtime_main_value("base_url") or "")):
+            accepted = ACCEPTED_IMAGE_MIMES
+    except Exception:  # noqa: BLE001 — best-effort narrowing only
+        pass
+    if mime not in accepted:
+        transcoded = _transcode_to_png(raw)
+        if transcoded is None:
             logger.warning(
-                "image_routing: %s is %s which is not accepted by the active provider "
-                "and could not be transcoded to PNG; skipping this attachment.", path, mime,
+                "image_routing: %s is %s which is not accepted by the "
+                "active provider and could not be transcoded to PNG; "
+                "skipping this attachment.",
+                path, mime,
             )
             return None
         logger.info("image_routing: transcoded %s (%s) -> image/png for provider compatibility", path.name, mime)

@@ -71,15 +71,48 @@ def _format_latency(seconds: float) -> str:
     return f"{m}m{sec:02d}s"
 
 
-def format_runtime_footer(*, model: Optional[str], context_tokens: int,
-                          context_length: Optional[int], cwd: Optional[str] = None,
-                          turn_seconds: Optional[float] = None,
-                          fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
-    """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
-    unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
-    def context_pct() -> str:
-        if context_length and context_length > 0 and context_tokens >= 0:
-            return f"{max(0, min(100, round((context_tokens / context_length) * 100)))}%"
+def format_runtime_footer(
+    *,
+    model: Optional[str],
+    context_tokens: int,
+    context_length: Optional[int],
+    cwd: Optional[str] = None,
+    turn_seconds: Optional[float] = None,
+    fields: Iterable[str] = _DEFAULT_FIELDS,
+) -> str:
+    """Render the footer line, or return "" if no fields have data.
+
+    Fields are skipped silently when their underlying data is missing — a
+    partially-populated footer is better than a line with ``?%`` or empty slots.
+    """
+    parts: list[str] = []
+    for field in fields:
+        if field == "model":
+            m = _model_short(model)
+            if m:
+                parts.append(m)
+        elif field == "context_pct":
+            if context_length and context_length > 0 and context_tokens >= 0:
+                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+                parts.append(f"{pct}%")
+        elif field == "latency":
+            # Wall-clock turn duration. Skipped when the caller supplied no
+            # timing (call sites that don't measure) or the value is negative.
+            if turn_seconds is not None and turn_seconds >= 0:
+                parts.append(_format_latency(turn_seconds))
+        elif field == "cwd":
+            try:
+                from tools.terminal_scope import terminal_env as _tenv
+            except ImportError:
+                env_cwd = os.environ.get("TERMINAL_CWD", "")
+            else:
+                env_cwd = _tenv("TERMINAL_CWD", "")
+            rel = _home_relative_cwd(cwd or env_cwd)
+            if rel:
+                parts.append(rel)
+        # Unknown field names are silently ignored.
+
+    if not parts:
         return ""
 
     renderers = {

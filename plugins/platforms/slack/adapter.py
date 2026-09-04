@@ -35,10 +35,23 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
-    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    platform_gate_env as _scoped_gate_env, send_error
+from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.base import (
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_VIDEO_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
+    is_host_excluded_by_no_proxy,
+    resolve_proxy_url,
+    safe_url_for_log,
+    _ssrf_redirect_guard,
+    cache_document_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
@@ -3103,24 +3116,27 @@ class SlackAdapter(BasePlatformAdapter):
         return value
 
     def _slack_api_human_users(self) -> frozenset:
-        """User IDs whose Web-API posts count as human (``extra.api_human_users`` /
-        ``SLACK_API_HUMAN_USERS``): ``xoxp-`` posts carry ``app_id`` and no ``client_msg_id`` so
-        look like bots. Users only — an app-id allowlist would admit the app's own posts.
+        """Slack user IDs whose Web-API posts count as human-authored.
 
-        A message posted with a *user* token (``xoxp-``) is authored by a real person, but Slack still
-        stamps it with the posting ``app_id`` and it carries no ``client_msg_id`` — exactly the #35777
-        app/bot signature in ``_event_declares_bot_sender``. Operators running their own front-end
-        (dashboard, mobile shell) allowlist those *users* via ``platforms.slack.extra.api_human_users``
-        (``SLACK_API_HUMAN_USERS`` fallback) instead of ``allow_bots: all``.
+        A message posted with a *user* token (``xoxp-``) is authored by a real
+        person, but Slack still stamps it with the posting ``app_id`` and it
+        carries no ``client_msg_id`` — exactly the #35777 app/bot signature in
+        ``_event_declares_bot_sender``. Operators running their own front-end
+        (dashboard, mobile shell) allowlist those *users* via
+        ``platforms.slack.extra.api_human_users`` (``SLACK_API_HUMAN_USERS``
+        fallback) instead of ``allow_bots: all``. Users only — an app-id
+        allowlist would also admit the app's own ``xoxb`` bot posts, which
+        carry the same user+app_id shape.
         """
         cached = getattr(self, "_api_human_users_cache", None)
         if cached is None:
             raw = self.config.extra.get("api_human_users")
             if raw is None:
-                raw = _get_scoped_secret("SLACK_API_HUMAN_USERS", "")
+                raw = os.getenv("SLACK_API_HUMAN_USERS", "")
             parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
             cached = self._api_human_users_cache = frozenset(
-                str(p).strip() for p in parts if str(p).strip())
+                str(p).strip() for p in parts if str(p).strip()
+            )
         return cached
 
     def _event_declares_bot_sender(self, event: dict) -> bool:
@@ -3136,6 +3152,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Real human-authored messages normally carry client_msg_id, so treat the combination as
         # app/bot-authored (#35777).
         if event.get("app_id") and not event.get("client_msg_id"):
+            # ...unless the operator allowlisted this user's API posts
+            # (_slack_api_human_users). ``user`` is required so classic bot
+            # posts (no ``user``) never match; bot_message/bot_id already
+            # returned True above.
             return event.get("user") not in self._slack_api_human_users()
         return False
 
@@ -4849,9 +4869,19 @@ class SlackAdapter(BasePlatformAdapter):
         # or file downloads.  The final gateway runner auth check happens
         # after MessageEvent construction, so adapter-side media fetches need
         # the same auth chain up front.
+        # Prefer the injected profile-bound check (survives the multiplex
+        # closure handler, which has no ``__self__``); fall back to runner
+        # introspection for adapters wired without one.
+        _early_decision = (
+            self._is_sender_authorized(
+                user_id, "dm" if is_dm else "group", channel_id
+            )
+            if user_id and getattr(self, "_authorization_check", None) is not None
+            else None
+        )
         _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         _auth_fn = getattr(_runner, "_is_user_authorized", None)
-        if user_id and callable(_auth_fn):
+        if _early_decision is None and user_id and callable(_auth_fn):
             _source = self.build_source(
                 chat_id=channel_id,
                 chat_name="",
@@ -4859,13 +4889,14 @@ class SlackAdapter(BasePlatformAdapter):
                 user_id=user_id,
                 user_name="",
             )
-            if not _auth_fn(_source):
-                logger.warning(
-                    "[Slack] Early reject of unauthorized user %s in channel %s",
-                    user_id,
-                    channel_id,
-                )
-                return
+            _early_decision = bool(_auth_fn(_source))
+        if _early_decision is False:
+            logger.warning(
+                "[Slack] Early reject of unauthorized user %s in channel %s",
+                user_id,
+                channel_id,
+            )
+            return
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -5377,14 +5408,426 @@ class SlackAdapter(BasePlatformAdapter):
             self._remember_processed_message_ts(ts)
         await self.handle_message(msg_event)
 
-    async def _build_message_event(
-        self, event: dict, *, text: str, original_text: str, command_probe_text: str,
-        is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
-        thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        channel_context: Optional[str]) -> MessageEvent:
-        """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
-        from canonical input: the parser needs the token at char zero and enrichment (blocks,
-        unfurls, file text, history) must never mutate arguments."""
+        # Thread context rules:
+        # - First message in a thread session (cold start): hydrate full
+        #   context.
+        # - Active thread + explicit @mention: refresh with only the delta
+        #   since the last hydrate/refresh (#23918), bypassing the TTL cache.
+        #   The delta is injected as part of the NEW turn (via
+        #   ``channel_context``) — prior conversation history is never
+        #   rewritten, so prompt caching is preserved.
+        #
+        # Keep recovered history separate from ``text``. Prepending it here
+        # moves a recognized command away from character zero, so downstream
+        # command routing can misclassify it as conversational text.
+        # ``channel_context`` is prepended only after command dispatch.
+        channel_context = None
+        # Thread-root images recovered on the cold-start hydrate: when the
+        # bot is mentioned mid-thread for the first time, the thread root is
+        # very often the artifact the mention is about ("@bot what's in this
+        # chart?" replying under an image post) — deliver its images with
+        # this first turn. One-time by construction: the cold-start path is
+        # guarded by _has_active_session_for_thread, so subsequent turns in
+        # the same session never re-deliver (adapted from #69185).
+        thread_root_media_urls: List[str] = []
+        thread_root_media_types: List[str] = []
+        has_active_thread_session = is_thread_reply and self._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            user_id=user_id,
+            team_id=team_id,
+            chat_type="dm" if is_dm else "group",
+        )
+        if is_thread_reply and not has_active_thread_session:
+            thread_context = await self._fetch_thread_context(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                current_ts=ts,
+                team_id=team_id,
+            )
+            if thread_context:
+                channel_context = thread_context
+            # Deliver the thread root's images with this first turn. The
+            # root is always a PRIOR message here (is_thread_reply implies
+            # thread_ts != ts); the trigger's own files ride event["files"].
+            (
+                thread_root_media_urls,
+                thread_root_media_types,
+            ) = await self._collect_thread_root_images(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                team_id=team_id,
+            )
+            # Record the trigger ts as the consumption watermark: everything
+            # up to and including this turn is now (or will be) in session
+            # history, so a later explicit-mention refresh only needs newer
+            # messages.
+            self._set_thread_watermark(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+                watermark_ts=ts,
+                team_id=team_id,
+            )
+            self._mark_thread_rehydration_checked(
+                channel_id, event_thread_ts, user_id, team_id
+            )
+        elif is_thread_reply and has_active_thread_session and is_mentioned:
+            # Explicit @mention on an active thread is a fresh intent signal:
+            # the user expects the bot to read the CURRENT thread state, which
+            # may include replies (e.g. from other bots/integrations) that
+            # arrived since the initial hydrate and never reached the session.
+            watermark_ts = self._get_thread_watermark(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+                team_id=team_id,
+            )
+            thread_context = await self._fetch_thread_context(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                current_ts=ts,
+                team_id=team_id,
+                after_ts=watermark_ts,
+                force_refresh=True,
+            )
+            if thread_context:
+                channel_context = thread_context
+            self._set_thread_watermark(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+                watermark_ts=ts,
+                team_id=team_id,
+            )
+            self._mark_thread_rehydration_checked(
+                channel_id, event_thread_ts, user_id, team_id
+            )
+        elif is_thread_reply and has_active_thread_session:
+            # Restart rehydration (#63530 restart gap / #33215): persistent
+            # sessions survive gateway restarts, but thread replies posted
+            # while the gateway was down never reached the session. On the
+            # FIRST ordinary reply per thread in this process, fetch the
+            # delta past the persisted watermark and inject anything missed
+            # as part of this new turn. Checked at most once per thread per
+            # process; a non-empty watermark plus an empty delta costs one
+            # cached conversations.replies call.
+            rehydration_key = self._thread_rehydration_key(
+                channel_id, event_thread_ts, user_id, team_id
+            )
+            if rehydration_key not in self._thread_rehydration_checked:
+                watermark_ts = self._get_thread_watermark(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    user_id=user_id,
+                    team_id=team_id,
+                )
+                if watermark_ts:
+                    thread_context = await self._fetch_thread_context(
+                        channel_id=channel_id,
+                        thread_ts=event_thread_ts,
+                        current_ts=ts,
+                        team_id=team_id,
+                        after_ts=watermark_ts,
+                        force_refresh=True,
+                    )
+                    if thread_context:
+                        channel_context = thread_context
+                self._set_thread_watermark(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    user_id=user_id,
+                    watermark_ts=ts,
+                    team_id=team_id,
+                )
+                self._mark_thread_rehydration_checked(
+                    channel_id, event_thread_ts, user_id, team_id
+                )
+            else:
+                # Steady state: keep the watermark advancing so a future
+                # refresh/rehydration never re-injects messages the session
+                # already carries as ordinary turns.
+                self._set_thread_watermark(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    user_id=user_id,
+                    watermark_ts=ts,
+                    team_id=team_id,
+                )
+
+        # Determine message type
+        msg_type = MessageType.TEXT
+        if is_command_text:
+            msg_type = MessageType.COMMAND
+
+        # Commands typed as Slack text messages often intentionally carry a
+        # leading space (`` /stop``) so Slack itself does not intercept the
+        # slash. Once classified as a command, pass only the command text into
+        # the gateway dispatcher; do not prepend fetched thread context or
+        # block/attachment rendering before the leading slash.
+
+        # Handle file attachments. Thread-root images recovered above are
+        # delivered ahead of the trigger message's own files.
+        media_urls = list(thread_root_media_urls)
+        media_types = list(thread_root_media_types)
+        attachment_notices: List[str] = []
+        files = event.get("files", [])
+        for f in files:
+            # Slack Connect channels return stub file objects with
+            # file_access="check_file_info" and no URL fields. We must
+            # call files.info to retrieve the full object (including url_private_download)
+            # before we can download it.
+            # https://docs.slack.dev/reference/objects/file-object/#slack_connect_files
+            if f.get("file_access") == "check_file_info":
+                file_id = f.get("id")
+                if not file_id:
+                    continue
+                try:
+                    info_resp = await self._get_client(
+                        channel_id, team_id=team_id
+                    ).files_info(file=file_id)
+                    if info_resp.get("ok"):
+                        f = info_resp["file"]
+                    else:
+                        detail = self._describe_slack_api_error(info_resp, file_obj=f)
+                        if detail:
+                            attachment_notices.append(detail)
+                            logger.warning("[Slack] %s", detail)
+                        else:
+                            logger.warning(
+                                "[Slack] files.info failed for %s: %s",
+                                file_id,
+                                info_resp.get("error"),
+                            )
+                        continue
+                except Exception as e:
+                    response = getattr(e, "response", None)
+                    detail = self._describe_slack_api_error(response, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] files.info error for %s: %s",
+                            file_id,
+                            e,
+                            exc_info=True,
+                        )
+                    continue
+
+            mimetype = f.get("mimetype", "unknown")
+            url = f.get("url_private_download") or f.get("url_private", "")
+            if mimetype.startswith("image/") and url:
+                try:
+                    ext = "." + mimetype.split("/")[-1].split(";")[0]
+                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                        ext = ".jpg"
+                    # Slack private URLs require the bot token as auth header
+                    cached = await self._download_slack_file(url, ext, team_id=team_id)
+                    media_urls.append(cached)
+                    media_types.append(mimetype)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache image from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
+            elif mimetype.startswith("audio/") and url:
+                try:
+                    ext = _resolve_slack_audio_ext(f, mimetype)
+                    cached = await self._download_slack_file(
+                        url, ext, audio=True, team_id=team_id
+                    )
+                    media_urls.append(cached)
+                    media_types.append(mimetype)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache audio from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
+            elif mimetype.startswith("video/") and url and _is_slack_voice_clip(f):
+                # Slack in-app voice clips are audio-only MP4 containers that
+                # Slack sometimes mislabels with a ``video/mp4`` mimetype.
+                # Cache them as audio and report an ``audio/*`` type so the
+                # gateway routes them to speech-to-text instead of video
+                # understanding. Without this, voice messages recorded in Slack
+                # never get transcribed.
+                try:
+                    ext = _resolve_slack_audio_ext(f, mimetype)
+                    cached = await self._download_slack_file(
+                        url, ext, audio=True, team_id=team_id
+                    )
+                    media_urls.append(cached)
+                    # Report a coherent audio mimetype matching the cached
+                    # extension so downstream STT routing recognizes it.
+                    media_types.append(
+                        _SLACK_EXT_TO_AUDIO_MIME.get(ext, "audio/mp4")
+                    )
+                    logger.debug(
+                        "[Slack] Cached voice clip (mislabeled %s) as audio: %s",
+                        mimetype,
+                        cached,
+                    )
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache voice clip from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
+            elif mimetype.startswith("video/") and url:
+                try:
+                    original_filename = f.get("name", "")
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+                    if ext not in SUPPORTED_VIDEO_TYPES:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
+                        ext = mime_to_ext.get(
+                            mimetype.split(";", 1)[0].lower(), ".mp4"
+                        )
+
+                    raw_bytes = await self._download_slack_file_bytes(
+                        url, team_id=team_id
+                    )
+                    cached_path = await cache_video_from_bytes_async(raw_bytes, ext=ext)
+                    media_urls.append(cached_path)
+                    media_types.append(
+                        SUPPORTED_VIDEO_TYPES.get(ext, mimetype or "video/mp4")
+                    )
+                    logger.debug("[Slack] Cached user video: %s", cached_path)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache video from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
+            elif url:
+                # Try to handle as a document attachment
+                try:
+                    original_filename = f.get("name", "")
+                    ext = ""
+                    if original_filename:
+                        _, ext = os.path.splitext(original_filename)
+                        ext = ext.lower()
+
+                    # Fallback: reverse-lookup from MIME type
+                    if not ext and mimetype:
+                        mime_to_ext = {
+                            v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()
+                        }
+                        ext = mime_to_ext.get(mimetype, "")
+
+                    # Any file type is accepted — authorization to message the
+                    # agent is the gate, not the file extension. Known types keep
+                    # their precise MIME; unknown types fall back to the source
+                    # mimetype or octet-stream so the agent reaches for terminal
+                    # tools.
+                    in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
+
+                    # Check file size (Slack limit: 20 MB for bots)
+                    file_size = f.get("size", 0)
+                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    if not file_size or file_size > MAX_DOC_BYTES:
+                        logger.warning(
+                            "[Slack] Document too large or unknown size: %s", file_size
+                        )
+                        continue
+
+                    # Download and cache
+                    raw_bytes = await self._download_slack_file_bytes(
+                        url, team_id=team_id
+                    )
+                    cached_path = await cache_document_from_bytes_async(
+                        raw_bytes, original_filename or f"document{ext or '.bin'}"
+                    )
+                    if in_allowlist:
+                        doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    else:
+                        doc_mime = mimetype or "application/octet-stream"
+                    media_urls.append(cached_path)
+                    media_types.append(doc_mime)
+                    logger.debug("[Slack] Cached user document: %s (%s)", cached_path, doc_mime)
+
+                    # Inject small text-ish files directly into the prompt so
+                    # snippets like JSON/YAML/configs are actually visible to the
+                    # agent. Gate on a text-like extension/MIME — NOT a blind
+                    # UTF-8 decode, since binary formats (PDF/zip/docx) can have
+                    # decodable ASCII headers. Binary files are surfaced as a
+                    # cached path only (run.py emits a path-pointing note).
+                    MAX_TEXT_INJECT_BYTES = 100 * 1024
+                    _is_text = ext in _TEXT_INJECT_EXTENSIONS or (mimetype or "").startswith("text/")
+                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                        try:
+                            text_content = raw_bytes.decode("utf-8")
+                            display_name = original_filename or f"document{ext or '.txt'}"
+                            display_name = re.sub(r"[^\w.\- ]", "_", display_name)
+                            injection = f"[Content of {display_name}]:\n{text_content}"
+                            if text:
+                                text = f"{injection}\n\n{text}"
+                            else:
+                                text = injection
+                        except UnicodeDecodeError:
+                            pass  # Binary content, skip injection
+
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache document from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
+
+        if attachment_notices:
+            notice_block = "[Slack attachment notice]\n" + "\n".join(
+                f"- {n}" for n in attachment_notices
+            )
+            text = f"{notice_block}\n\n{text}" if text else notice_block
+
+        if msg_type != MessageType.COMMAND and media_types:
+            if any(m.startswith("image/") for m in media_types):
+                msg_type = MessageType.PHOTO
+            elif any(m.startswith("video/") for m in media_types):
+                msg_type = MessageType.VIDEO
+            elif any(m.startswith("audio/") for m in media_types):
+                msg_type = MessageType.VOICE
+            else:
+                msg_type = MessageType.DOCUMENT
+
+        # Every enrichment path above (blocks, unfurls, attachment notices,
+        # text-file injection, thread history) is deliberately allowed for
+        # normal messages. Commands are restored from canonical authored
+        # input only: the gateway parser requires the command token at
+        # character zero, and enrichment must never mutate a command's
+        # arguments.
         if is_command_text:
             text = command_probe_text
         msg_type = MessageType.COMMAND if is_command_text else self._media_message_type(media_types)
@@ -5406,7 +5849,9 @@ class SlackAdapter(BasePlatformAdapter):
             # subtype=bot_message with user=None; flag them so the
             # gateway SLACK_ALLOW_BOTS bypass can authorize them
             # (they carry no user_id to match against the allowlist).
-            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
+            # Same predicate as the drop gate above, so an api_human_users
+            # post is a plain human here too.
+            is_bot=self._event_declares_bot_sender(event),
         )
 
         # Per-channel ephemeral prompt
@@ -6150,45 +6595,64 @@ class SlackAdapter(BasePlatformAdapter):
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
             return False
+
         chat_type = "dm" if str(channel_id or "").startswith("D") else "group"
-        # Preferred: the injected profile-bound check (``set_authorization_check``); unlike the
-        # ``__self__`` introspection below it works under multiplex (handler is a closure).
-        # getattr: object.__new__ test doubles never ran BasePlatformAdapter.__init__.
-        # Preferred path: the auth callback GatewayRunner injects at connect time
-        # (``set_authorization_check``) runs the full, profile-bound ``_is_user_authorized`` chain. Unlike
-        # the ``__self__`` introspection below it also resolves on a multiplexed adapter, whose message
-        # handler is a profile closure with no ``__self__`` (#72657, same class as Telegram's #86296).
+
+        # Preferred path: the auth callback GatewayRunner injects at connect
+        # time (``set_authorization_check``) runs the full, profile-bound
+        # ``_is_user_authorized`` chain. Unlike the ``__self__`` introspection
+        # below it also resolves on a multiplexed adapter, whose message
+        # handler is a profile closure with no ``__self__`` (#72657, same
+        # class as Telegram's #86296).
+        # ``getattr``: adapters built via ``object.__new__`` never ran
+        # ``BasePlatformAdapter.__init__``.
         if getattr(self, "_authorization_check", None) is not None:
             injected = self._is_sender_authorized(
-                normalized_user_id, chat_type, str(channel_id or ""))
+                normalized_user_id, chat_type, str(channel_id or "")
+            )
             if injected is not None:
                 return injected
-        auth_fn = self._runner_auth_fn()
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
             try:
                 from gateway.session import SessionSource
                 source = SessionSource(
-                    platform=Platform.SLACK, chat_id=str(channel_id or normalized_user_id),
-                    chat_type=chat_type, user_id=normalized_user_id,
+                    platform=Platform.SLACK,
+                    chat_id=str(channel_id or normalized_user_id),
+                    chat_type=chat_type,
+                    user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     scope_id=str(team_id) if team_id else None)
                 return bool(auth_fn(source))
             except Exception:
                 logger.debug(
                     "[Slack] Falling back to env-only interactive auth for user %s",
-                    normalized_user_id, exc_info=True)
-        # Env-only fallback. Per-profile accessor: under multiplex a scoped miss
-        # returns "" rather than leaking the DEFAULT profile's os.environ allowlist.
-        _env = _scoped_gate_env
+                    normalized_user_id,
+                    exc_info=True,
+                )
+
+        # Env-only fallback (no injected check, no bound runner). Gate reads go
+        # through the shared per-profile accessor: under multiplex a scoped
+        # miss returns "" instead of falling through to ``os.environ``, which
+        # holds the DEFAULT profile's allow-all flag / allowlist.
+        from gateway.authz_mixin import _platform_gate_env as _env
+
         if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
             return True
-        allowed_ids = {
-            uid.strip()
-            for var in ("SLACK_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")
-            for uid in _env(var).split(",")
-            if uid.strip()}
+
+        allowed_ids = set()
+        platform_allowlist = _env("SLACK_ALLOWED_USERS")
+        if platform_allowlist:
+            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+        global_allowlist = _env("GATEWAY_ALLOWED_USERS")
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
         if allowed_ids:
             return "*" in allowed_ids or normalized_user_id in allowed_ids
+
         return _env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
     @staticmethod
@@ -6596,6 +7060,33 @@ class SlackAdapter(BasePlatformAdapter):
             skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
+            is_bot = self._event_declares_bot_sender(msg)
+            msg_user = msg.get("user", "")
+
+            # Identify "our own" bot for this workspace (multi-workspace safe).
+            msg_team = msg.get("team") or team_id
+            self_bot_uid = (
+                self._team_bot_user_ids.get(msg_team) if msg_team else None
+            ) or self._bot_user_id
+
+            # Identify our own prior bot replies. These are kept on the
+            # cold-start path (the only path that reaches this method —
+            # the call site is guarded by _has_active_session_for_thread)
+            # so the agent can reconstruct its own prior turns (#38861).
+            # When an active session exists, this method is not called and
+            # the session history already carries those replies — so there
+            # is no risk of circular duplication.
+            #
+            # Self-bot replies are labelled with an explicit ``[assistant]``
+            # prefix so the agent can distinguish its own prior turns
+            # from user messages and from third-party bot posts.
+            is_self_bot_reply = (
+                is_bot
+                and not is_parent
+                and self_bot_uid
+                and msg_user == self_bot_uid
+            )
+
             msg_text = self._render_message_text(msg, bot_uid=bot_uid)
             if not msg_text:
                 continue
@@ -6996,7 +7487,85 @@ class SlackAdapter(BasePlatformAdapter):
             for attempt in range(3):
                 try:
                     response = await client.get(
-                        url, headers={"Authorization": f"Bearer {bot_token}"})
+                        url,
+                        headers={"Authorization": f"Bearer {bot_token}"},
+                    )
+                    response.raise_for_status()
+
+                    # Slack may return an HTML sign-in/redirect page
+                    # instead of actual media bytes (e.g. expired token,
+                    # restricted file access).  Detect this early so we
+                    # don't cache bogus data and confuse downstream tools.
+                    ct = response.headers.get("content-type", "")
+                    if "text/html" in ct:
+                        raise ValueError(
+                            "Slack returned HTML instead of media "
+                            f"(content-type: {ct}); "
+                            "check bot token scopes and file permissions"
+                        )
+
+                    if audio:
+                        from gateway.platforms.base import cache_audio_from_bytes_async
+
+                        return await cache_audio_from_bytes_async(response.content, ext)
+                    else:
+                        from gateway.platforms.base import cache_image_from_bytes_async
+
+                        return await cache_image_from_bytes_async(response.content, ext)
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                    if (
+                        isinstance(exc, httpx.HTTPStatusError)
+                        and exc.response.status_code < 429
+                    ):
+                        raise
+                    if attempt < 2:
+                        logger.debug(
+                            "Slack file download retry %d/2 for %s: %s",
+                            attempt + 1,
+                            url[:80],
+                            exc,
+                        )
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise
+
+    async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
+        """Download a Slack file and return raw bytes, with retry."""
+        import httpx
+        from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
+        # SSRF guard (CWE-918): see _download_slack_file. This sibling path
+        # also attaches the bot token and must validate the destination plus
+        # every redirect hop.
+        if not is_safe_url(url):
+            raise ValueError(
+                f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}"
+            )
+
+        # Slack-CDN allowlist — see _download_slack_file for the rationale.
+        if not self._is_slack_cdn_url(url):
+            raise ValueError(
+                "Blocked non-Slack-CDN file URL (token-exfiltration protection): "
+                f"{safe_url_for_log(url)}"
+            )
+
+        bot_token = self._resolve_download_token(url, team_id)
+
+        # DNS-pinned client: resolve + validate once, dial the vetted IP
+        # (closes the DNS-rebinding TOCTOU window between is_safe_url and
+        # TCP connect — the redirect hook still re-validates every hop).
+        async with create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
+            for attempt in range(3):
+                try:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {bot_token}"},
+                    )
                     response.raise_for_status()
                     ct = response.headers.get("content-type", "")
                     if "text/html" in ct:

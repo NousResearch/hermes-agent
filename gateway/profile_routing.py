@@ -5,10 +5,43 @@ platform + chat_id + thread_id (14) → platform + chat_id (6) → platform + gu
 → default profile. For Discord threads/forum posts ``parent_chat_id`` carries the
 direct parent, so a channel route also matches any thread/post under it.
 
-A route applies only to messages received by the bot of its ``bot_profile`` (default: the
-default profile's shared bot). Telegram DM ``chat_id == user_id`` for EVERY bot, so without
-this a ``chat_id`` route meant for the shared bot would re-home the same user's DM with a
-dedicated secondary bot into another profile (#104933).
+Matching priority (most specific first):
+  1. platform + chat_id + thread_id (exact thread)  — specificity 14
+  2. platform + chat_id (channel route)             — specificity 6
+  3. platform + guild_id (guild/server route)       — specificity 2
+  4. No match                                       → default profile
+
+Parent-chain matching:
+For Discord threads and forum posts, ``parent_chat_id`` carries the
+direct parent (the channel for a thread, the forum channel for a post).
+Routes keyed on a channel match both direct messages and messages in
+any thread/post whose parent is that channel.
+
+Configuration (config.yaml):
+
+    gateway:
+      profile_routes:
+        - name: server-default
+          platform: discord
+          guild_id: "YOUR_GUILD_ID"
+          profile: server-profile
+
+        - name: special-channel
+          platform: discord
+          guild_id: "YOUR_GUILD_ID"
+          chat_id: "YOUR_CHANNEL_ID"
+          profile: channel-profile
+
+        - name: thread-route
+          platform: discord
+          chat_id: "YOUR_CHANNEL_ID"
+          thread_id: "YOUR_THREAD_ID"
+          profile: thread-profile
+
+        - name: owner-whatsapp
+          platform: whatsapp
+          chat_id: "15551234567"   # phone, JID, or LID — all equivalent
+          profile: owner
 """
 
 from __future__ import annotations
@@ -19,33 +52,42 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Baileys and Cloud share phone/JID/LID identity rules; other platforms compare exactly.
+# Baileys and Cloud share phone/JID/LID identity rules. Other platforms keep
+# exact string compare so Telegram numeric ids and Discord snowflakes stay
+# unchanged.
 _WHATSAPP_IDENTITY_PLATFORMS = {"whatsapp", "whatsapp_cloud"}
 _WHATSAPP_NON_USER_SUFFIXES = ("@g.us", "@broadcast", "@newsletter")
 
 
 def _is_whatsapp_non_user_chat(chat_id: Optional[str]) -> bool:
     """True for group / broadcast / newsletter JIDs — not a sender identity."""
-    return bool(chat_id) and str(chat_id).strip().lower().endswith(_WHATSAPP_NON_USER_SUFFIXES)
+    if not chat_id:
+        return False
+    cid = str(chat_id).strip().lower()
+    return any(cid.endswith(suffix) for suffix in _WHATSAPP_NON_USER_SUFFIXES)
 
 
 def _whatsapp_user_chat_ids_match(platform: str, left: Optional[str], right: Optional[str]) -> bool:
     """True when two WhatsApp *user* chat_ids refer to the same person.
 
-    Uses ``expand_whatsapp_aliases`` (same helper as session keys and adapter allowlists) so a bare
-    number, JID and LID collapse to one identity. Group/broadcast JIDs are chats, not senders;
-    non-WhatsApp platforms → False.
+    Reuses :func:`gateway.whatsapp_identity.expand_whatsapp_aliases` so a
+    bare phone number, a ``@s.whatsapp.net`` JID, and a ``@lid`` LID collapse
+    to one identity — the same helper session keys and adapter allowlists
+    already use. Group/broadcast JIDs are excluded: those are chats, not
+    senders. Returns False for non-WhatsApp platforms (exact match only).
     """
-    if (
-        (platform or "").strip().lower() not in _WHATSAPP_IDENTITY_PLATFORMS
-        or not left or not right
-        or _is_whatsapp_non_user_chat(left) or _is_whatsapp_non_user_chat(right)
-    ):
+    if (platform or "").strip().lower() not in _WHATSAPP_IDENTITY_PLATFORMS:
+        return False
+    if not left or not right:
+        return False
+    if _is_whatsapp_non_user_chat(left) or _is_whatsapp_non_user_chat(right):
         return False
     from gateway.whatsapp_identity import expand_whatsapp_aliases
 
     left_aliases = expand_whatsapp_aliases(str(left))
-    return bool(left_aliases and left_aliases & expand_whatsapp_aliases(str(right)))
+    if not left_aliases:
+        return False
+    return bool(left_aliases & expand_whatsapp_aliases(str(right)))
 
 
 class ProfileRouteRejected(RuntimeError):
@@ -77,10 +119,18 @@ class ProfileRoute:
     ) -> bool:
         """True if every discriminator the route declares holds (AND).
 
-        ``chat_id`` matches the channel directly or as the parent of a thread/forum post; WhatsApp
-        ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
-        ``adapter_profile`` is the profile owning the receiving bot (``None`` = default); it must equal
-        the route's ``bot_profile``.
+        All configured discriminators are matched conjunctively (AND): every
+        discriminator that the route declares must hold. ``chat_id`` supports
+        hierarchical matching for Discord forums/threads:
+        - Direct channel match: chat_id == route.chat_id
+        - Thread in channel: parent_chat_id == route.chat_id
+        A route declaring both ``guild_id`` and ``chat_id`` requires both to
+        match (a chat match alone does not satisfy a guild constraint).
+
+        WhatsApp / WhatsApp Cloud ``chat_id`` also matches across user-identity
+        forms (bare number, JID, LID) after the exact-string check. Exact
+        matches always win first, so existing configs keep working. Groups
+        (``@g.us``) and broadcasts stay exact-only.
         """
         if not self.enabled or self.platform != platform:
             return False
@@ -88,32 +138,29 @@ class ProfileRoute:
             return False
         if self.thread_id and self.thread_id != thread_id:
             return False
-        if (
-            self.chat_id
-            and self.chat_id not in (chat_id, parent_chat_id)
-            and not _whatsapp_user_chat_ids_match(platform, self.chat_id, chat_id)
-            and not _whatsapp_user_chat_ids_match(platform, self.chat_id, parent_chat_id)
-        ):
+        if self.chat_id and self.chat_id != chat_id and self.chat_id != parent_chat_id:
+            if not (
+                _whatsapp_user_chat_ids_match(platform, self.chat_id, chat_id)
+                or _whatsapp_user_chat_ids_match(platform, self.chat_id, parent_chat_id)
+            ):
+                return False
+        if self.guild_id and self.guild_id != guild_id:
             return False
-        return not (self.guild_id and self.guild_id != guild_id)
-
-
-def _bot_profile_key(name: Optional[str]) -> Optional[str]:
-    """``None`` for the default profile, else the profile name (mirrors ``set_owner_profile``)."""
-    name = (name or "").strip()
-    return None if not name or name == "default" else name
+        return True
 
 
 def _coerce_route_id(value: Any) -> Optional[str]:
     """Normalize a route discriminator to str for strict equality matching.
 
-    PyYAML loads unquoted numeric IDs as ``int`` while ``SessionSource`` fields are ``str``. Only
-    ``int`` (not ``bool``) is coerced; floats stringify to something (``"123.0"``) that can never
-    match, so they get a load-time warning instead.
+    PyYAML loads unquoted numeric IDs (Discord snowflakes, Telegram negative
+    chat ids) as ``int``. Inbound ``SessionSource`` fields are always ``str``
+    via ``build_source``, so leaving ints here makes ``matches()`` fail silently.
 
-    ``bool`` is an ``int`` subclass but never a valid id; floats and other types stringify to something
-    (``"123.0"``) that can never equal an inbound id — recreating the silent no-match this exists to fix —
-    so they are passed through with a load-time warning instead of being silently "fixed" (#86470).
+    Only ``int`` is coerced (the legitimate YAML-numeric case). ``bool`` is an
+    ``int`` subclass but never a valid id; floats and other types stringify to
+    something (``"123.0"``) that can never equal an inbound id — recreating the
+    silent no-match this exists to fix — so they are passed through with a
+    load-time warning instead of being silently "fixed" (#86470).
     """
     if value is None or isinstance(value, str):
         return value
@@ -150,14 +197,18 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
         except (ValueError, ImportError):
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue
-        routes.append(ProfileRoute(
-            name=name, platform=platform, profile=profile,
-            guild_id=_coerce_route_id(entry.get("guild_id")),
-            chat_id=_coerce_route_id(entry.get("chat_id")),
-            thread_id=_coerce_route_id(entry.get("thread_id")),
-            enabled=entry.get("enabled", True),
-            bot_profile=_bot_profile_key(entry.get("bot_profile")),
-        ))
+        routes.append(
+            ProfileRoute(
+                name=name,
+                platform=platform,
+                profile=profile,
+                guild_id=_coerce_route_id(entry.get("guild_id")),
+                chat_id=_coerce_route_id(entry.get("chat_id")),
+                thread_id=_coerce_route_id(entry.get("thread_id")),
+                enabled=entry.get("enabled", True),
+            )
+        )
+    # Sort: most specific first so the first match wins.
     routes.sort(key=lambda r: r.specificity, reverse=True)
     logger.debug("Loaded %d profile routes (most-specific-first)", len(routes))
     return routes

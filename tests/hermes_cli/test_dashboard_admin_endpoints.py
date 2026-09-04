@@ -677,11 +677,11 @@ class TestOfficialSkillsCatalogEndpoint:
             _FakeMeta("official/creative/ascii-art", "builtin", "official"),
         ]
         monkeypatch.setattr(
-            "tools.skills_hub_official.OptionalSkillSource.list_local",
+            "tools.skills_hub.OptionalSkillSource.list_local",
             lambda self: metas,
         )
         monkeypatch.setattr(
-            "hermes_cli.web_routers.skills._installed_hub_identifiers",
+            "hermes_cli.web_server._installed_hub_identifiers",
             lambda profile=None: {"official/gifs/gif-search": {"name": "gif-search"}},
         )
         r = self.client.get("/api/skills/hub/official")

@@ -31,8 +31,14 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import (
-    _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
-    cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
+    gateway_trust_env,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
@@ -79,10 +85,17 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     OpenSSL); None without certifi so aiohttp's default (honors ``SSL_CERT_FILE`` under trust_env) applies.
     ``keepalive_timeout=2`` + ``enable_cleanup_closed`` drain idle CLOSE_WAIT sockets behind proxies like Warp.
 
-    Uses a tight ``keepalive_timeout=2`` (default aiohttp: 30s) so idle connections drain promptly behind
-    proxies like Cloudflare Warp that leave peer-initiated FIN in ``CLOSE_WAIT`` (same class as #18451).
-    ``enable_cleanup_closed=True`` helps the connector clean up sockets that the remote side has already
-    closed.
+    Tencent's iLink server (``ilinkai.weixin.qq.com``) is not verifiable against
+    some system CA stores (notably Homebrew's OpenSSL on macOS Apple Silicon).
+    When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
+    verification. Otherwise fall back to aiohttp's default (which honors
+    ``SSL_CERT_FILE`` env var when ``gateway.trust_env`` is on).
+
+    Uses a tight ``keepalive_timeout=2`` (default aiohttp: 30s) so idle
+    connections drain promptly behind proxies like Cloudflare Warp that
+    leave peer-initiated FIN in ``CLOSE_WAIT`` (same class as #18451).
+    ``enable_cleanup_closed=True`` helps the connector clean up sockets
+    that the remote side has already closed.
     """
     try:
         import ssl
@@ -196,12 +209,23 @@ class ContextTokenStore:
 
     async def set(self, account_id: str, user_id: str, token: str) -> None:
         self._cache[self._key(account_id, user_id)] = token
-        # atomic_json_write() fsyncs, so the flush is offloaded off the loop; the payload is snapshotted
-        # here (the worker never iterates ``_cache`` mid-mutation) and the lock keeps flushes in order.
+        # atomic_json_write() calls os.fsync(), which blocks until the write
+        # reaches stable storage. _process_message runs on the event loop for
+        # every inbound message, so offload the flush the same way #83906 did
+        # for the other gateway persist paths. The payload is snapshotted here,
+        # on the loop, so the worker never iterates ``_cache`` while another
+        # message task mutates it; the lock keeps flushes in mutation order.
         async with self._persist_lock:
-            prefix = f"{account_id}:"
-            payload = {key[len(prefix):]: value for key, value in self._cache.items() if key.startswith(prefix)}
+            payload = self._payload(account_id)
             await asyncio.to_thread(self._persist, account_id, payload)
+
+    def _payload(self, account_id: str) -> Dict[str, str]:
+        prefix = f"{account_id}:"
+        return {
+            key[len(prefix) :]: value
+            for key, value in self._cache.items()
+            if key.startswith(prefix)
+        }
 
     def _persist(self, account_id: str, payload: Dict[str, str]) -> None:
         try:
@@ -579,7 +603,8 @@ def _print_qr(qrcode_value: str, qrcode_url: str, *, report_render_error: bool) 
 async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: int = 480) -> Optional[Dict[str, str]]:
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
-    async with _new_session() as session:
+
+    async with aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector()) as session:
         try:
             qrcode_value, qrcode_url = await _fetch_qr(session, bot_type)
         except Exception as exc:
@@ -788,10 +813,14 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return False
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
-        self._poll_session = _new_session()
-        # total=None disables aiohttp's ClientTimeout so send() works via run_coroutine_threadsafe() from cron;
-        # _api_post/_api_get enforce timeouts with asyncio.wait_for() instead.
-        self._send_session = _new_session(timeout=aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None))
+
+        self._poll_session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector())
+        # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
+        # "Timeout context manager should be used inside a task" errors when
+        # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
+        # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
+        _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
+        self._send_session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -888,7 +917,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Swap in a fresh ``_poll_session`` *then* close the old one, so concurrent tasks never see a closed session."""
         if not self._running or aiohttp is None:
             return
-        old, self._poll_session = self._poll_session, _new_session()
+        old = self._poll_session
+        self._poll_session = aiohttp.ClientSession(
+            trust_env=gateway_trust_env(), connector=_make_ssl_connector()
+        )
         if old is not None and not old.closed:
             try:
                 await old.close()
@@ -922,9 +954,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
-        if self._poll_session and self._token and not self._typing_cache.get(sender_id):
-            asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
-        media_paths, media_types = [], []  # type: List[str], List[str]
+        asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
+
+        media_paths: List[str] = []
+        media_types: List[str] = []
+
         for item in item_list:
             ref_item = (item.get("ref_msg") or {}).get("message_item")
             for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
@@ -1010,16 +1044,83 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             # ``gateway/run.py``'s central STT pipeline can re-transcribe with the user's configured
             # mlx-whisper / whisper.cpp / faster-whisper backend.
             data = await _download_and_decrypt_media(
-                self._poll_session, cdn_base_url=self._cdn_base_url, encrypted_query_param=media.get("encrypt_query_param"),
-                aes_key_b64=aes_key_b64, full_url=media.get("full_url"), timeout_seconds=timeout_seconds)
-            return await cache_fn(data, filename), mime
+                self._poll_session,
+                cdn_base_url=self._cdn_base_url,
+                encrypted_query_param=media.get("encrypt_query_param"),
+                aes_key_b64=(item.get("image_item") or {}).get("aeskey")
+                and base64.b64encode(bytes.fromhex(str((item.get("image_item") or {}).get("aeskey")))).decode("ascii")
+                or media.get("aes_key"),
+                full_url=media.get("full_url"),
+                timeout_seconds=30.0,
+            )
+            return await cache_image_from_bytes_async(data, ".jpg")
         except Exception as exc:
-            logger.warning("[%s] %s download failed: %s", self.name, label, exc)
+            logger.warning("[%s] image download failed: %s", self.name, exc)
+            return None
+
+    async def _download_video(self, item: Dict[str, Any]) -> Optional[str]:
+        media = _media_reference(item, "video_item")
+        try:
+            data = await _download_and_decrypt_media(
+                self._poll_session,
+                cdn_base_url=self._cdn_base_url,
+                encrypted_query_param=media.get("encrypt_query_param"),
+                aes_key_b64=media.get("aes_key"),
+                full_url=media.get("full_url"),
+                timeout_seconds=120.0,
+            )
+            return await cache_document_from_bytes_async(data, "video.mp4")
+        except Exception as exc:
+            logger.warning("[%s] video download failed: %s", self.name, exc)
+            return None
+
+    async def _download_file(self, item: Dict[str, Any]) -> Tuple[Optional[str], str]:
+        file_item = item.get("file_item") or {}
+        media = file_item.get("media") or {}
+        filename = str(file_item.get("file_name") or "document.bin")
+        mime = _mime_from_filename(filename)
+        try:
+            data = await _download_and_decrypt_media(
+                self._poll_session,
+                cdn_base_url=self._cdn_base_url,
+                encrypted_query_param=media.get("encrypt_query_param"),
+                aes_key_b64=media.get("aes_key"),
+                full_url=media.get("full_url"),
+                timeout_seconds=60.0,
+            )
+            return await cache_document_from_bytes_async(data, filename), mime
+        except Exception as exc:
+            logger.warning("[%s] file download failed: %s", self.name, exc)
             return None, mime
 
     async def _fetch_typing_ticket(self, session: Any, user_id: str, context_token: Optional[str], failure_label: str) -> Optional[str]:
         try:
-            response = await _get_config(session, base_url=self._base_url, token=self._token, user_id=user_id, context_token=context_token)
+            data = await _download_and_decrypt_media(
+                self._poll_session,
+                cdn_base_url=self._cdn_base_url,
+                encrypted_query_param=media.get("encrypt_query_param"),
+                aes_key_b64=media.get("aes_key"),
+                full_url=media.get("full_url"),
+                timeout_seconds=60.0,
+            )
+            return await cache_audio_from_bytes_async(data, ".silk")
+        except Exception as exc:
+            logger.warning("[%s] voice download failed: %s", self.name, exc)
+            return None
+
+    async def _maybe_fetch_typing_ticket(self, user_id: str, context_token: Optional[str]) -> None:
+        if not self._poll_session or not self._token:
+            return
+        if self._typing_cache.get(user_id):
+            return
+        try:
+            response = await _get_config(
+                self._poll_session,
+                base_url=self._base_url,
+                token=self._token,
+                user_id=user_id,
+                context_token=context_token,
+            )
             typing_ticket = str(response.get("typing_ticket") or "")
             if typing_ticket:
                 self._typing_cache.set(user_id, typing_ticket)
@@ -1285,12 +1386,52 @@ async def send_weixin_direct(
     context_token = token_store.get(account_id, chat_id)
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if send_session is not None and not send_session.closed and send_session._loop is asyncio.get_running_loop():
-        return await _deliver_direct(live_adapter, chat_id, message, media_files, context_token)
-    async with _new_session() as session:
-        merged = {**dict(extra or {}), "account_id": account_id, "base_url": base_url, "cdn_base_url": cdn_base_url}
-        adapter = WeixinAdapter(PlatformConfig(enabled=True, token=resolved_token, extra=merged))
-        adapter._send_session = adapter._session = session
+    if (live_adapter is not None and send_session is not None
+            and not send_session.closed
+            and send_session._loop is asyncio.get_running_loop()):
+        last_result: Optional[SendResult] = None
+        cleaned = live_adapter.format_message(message)
+        if cleaned:
+            last_result = await live_adapter.send(chat_id, cleaned)
+            if not last_result.success:
+                return {"error": f"Weixin send failed: {last_result.error}"}
+
+        for media_path, _is_voice in media_files or []:
+            ext = Path(media_path).suffix.lower()
+            if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+                last_result = await live_adapter.send_image_file(chat_id, media_path)
+            else:
+                last_result = await live_adapter.send_document(chat_id, media_path)
+            if not last_result.success:
+                return {"error": f"Weixin media send failed: {last_result.error}"}
+
+        return {
+            "success": True,
+            "platform": "weixin",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id if last_result else None,
+            "context_token_used": bool(context_token),
+        }
+
+    async with aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector()) as session:
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token=resolved_token,
+                extra={
+                    **dict(extra or {}),
+                    "account_id": account_id,
+                    "base_url": base_url,
+                    "cdn_base_url": cdn_base_url,
+                },
+            )
+        )
+        adapter._send_session = session
+        adapter._session = session
+        adapter._token = resolved_token
+        adapter._account_id = account_id
+        adapter._base_url = base_url
+        adapter._cdn_base_url = cdn_base_url
         adapter._token_store = token_store
         return await _deliver_direct(adapter, chat_id, message, media_files, context_token)
 

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import pathlib
 import inspect
+import tempfile
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -402,4 +405,101 @@ def test_loop_scheduling_witness_is_served_by_the_loop_itself():
     # thread, so an awaited start_unix_server is structurally loop-owned.
     assert "await asyncio.start_unix_server(" in body, (
         "the loop-scheduling witness socket is not armed by the loop task"
+    )
+
+
+def test_windows_tcp_witness_arms_and_publishes_port():
+    """On non-POSIX platforms the witness must arm over TCP loopback.
+
+    ``asyncio.start_unix_server`` does not exist on Windows (no AF_UNIX
+    event-loop support), so the producer arm fell into the broad except and
+    recorded ``loop_tick_socket=False`` — every stale-file probe then
+    classified UNKNOWN forever, disabling the wedge interlock on Windows
+    entirely. The TCP loopback witness restores the same contract: armed by
+    the loop task (an awaited ``asyncio.start_server`` is structurally
+    loop-owned exactly like the Unix variant), answered only while the loop
+    dispatches, port published in the heartbeat payload.
+    """
+    if os.name == "posix":
+        pytest.skip("TCP loopback witness is the non-POSIX arm")
+
+    async def scenario() -> tuple[dict, bool]:
+        task = asyncio.create_task(
+            loop_heartbeat_forever(interval_s=1.0, home=tmp_home)
+        )
+        try:
+            deadline = time.monotonic() + 5.0
+            payload = None
+            while time.monotonic() < deadline:
+                hb = tmp_home.joinpath(*("state", "gateway.heartbeat"))
+                if hb.exists():
+                    try:
+                        payload = json.loads(hb.read_text(encoding="utf-8"))
+                    except Exception:
+                        payload = None
+                    if payload and payload.get("loop_tick_tcp_port"):
+                        break
+                await asyncio.sleep(0.02)
+            assert payload is not None, "heartbeat never appeared"
+            assert payload.get("loop_tick_socket") is True, (
+                "witness reported unarmed on a platform where the TCP arm "
+                "must work"
+            )
+            port = int(payload["loop_tick_tcp_port"])
+            assert 0 < port <= 65535, "published port out of range"
+
+            # Probe from a worker thread so the blocking connect/recv never
+            # stalls the very loop we are witnessing (an external process
+            # probes from its own loop/thread — reproduce that shape).
+            from hermes_cli.gateway import _probe_loop_tick_tcp
+
+            result_box: dict[str, object] = {}
+
+            def _probe() -> None:
+                result_box["r"] = _probe_loop_tick_tcp(port, timeout=2.0)
+
+            worker = threading.Thread(target=_probe)
+            worker.start()
+            while worker.is_alive():
+                await asyncio.sleep(0.05)
+            worker.join()
+            return payload, bool(result_box.get("r") is True)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    with tempfile.TemporaryDirectory(prefix="lw-tcp-") as raw:
+        tmp_home = pathlib.Path(raw)
+        payload, answered = asyncio.run(scenario())
+    assert answered, (
+        "the loop-tick TCP witness did not answer a probe while the loop "
+        "was dispatching — the two-witness interlock would misclassify "
+        "this gateway as UNKNOWN"
+    )
+
+
+def test_windows_tcp_witness_arms_on_loop_task_source_shape():
+    """The TCP arm must be awaited by the loop task, never thread-owned.
+
+    Structural companion to ``test_loop_scheduling_witness_is_served_by_the_
+    loop_itself``: the same property that makes the Unix socket an honest
+    witness (a coroutine cannot run inside a thread) must hold for the TCP
+    loopback arm, or a wedged loop could keep answering pings and the
+    interlock would be void on Windows.
+    """
+    src = pathlib.Path(
+        inspect.getsourcefile(loop_heartbeat_forever) or ""
+    ).read_text()
+    body = src[src.index("async def loop_heartbeat_forever("):]
+    body = body[: body.index("\ndef ") if "\ndef " in body else len(body)]
+    assert "await asyncio.start_server(" in body, (
+        "the TCP loop-scheduling witness is not armed by the loop task"
+    )
+    # The Unix arm must stay gated to POSIX-only code paths so the missing
+    # attribute can never raise on Windows again.
+    assert 'os.name == "posix"' in body, (
+        "the AF_UNIX witness arm is not gated to POSIX platforms"
     )

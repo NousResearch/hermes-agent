@@ -5,10 +5,15 @@ from __future__ import annotations
 
 from contextvars import copy_context
 from dataclasses import dataclass, replace
+from threading import Lock, Thread, current_thread
 from typing import Any, Optional
+
 
 _pricing_prewarm_lock = Lock()
 _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
+
+
+# ─── Public types ───────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -84,17 +89,81 @@ def _without_slug(rows: list[dict], slug: str) -> list[dict]:
 
 
 def build_models_payload(
-    ctx: ConfigContext, *, explicit_only: bool = False, include_unconfigured: bool = False,
-    picker_hints: bool = False, canonical_order: bool = False, pricing: bool = False,
+    ctx: ConfigContext,
+    *,
+    explicit_only: bool = False,
+    include_unconfigured: bool = False,
+    picker_hints: bool = False,
+    canonical_order: bool = False,
+    pricing: bool = False,
     pricing_cache_only: bool = False,
-    capabilities: bool = False, featured: bool = False, force_fresh_nous_tier: bool = False,
-    refresh: bool = False, probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
-    for_picker: bool = False, max_models: int | None = None,
+    capabilities: bool = False,
+    featured: bool = False,
+    force_fresh_nous_tier: bool = False,
+    refresh: bool = False,
+    probe_custom_providers: bool = True,
+    probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
+    max_models: int | None = None,
 ) -> dict:
-    """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
-    only providers the user explicitly configured — hides ambient/auto-seeded credentials from
-    desktop chat pickers. ``pricing_cache_only``: with ``pricing``, use only values already resident
-    in process caches (normal picker opens, while a background worker warms cold endpoints)."""
+    """Build the ``{providers, model, provider}`` shape every consumer
+    needs from a single substrate call.
+
+    Flags:
+    - ``explicit_only``: keep only providers the user explicitly configured
+      (current provider, providers from config, or providers backed by
+      provider-specific env vars). This hides ambient / auto-seeded
+      credentials from desktop chat pickers.
+    - ``include_unconfigured``: append ``CANONICAL_PROVIDERS`` rows that
+      ``list_authenticated_providers`` didn't emit (TUI uses this to show
+      the full provider universe in the picker).
+    - ``picker_hints``: add ``authenticated``/``auth_type``/``key_env``/
+      ``warning`` per row (TUI ``ModelPickerDialog`` shape).
+    - ``canonical_order``: reorder canonical-slug rows to
+      ``CANONICAL_PROVIDERS`` declaration order; truly-custom rows go
+      last (TUI display order).
+    - ``pricing``: enrich each row with formatted per-model pricing and,
+      for Nous, ``free_tier``/``unavailable_models`` so the GUI picker can
+      show $/Mtok columns and gate paid models on free accounts —
+      mirroring the ``hermes model`` CLI picker. Adds network calls
+      (pricing fetch + Nous tier check); only set for interactive pickers.
+    - ``pricing_cache_only``: when pricing is enabled, use only values already
+      resident in process caches. Normal picker opens use this while a
+      background worker warms cold pricing endpoints.
+    - ``capabilities``: add a per-row ``capabilities`` map
+      ``{model: {fast, reasoning}}`` so pickers can gate the model-options
+      controls (fast toggle / reasoning) to what each model actually
+      supports, instead of offering knobs the backend would reject.
+    - ``featured``: add a per-row ``featured_models`` list — the newest few
+      models per lab (by models.dev release_date, ranked within the row's own
+      models; see ``_FEATURED_PER_LAB``) for aggregator providers that serve
+      dozens of models across many labs. Pickers default their visible set to
+      these; the rest of ``models`` stays reachable via search / show-all. Empty
+      for single-lab providers (callers fall back to top-N). Derived live from
+      models.dev — no allowlist.
+    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
+      selecting Portal-recommended Nous models and applying tier gating. Keep
+      this false for UI picker opens; explicit auth/model flows can opt in
+      when they need freshly-purchased credits to show up immediately.
+    - ``refresh``: bust the per-provider model-id disk cache so every row
+      re-fetches its live catalog. Set only for an explicit user-triggered
+      "refresh models" action; normal picker opens leave it false to stay
+      snappy on the 1h cache.
+    - ``probe_custom_providers``: allow saved custom/provider endpoints to
+      run live ``/models`` discovery while building the payload. GUI picker
+      opens should leave this false unless the user explicitly refreshes; the
+      row can still render its configured model immediately, and slow/offline
+      local endpoints no longer block the dialog.
+    - ``probe_current_custom_provider``: when ``probe_custom_providers`` is
+      false, still live-probe the current custom endpoint. This keeps normal
+      GUI/TUI picker opens fast while making the active custom provider's model
+      list match the classic CLI picker.
+    - ``for_picker``: interactive-picker visibility. Keeps providers whose
+      credential pool exists but is entirely rate-limited (exhausted) in the
+      list. Rate limits are per-model, so a different model under the same
+      provider may still work; hiding the provider strands the user. Set for
+      any surface a human is choosing from, not for programmatic resolution.
+    """
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -106,21 +175,28 @@ def build_models_payload(
         excluded_providers=ctx.excluded_providers or [],
     )
 
-    # Managed local runtime: staged GGUFs are selectable like any provider's models, but
-    # list_authenticated_providers can't know about them (no credential — reachability is the
-    # credential), so inject the row here where every picker surface inherits it.
+    # Managed local runtime: staged GGUFs are selectable like any provider's
+    # models. list_authenticated_providers can't know about them (no
+    # credential, no custom_providers entry — the credential is
+    # reachability), so inject the row here where every picker surface
+    # inherits it. Present whenever models are staged; picking one routes
+    # through the llamacpp alias -> managed/detected server resolution.
     local_row = _local_runtime_row(ctx)
     if local_row is not None:
-        rows = _without_slug(rows, "llamacpp") + [local_row]
-        # A live session on the managed server reports provider "custom" (raw base_url label), which
-        # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
-        # checkmark. The Local row owns the managed server's identity — drop such custom rows.
+        rows = [r for r in rows if str(r.get("slug", "")).lower() != "llamacpp"]
+        rows.append(local_row)
+        # A live session on the managed server reports provider "custom"
+        # (the resolution seam's generic label for a raw base_url), which
+        # would otherwise materialize a duplicate "Custom endpoint" row
+        # carrying the same staged models and stealing the checkmark. The
+        # Local row owns the managed server's identity — drop custom rows
+        # that point at the managed endpoint.
         if local_row.get("is_current"):
-            staged = set(local_row["models"])
-
             def _is_managed_custom(row: dict) -> bool:
+                if str(row.get("slug", "")).lower() != "custom":
+                    return False
                 models = {str(m) for m in (row.get("models") or [])}
-                return _slug(row) == "custom" and bool(models) and models <= staged
+                return bool(models) and models <= set(local_row["models"])
 
             rows = [r for r in rows if not _is_managed_custom(r)]
 
@@ -130,14 +206,20 @@ def build_models_payload(
 
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
-        # If the current provider lost its credential, list_authenticated_providers() omits it; keep
-        # that one row so the UI shows the saved selection + a re-auth affordance instead of appearing
-        # to jump providers. Exception: a "custom" current on the managed local server is already
-        # represented by the Local row — the skeleton would resurrect the duplicate removed above.
+        # Desktop chat pickers request the explicit subset without the full
+        # unconfigured provider universe. If the configured current provider
+        # has lost its credential, list_authenticated_providers() omits it;
+        # keep that one row visible so the UI can show the saved selection and
+        # a re-auth affordance instead of appearing to jump to another provider.
+        # Exception: a "custom" current whose endpoint is the managed local
+        # server is already represented (with the checkmark) by the Local row
+        # — the skeleton would resurrect the duplicate the dedup above removed.
         _local_owns_current = bool(local_row and local_row.get("is_current")
                                    and (ctx.current_provider or "").lower() == "custom")
         if not _local_owns_current:
-            rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
+            rows = list(rows) + _append_unconfigured_rows(
+                rows, ctx, current_only=True
+            )
 
     # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
     # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
@@ -150,7 +232,11 @@ def build_models_payload(
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, cached_only=pricing_cache_only)
+        _apply_pricing(
+            rows,
+            force_fresh_nous_tier=force_fresh_nous_tier,
+            cached_only=pricing_cache_only,
+        )
     if capabilities:
         _apply_capabilities(rows)
     if featured:
@@ -199,14 +285,25 @@ def build_model_options_payload(
     offline saved endpoints don't block the picker; explicit refresh probes all and busts the cache."""
     refresh = bool(refresh)
     payload = build_models_payload(
-        ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
-        picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
-        refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
+        ctx,
+        explicit_only=bool(explicit_only),
+        include_unconfigured=bool(include_unconfigured),
+        picker_hints=True,
+        canonical_order=True,
+        pricing=True,
+        pricing_cache_only=not refresh,
+        capabilities=True,
+        featured=True,
+        refresh=refresh,
+        probe_custom_providers=refresh,
+        probe_current_custom_provider=not refresh,
     )
     if not refresh:
-        _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
-                               current_base_url=ctx.current_base_url)
+        _prewarm_pricing_async(
+            payload["providers"],
+            current_provider=ctx.current_provider,
+            current_base_url=ctx.current_base_url,
+        )
     return payload
 
 
@@ -553,14 +650,26 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
     from hermes_cli.auth import is_provider_explicitly_configured
 
     current_slug = str(ctx.current_provider or "").strip().lower()
-
-    def _is_explicit(row: dict, slug: str) -> bool:
-        # Managed local models are explicit configuration by existence (gigabytes downloaded into the
-        # machine-scoped dir); there is deliberately no config credential, so without the source clause
-        # the row would only survive on the profile where Use was last clicked.
-        if (row.get("is_user_defined") or (current_slug and slug == current_slug)
-                or row.get("source") == "local-runtime"):
-            return True
+    kept: list[dict] = []
+    for row in rows:
+        slug = str(row.get("slug", "")).strip().lower()
+        if not slug:
+            continue
+        if row.get("is_user_defined"):
+            kept.append(row)
+            continue
+        if current_slug and slug == current_slug:
+            kept.append(row)
+            continue
+        if row.get("source") == "local-runtime":
+            # Managed local models are explicit configuration by existence:
+            # the user downloaded gigabytes into the machine-scoped models
+            # dir. There is deliberately no config credential to find
+            # (credential is reachability), so without this clause the row
+            # only survives on the profile where Use was last clicked —
+            # every other profile loses local models from its picker.
+            kept.append(row)
+            continue
         if slug == "moa":
             # MoA is a virtual routing mode, not an independently configured
             # provider. Hide it from explicit-only pickers unless it is the
@@ -584,9 +693,33 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # just accepted those same credentials when building it.
             kept.append(row)
             continue
+        if _external_process_signed_in(slug):
+            # External-process providers (copilot-acp) authenticate through
+            # their own CLI (`copilot login`), which — like the Anthropic
+            # OAuth case above — leaves no trace in active_provider,
+            # model.provider, or env vars. Verified CLI credentials are a
+            # deliberate sign-in; without this the desktop picker drops the
+            # row the picker-discovery side just accepted.
+            kept.append(row)
+            continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
     return kept
+
+
+def _external_process_signed_in(slug: str) -> bool:
+    """True when an external-process provider has verified CLI credentials."""
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            get_external_process_provider_status,
+        )
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        if not pconfig or pconfig.auth_type != "external_process":
+            return False
+        return bool(get_external_process_provider_status(slug).get("auth_verified"))
+    except Exception:
+        return False
 
 
 def _provider_is_keyless(slug: str) -> bool:
@@ -653,14 +786,33 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
-def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cached_only: bool = False) -> None:
-    """Set ``row["pricing"] = {model_id: {input, output, cache | None, free}}``; for Nous also
-    ``free_tier`` (account is free-tier) and ``unavailable_models`` (paid models a free user can't pick).
-    ``cached_only`` never hits the network: unknown Nous entitlement fails closed (``free_tier_pending``,
-    all models locked) and missing pricing is marked ``pricing_pending``."""
-    from hermes_cli.models_pricing import (
+def _apply_pricing(
+    rows: list[dict],
+    *,
+    force_fresh_nous_tier: bool = False,
+    cached_only: bool = False,
+) -> None:
+    """Enrich each provider row with per-model pricing + Nous tier gating.
+
+    Mutates ``rows`` in-place. For every row whose provider supports live
+    pricing (openrouter / nous / novita) adds::
+
+        row["pricing"] = {model_id: {"input": "$3.00", "output": "$15.00",
+                                     "cache": "$0.30" | None, "free": bool}}
+
+    For Nous additionally adds::
+
+        row["free_tier"] = bool            # current account is free-tier
+        row["unavailable_models"] = [...]  # paid models a free user can't pick
+
+    Prices are pre-formatted via ``_format_price_per_mtok`` so the GUI just
+    renders strings — identical formatting to the CLI picker. All failures
+    are swallowed (best-effort): a row simply gets no ``pricing`` key.
+    """
+    from hermes_cli.models import (
         _format_price_per_mtok,
         compute_sale_discount,
+        get_cached_nous_free_tier,
         get_pricing_for_provider,
     )
     from hermes_cli.models import (
@@ -689,19 +841,28 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         if slug == "nous" and cached_only:
             cached_nous_tier = get_cached_nous_free_tier()
             if cached_nous_tier is None:
-                # Entitlement unknown: stay nonblocking but fail closed until the prewarm has populated
-                # both caches, else a free account could briefly select paid models on first open.
+                # Entitlement is not yet known. Keep the response nonblocking,
+                # but fail closed until this profile's prewarm has populated
+                # both caches; otherwise a free account can briefly select
+                # paid models on its first picker open.
                 row["free_tier_pending"] = True
                 row["unavailable_models"] = list(models)
-                if not row.get("warning"):  # say why every model renders locked
-                    row["warning"] = ("Checking Nous plan entitlement… models unlock on the "
-                                      "next picker open or refresh.")
+                # Every model renders locked until the prewarm lands; say why
+                # on the existing per-provider warning surface instead of
+                # leaving the user staring at a greyed-out list.
+                if not row.get("warning"):
+                    row["warning"] = (
+                        "Checking Nous plan entitlement… models unlock on the "
+                        "next picker open or refresh."
+                    )
                 continue
         if not raw_pricing:
             if slug == "nous":
                 row["free_tier"] = bool(cached_nous_tier)
                 row["pricing_pending"] = True
-                row["unavailable_models"] = list(models) if cached_nous_tier else []
+                row["unavailable_models"] = (
+                    list(models) if cached_nous_tier else []
+                )
             continue
 
         formatted: dict[str, dict] = {}
@@ -741,8 +902,12 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         if slug == "nous":
             try:
                 if nous_free_tier is None:
-                    nous_free_tier = (cached_nous_tier if cached_only
-                                      else check_nous_free_tier(force_fresh=force_fresh_nous_tier))
+                    if cached_only:
+                        nous_free_tier = cached_nous_tier
+                    else:
+                        nous_free_tier = check_nous_free_tier(
+                            force_fresh=force_fresh_nous_tier
+                        )
                 row["free_tier"] = bool(nous_free_tier)
                 row["unavailable_models"] = (
                     partition_nous_models_by_tier(list(models), raw_pricing, free_tier=True)[1]
@@ -753,10 +918,119 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
 
 
 def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
-    """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
-    before the server runs (selection starts it via the runtime_provider seam)."""
+    """Build the ``llamacpp`` provider row from staged local models.
+
+    Present whenever GGUFs are staged in the managed models directory —
+    downloaded models must be selectable even before the server is running
+    (selection starts it via the runtime_provider seam / activate flow).
+    Returns ``None`` when nothing is staged.
+    """
     try:
         from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+        staged = staged_model_ids()
+        if not staged:
+            return None
+        current = (ctx.current_provider or "").strip().lower() in (
+            "llamacpp", "llama.cpp", "llama-cpp")
+        if not current:
+            # A LIVE session on the managed server reports provider "custom"
+            # (the resolution seam's label) with the managed base_url. Match
+            # on the endpoint so the picker still marks this row current —
+            # otherwise the session the user is chatting in shows no
+            # selection.
+            try:
+                from hermes_cli.local_runtime.endpoint import _state_endpoint
+
+                managed = _state_endpoint()
+                current = bool(
+                    managed
+                    and (ctx.current_base_url or "").strip().rstrip("/")
+                    == managed["base_url"].rstrip("/"))
+            except Exception:
+                current = False
+        return {
+            "slug": "llamacpp",
+            # Bare "Local" everywhere user-facing: the engine name is an
+            # implementation detail (the pane brands this "Local models").
+            "name": "Local",
+            "is_current": current,
+            "is_user_defined": False,
+            "models": staged,
+            "total_models": len(staged),
+            "source": "local-runtime",
+            "authenticated": True,       # the credential is reachability
+            "auth_type": "local",
+            "warning": None,
+        }
+    except Exception:
+        return None
+
+
+def _prewarm_pricing_async(
+    rows: list[dict],
+    *,
+    current_provider: str = "",
+    current_base_url: str = "",
+) -> Optional[Thread]:
+    """Warm picker pricing caches without delaying the current payload."""
+    from hermes_constants import hermes_home_key
+    from hermes_cli.models import pricing_cache_scope
+
+    profile_key = hermes_home_key()
+    endpoint_scope = tuple(
+        sorted(
+            (
+                slug,
+                pricing_cache_scope(
+                    slug,
+                    current_provider=current_provider,
+                    current_base_url=current_base_url,
+                ),
+            )
+            for slug in {
+                str(row.get("slug") or "").lower()
+                for row in rows
+                if row.get("slug")
+            }
+        )
+    )
+    prewarm_key = (profile_key, endpoint_scope)
+
+    with _pricing_prewarm_lock:
+        current = _pricing_prewarm_threads.get(prewarm_key)
+        if current is not None and current.is_alive():
+            return current
+
+        # The worker mutates only private copies while the pricing helpers
+        # populate their shared process caches.
+        worker_rows = [
+            {**row, "models": list(row.get("models") or [])}
+            for row in rows
+        ]
+
+        def _worker() -> None:
+            try:
+                _apply_pricing(worker_rows)
+            finally:
+                with _pricing_prewarm_lock:
+                    if _pricing_prewarm_threads.get(prewarm_key) is current_thread():
+                        _pricing_prewarm_threads.pop(prewarm_key, None)
+
+        worker_context = copy_context()
+        thread = Thread(
+            target=worker_context.run,
+            args=(_worker,),
+            name="hermes-picker-pricing-prewarm",
+            daemon=True,
+        )
+        _pricing_prewarm_threads[prewarm_key] = thread
+        thread.start()
+        return thread
+
+
+def _moa_provider_row(current_provider: str = "") -> dict | None:
+    """Build the virtual ``moa`` provider row for model pickers.
 
         staged = staged_model_ids()
         if not staged:

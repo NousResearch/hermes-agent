@@ -422,7 +422,32 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     never overrides ``model_aliases``; its string entries (``ds-flash: deepseek/deepseek-v4-flash``)
     take the provider from the ``provider/`` prefix, else the current provider.
 
-    See #83612.
+        model_aliases:
+          qwen:
+            model: "qwen3.5:397b"
+            provider: custom
+            base_url: "https://ollama.com/v1"
+          minimax:
+            model: "minimax-m2.7"
+            provider: custom
+            base_url: "https://ollama.com/v1"
+          theta:
+            model: "theta-1"
+            provider: custom
+            base_url: "https://theta.example.com/v1"
+            api_key: "sk-..."          # literal, or "${THETA_API_KEY}"
+            key_env: "THETA_API_KEY"   # read from the environment instead
+
+    ``api_key``/``key_env`` are the alias endpoint's own credential. When
+    neither is set the key is resolved from the alias HOST, never from the
+    previously active provider (#83612).
+
+    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``
+    or hand-written). String entries (``ds-flash: deepseek/deepseek-v4-flash``)
+    are converted into DirectAlias objects with the provider parsed from the
+    ``provider/`` prefix in the value; if no slash, the current provider is
+    used. Dict entries use the same shape as ``model_aliases:`` (``model``,
+    ``provider``, ``base_url`` keys).
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
@@ -438,21 +463,34 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                         base_url=entry.get("base_url", ""), api_key=_clean(entry.get("api_key", "")),
                         key_env=_clean(entry.get("key_env", "")))
 
+        # --- model.aliases (from config set / hand-written config) ---
         model_section = cfg.get("model", {})
-        simple_aliases = model_section.get("aliases") if isinstance(model_section, dict) else None
-        if isinstance(simple_aliases, dict):
-            current_provider = model_section.get("provider", "")
-            for name, value in simple_aliases.items():
-                key = name.strip().lower()
-                if not key or key in merged:
-                    continue
-                if isinstance(value, dict):
-                    model = _clean(value.get("model"))
-                    if model:
+        if isinstance(model_section, dict):
+            simple_aliases = model_section.get("aliases")
+            if isinstance(simple_aliases, dict):
+                current_provider = model_section.get("provider", "")
+                for name, value in simple_aliases.items():
+                    key = name.strip().lower()
+                    if not key or key in merged:
+                        continue  # don't override explicit model_aliases entries
+                    if isinstance(value, dict):
+                        # Dict form mirrors the ``model_aliases:`` shape:
+                        # localqwen: {model: qwen3.5:4b, provider: custom}.
+                        # Hand-written configs already use it; honoring it
+                        # here keeps aliases with an explicit provider from
+                        # being silently dropped (#87189).
+                        model = str(value.get("model") or "").strip()
+                        if not model:
+                            continue
+                        provider = str(value.get("provider") or "").strip()
                         merged[key] = DirectAlias(
-                            model=model, provider=_clean(value.get("provider")) or current_provider or "custom",
-                            base_url=_clean(value.get("base_url")))
-                elif isinstance(value, str) and value.strip():
+                            model=model,
+                            provider=provider or current_provider or "custom",
+                            base_url=str(value.get("base_url") or "").strip(),
+                        )
+                        continue
+                    if not isinstance(value, str) or not value.strip():
+                        continue
                     val = value.strip()
                     provider, model = val.split("/", 1) if "/" in val else (current_provider, val)
                     merged[key] = DirectAlias(
@@ -559,6 +597,7 @@ def _may_reuse_session_credential(session_base_url: str, alias_base_url: str) ->
 
 class StartupModelRoute(NamedTuple):
     """Model/provider pair resolved before an agent is constructed."""
+
     model: str
     provider: str = ""
     base_url: str = ""
@@ -566,18 +605,30 @@ class StartupModelRoute(NamedTuple):
 
 
 def resolve_startup_model_route(
-    raw_model: str, *, explicit_provider: str = "", current_provider: str = "",
+    raw_model: str,
+    *,
+    explicit_provider: str = "",
+    current_provider: str = "",
     user_providers: Optional[dict] = None,
-    custom_providers: Optional[list] = None) -> Optional[StartupModelRoute]:
+    custom_providers: Optional[list] = None,
+) -> Optional[StartupModelRoute]:
     """Resolve aliases and configured ``provider/model`` input at startup.
 
-    ``HermesCLI`` is constructed before the interactive ``/model`` pipeline runs; resolving here
-    keeps startup from attaching the configured default provider to an explicitly requested
-    model. ``provider/model`` strings are consumed only for providers present in user config. When
-    ``current_provider`` is a routing aggregator and the raw string is an aggregator-native slug
-    (``anthropic/claude-opus-4.6`` on OpenRouter) the input stays on the aggregator — a
-    ``providers:`` block for the same vendor must not steal the route."""
-    raw = _clean(raw_model)
+    ``HermesCLI`` is constructed before the interactive ``/model`` pipeline
+    runs.  Keeping this small resolver at the same boundary as
+    ``DIRECT_ALIASES`` prevents startup from attaching the configured default
+    provider to an explicitly requested model. Provider/model strings are
+    consumed only for providers present in user configuration; aggregator
+    namespaces remain untouched.
+
+    ``current_provider`` is the provider the session would otherwise use
+    (config ``model.provider`` / ``--provider``). When it is a routing
+    aggregator and the raw string is an aggregator-native slug
+    (``anthropic/claude-opus-4.6`` on OpenRouter), the input stays on the
+    aggregator — bare vendor slugs resolve WITHIN the aggregator first and a
+    ``providers:`` block for the same vendor must not steal the route.
+    """
+    raw = str(raw_model or "").strip()
     if not raw:
         return None
 
@@ -585,17 +636,26 @@ def resolve_startup_model_route(
     direct = DIRECT_ALIASES.get(raw.lower())
     if direct is not None:
         if explicit_provider:
-            # An explicit --provider wins over the alias's own label; the alias contributes
-            # model/base_url only.
-            return StartupModelRoute(model=direct.model, provider=explicit_provider, base_url=direct.base_url)
-        # Same owner as the interactive /model and oneshot paths: credential for the alias HOST.
-        # Resolve through the SAME owner the interactive /model and oneshot paths use: a URL-bearing alias
-        # must resolve its credential for the alias HOST, never for its provider label — a label like
-        # ``anthropic`` on a foreign URL would otherwise reach that provider's explicit-runtime branch and
-        # put the live vendor token on the foreign wire (#28660).
+            # An explicit --provider wins over the alias's own label; the
+            # alias contributes model/base_url only.
+            return StartupModelRoute(
+                model=direct.model,
+                provider=explicit_provider,
+                base_url=direct.base_url,
+            )
+        # Resolve through the SAME owner the interactive /model and oneshot
+        # paths use: a URL-bearing alias must resolve its credential for the
+        # alias HOST, never for its provider label — a label like
+        # ``anthropic`` on a foreign URL would otherwise reach that
+        # provider's explicit-runtime branch and put the live vendor token
+        # on the foreign wire (#28660).
         alias_provider, alias_key = direct_alias_runtime_request(direct)
         return StartupModelRoute(
-            model=direct.model, provider=alias_provider, base_url=direct.base_url, api_key=alias_key or "")
+            model=direct.model,
+            provider=alias_provider,
+            base_url=direct.base_url,
+            api_key=alias_key or "",
+        )
 
     if explicit_provider or "/" not in raw:
         return None
@@ -603,23 +663,37 @@ def resolve_startup_model_route(
     if not prefix or not model:
         return None
 
+    # Aggregator-native slugs stay on the aggregator. A user on OpenRouter
+    # whose config also has a ``providers.anthropic`` block must NOT have
+    # ``anthropic/claude-opus-4.6`` silently rerouted to native Anthropic.
     if current_provider:
         try:
-            from hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov
-            if is_routing_aggregator(_norm_prov(current_provider)):
+            from hermes_cli.providers import (
+                is_routing_aggregator as _is_routing_agg,
+                normalize_provider as _norm_prov,
+            )
+
+            if _is_routing_agg(_norm_prov(current_provider)):
                 from hermes_cli.models import _find_openrouter_slug
+
                 if _find_openrouter_slug(raw):
                     return None
         except Exception:
             pass
 
-    configured = {str(name).strip().lower() for name in (user_providers or {}) if str(name).strip()}
+    configured = {
+        str(name).strip().lower()
+        for name in (user_providers or {})
+        if str(name).strip()
+    }
     configured.update(
         f"custom:{entry.get('name', '').strip().lower()}"
         for entry in (custom_providers or [])
-        if isinstance(entry, dict) and _clean(entry.get("name")))
+        if isinstance(entry, dict) and str(entry.get("name") or "").strip()
+    )
     try:
         from hermes_cli.models import normalize_provider
+
         canonical = normalize_provider(prefix)
     except Exception:
         canonical = prefix.lower()
@@ -630,10 +704,15 @@ def resolve_startup_model_route(
         provider = canonical
     else:
         return None
-    return None if is_aggregator(canonical) else StartupModelRoute(model=model, provider=provider)
+
+    if is_aggregator(canonical):
+        return None
+    return StartupModelRoute(model=model, provider=provider)
 
 
-# --- Result dataclasses
+# ---------------------------------------------------------------------------
+# Result dataclasses
+# ---------------------------------------------------------------------------
 
 @dataclass
 class ModelSwitchResult:
@@ -720,13 +799,29 @@ def resolve_persist_behavior(
     ``model.persist_switch_by_default`` (default False). A flat-string ``model`` IS a configured
     default; an unreadable config -> False.
 
-    1. ``--once`` explicitly opts out → ``False`` (next turn only). 2. ``--session`` explicitly opts out →
-    ``False`` (this session only). 3. 4. Applies to every surface (CLI, gateway, Desktop picker) so no
-    client has to hardcode ``--global``. 5. Provider switches are typically exploratory — the user is trying
-    a different backend for this conversation, not reconfiguring the default. 6. Otherwise defer to
-    ``model.persist_switch_by_default`` in ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
-    affects only the current session). Users who want the old persist-by-default behavior can set the key to
-    ``true``; a one-off ``--global`` always persists. See #86414.
+    1. ``--once`` explicitly opts out → ``False`` (next turn only).
+    2. ``--session`` explicitly opts out → ``False`` (this session only).
+    3. ``--global`` explicitly opts in → ``True``.
+    4. No default configured yet (neither ``model.default`` nor
+       ``model.provider`` set — a fresh install whose first-ever pick this
+       is) → ``True``.  Without a persisted provider, ``resolve_provider``
+       falls through to whatever ``*_API_KEY`` env var is lying around on
+       the next launch (#86414), so the first pick becomes the default
+       instead of evaporating.  Applies to every surface (CLI, gateway,
+       Desktop picker) so no client has to hardcode ``--global``.
+    5. ``--provider`` given without an explicit persist flag → ``False``
+       (session only).  Provider switches are typically exploratory — the
+       user is trying a different backend for this conversation, not
+       reconfiguring the default.  ``--global`` can still force persist.
+    6. Otherwise defer to ``model.persist_switch_by_default`` in
+       ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
+       affects only the current session).  Users who want the old
+       persist-by-default behavior can set the key to ``true``; a one-off
+       ``--global`` always persists.
+
+    The config read is defensive: on a fresh install ``model`` may be a
+    flat string rather than a dict, in which case the built-in default
+    (``False``) applies.
     """
     if is_once or is_session:
         return False
@@ -743,6 +838,7 @@ def resolve_persist_behavior(
         if explicit_provider:
             return False
         return bool(model_cfg.get("persist_switch_by_default", False))
+    # Flat-string form: a non-empty string IS a configured default.
     return not model_cfg
 
 
@@ -2910,7 +3006,10 @@ def _collect_authed_provider_slugs(
             slugs.append(_cp.slug)
             seen.add(_cp.slug.lower())
 
-    return slugs
+    # Nous excluded: its picker branch builds from the curated list and it
+    # cannot reach the api_key-only pathway, so a prefetched entry is written
+    # and never read.
+    return [s for s in slugs if s != "nous"]
 
 
 def list_authenticated_providers(
@@ -3327,6 +3426,19 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        # External-process providers (copilot-acp) hold no API key, OAuth
+        # token, or pool entry by design — the spawned ACP subprocess brings
+        # its own auth. "Configured" means the executable resolves, which is
+        # exactly what get_auth_status() reports for them; without this branch
+        # the has_creds filter below unconditionally hides the provider from
+        # every picker (#63662).
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_auth_status
+                _ext_status = get_auth_status(hermes_slug) or {}
+                has_creds = bool(_ext_status.get("logged_in") or _ext_status.get("configured"))
+            except Exception as exc:
+                logger.debug("External-process check failed for %s: %s", pid, exc)
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code
@@ -3441,6 +3553,19 @@ def list_authenticated_providers(
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
                 pass
+            # Outside the try above, so a failed recommendation fetch still
+            # yields a policy-filtered curated list.
+            try:
+                from hermes_cli.models import (
+                    nous_policy_allowed_ids as _nous_policy,
+                    restrict_to_nous_policy as _nous_restrict,
+                )
+
+                model_ids = _nous_restrict(
+                    model_ids, _nous_policy(), rescue_empty=True,
+                )
+            except Exception:
+                pass
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)
@@ -3488,7 +3613,20 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_lit = {ev for ev in _cp_config.api_key_env_vars if os.environ.get(ev)}
+            _cp_has_creds = bool(_cp_lit)
+            # A regional "-cn" twin lit only by key vars it shares with its
+            # non-CN sibling (e.g. alibaba-coding-plan-cn off the intl
+            # ALIBABA_CODING_PLAN_API_KEY) is a phantom picker row (#101122).
+            # Hide it unless the user configured that CN provider -- and only
+            # when it has a dedicated var of its own the user could set instead.
+            _sib = _auth_registry.get(_cp.slug[:-3]) if _cp.slug.endswith("-cn") else None
+            _sib_vars = set(_sib.api_key_env_vars) if _sib else set()
+            if (
+                _cp_lit and _cp_lit <= _sib_vars < set(_cp_config.api_key_env_vars)
+                and _cp.slug != current_provider
+            ):
+                continue
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

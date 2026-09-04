@@ -184,8 +184,12 @@ _LEGACY_TOOLSET_MAP = {
     "vision_tools": ["vision_analyze"],
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
-    "browser_tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_scroll",
-                      "browser_back", "browser_press", "browser_get_images", "browser_vision", "browser_console"],
+    "browser_tools": [
+        "browser_navigate", "browser_snapshot", "browser_click",
+        "browser_type", "browser_scroll", "browser_back",
+        "browser_press", "browser_get_images",
+        "browser_vision", "browser_console"
+    ],
     "cronjob_tools": ["cronjob_manage"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
@@ -378,7 +382,7 @@ def _discord_rewriter(schema_fn_name: str):
     # Same session-level seam as the browser_exec gate above.
     if "delegate_task" in available_tool_names:
         blocked_present = [
-            t for t in ("clarify", "memory", "cronjob") if t in available_tool_names
+            t for t in ("clarify", "memory", "cronjob_manage") if t in available_tool_names
         ]
         if len(blocked_present) < 3:
             full_offvariant = "delegate_task, clarify, memory, or cronjob"
@@ -662,14 +666,21 @@ def _resolve_active_context_length() -> int:
 # handle_function_call  (the main dispatcher)
 # =============================================================================
 
-# Intercepted by the agent loop (need agent-level state); dispatch returns a stub error.
+# Tools whose execution is intercepted by the agent loop (run_agent.py)
+# because they need agent-level state (TodoStore, MemoryStore, etc.).
+# The registry still holds their schemas; dispatch just returns a stub error
+# so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo_list", "memory", "session_search", "delegate_task"}
 
-# Legacy tool-name aliases accepted at every dispatch seam (old sessions/saved
-# prompts keep working); schemas advertise only new names.
+# Legacy tool-name aliases (2026-08 renames): accepted at every dispatch seam
+# (handle_function_call + both executors) so old sessions and saved prompts
+# keep working; schemas only advertise the new names.
 _LEGACY_TOOL_ALIASES = {
-    "todo": "todo_list", "cronjob": "cronjob_manage", "process": "process_manage",
-    "tour": "gui_tour", "tip": "show_tip",
+    "todo": "todo_list",
+    "cronjob": "cronjob_manage",
+    "process": "process_manage",
+    "tour": "gui_tour",
+    "tip": "show_tip",
 }
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
@@ -969,10 +980,33 @@ def handle_function_call(
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
     start = time.monotonic()
 
-    def _emit(result: Any, **extra: Any) -> Any:
-        """Emit post_tool_call with this call's identity fields; returns *result*."""
-        _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
-                                  **asdict(ids), middleware_trace=list(trace), **extra)
+    # ── Legacy tool-name aliases (2026-08 renames) ────────────────────
+    # Old sessions resuming mid-conversation (and users' muscle memory in
+    # saved skills/cron prompts) still emit the pre-rename names. Alias at
+    # the dispatch seam so every replay keeps working; new schemas only
+    # advertise the new names, so fresh sessions never see the old ones.
+    function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
+
+    # ── Tool Search bridge dispatch ──────────────────────────────────
+    # tool_search and tool_describe are pure catalog reads — handle them
+    # inline. tool_call is unwrapped to the underlying tool so that every
+    # downstream hook (pre/post, edit approval, guardrails) sees the real
+    # tool name, not the bridge.
+    _dispatch_start = time.monotonic()
+
+    def _return_bridge_result(result: Any) -> Any:
+        _emit_post_tool_call_hook(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            duration_ms=int((time.monotonic() - _dispatch_start) * 1000),
+            middleware_trace=list(_tool_middleware_trace),
+        )
         return result
 
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
@@ -997,13 +1031,87 @@ def handle_function_call(
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 
-    from tools.connectors import is_connector_name
-    from tools.connectors.gateway.names import parse_connector_name
-    if function_name == "manage_connections" or is_connector_name(function_name):
-        if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
-            return _emit(tool_error("Connectors are not available in this session."))
-        if is_connector_name(function_name) and parse_connector_name(function_name) is None:
-            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
+    if _ts_mod is not None and _ts_mod.is_bridge_tool(function_name):
+        try:
+            # Use skip_tool_search_assembly=True so we see the real catalog,
+            # not the already-collapsed bridge-only list (the bridge would
+            # otherwise be searching only itself).
+            #
+            # Scope the catalog to the session's toolsets so the bridge can
+            # only surface and invoke tools the session was actually granted.
+            # Without this, a restricted-toolset session (subagent, kanban
+            # worker, curated gateway session) would see and be able to call
+            # the entire process registry via the bridge. Passing the same
+            # enabled/disabled toolsets the session was assembled with keeps
+            # the deferred catalog identical to the deferrable subset of the
+            # session's own tool list, and avoids polluting the process-global
+            # _last_resolved_tool_names with out-of-scope tools.
+            current_defs = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True, skip_tool_search_assembly=True,
+            ) or []
+        except Exception:
+            current_defs = []
+        if function_name == _ts_mod.TOOL_SEARCH_NAME:
+            return _return_bridge_result(
+                _ts_mod.dispatch_tool_search(
+                    function_args or {},
+                    current_tool_defs=current_defs,
+                )
+            )
+        if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
+            return _return_bridge_result(
+                _ts_mod.dispatch_tool_describe(
+                    function_args or {},
+                    current_tool_defs=current_defs,
+                )
+            )
+        if function_name == _ts_mod.TOOL_CALL_NAME:
+            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
+            if err or not underlying_name:
+                return _return_bridge_result(
+                    tool_error(err or "tool_call could not be resolved")
+                )
+            # Defense in depth: the underlying tool MUST be in the session's
+            # scoped deferrable catalog. resolve_underlying_call() only checks
+            # that the name is deferrable in the global registry; this gate
+            # additionally rejects any tool the session was not granted, so a
+            # restricted session can never invoke an out-of-scope tool through
+            # the bridge even if the catalog scoping above regressed.
+            _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
+            if underlying_name not in _scoped_deferrable:
+                return _return_bridge_result(
+                    tool_error(
+                        f"'{underlying_name}' is not available in this session. "
+                        "Use tool_search to find tools you can call."
+                    )
+                )
+            # Validate against the deferred tool's concrete schema before
+            # dispatch. This covers constraints the provider cannot enforce
+            # through the generic tool_call ``arguments: object`` bridge.
+            _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
+            if _probe_err is not None:
+                return _return_bridge_result(_probe_err)
+            # Recurse with the underlying tool. All hooks fire against the
+            # real tool name. The bridge is invisible to hooks by design.
+            return handle_function_call(
+                function_name=underlying_name,
+                function_args=underlying_args,
+                task_id=task_id,
+                tool_call_id=tool_call_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                user_task=user_task,
+                enabled_tools=enabled_tools,
+                skip_pre_tool_call_hook=skip_pre_tool_call_hook,
+                skip_tool_request_middleware=skip_tool_request_middleware,
+                skip_tool_execution_middleware=skip_tool_execution_middleware,
+                tool_request_middleware_trace=list(_tool_middleware_trace),
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+            )
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

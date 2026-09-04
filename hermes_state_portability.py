@@ -205,12 +205,20 @@ class SessionPortabilityMixin:
         where = "cwd IS NOT NULL AND TRIM(cwd) != ''"
         if not include_archived:
             where += " AND archived = 0"
-        rows = self._read_rows(
-            "SELECT cwd AS cwd, COUNT(*) AS sessions, MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
-            f"FROM sessions WHERE {where} GROUP BY cwd"
-        )
-        return [{"cwd": r["cwd"], "sessions": int(r["sessions"] or 0), "last_active": float(r["last_active"] or 0)}
-                for r in rows]
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT cwd AS cwd, COUNT(*) AS sessions, "
+                "MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
+                f"FROM sessions WHERE {where} GROUP BY cwd"
+            ).fetchall()
+        return [
+            {
+                "cwd": r["cwd"],
+                "sessions": int(r["sessions"] or 0),
+                "last_active": float(r["last_active"] or 0),
+            }
+            for r in rows
+        ]
 
     def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape.
@@ -240,8 +248,8 @@ class SessionPortabilityMixin:
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """
-        with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, (prefix, prefix_hi, limit, offset))
             rows = cursor.fetchall()
 
         runs: List[Dict[str, Any]] = []
@@ -298,8 +306,8 @@ class SessionPortabilityMixin:
             {prompt_join}
             WHERE s.id IN ({placeholders})
         """
-        with self._lock:
-            cursor = self._conn.execute(query, ids)
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, ids)
             rows = cursor.fetchall()
         result: Dict[str, Dict[str, Any]] = {}
         for row in rows:
@@ -318,10 +326,16 @@ class SessionPortabilityMixin:
         return self._get_session_rich_row(session_id, compact_rows=compact_rows)
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """Titled sessions whose first user turn was a ``/skill`` invocation (their titles
-        describe the expanded skill body, not the request). Returns ``id``, ``title`` and
-        the first-turn ``content`` so callers can re-derive what was typed. Newest first."""
-        rows = self._read_rows("""
+        """Titled sessions whose first user turn was a ``/skill`` invocation.
+
+        Those titles were generated from the expanded message, which embeds the
+        whole skill body — so they describe the skill rather than the request.
+        Returns ``id``, ``title``, and the full first-turn ``content`` so a
+        caller can re-derive what the user typed. Newest first.
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                """
                 SELECT s.id, s.title, m.content
                 FROM sessions s
                 JOIN messages m ON m.id = (
@@ -338,9 +352,20 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        messages = self.get_messages(session["id"])
-        return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
+        Pairs with :meth:`list_skill_scaffolded_sessions` so a re-title can feed
+        the titler the same (request, reply) shape the live path uses.
+        """
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT content FROM messages "
+                "WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL "
+                "ORDER BY timestamp, id LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if not row:
+            return ""
+        decoded = self._decode_content(row["content"])
+        return decoded if isinstance(decoded, str) else ""
 
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""

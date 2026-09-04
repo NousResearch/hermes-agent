@@ -57,18 +57,19 @@ class BedrockTransport(ProviderTransport):
         choice = ns.choices[0]
         msg = choice.message
 
-        tool_calls = (
-            [ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments) for tc in msg.tool_calls]
-            if msg.tool_calls else None
-        )
-        provider_data = {
-            key: getattr(msg, key) for key in ("reasoning_details", "bedrock_content_blocks") if getattr(msg, key, None)
-        }
+        provider_data = {}
+        if getattr(msg, "reasoning_details", None):
+            provider_data["reasoning_details"] = msg.reasoning_details
+        if getattr(msg, "bedrock_content_blocks", None):
+            provider_data["bedrock_content_blocks"] = msg.bedrock_content_blocks
+
         return NormalizedResponse(
-            content=msg.content, tool_calls=tool_calls,
-            finish_reason=choice.finish_reason or "stop",
-            reasoning=getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None),
-            usage=Usage.from_openai(ns.usage) if getattr(ns, "usage", None) else None, provider_data=provider_data or None,
+            content=msg.content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            reasoning=reasoning,
+            usage=usage,
+            provider_data=provider_data or None,
         )
 
     def validate_response(self, response: Any) -> bool:

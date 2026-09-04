@@ -9,7 +9,6 @@ Shared helpers are reached via the late-binding seam in :mod:`hermes_cli.web_dep
 so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps working.
 """
 
-import contextlib
 import copy
 import functools
 from hermes_cli.web_read_coalescing import coalesced_read
@@ -80,6 +79,12 @@ run_in_threadpool = late("run_in_threadpool")
 _strip_session_list_rows = late("_strip_session_list_rows")
 _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
+
+# Returned by the offloaded file readers below to mean "the file is not there",
+# which a plain ``None`` cannot express: ``desktop.json`` may legitimately hold
+# the document ``null``, and that is an existing-but-empty overlay rather than
+# an absent one.
+_MISSING = object()
 
 
 def _profile_to_dict(info) -> Dict[str, Any]:
@@ -354,9 +359,9 @@ def _sidebar_singleflight_cache(func):
             if cached is not miss:
                 return cached
             result = func(*args, **kwargs)
-            # A 200 carrying errors[] is a FAILED profile scan, not a successful empty page.
-            # Caching it would hold the empty recents in front of a store that has already
-            # recovered, for the whole TTL.
+            # A 200 carrying errors[] is a FAILED profile scan, not a
+            # successful empty page. Caching it holds the empty recents in
+            # front of a store that has already recovered, for the whole TTL.
             if isinstance(result, dict) and result.get("errors"):
                 return result
             try:
@@ -747,14 +752,19 @@ async def get_active_profile_endpoint():
     from hermes_cli import profiles as profiles_mod
 
     def _run():
-        # Both reads touch the filesystem; one hop so sidebar polling costs one round-trip.
-        def _or_default(fn):
-            try:
-                return fn() or "default"
-            except Exception:
-                return "default"
-        return {"active": _or_default(profiles_mod.get_active_profile),
-                "current": _or_default(profiles_mod.get_active_profile_name)}
+        # Both reads touch the filesystem: get_active_profile() reads the
+        # active_profile state file and get_active_profile_name() resolves
+        # HERMES_HOME against the profiles root. Batched into one hop so the
+        # sidebar's polling costs a single executor round-trip, not two.
+        try:
+            active = profiles_mod.get_active_profile() or "default"
+        except Exception:
+            active = "default"
+        try:
+            current = profiles_mod.get_active_profile_name() or "default"
+        except Exception:
+            current = "default"
+        return {"active": active, "current": current}
 
     return await run_in_threadpool(_run)
 
@@ -764,9 +774,21 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     """Set the sticky active profile (mirrors ``hermes profile use``); does not retarget the
     running dashboard, only subsequent CLI commands and gateways."""
     from hermes_cli import profiles as profiles_mod
-    with _profile_errors("POST /api/profiles/active failed"):
-        # Stats the target, creates the state directory, writes via temp file + replace.
-        await run_in_threadpool(profiles_mod.set_active_profile, body.name)
+
+    def _run():
+        return profiles_mod.set_active_profile(body.name)
+
+    try:
+        # set_active_profile() stats the target profile, creates the state
+        # directory and writes active_profile through a temp file + replace.
+        await run_in_threadpool(_run)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/active failed")
+        raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "active": profiles_mod.normalize_profile_name(body.name)}
 
 
@@ -816,15 +838,16 @@ async def open_profile_terminal_endpoint(name: str):
 @router.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
-    with _profile_errors("PATCH /api/profiles/%s failed", name,
-                         bad_request=(ValueError, FileExistsError)):
-        # Stops a running gateway (10 s poll), renames the directory, rewrites the Honcho
-        # host blocks and regenerates the wrapper script.
-        path = await run_in_threadpool(profiles_mod.rename_profile, name, body.new_name)
-    # For the default profile the rename lands as a presentation-only display_name; the
-    # canonical id ("default") is always returned so callers keying on `name` stay correct.
+
+    def _run():
+        return profiles_mod.rename_profile(name, body.new_name)
+
     try:
-        path = profiles_mod.rename_profile(name, body.new_name)
+        # rename_profile() stops a running gateway through the same 10-second
+        # _stop_gateway_process() poll that delete does, then renames the
+        # profile directory, rewrites the Honcho host blocks and regenerates
+        # the wrapper script.
+        path = await run_in_threadpool(_run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except (ValueError, FileExistsError) as e:
@@ -858,10 +881,25 @@ async def delete_profile_endpoint(name: str):
     """The dashboard collects the user's confirmation in its own dialog, so ``yes=True``
     always skips the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
-    with _profile_errors("DELETE /api/profiles/%s failed", name):
-        # Polls a running gateway's PID for up to 10 s, then rmtree()s the directory; on the
-        # loop that parks every request past the desktop's 10 s WebSocket ready-probe.
-        path = await run_in_threadpool(profiles_mod.delete_profile, name, yes=True)
+
+    def _run():
+        return profiles_mod.delete_profile(name, yes=True)
+
+    try:
+        # delete_profile() stops a running gateway by polling its PID once
+        # every 500 ms for up to 10 s (profiles._stop_gateway_process) and
+        # then rmtree()s the profile directory. Deleting a profile whose
+        # gateway is up — which this path announces as "⚠ Gateway is running
+        # — it will be stopped" — therefore parks the loop for a full ten
+        # seconds, and the desktop's WebSocket ready-probe gives up at ten.
+        path = await run_in_threadpool(_run)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("DELETE /api/profiles/%s failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "path": str(path)}
 
 
@@ -870,12 +908,16 @@ async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
 
     def _run():
-        # Probe and read in one hop (two round-trips would widen the check/read window).
+        # Probe and read in the same hop: two round-trips would also widen the
+        # window between the existence check and the read.
         if not soul_path.exists():
             return _MISSING
         return soul_path.read_text(encoding="utf-8")
 
-    content = await _read_off_loop(_run, "SOUL.md", OSError)
+    try:
+        content = await run_in_threadpool(_run)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
     if content is _MISSING:
         return {"content": "", "exists": False}
     return {"content": content, "exists": True}
@@ -887,15 +929,29 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
 
     def _run():
         from utils import atomic_write_text
-        # Atomic: a bare write_text() truncates SOUL.md before the new body lands, and the
-        # paired GET reports an unreadable file as "never set" — so an interrupted save would
-        # make the editor's next Save persist an empty document. preserve_mode keeps an
-        # existing file's mode/owner; create_mode=0o644 covers the first save (profiles
-        # chmods only .env to 0600 and SOUL.md is not a secret).
-        atomic_write_text(soul_path, body.content, preserve_mode=True, create_mode=0o644)
+
+        # PUT replaces the whole persona document from the dashboard editor.
+        # A bare write_text() truncates SOUL.md before the new body lands, and
+        # the paired GET above reports an unreadable file as
+        # ``{"content": "", "exists": False}`` -- so an interrupted save shows
+        # up as "your persona was never set" and the editor's next Save
+        # persists that empty document over it.
+        #
+        # preserve_mode carries an existing file's permission bits and owner
+        # across the replace. create_mode=0o644 covers the first save: named
+        # profiles seed SOUL.md at the umask default (hermes_cli.profiles
+        # chmods only .env to 0600), and SOUL.md is not a secret. (The default
+        # profile's runtime seeder does run it through _secure_file, but that
+        # seeder fires on every load_config, so the file already exists there
+        # and preserve_mode keeps whatever mode it set.)
+        atomic_write_text(
+            soul_path, body.content, preserve_mode=True, create_mode=0o644
+        )
 
     try:
-        # Temp file + fsync + replace blocks for as long as the filesystem takes to commit.
+        # atomic_write_text() writes a temp file, fsyncs it and replaces the
+        # original — three syscalls that block for as long as the filesystem
+        # takes to durably commit the persona document.
         await run_in_threadpool(_run)
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
@@ -910,10 +966,21 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     from hermes_cli import profiles as profiles_mod
     profile_dir = _resolve_profile_dir(name)
     text = (body.description or "").strip()
-    with _profile_errors("PUT /api/profiles/%s/description failed", name,
-                         not_found=(), bad_request=()):
-        await run_in_threadpool(
-            profiles_mod.write_profile_meta, profile_dir, description=text, description_auto=False)
+
+    def _run():
+        profiles_mod.write_profile_meta(
+            profile_dir,
+            description=text,
+            description_auto=False,
+        )
+
+    try:
+        # write_profile_meta() reads profile.yaml, merges the new keys and
+        # writes the document back out.
+        await run_in_threadpool(_run)
+    except Exception as e:
+        _log.exception("PUT /api/profiles/%s/description failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "description": text, "description_auto": False}
 
 
@@ -926,31 +993,52 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     model = (body.model or "").strip()
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model are required")
-    with _profile_errors("PUT /api/profiles/%s/model failed", name,
-                         not_found=(), bad_request=()):
+    try:
+        # _write_profile_model() reads and rewrites the profile's config.yaml.
         await run_in_threadpool(_write_profile_model, profile_dir, provider, model)
+    except Exception as e:
+        _log.exception("PUT /api/profiles/%s/model failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "provider": provider, "model": model}
 
 
 @router.post("/api/profiles/{name}/describe-auto")
 async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
-    """Auto-generate a profile's description via the auxiliary LLM (mirrors ``hermes profile
-    describe <name> --auto``). A failed generation is ``ok: false`` with a reason rather than
-    an HTTP error so the UI can surface it inline and let the operator retry."""
-    # Resolution stays on the loop: it owns the 400/404 mapping the 500 fallback would flatten.
+    """Auto-generate a profile's description via the auxiliary LLM
+    (``auxiliary.profile_describer``). Mirrors ``hermes profile describe
+    <name> --auto``.
+
+    A failed generation (no aux client, LLM error, …) is returned as
+    ``ok: false`` with a reason rather than an HTTP error so the UI can
+    surface it inline and let the operator fix config and retry.
+    """
+    # Resolution stays on the loop: it is a name check plus one stat, and it
+    # owns the 400/404 mapping that the ``except Exception`` below would
+    # otherwise flatten into a 500.
     _resolve_profile_dir(name)
 
     def _run():
         from hermes_cli import profile_describer
         return profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
 
-    with _profile_errors("POST /api/profiles/%s/describe-auto failed", name,
-                         not_found=(), bad_request=()):
-        # A synchronous LLM round-trip with a 60 s ceiling; on the loop it stalls everything.
+    try:
+        # describe_profile() is a plain def that reaches auxiliary_client's
+        # call_llm() — a synchronous provider round-trip with a 60 s ceiling,
+        # six times the desktop's WebSocket disconnect threshold. Held on the
+        # loop it stalls every other dashboard request for that whole window.
         outcome = await run_in_threadpool(_run)
-    # description_auto mirrors ok: a failed sweep leaves any existing description untouched.
-    return {"ok": bool(outcome.ok), "reason": outcome.reason, "description": outcome.description,
-            "description_auto": bool(outcome.ok)}
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/describe-auto failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "ok": bool(outcome.ok),
+        "reason": outcome.reason,
+        "description": outcome.description,
+        # Only a successful generation is an auto-authored description. A failed
+        # sweep leaves any existing description untouched, so don't claim it's
+        # auto-generated.
+        "description_auto": bool(outcome.ok),
+    }
 
 
 # ── Export / Import ── wraps hermes_cli.profiles.export_profile / import_profile. Paths are
@@ -975,9 +1063,17 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Could not create export directory: {exc}")
 
-    with _profile_errors("POST /api/profiles/%s/export failed", name):
+    try:
         result = await run_in_threadpool(
-            profiles_mod.export_profile, name, output, extra_files=body.extra_files or None)
+            profiles_mod.export_profile, name, output, extra_files=body.extra_files or None
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/export failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "archive": str(result)}
 
 
@@ -988,10 +1084,17 @@ async def import_profile_endpoint(body: ProfileImport):
     if not archive:
         raise HTTPException(status_code=400, detail="archive path is required")
 
-    with _profile_errors("POST /api/profiles/import failed",
-                         bad_request=(ValueError, FileExistsError)):
+    try:
         profile_dir = await run_in_threadpool(
-            profiles_mod.import_profile, archive, name=(body.name or "").strip() or None)
+            profiles_mod.import_profile, archive, name=(body.name or "").strip() or None
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/import failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
     imported = profile_dir.name
 
@@ -1011,17 +1114,22 @@ async def import_profile_endpoint(body: ProfileImport):
 
 @router.get("/api/profiles/{name}/desktop-overlay")
 async def get_profile_desktop_overlay(name: str):
-    """The desktop appearance/interface overlay bundled with an imported profile
-    (``desktop.json`` at the profile root), or ``exists: false``."""
-    profile_dir = _resolve_profile_dir(name)
+    """The desktop appearance/interface overlay bundled with an imported
+    profile (``desktop.json`` at the profile root), or ``exists: false``."""
+    overlay_path = _resolve_profile_dir(name) / "desktop.json"
 
     def _run():
-        # Probe and read in one hop; _MISSING because desktop.json may hold ``null``.
-        if not (profile_dir / "desktop.json").is_file():
+        if not overlay_path.is_file():
             return _MISSING
-        return _read_desktop_overlay(profile_dir)
+        import json as _json
+        return _json.loads(overlay_path.read_text(encoding="utf-8"))
 
-    overlay = await _read_off_loop(_run, "desktop.json", Exception)
+    try:
+        overlay = await run_in_threadpool(_run)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read desktop.json: {e}")
+    # _MISSING rather than None: an overlay file holding the document ``null``
+    # exists, and must not be reported as absent.
     if overlay is _MISSING:
         return {"exists": False, "desktop": None}
     return {"exists": True, "desktop": overlay}

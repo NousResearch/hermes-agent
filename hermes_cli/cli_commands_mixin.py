@@ -937,7 +937,11 @@ class CLICommandsMixin:
             /export <profile>             — export a named profile
             /export [profile] -o <path>   — choose the output path
         """
-        from hermes_cli.profiles import export_profile, get_active_profile_name
+        from hermes_cli.profiles import (
+            export_profile,
+            get_active_profile_name,
+            get_profile_export_path,
+        )
 
         parts = command.split()[1:]
         output = None
@@ -950,8 +954,6 @@ class CLICommandsMixin:
             parts = parts[:idx] + parts[idx + 2:]
 
         name = parts[0] if parts else (get_active_profile_name() or "default")
-        if not output:
-            output = f"{name}.tar.gz"
 
     def _snapshot_restore(self, parts) -> None:
         from hermes_cli.backup import list_quick_snapshots, restore_quick_snapshot
@@ -963,49 +965,11 @@ class CLICommandsMixin:
             return
         snap_id = parts[2]
         try:
-            idx = int(snap_id)  # restore by number (1-indexed)
-        except ValueError:
-            idx = None
-        if idx is not None:
-            snaps = list_quick_snapshots()
-            if not 1 <= idx <= len(snaps):
-                return print(f"  Invalid snapshot number. Use 1-{len(snaps)}.")
-            snap_id = snaps[idx - 1]["id"]
-        # Close our SessionDB first so the restore doesn't contend with this process's live connection.
-        local_session_db = getattr(self, "_session_db", None)
-        if local_session_db is not None:
-            with suppress(Exception):
-                local_session_db.close()
-                self._session_db = None
-        if restore_quick_snapshot(snap_id):
-            _pr(f"  Restored state from: {snap_id}",
-                "  Restart recommended for gateway/dashboard processes to pick up state.db changes.")
-        else:
-            print(f"  Snapshot not found: {snap_id}")
-
-    def _snapshot_prune(self, parts) -> None:
-        from hermes_cli.backup import prune_quick_snapshots
-        keep = 20
-        if len(parts) > 2:
-            try:
-                keep = int(parts[2])
-            except ValueError:
-                return print("  Usage: /snapshot prune [keep-count]")
-        deleted = prune_quick_snapshots(keep=keep)
-        print(f"  Pruned {deleted} old snapshot(s) (keeping {keep}).")
-
-    # ---- /export, /import -----------------------------------------------------------------
-    def _handle_export_command(self, command: str):
-        """Handle /export [profile] [-o path] — export a profile to a shareable .tar.gz archive."""
-        from hermes_cli.profiles import export_profile, get_active_profile_name, get_profile_export_path
-        parts, output, ok = _take_flag(command.split()[1:], "-o")
-        if not ok:
-            return print("  Usage: /export [profile] [-o output.tar.gz]")
-        name = parts[0] if parts else (get_active_profile_name() or "default")
-        try:
-            result = export_profile(name, output or str(get_profile_export_path(name)))
-            _pr(f"  ✓ Exported '{name}' to {result}",
-                "  Share it: the other user runs /import or `hermes profile import <archive>`.")
+            if not output:
+                output = str(get_profile_export_path(name))
+            result = export_profile(name, output)
+            print(f"  ✓ Exported '{name}' to {result}")
+            print("  Share it: the other user runs /import or `hermes profile import <archive>`.")
         except (ValueError, FileNotFoundError, OSError) as e:
             print(f"  Error: {e}")
 
@@ -1933,10 +1897,16 @@ class CLICommandsMixin:
             for job in jobs:
                 print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', '?'):<8}")
                 if job.get("skills"):
-                    print(f"      Skills: {', '.join(job['skills'])}")
-                print(f"      {job.get('prompt_preview', '')}")
-                if job.get("next_run_at"):
-                    print(f"      Next: {job['next_run_at']}")
+                    print(f"  Skills: {', '.join(job['skills'])}")
+                print(f"  Prompt: {job.get('prompt_preview', '')}")
+                if job.get("last_run_at"):
+                    status = job.get("last_status") or "?"
+                    # delivery_failed: the agent ran fine but the output never
+                    # reached the target — name the delivery reason, which
+                    # lives in last_delivery_error (last_error is None).
+                    if status == "delivery_failed" and job.get("last_delivery_error"):
+                        status = f"delivery_failed: {job['last_delivery_error']}"
+                    print(f"  Last run: {job['last_run_at']} ({status})")
                 print()
         else:
             print("  No scheduled jobs. Use '/cron add' to create one.")
@@ -2563,9 +2533,12 @@ class CLICommandsMixin:
             return _cp(_dim_line('Nothing to refine yet — the conversation is empty.'))
         try:
             agent._spawn_background_review(
-                messages_snapshot=snapshot, review_memory=True,
-                review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()),
-                focus=focus or None, explicit=True)
+                messages_snapshot=snapshot,
+                review_memory=True,
+                review_skills=review_skills,
+                focus=focus or None,
+                explicit=True,
+            )
         except Exception as exc:
             return _cp(f"  /refine failed to start: {exc}")
         tail = f" (focus: {focus})" if focus else ""
@@ -3143,19 +3116,45 @@ class CLICommandsMixin:
             return _cp("  (._.) /fast is only available for models that support fast mode "
                        "(OpenAI Priority Processing or Anthropic Fast Mode).")
         # Determine the branding for the current model
-        model = getattr(getattr(self, "agent", None), "model", None) or getattr(self, "model", None)
-        anthropic = _probe("hermes_cli.models", "_is_anthropic_fast_model", None, model)
-        feature_name = ("Fast mode" if anthropic is None
-                        else "Anthropic Fast Mode" if anthropic else "Priority Processing")
-        raw = _command_arg(cmd)
-        usage = _dim_line('Usage: /fast [normal|fast|auto|cold|status] [--global]')
-        if not raw or raw.lower() == "status":
+        try:
+            from hermes_cli.models import _is_anthropic_fast_model
+            agent = getattr(self, "agent", None)
+            model = getattr(agent, "model", None) or getattr(self, "model", None)
+            feature_name = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
+        except Exception:
+            feature_name = "Fast mode"
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
             status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
-            return _cp(_accent_line(f"{feature_name}: {status}"), usage)
-        arg, explicit_global = _split_scope_flags(raw)
-        if arg not in _FAST_TIERS:
-            return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
-        self.service_tier, saved_value = _FAST_TIERS[arg]
+            _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
+            return
+
+        arg_tokens = parts[1].strip().lower().split()
+        explicit_global = "--global" in arg_tokens
+        arg = " ".join(
+            token for token in arg_tokens
+            if token not in ("--global", "--session")
+        )
+
+        if arg in {"fast", "on"}:
+            self.service_tier = "priority"
+            saved_value = "fast"
+            label = "FAST"
+        elif arg in {"normal", "off"}:
+            self.service_tier = None
+            saved_value = "normal"
+            label = "NORMAL"
+        elif arg in {"auto", "cold"}:
+            self.service_tier = arg
+            saved_value = arg
+            label = arg.upper()
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
+            return
+
         self.agent = None  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)
         outcome = _scope_outcome(explicit_global, saved)

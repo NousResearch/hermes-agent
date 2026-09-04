@@ -300,19 +300,14 @@ _KEY_KEYWORD_RE = re.compile(
 )
 
 # Key names that are credential-specific even when their values are short or
-# human-readable. Bare ``token`` / ``key`` are intentionally absent: they also
-# describe model limits, tensor names, and cache keys, so those assignments
-# are gated on value shape (_looks_like_opaque_credential).
+# human-readable. Bare ``token`` / ``key`` are intentionally absent: those
+# words also describe model limits, tensor names, cache keys, and other public
+# technical values. Their assignments are gated on value shape below.
 _STRONG_KEY_KEYWORD_RE = re.compile(
     r"(?:api|auth|access|refresh|session|id|bearer)[ _.\\-]?(?:key|token)"
     r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|auth|bearer",
     re.IGNORECASE,
 )
-# Password-class keys mask any literal value; for other keys a value that starts like ``$HOME/...``,
-# ``/usr/...`` or ``~/...`` references a variable or a path, not a credential, even under a strong key
-# (``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock``, ``DOCKER_AUTH_CONFIG=/home/u/.docker``).
-_PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
-_PATH_OR_VAR_VALUE_RE = re.compile(r"[$/~]")
 
 
 def _is_word_start(s: str, i: int) -> bool:
@@ -385,6 +380,42 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
             or _looks_like_opaque_credential(value))
 
+
+
+def _key_has_strong_secret_keyword(key: str) -> bool:
+    """Return whether ``key`` names an unambiguously credential-bearing field."""
+    for match in _STRONG_KEY_KEYWORD_RE.finditer(key):
+        if _is_word_start(key, match.start()) and _is_word_end(key, match.end()):
+            return True
+    return False
+
+
+def _looks_like_opaque_credential(value: str) -> bool:
+    """Return whether an ambiguous token/key value has credential-like shape.
+
+    Known vendor prefixes and JWTs have dedicated redactors. This catches the
+    remaining opaque family without treating short technical scalars such as
+    ``CPU``, ``local``, or training captions as secrets merely because their
+    key contains ``token`` or ``key``.
+    """
+    if value == "***" or value.startswith("«redacted:"):
+        return True
+    if len(value) >= 16 and re.fullmatch(r"[A-Fa-f0-9]+", value):
+        return True
+    if len(value) >= 20 and re.fullmatch(r"[A-Za-z0-9_./+=-]+", value):
+        return True
+    if len(value) < 12:
+        return False
+    classes = sum(
+        bool(re.search(pattern, value))
+        for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]")
+    )
+    return classes >= 2
+
+
+def _assignment_value_requires_redaction(key: str, value: str) -> bool:
+    """Apply value-aware gating to key-name-only assignment matches."""
+    return _key_has_strong_secret_keyword(key) or _looks_like_opaque_credential(value)
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
@@ -887,11 +918,95 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     if not code_file:
-        text = _redact_assignments(text, mask_nonreusable=file_read)
+        if "=" in text:
+            def _redact_env(m):
+                name, quote, value = m.group(1), m.group(2), m.group(3)
+                # Programmatic env lookups reference variable *names*, not
+                # secret values — masking them corrupts code snippets in
+                # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                # Keyword must sit at a word boundary within the key —
+                # ``author=Smith`` / ``press.secretary=…`` are prose, not
+                # credentials (ported from nearai/ironclaw#6129). All-caps
+                # keys (the _ENV_ASSIGN_RE shape) short-circuit to legacy
+                # embedded matching inside the helper.
+                if not _key_has_secret_keyword(name):
+                    return m.group(0)
+                if not _assignment_value_requires_redaction(name, value):
+                    return m.group(0)
+                return f"{name}={quote}{_mask_token(value)}{quote}"
+            text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+            # Lowercase env names (``openai_key=…``). Skip URLs — the query
+            # string may contain ``token=``/``key=`` params that are
+            # intentionally passed through (see note near the bottom of this
+            # function; _redact_strict_url_credentials handles the opt-in
+            # case). The uppercase regex above is all-caps-only, so it never
+            # matches URL params; the lowercase one would (issue #77484).
+            if "://" not in text:
+                text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
+            # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
+            # web-URL query params are intentionally passed through (see note
+            # near the bottom of this function); _DB_CONNSTR_RE still guards
+            # connection-string passwords.
+            #
+            # Extra gate: every _CFG_*_RE match requires a secret keyword in
+            # the key, so a text without any secret keyword cannot match —
+            # skipping is exact. This matters because _CFG_DOTTED_RE
+            # backtracks quadratically on long unbroken [A-Za-z0-9_.\-] runs
+            # (e.g. base64/hex blobs in compaction payloads); the linear
+            # keyword scan prevents that pathological path on secret-free
+            # text.
+            if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
+                text = _CFG_DOTTED_RE.sub(_redact_env, text)
+                text = _CFG_ANCHORED_RE.sub(_redact_env, text)
 
-    if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+        # JSON fields: "apiKey": "***"  (skip for code files — false positives)
+        if ":" in text and '"' in text:
+            def _redact_json(m):
+                key, value = m.group(1), m.group(2)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): "apiKey": "os.getenv('X')" is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                if not _assignment_value_requires_redaction(key, value):
+                    return m.group(0)
+                return f'{key}: "{_mask_token(value)}"'
+            text = _JSON_FIELD_RE.sub(_redact_json, text)
 
+        # Unquoted YAML / colon config: password: ***  (after JSON so quoted
+        # values are handled there; the lookahead in _YAML_ASSIGN_RE skips
+        # quotes). Skip URLs — web-URL query params pass through by design.
+        if ":" in text and "://" not in text:
+            def _redact_yaml(m):
+                key, sep, value = m.group(1), m.group(2), m.group(3)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): api_key: os.getenv('X') is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                # Keyword must sit at a word boundary within the key —
+                # ``Secretary: J.Smith`` / ``tokenizer: cl100k_base`` are
+                # document text, not credentials (nearai/ironclaw#6129).
+                if not _key_has_secret_keyword(key):
+                    return m.group(0)
+                if not _assignment_value_requires_redaction(key, value):
+                    return m.group(0)
+                return f"{key}{sep}{_mask_token(value)}"
+            text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
+
+    # Authorization headers — _AUTH_HEADER_RE matches any scheme after
+    # "[Proxy-]Authorization:" case-insensitively, so "uthorization" is the
+    # cheapest substring gate that covers every casing without a casefold().
+    if "uthorization" in text or "UTHORIZATION" in text:
+        text = _AUTH_HEADER_RE.sub(
+            lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)),
+            text,
+        )
+
+    # API-key style headers (x-api-key, api-key, …). Header values are
+    # colon-separated, so gate on ":" — the regex itself is the precise filter.
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)

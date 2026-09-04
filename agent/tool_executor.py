@@ -1065,6 +1065,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     parsed_calls = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
+        # Legacy tool-name aliases (2026-08 renames) — map BEFORE the
+        # agent-loop branches (todo_list etc. dispatch above the registry).
+        from model_tools import _LEGACY_TOOL_ALIASES as _lta
+        function_name = _lta.get(function_name, function_name)
 
         function_args, malformed_args_result = _parse_tool_arguments(
             tool_call.function.arguments
@@ -1101,15 +1105,30 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # hook, or dispatch fires.
         _ts_scope_block = None
         try:
-            display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
-        except Exception as cb_err:
-            logging.debug("Tool complete callback error: %s", cb_err)
-        else:
-            _safe_callback(agent.tool_complete_callback, "Tool complete", ref.call_id, ref.name, display_args, result)
-    if risk_metadata is not None and risk_metadata.get("risk") != "low":
-        _safe_callback(
-            agent.tool_progress_callback, "Tool output risk",
-            "tool.output_risk", ref.name, None, None, tool_call_id=ref.call_id, risk_metadata=risk_metadata,
+            from tools import tool_search as _ts
+            if function_name == _ts.TOOL_CALL_NAME:
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                if not _err and _underlying:
+                    if _underlying in _tool_search_scoped_names(agent):
+                        # Validate before unwrapping: the generic bridge hides
+                        # the concrete parameter schema from provider-native
+                        # tool-call validation.
+                        _probe_err = _ts.validate_deferred_call_args(_underlying, _underlying_args)
+                        if _probe_err is not None:
+                            _ts_scope_block = _probe_err
+                        else:
+                            function_name = _underlying
+                            function_args = _underlying_args
+                    else:
+                        _ts_scope_block = (
+                            f"'{_underlying}' is not available in this session. "
+                            "Use tool_search to find tools you can call."
+                        )
+        except Exception:
+            pass
+
+        parsed_calls.append(
+            (tool_call, function_name, function_args, [], None, _ts_scope_block)
         )
 
 
@@ -2070,6 +2089,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             break
 
         function_name = tool_call.function.name
+        # Legacy tool-name aliases (2026-08 renames) — map BEFORE the
+        # agent-loop branches (todo_list etc. dispatch above the registry).
+        from model_tools import _LEGACY_TOOL_ALIASES as _lta
+        function_name = _lta.get(function_name, function_name)
 
         function_args, malformed_args_result = _parse_tool_arguments(
             tool_call.function.arguments
@@ -2101,9 +2124,50 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 return
             continue
 
+        # Tool Search unwrap — see execute_tool_calls_concurrent for full
+        # rationale, including the scope gate (the unwrap dispatches the
+        # underlying tool directly, so session toolset scope is enforced here).
+        _ts_scope_block: Optional[str] = None
+        try:
+            from tools import tool_search as _ts
+            if function_name == _ts.TOOL_CALL_NAME:
+                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
+                if not _err and _underlying:
+                    if _underlying in _tool_search_scoped_names(agent):
+                        # Validate before unwrapping: the generic bridge hides
+                        # the concrete parameter schema from provider-native
+                        # tool-call validation.
+                        _probe_err = _ts.validate_deferred_call_args(_underlying, _underlying_args)
+                        if _probe_err is not None:
+                            # This path wraps _block_msg in {"error": ...} —
+                            # flatten the probe payload to one plain string.
+                            try:
+                                _probe = json.loads(_probe_err)
+                                _ts_scope_block = (
+                                    f"{_probe.get('error', '')} Parameters schema: "
+                                    f"{json.dumps(_probe.get('parameters', {}), ensure_ascii=False)}. "
+                                    f"{_probe.get('hint', '')}"
+                                ).strip()
+                            except Exception:
+                                _ts_scope_block = _probe_err
+                        else:
+                            function_name = _underlying
+                            function_args = _underlying_args
+                    else:
+                        _ts_scope_block = (
+                            f"'{_underlying}' is not available in this session. "
+                            "Use tool_search to find tools you can call."
+                        )
+        except Exception:
+            pass
+
+        middleware_trace: list[dict[str, Any]] = []
+        _execution_blocked = False
+        _execution_dispatched = False
+
         tool_start_time = time.time()
 
-        if function_name == "todo":
+        if function_name == "todo_list":
             def _execute(next_args: dict) -> Any:
                 from tools.todo_tool import todo_tool as _todo_tool
                 return _todo_tool(
@@ -2123,7 +2187,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ))
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                agent._vprint(f"  {_get_cute_tool_message_impl('todo_list', function_args, tool_duration, result=function_result)}")
         elif function_name == "message_agent":
             # Bot Mode teammate DM (tools/bot_mode_dm.py) — injected, not
             # registered: only a canonical Bot Chat session carries the
@@ -2358,7 +2422,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_window_below', function_args, tool_duration, result=function_result)}")
-        elif function_name == "tour":
+        elif function_name == "gui_tour":
             def _execute(next_args: dict) -> Any:
                 from tools.tour_tool import tour_tool as _tour_tool
                 return _tour_tool(
@@ -2384,7 +2448,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ))
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('tour', function_args, tool_duration, result=function_result)}")
+                agent._vprint(f"  {_get_cute_tool_message_impl('gui_tour', function_args, tool_duration, result=function_result)}")
         elif function_name == "setup_mcp":
             def _execute(next_args: dict) -> Any:
                 from tools.setup_mcp_tool import setup_mcp_tool as _setup_mcp_tool

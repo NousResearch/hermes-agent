@@ -362,12 +362,11 @@ def check_todo_requirements() -> bool:
 # Behavioral guidance is baked into the (static, cached) description; item shape and merge
 # semantics live ONLY in the parameter schema.
 TODO_SCHEMA = {
-    "name": "todo",
+    "name": "todo_list",
     # Dieted (#95681): the item shape and merge semantics live ONLY in the
     # parameter schema below — the description teaches behavior, not
     # structure the params already define.
     "description": (
-        # See #95681.
         "Track a task list for multi-step work (3+ steps). Use for complex tasks "
         "with 3+ steps or when the user provides multiple tasks. "
         "For 'all N items' tasks, enumerate every instance as its own checklist "
@@ -424,7 +423,9 @@ TODO_SCHEMA = {
 from tools.registry import registry, tool_error
 
 registry.register(
-    name="todo_list", toolset="todo", schema=TODO_SCHEMA, check_fn=check_todo_requirements,
+    name="todo_list",
+    toolset="todo",
+    schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(
         todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
     emoji="📋")

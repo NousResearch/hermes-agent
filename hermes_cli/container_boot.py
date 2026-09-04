@@ -77,8 +77,14 @@ def reconcile_profile_gateways(
     review).
     """
     actions: list[ReconcileAction] = []
-    # Under a multiplexing root gateway named slots are still registered but must not boot from
-    # their persisted run intent, or they would become additional multiplex owners.
+
+    # A multiplexing root/default gateway owns inbound platform connections
+    # for every profile. Named slots must still be registered (so explicit
+    # lifecycle management remains available), but booting them from their
+    # persisted run intent would create additional multiplex owners.
+    # Keep the boot reconciler aligned with the gateway that will own these
+    # slots. The runtime resolver gives a recognized environment override
+    # precedence over config.yaml and otherwise preserves the configured value.
     from gateway.config import load_gateway_config
     from utils import is_truthy_value
     try:
@@ -88,7 +94,25 @@ def reconcile_profile_gateways(
                     "GATEWAY_MULTIPLEX_PROFILES override if set.", exc_info=True)
         multiplex_profiles = is_truthy_value(os.environ.get("GATEWAY_MULTIPLEX_PROFILES"))
 
-    # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
+    try:
+        multiplex_profiles = load_gateway_config().multiplex_profiles
+    except Exception:
+        log.warning(
+            "Unable to load gateway configuration during container boot; "
+            "using the GATEWAY_MULTIPLEX_PROFILES override if set.",
+            exc_info=True,
+        )
+        multiplex_profiles = is_truthy_value(
+            os.environ.get("GATEWAY_MULTIPLEX_PROFILES"),
+        )
+
+    # Default profile — always register, even if nothing has ever
+    # populated the root profile dir. The slot exists so
+    # ``hermes gateway start`` (no ``-p``) has somewhere to land;
+    # auto-up only when the prior state was "running" (same rule as
+    # named profiles). If the container was launched with the legacy
+    # `gateway run` command and no state exists yet, seed that intent
+    # as `running` so the s6 reconciler preserves the pre-s6 behavior.
     legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
         hermes_home, container_argv=container_argv, dry_run=dry_run)
     default_prior_state = legacy_default_state or _read_desired_state(hermes_home)

@@ -13,7 +13,6 @@ import { useHudClickThrough } from './click-through'
 import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
-import { hudTranscriptHeight } from './layout'
 import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
 import { useHudTranscriptBand } from './transcript-band'
@@ -277,6 +276,8 @@ export function HudShell() {
 
   const rootRef = useRef<HTMLDivElement | null>(null)
 
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
   // Whether bar + band actually cover the window. Gates the frost, which is
   // native vibrancy and therefore the WINDOW's content view — it fills the whole
   // rectangle and nothing in the page can clip it to the sheet. Whenever the
@@ -285,89 +286,6 @@ export function HudShell() {
   // capped it almost never covers the window, so this is almost always false —
   // which is correct, and asking anything looser paints the slab back.
   const filled = useHudTranscriptBand(rootRef)
-
-  useEffect(() => {
-    const root = rootRef.current
-
-    if (!root) {
-      return
-    }
-
-    let viewport: HTMLElement | null = null
-    const ro = new ResizeObserver(() => measure())
-
-    const measure = () => {
-      const el = viewport ?? root.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')
-
-      if (el !== viewport) {
-        viewport = el
-
-        if (el) {
-          ro.observe(el)
-
-          if (el.firstElementChild) {
-            ro.observe(el.firstElementChild)
-          }
-        }
-      }
-
-      // How tall the band actually needs to be — the tight bbox of the message
-      // rows only. Measuring to the viewport edge counted the full-window scroll
-      // container (min-height: 100%) as transcript and painted a empty slab almost
-      // the size of the HUD.
-      const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
-
-      // Zero-height rows are not a transcript. A fresh thread still renders
-      // scaffolding inside the content box (clearance, empty state), so
-      // counting rows alone paid the overhang for nothing and left a sliver of
-      // sheet hanging under the bar with no text in it.
-      const text = !rows?.length
-        ? 0
-        : Math.max(0, rows[rows.length - 1].getBoundingClientRect().bottom - rows[0].getBoundingClientRect().top)
-
-      const contentSpan = text < 1 ? 0 : text + HUD_SHEET_OVERHANG_PX
-
-      // Once the HUD has a transcript, a resize must buy readable scrollback.
-      // The old glance-band ceiling froze this at 152px and turned every extra
-      // pixel of native window height into empty transparent chrome.
-      const visible = hudTranscriptHeight({
-        barHeight: root.querySelector<HTMLElement>('[data-slot="composer-dock"]')?.getBoundingClientRect().height ?? 0,
-        contentHeight: contentSpan,
-        viewportHeight: window.innerHeight
-      })
-
-      root.style.setProperty('--hud-band-height', `${visible}px`)
-
-      // …and the bar's real height, which is what the thread has to clear.
-      // --composer-measured-height would be the obvious source, but it is a
-      // surface var that never lands here, so the clearance silently fell back
-      // to the root estimate and reserved ~20px more than the bar occupies —
-      // a visible hole under the last message.
-      const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
-      const barHeight = bar?.getBoundingClientRect().height ?? 0
-
-      if (bar) {
-        ro.observe(bar)
-        root.style.setProperty('--hud-bar-height', `${Math.round(barHeight)}px`)
-      }
-
-      setFilled(barHeight + visible >= window.innerHeight - 1)
-    }
-
-    // The viewport mounts async (lazy chat surface); poll briefly until it
-    // exists, then let the ResizeObserver own it. Window resize is separate:
-    // the transcript's rows may not change size, but the available scrollback
-    // must, so observing the rows alone cannot update the band.
-    measure()
-    const probe = setInterval(measure, 500)
-    window.addEventListener('resize', measure)
-
-    return () => {
-      clearInterval(probe)
-      window.removeEventListener('resize', measure)
-      ro.disconnect()
-    }
-  }, [])
 
   useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)

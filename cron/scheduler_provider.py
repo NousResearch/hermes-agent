@@ -440,8 +440,17 @@ class InProcessCronScheduler(CronScheduler):
         return "builtin"
 
     def start(
-        self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None,
-        profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        self,
+        stop_event,
+        *,
+        adapters=None,
+        loop=None,
+        interval=60,
+        can_dispatch=None,
+        profile_homes=None,
+        profile_adapters=None,
+        default_profile=None,
+        profile_gate=None,
     ):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
@@ -457,9 +466,15 @@ class InProcessCronScheduler(CronScheduler):
         # scoped per profile so `hermes cron status` reflects liveness for every profile independently.
         if profile_homes is not None and (callable(profile_homes) or profile_homes):
             self._start_multiplex(
-                stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
-                interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
-                default_profile=default_profile, profile_gate=profile_gate,
+                stop_event,
+                profile_homes=profile_homes,
+                adapters=adapters,
+                loop=loop,
+                interval=interval,
+                can_dispatch=can_dispatch,
+                profile_adapters=profile_adapters,
+                default_profile=default_profile,
+                profile_gate=profile_gate,
             )
             return
 
@@ -523,16 +538,44 @@ class InProcessCronScheduler(CronScheduler):
             stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
 
     def _start_multiplex(
-        self, stop_event, *, profile_homes, adapters=None, loop=None, interval=60,
-        can_dispatch=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        self,
+        stop_event,
+        *,
+        profile_homes,
+        adapters=None,
+        loop=None,
+        interval=60,
+        can_dispatch=None,
+        profile_adapters=None,
+        default_profile=None,
+        profile_gate=None,
     ):
-        """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
-        home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
-        heartbeated."""
+        """Tick every served profile's cron store when multiplex_profiles is on.
+
+        Each profile uses ``set_hermes_home_override()`` + ``use_cron_store()``
+        to scope its tick, heartbeat, recovery, lock file, config/.env, and
+        agent execution to that profile's home — mirroring how
+        ``_profile_runtime_scope`` scopes the multiplexed inbound path and
+        ``web_server.py`` scopes per-profile cron API calls.
+
+        ``profile_gate(name, home) -> bool``, when given, is consulted every
+        cycle; a profile it rejects is neither ticked nor heartbeated that
+        cycle (the desktop ticker uses it to stand down for profiles whose
+        own gateway is running, #100489).
+        """
+        import logging
         from cron.scheduler import tick as cron_tick
-        from cron.scheduler import CronTickYielded, _is_fd_exhaustion
-        from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home,
+        from cron.scheduler import (
+            CronTickYielded,
+            SharedRouteAdapters,
+            _is_fd_exhaustion,
+            _primary_profile_routes_for_current_home,
+        )
+        from cron.jobs import (
+            clear_ticker_error,
+            record_ticker_error,
+            record_ticker_heartbeat,
+            use_cron_store,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
 
@@ -548,6 +591,8 @@ class InProcessCronScheduler(CronScheduler):
         # A profile may have been deleted since this snapshot was taken;
         # never recreate a deleted home's cron workspace via the heartbeat
         # below (#47368).
+        # One profile's broken store (corrupt executions.db, unreadable
+        # cron dir) must not abort startup for every other profile (#74878).
         for entry in _existing_profile_homes(profile_homes):
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
@@ -562,40 +607,69 @@ class InProcessCronScheduler(CronScheduler):
                     record_ticker_heartbeat()
             except BaseException as e:
                 logger.error(
-                    "Cron startup recovery error for profile at %s: %s", home, e, exc_info=True
+                    "Cron startup recovery error for profile at %s: %s",
+                    home,
+                    e,
+                    exc_info=True,
                 )
+            finally:
+                reset_hermes_home_override(home_token)
 
         consecutive_failures = 0
         while not stop_event.is_set():
             ok = False
             _tick_error = None
             _profile_errors: dict[str, str] = {}
-            # Worst failure this cycle (fd exhaustion wins); backoff applied once per cycle.
-            # See #87644.
+            # Worst per-profile failure this cycle (fd exhaustion wins) so the
+            # #87644 backoff/reclaim is applied once per cycle, not per profile.
             _cycle_exc: BaseException | None = None
-            # Enumeration and gating run on the ticker thread; a raising gate callable must
-            # fail THIS cycle (logged, no heartbeats, NO ticks), not end the thread (#111010).
-            # Publish the list only once the gate has filtered it: a partial assignment would
-            # tick the ungated set — the exact stand-down the Desktop gate exists for (#100489).
-            cycle_homes: list = []
-            try:
-                enumerated = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
-                if profile_gate is not None:
-                    enumerated = [(name, home) for name, home in enumerated if profile_gate(name, home)]
-                cycle_homes = enumerated
-            except BaseException as e:
-                logger.error("Cron profile enumeration error: %s", e, exc_info=True)
-                _tick_error = f"{type(e).__name__}: {e}"
-                consecutive_failures = _note_tick_failure(e, consecutive_failures)
+            cycle_homes = _existing_profile_homes(profile_homes)
+            if profile_gate is not None:
+                cycle_homes = [
+                    entry
+                    for entry in cycle_homes
+                    if profile_gate(
+                        entry[0] if isinstance(entry, tuple) else None,
+                        entry[1] if isinstance(entry, tuple) else entry,
+                    )
+                ]
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
-                    for entry in _existing_profile_homes(profile_homes):
+                    for entry in cycle_homes:
+                        _pname = entry[0] if isinstance(entry, tuple) else None
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
-                            with _profile_cron_scope(home):
+                            with use_cron_store(home):
+                                # Deliver each profile's cron via ITS OWN adapters.
+                                # The shared `adapters` set belongs to the default
+                                # profile only. A secondary profile uses its own map
+                                # in profile_adapters[name], which is populated only
+                                # once that profile's bot connects. A secondary must
+                                # NEVER fall back to the default profile's `adapters`
+                                # (that ships its cron output through the wrong bot),
+                                # so before its adapter connects — map absent or empty
+                                # — it simply does not deliver this tick.
+                                if _pname is None or _pname == default_profile:
+                                    _tick_adapters = adapters
+                                else:
+                                    _tick_adapters = (profile_adapters or {}).get(_pname) or {}
+                                    if not _tick_adapters and adapters:
+                                        # Credentialless satellite under
+                                        # gateway.profile_routes: no bot of its
+                                        # own, so its output may ride the
+                                        # PRIMARY adapter — but only for
+                                        # targets an exact enabled primary
+                                        # route maps to this profile
+                                        # (#101113). Unmatched targets still
+                                        # fail closed; this is not a default
+                                        # fallback.
+                                        _tick_adapters = SharedRouteAdapters(
+                                            adapters,
+                                            _primary_profile_routes_for_current_home(),
+                                        )
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
                                     sync=False, can_dispatch=can_dispatch,
@@ -605,13 +679,22 @@ class InProcessCronScheduler(CronScheduler):
                             logger.info("Cron tick yielded for profile at %s: %s", home, e)
                             _profile_errors[str(home)] = f"{type(e).__name__}: {e}"
                         except BaseException as e:
-                            # THIS profile only; BaseException as in the single-profile loop.
+                            # Any other failure is THIS profile's failure
+                            # (#74878): record it against this profile's
+                            # status and keep ticking the remaining profiles.
+                            # BaseException for the same reason as the
+                            # single-profile loop (#32612).
                             logger.error(
-                                "Cron tick error for profile at %s: %s", home, e, exc_info=True
+                                "Cron tick error for profile at %s: %s",
+                                home,
+                                e,
+                                exc_info=True,
                             )
                             _profile_errors[str(home)] = f"{type(e).__name__}: {e}"
                             if _cycle_exc is None or _is_fd_exhaustion(e):
                                 _cycle_exc = e
+                        finally:
+                            reset_hermes_home_override(home_token)
                     ok = not _profile_errors
                     if _cycle_exc is not None:
                         consecutive_failures = _note_tick_failure(_cycle_exc, consecutive_failures)
@@ -620,10 +703,12 @@ class InProcessCronScheduler(CronScheduler):
                 _tick_error = f"{type(e).__name__}: {e}"
                 # EMFILE: reclaim fds + exponential backoff (#87644).
                 consecutive_failures = _note_tick_failure(e, consecutive_failures)
-            else:
-                _tick_error = None
-            # Record per-profile heartbeat after each tick cycle.
-            for entry in _existing_profile_homes(profile_homes):
+            # Record per-profile heartbeat after each tick cycle. Distinguish
+            # a COMPLETED cycle (``_tick_error`` unset) — where each profile's
+            # beat reflects its own outcome, so a yielding profile does not
+            # darken healthy siblings — from an aborted one (exception), where
+            # no profile completed and all beats are unsuccessful (#32612).
+            for entry in cycle_homes:
                 home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:

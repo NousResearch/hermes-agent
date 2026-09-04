@@ -244,7 +244,7 @@ class TestKillStaleDashboardPosix:
             raise AssertionError(f"unexpected subprocess.run call: {args}")
 
         with patch("subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", return_value=[]) as find_pids, \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]) as find_pids, \
              patch("os.kill") as kill:
             _kill_stale_dashboard_processes(restart_managed=True)
 

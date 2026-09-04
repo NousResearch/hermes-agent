@@ -148,12 +148,12 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main_desktop._register_linux_desktop_entry"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
@@ -313,10 +313,10 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     pack_fail = _pack_into_staging(root, content="half-signed", returncode=1)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
-         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
+         patch("hermes_cli.main._redownload_electron_dist", return_value=True) as mock_dl, \
          patch("hermes_cli.main.subprocess.run", side_effect=pack_fail) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
@@ -1112,7 +1112,7 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
@@ -1128,7 +1128,7 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run2, \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run2, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
@@ -1209,7 +1209,7 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value={}), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store", return_value="gnome-libsecret"), \
+         patch("hermes_cli.main._detect_linux_password_store", return_value="gnome-libsecret"), \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
@@ -1232,7 +1232,7 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.config.load_config", return_value={}), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store", return_value="kwallet6"), \
+         patch("hermes_cli.main._detect_linux_password_store", return_value="kwallet6"), \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns(source=True))
@@ -1260,7 +1260,7 @@ def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
+         patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
@@ -1289,7 +1289,7 @@ def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
+         patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
@@ -1315,7 +1315,7 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.config.load_config", return_value={}), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
+         patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
@@ -1336,15 +1336,15 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 def _gui_build_patches(root: Path, run_side_effect):
     return [
         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"),
-        patch("hermes_cli.main_web_build._run_npm_install_deterministic",
+        patch("hermes_cli.main._run_npm_install_deterministic",
               return_value=subprocess.CompletedProcess(["npm", "ci"], 0)),
-        patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True),
-        patch("hermes_cli.main_desktop._write_desktop_build_stamp"),
-        patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"),
-        patch("hermes_cli.main_desktop._register_linux_desktop_entry"),
-        patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]),
-        patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]),
-        patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=False),
+        patch("hermes_cli.main._desktop_build_needed", return_value=True),
+        patch("hermes_cli.main._write_desktop_build_stamp"),
+        patch("hermes_cli.main._desktop_macos_relaunchable_fixup"),
+        patch("hermes_cli.main._register_linux_desktop_entry"),
+        patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]),
+        patch("hermes_cli.main._purge_electron_build_cache", return_value=[]),
+        patch("hermes_cli.main._redownload_electron_dist", return_value=False),
         patch("hermes_cli.main.subprocess.run", side_effect=run_side_effect),
     ]
 
@@ -1355,12 +1355,12 @@ def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_pat
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
     live_exe.parent.mkdir(parents=True)
     live_exe.write_text("old", encoding="utf-8")
-    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staging = cli_main._desktop_staging_dir(desktop_dir)
     staged_exe = staging / _packaged_exe_rel()
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
 
-    promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
+    promoted = cli_main._swap_staged_desktop_app(desktop_dir, staging)
 
     assert promoted == live_exe
     assert live_exe.read_text(encoding="utf-8") == "new"
@@ -1375,10 +1375,10 @@ def test_swap_staged_desktop_app_without_staged_exe_keeps_live_app(tmp_path):
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
     live_exe.parent.mkdir(parents=True)
     live_exe.write_text("old", encoding="utf-8")
-    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staging = cli_main._desktop_staging_dir(desktop_dir)
     (staging / "linux-unpacked" / "resources").mkdir(parents=True)  # partial tree, no exe
 
-    assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) is None
+    assert cli_main._swap_staged_desktop_app(desktop_dir, staging) is None
     assert live_exe.read_text(encoding="utf-8") == "old"
     assert not staging.exists()
 
@@ -1389,7 +1389,7 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
     live_exe.parent.mkdir(parents=True)
     live_exe.write_text("old", encoding="utf-8")
-    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staging = cli_main._desktop_staging_dir(desktop_dir)
     staged_exe = staging / _packaged_exe_rel()
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
@@ -1404,7 +1404,7 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
         return real_rename(src, dst)
 
     monkeypatch.setattr(cli_main.os, "rename", flaky_rename)
-    assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) is None
+    assert cli_main._swap_staged_desktop_app(desktop_dir, staging) is None
     assert live_exe.read_text(encoding="utf-8") == "old"
     assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
 

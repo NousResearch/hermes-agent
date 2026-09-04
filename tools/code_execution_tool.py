@@ -250,9 +250,9 @@ _TOOL_STUBS = {
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, order: str = "discovery"',
         '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "order": order}',
     ),
     "patch": (
         "patch",
@@ -1335,17 +1335,26 @@ def execute_code(
         JSON string with execution results.
     """
     if not SANDBOX_AVAILABLE:
-        return tool_error("execute_code sandbox is unavailable in this environment. "
-                          "Use normal tool calls (terminal, read_file, write_file, ...) instead.")
-    # Fail closed under a terminal-policy refusal scope: the routed profile's terminal
-    # policy is unresolved, so refuse rather than inherit the launch process's ambient policy.
+        return tool_error(
+            "execute_code sandbox is unavailable in this environment. "
+            "Use normal tool calls (terminal, read_file, write_file, ...) instead."
+        )
+
+    # Fail closed under a terminal-policy refusal scope (#68559): the routed
+    # profile's terminal policy could not be resolved and execute_code runs on
+    # the configured terminal backend — refuse rather than inheriting the
+    # launch process's ambient policy.
     try:
-        # See #68559.
         from tools.terminal_scope import enforce_no_refusal
+
         enforce_no_refusal()
     except Exception as refusal:
-        return tool_error(f"execute_code refused: {refusal} "
-                          "(profile terminal policy unresolved; fix the profile's config.yaml / .env and retry)")
+        return tool_error(
+            f"execute_code refused: {refusal} "
+            "(profile terminal policy unresolved; fix the profile's "
+            "config.yaml / .env and retry)"
+        )
+
     if not code or not code.strip():
         return tool_error(
             "No code provided. execute_code requires a non-empty 'code' "
@@ -1857,7 +1866,197 @@ def _get_execution_mode() -> str:
 
 # ---- OpenAI Function-Calling Schema ----
 
-# Per-tool documentation lines for the execute_code description, in canonical display order.
+# Interpreter paths already reported as outside the Hermes environment —
+# dedupes the exclusion log to once per path per process.
+_external_env_logged: set = set()
+
+
+def _cache_probe_result(cache: dict, key: str, value):
+    """Insert into a bounded probe cache, FIFO-evicting at the cap."""
+    if len(cache) >= _PROBE_CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
+def _is_usable_python(python_path: str) -> bool:
+    """Check whether a candidate Python interpreter is usable for execute_code.
+
+    Requires Python 3.8+ (f-strings and stdlib modules the RPC stubs need).
+    Successful probes are cached per interpreter path; failures are retried
+    (a sticky False would silently pin project mode to sys.executable).
+    """
+    cached = _usable_python_cache.get(python_path)
+    if cached is not None:
+        return cached
+    result = _probe_python(
+        python_path,
+        "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)",
+    )
+    if result is None:
+        return False
+    usable = result.returncode == 0
+    _cache_probe_result(_usable_python_cache, python_path, usable)
+    return usable
+
+
+def _probe_python(python_path: str, code: str, *, text: bool = False):
+    """Run ``python_path -c code`` with the standard interpreter-probe guards.
+
+    Returns the ``CompletedProcess``, or ``None`` when the interpreter is
+    missing, can't be spawned, or hangs past the 5s timeout.
+    """
+    try:
+        from agent.delegation_context import delegated_child_subprocess_env
+
+        return subprocess.run(
+            [python_path, "-c", code],
+            timeout=5,
+            capture_output=True,
+            text=text,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            stdin=subprocess.DEVNULL,
+            env=delegated_child_subprocess_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return None
+
+
+def _python_environment_prefix(python_path: str) -> str:
+    """Return the resolved ``sys.prefix`` reported by *python_path*, if any.
+
+    Successful probes are cached per interpreter path (bounded, FIFO-evicted).
+    Failures are NOT cached: a transient probe failure (fork pressure, 5s
+    timeout on a loaded host) must not stick for the process lifetime — a
+    sticky empty result would silently drop the hermes root from every
+    subsequent execute_code call's PYTHONPATH.
+    """
+    cached = _python_prefix_cache.get(python_path)
+    if cached is not None:
+        return cached
+    result = _probe_python(python_path, "import sys; print(sys.prefix)", text=True)
+    if result is not None and result.returncode == 0 and result.stdout.strip():
+        prefix = os.path.realpath(result.stdout.strip())
+        _cache_probe_result(_python_prefix_cache, python_path, prefix)
+        return prefix
+    return ""
+
+
+def _uses_hermes_python_environment(python_path: str) -> bool:
+    """Whether *python_path* belongs to Hermes's active Python environment.
+
+    Short-circuits when *python_path* IS the running interpreter (by path or
+    realpath) — no subprocess probe on the default strict-mode path, and no
+    way for a flaky probe of ``sys.executable`` itself to break the invariant
+    that repo-root modules are importable in strict mode.  The realpath leg
+    also covers venvs whose bin/python resolves to the same binary (e.g.
+    ``uv run`` setting VIRTUAL_ENV without changing sys.prefix).
+    """
+    if python_path == sys.executable or (
+        os.path.realpath(python_path) == os.path.realpath(sys.executable)
+    ):
+        return True
+    return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
+
+
+def _resolve_child_python(mode: str) -> str:
+    """Pick the Python interpreter for the execute_code subprocess.
+
+    In ``strict`` mode, always ``sys.executable`` — guaranteed to work and
+    keeps behavior fully reproducible across sessions.
+
+    In ``project`` mode, prefer the user's active virtualenv/conda env's
+    python so ``import pandas`` etc. work. Falls back to ``sys.executable``
+    if no venv is detected, the candidate binary is missing/not executable,
+    or it fails a Python 3.8+ version check.
+    """
+    if mode != "project":
+        return sys.executable
+
+    if _IS_WINDOWS:
+        exe_names = ("python.exe", "python3.exe")
+        subdirs = ("Scripts",)
+    else:
+        exe_names = ("python", "python3")
+        subdirs = ("bin",)
+
+    for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
+        root = os.environ.get(var, "").strip()
+        if not root:
+            continue
+        for subdir in subdirs:
+            for exe in exe_names:
+                candidate = os.path.join(root, subdir, exe)
+                if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+                    continue
+                if _is_usable_python(candidate):
+                    return candidate
+                # Found the interpreter but it failed the version check —
+                # log once and fall through to sys.executable.
+                logger.info(
+                    "execute_code: skipping %s=%s (Python version < 3.8 or broken). "
+                    "Using sys.executable instead.", var, candidate,
+                )
+                return sys.executable
+
+    return sys.executable
+
+
+def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
+    """Resolve the working directory for the execute_code subprocess.
+
+    - ``strict``: the staging tmpdir (today's behavior).
+    - ``project``: the session's own cwd — its per-session cwd record
+      (written after every completed terminal command), then the raw
+      per-session cwd override registered via ``session.cwd.set`` /
+      ``register_task_env_overrides``, then the session's TERMINAL_CWD
+      (same as the terminal tool), or ``os.getcwd()`` if none points at a
+      real dir. Falls back to the staging tmpdir as a last resort so we
+      never invoke Popen with a nonexistent cwd.
+
+    This mirrors the resolution ladder file tools and the terminal use
+    (record → registered override → TERMINAL_CWD), so all file-writing
+    paths within a session agree on the working directory. (#56047)
+    """
+    if mode != "project":
+        return staging_dir
+    if task_id:
+        # 1. The session's cwd record — IS the session's `cd` state.
+        try:
+            from tools.terminal_tool import get_session_cwd
+
+            recorded = get_session_cwd(task_id)
+        except Exception:
+            recorded = None
+        if recorded and os.path.isdir(recorded):
+            return recorded
+        # 2. Registered workspace override (session.cwd.set → gateway/TUI/ACP).
+        try:
+            from tools.file_tools import _registered_task_cwd_override
+
+            session_cwd = _registered_task_cwd_override(task_id)
+        except Exception:
+            session_cwd = None
+        if session_cwd and os.path.isdir(session_cwd):
+            return session_cwd
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    raw = scope_terminal_cwd().strip()
+    if raw:
+        expanded = os.path.expanduser(raw)
+        if os.path.isdir(expanded):
+            return expanded
+    here = os.getcwd()
+    if os.path.isdir(here):
+        return here
+    return staging_dir
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Function-Calling Schema
+# ---------------------------------------------------------------------------
+
+# Per-tool documentation lines for the execute_code description.
+# Ordered to match the canonical display order.
 _TOOL_DOC_LINES = [
     ("web_search", "  web_search(query: str, limit: int = 5) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
@@ -1866,8 +2065,11 @@ _TOOL_DOC_LINES = [
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
-    ("write_file", "  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file."),
-    ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
+    ("write_file",
+     "  write_file(path: str, content: str) -> dict\n"
+     "    Always overwrites the entire file."),
+    ("search_files",
+     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),

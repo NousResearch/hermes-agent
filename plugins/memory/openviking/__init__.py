@@ -113,6 +113,7 @@ _SESSION_START_LIST_PARAMS = {
     "node_limit": 512,
 }
 
+_DEFAULT_MEMORY_SUBDIR = "preferences"
 
 def _cfg_field(key: str, description: str, **extra) -> dict:
     return {"key": key, "description": description, **extra, "env_var": f"OPENVIKING_{key.upper()}"}
@@ -492,39 +493,24 @@ BROWSE_SCHEMA = {
     ["action"],
 )
 
-REMEMBER_SCHEMA = _tool_schema(
-    "viking_remember",
-    "Submit important long-term information to OpenViking through session memory extraction. Success means the source was "
-    "submitted, not that a distinct memory file was created. OpenViking can add, merge, or skip the final memory. Use this tool "
-    "when OpenViking should decide how to retain the information. Do not use it when an exact memory file or URI is required. "
-    "If the message is accepted but commit fails, it normally remains live and unextracted because server auto-commit is "
-    "disabled by default; follow the returned recovery instructions.",
-    {"content": _str("The information to remember.")},
-    ["content"],
-)
-
-FORGET_SCHEMA = _tool_schema(
-    "viking_forget",
-    "Delete one OpenViking memory file by exact viking:// URI. Use only when the user explicitly asks to forget or delete a "
-    "specific memory and you have the exact memory file URI. Resources, skills, sessions, directories, generated summaries, "
-    "and broad deletes are rejected.",
-    {"uri": _str("Exact viking:// memory file URI ending in .md.")},
-    ["uri"],
-)
-
-ADD_RESOURCE_SCHEMA = _tool_schema(
-    "viking_add_resource",
-    "Add a remote URL or local file/directory to the OpenViking knowledge base. Remote resources must be public http(s), git, "
-    "or ssh URLs. Local files are uploaded first using OpenViking temp_upload. The system automatically parses, indexes, and "
-    "generates summaries.",
-    {
-        "url": _str("Remote URL or local file/directory path to add."),
-        "reason": _str("Why this resource is relevant (improves search)."),
-        "to": _str("Optional target viking:// URI for the resource."),
-        "parent": _str("Optional parent viking:// URI. Cannot be used with to."),
-        "instruction": _str("Optional processing instruction for semantic extraction."),
-        "wait": {"type": "boolean", "description": "Whether to wait for processing to complete."},
-        "timeout": {"type": "number", "description": "Timeout in seconds when wait is true."},
+REMEMBER_SCHEMA = {
+    "name": "viking_remember",
+    "description": (
+        "Submit important long-term information to OpenViking through session "
+        "memory extraction. Success means the source was submitted, not that a "
+        "distinct memory file was created. OpenViking can add, merge, or skip the "
+        "final memory. Use this tool when OpenViking should decide how to retain "
+        "the information. Do not use it when an exact memory file or URI is "
+        "required. If the message is accepted but commit fails, it normally "
+        "remains live and unextracted because server auto-commit is disabled by "
+        "default; follow the returned recovery instructions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "The information to remember."},
+        },
+        "required": ["content"],
     },
     ["url"],
 )
@@ -3868,49 +3854,77 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not client:
             return tool_error("OpenViking server not connected")
 
-        category = args.get("category", "")
-        subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
         client = self._ensure_client()
         if not client:
             return tool_error("OpenViking server not connected")
-        uri = self._build_memory_uri(subdir, client=client)
 
-        def failure(message: str, *, stage: str, message_status: str) -> str:
-            return tool_error(
-                message, session_id=session_id, session_uri=session_uri, failure_stage=stage, message_status=message_status,
-                recovery_command=f"ov session commit {session_id}",
-                recovery_note=(
-                    "Inspect session_uri before recovery. If history/archive_* exists, do not retry. If messages.jsonl contains "
-                    "the fact and no archive exists, run recovery_command with the same OpenViking profile and credentials as "
-                    "Hermes. Otherwise, do not resubmit automatically; report the uncertain state to the user."
-                ),
-            )
+        session_id = f"hermes-remember-{uuid.uuid4().hex[:12]}"
+        session_uri = _user_scoped_uri(
+            self._user_space(client),
+            f"sessions/{session_id}",
+        )
+        recovery_command = f"ov session commit {session_id}"
+        recovery_note = (
+            "Inspect session_uri before recovery. If history/archive_* exists, do not "
+            "retry. If messages.jsonl contains the fact and no archive exists, run "
+            "recovery_command with the same OpenViking profile and credentials as "
+            "Hermes. Otherwise, do not resubmit automatically; report the uncertain "
+            "state to the user."
+        )
+        message: Dict[str, Any] = {
+            "role": "user",
+            "parts": [self._text_part(content)],
+        }
+
+        # Use a dedicated session so explicit remember does not commit or
+        # otherwise alter the live Hermes conversation session.
         try:
-            result = client.post("/api/v1/content/write", {
-                "uri": uri,
-                "content": content,
-                "mode": "create",
-            })
-            written = result.get("result", {}).get("written_bytes", 0)
-            return json.dumps({
-                "status": "stored",
-                "message": f"Memory stored ({written}b) and queued for vector indexing.",
-            })
+            client.post(f"/api/v1/sessions/{session_id}/messages", message)
         except Exception as e:
             logger.error("OpenViking remember message failed for %s: %s", session_id, e)
-            return failure(f"Memory message submission failed for session {session_id}: {e}", stage="message", message_status="unknown")
+            return tool_error(
+                f"Memory message submission failed for session {session_id}: {e}",
+                session_id=session_id,
+                session_uri=session_uri,
+                failure_stage="message",
+                message_status="unknown",
+                recovery_command=recovery_command,
+                recovery_note=recovery_note,
+            )
+
         try:
-            commit = self._unwrap_result(client.post(f"/api/v1/sessions/{session_id}/commit", {"keep_recent_count": 0}))
+            commit = self._unwrap_result(client.post(
+                f"/api/v1/sessions/{session_id}/commit",
+                {"keep_recent_count": 0},
+            ))
+            commit = commit if isinstance(commit, dict) else {}
+            result: Dict[str, Any] = {
+                "status": "submitted",
+                "session_id": session_id,
+                "session_uri": session_uri,
+                "message_status": "accepted",
+                "extraction_status": str(commit.get("status") or "accepted"),
+                "message": (
+                    "Memory source submitted to OpenViking session extraction. "
+                    "OpenViking may add, merge, or skip the final memory."
+                ),
+            }
+            if commit.get("task_id"):
+                result["task_id"] = commit["task_id"]
+            if commit.get("trace_id"):
+                result["trace_id"] = commit["trace_id"]
+            return json.dumps(result)
         except Exception as e:
             logger.error("OpenViking remember commit failed for %s: %s", session_id, e)
-            return failure(f"Memory message was accepted, but commit failed for session {session_id}: {e}", stage="commit", message_status="accepted")
-        commit = commit if isinstance(commit, dict) else {}
-        return json.dumps({
-            "status": "submitted", "session_id": session_id, "session_uri": session_uri, "message_status": "accepted",
-            "extraction_status": str(commit.get("status") or "accepted"),
-            "message": "Memory source submitted to OpenViking session extraction. OpenViking may add, merge, or skip the final memory.",
-            **{key: commit[key] for key in ("task_id", "trace_id") if commit.get(key)},
-        })
+            return tool_error(
+                f"Memory message was accepted, but commit failed for session {session_id}: {e}",
+                session_id=session_id,
+                session_uri=session_uri,
+                failure_stage="commit",
+                message_status="accepted",
+                recovery_command=recovery_command,
+                recovery_note=recovery_note,
+            )
 
     def _tool_forget(self, args: dict) -> str:
         uri, error = _validate_forget_memory_uri(args.get("uri"))

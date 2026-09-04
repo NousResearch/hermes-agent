@@ -75,6 +75,17 @@ _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# A tool-call opener with no closer, or GLM-style argument markup
+# (<arg_key>/<arg_value>) outside any closed block, means the stream was
+# cut mid-serialization of a text-channel tool call (#101899). The call
+# can't be recovered; strip from the block-boundary opener (or the line
+# holding the first stray argument tag) to the end of the text.
+_UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
+    r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
@@ -83,7 +94,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "tour", "delegate_task"}
+    {"todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "gui_tour", "delegate_task"}
 )
 
 
@@ -890,13 +901,102 @@ _THINK_STRIP_PATTERNS = (
 
 
 def strip_think_blocks(agent, content: str) -> str:
-    """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
-    pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
-    stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
-    content = _flatten_content_text(content) if content else ""
-    for pattern in _THINK_STRIP_PATTERNS if content else ():
-        content = pattern.sub('', content)
+    """Remove reasoning/thinking blocks from content, returning only visible text.
+
+    Handles four cases:
+      1. Closed tag pairs (`` <think>… ``) — the common path when
+         the provider emits complete reasoning blocks.
+      2. Unterminated open tag at a block boundary (start of text or
+         after a newline) — e.g. MiniMax M2.7 / NIM endpoints where the
+         closing tag is dropped.  Everything from the open tag to end
+         of string is stripped.  The block-boundary check mirrors
+         ``gateway/stream_consumer.py``'s filter so models that mention
+         `` <think>`` in prose aren't over-stripped.
+      3. Stray orphan open/close tags that slip through.
+      4. Tag variants: `` <think>``, ``<thinking>``, ``<reasoning>``,
+         ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
+         case-insensitive.
+
+    Additionally strips standalone tool-call XML blocks that some open
+    models (notably Gemma variants on OpenRouter) emit inside assistant
+    content instead of via the structured ``tool_calls`` field:
+      * ``<tool_call>…</tool_call>``
+      * ``<tool_calls>…</tool_calls>``
+      * ``<tool_result>…</tool_result>``
+      * ``<function_call>…</function_call>``
+      * ``<function_calls>…</function_calls>``
+      * ``<function name="…">…</function>`` (Gemma style)
+    Ported from openclaw/openclaw#67318. The ``<function>`` variant is
+    boundary-gated (only strips when the tag sits at start-of-line or
+    after punctuation and carries a ``name="..."`` attribute) so prose
+    mentions like "Use <function> in JavaScript" are preserved.
+    """
+    if not content:
+        return ""
+    # Coerce non-string content to text before any regex runs.  Providers
+    # that return assistant ``content`` as a list of blocks (Anthropic via
+    # OpenRouter emits ``[{"type":"text",...}, {"type":"thinking",...}]``) or
+    # as a dict flow into this shared helper from several callers — most
+    # notably ``_interim_assistant_visible_text`` reading a *stored* history
+    # message whose content was persisted as a list.  A raw list/dict reaching
+    # ``re.sub`` below raises ``TypeError: expected string or bytes-like
+    # object, got 'list'``, which the outer conversation loop swallows and
+    # retries forever (observed as an infinite "preparing terminal…" loop on
+    # Anthropic models via OpenRouter).  Flatten here so every caller is safe.
+    if not isinstance(content, str):
+        if isinstance(content, list):
+            _parts: list[str] = []
+            for _part in content:
+                if isinstance(_part, str):
+                    _parts.append(_part)
+                elif isinstance(_part, dict):
+                    _ptype = str(_part.get("type") or "").strip().lower()
+                    # Drop reasoning/thinking blocks outright — this function's
+                    # whole job is to strip them, and their text lives under
+                    # different keys ("thinking", "reasoning") per provider.
+                    if _ptype in {"thinking", "reasoning", "redacted_thinking"}:
+                        continue
+                    _text = _part.get("text")
+                    if isinstance(_text, str) and _text:
+                        _parts.append(_text)
+            content = "".join(_parts)
+        elif isinstance(content, dict):
+            content = str(content.get("text") or content.get("content") or "")
+        else:
+            content = str(content)
+        if not content:
+            return ""
+    # 1. Closed tag pairs — case-insensitive for all variants so
+    #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
+    #    the unterminated-tag pass and take trailing content with them.
+    for _pattern in _REASONING_BLOCK_PATTERNS:
+        content = _pattern.sub('', content)
+    # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
+    #     generic tag names first — they have no attribute gating since
+    #     a literal <tool_call> in prose is already vanishingly rare.
+    for _pattern in _TOOL_CALL_BLOCK_PATTERNS:
+        content = _pattern.sub('', content)
+    # 1c. <function name="...">...</function> — Gemma-style standalone
+    #     tool call. Only strip when the tag sits at a block boundary
+    #     (start of text, after a newline, or after sentence-ending
+    #     punctuation) AND carries a name="..." attribute. This keeps
+    #     prose mentions like "Use <function> to declare" safe.
+    content = _NAMED_FUNCTION_BLOCK_PATTERN.sub('', content)
+    # 2. Unterminated reasoning block — open tag at a block boundary
+    #    (start of text, or after a newline) with no matching close.
+    #    Strip from the tag to end of string.  Fixes #8878 / #9568
+    #    (MiniMax M2.7 leaking raw reasoning into assistant content).
+    content = _UNTERMINATED_REASONING_BLOCK_PATTERN.sub('', content)
+    # 3. Stray orphan open/close tags that slipped through.
+    content = _ORPHAN_REASONING_TAG_PATTERN.sub('', content)
+    # 3b. Stray tool-call closers. (We do NOT strip bare <function> or
+    #     unterminated <function name="..."> because a truncated tail
+    #     during streaming may still be valuable to the user; matches
+    #     OpenClaw's intentional asymmetry.)
+    content = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', content)
+    # 3c. Tool-call openers or argument markup surviving 1b belong to a
+    #     block that never closed — a mid-serialization stream cut (#101899).
+    content = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', content)
     return content
 
 
@@ -2188,15 +2288,20 @@ def anthropic_prompt_cache_policy(
     return False, False
 
 
+
 def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
-    """Ask the registered ProviderProfile for a custom client, if any. Resolves by provider name,
-    then by ``base_url`` prefix so a URL-only runtime (``acp://…``) still reaches its profile.
-    A profile that raises is logged and skipped: a third-party plugin must not be able to take
-    the turn down, it can only fail to provide a client."""
+    """Ask the registered ProviderProfile for a custom client, if any.
+
+    Resolves by provider name first, then by the ``base_url`` scheme prefix so a
+    runtime configured only by URL (``acp://…``) still reaches its profile.
+    A profile that raises is logged and skipped: a third-party plugin must not
+    be able to take the turn down, it can only fail to provide a client.
+    """
     try:
         from providers import get_provider_profile
     except Exception:
         return None
+
     profile = None
     provider_name = (getattr(agent, "provider", "") or "").strip()
     if provider_name:
@@ -2210,37 +2315,166 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
             profile = _profile_for_base_url(base_url)
     if profile is None:
         return None
+
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
         _ra().logger.warning(
-            "Provider profile %r failed to create a client; falling back to the standard client path",
-            getattr(profile, "name", provider_name) or "?", exc_info=True,
+            "Provider profile %r failed to create a client; falling back to the "
+            "standard client path",
+            getattr(profile, "name", provider_name) or "?",
+            exc_info=True,
         )
         return None
 
 
 def _profile_for_base_url(base_url: str) -> Any | None:
-    """Registered profile whose own base_url is a prefix of ``base_url`` (provider name did not
-    resolve). Prefix, not equality: the replaced copilot-acp branch keyed on
-    ``startswith("acp://copilot")``, so a path or user override under the same root must resolve."""
+    """Find a registered profile whose own base_url matches ``base_url``.
+
+    Only used when the provider name did not resolve. Matches on exact base_url
+    so a non-HTTP scheme (``acp://copilot``) routes to its profile even when the
+    caller passed no provider name.
+    """
     try:
         from providers import list_providers
-        candidates = list_providers()
     except Exception:
         return None
     target = base_url.rstrip("/").lower()
+    try:
+        candidates = list_providers()
+    except Exception:
+        return None
     for candidate in candidates or []:
         own = str(getattr(candidate, "base_url", "") or "").rstrip("/").lower()
+        # Prefix match, not equality: the replaced copilot-acp branch keyed on
+        # ``startswith("acp://copilot")``, so a base_url carrying a path or a
+        # user override under the same root must still resolve.
         if own and (target == own or target.startswith(own + "/")):
             return candidate
     return None
 
 
-def _ensure_copilot_headers(client_kwargs: dict) -> None:
-    """Defense-in-depth: recovery/restore rebuild from a snapshot without re-running header
-    wiring; a missing Copilot-Integration-Id causes model_not_available_for_integrator 400s.
-    Only ADD missing keys, never override."""
+def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.ssl_verify import resolve_httpx_verify
+    # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
+    # copies of it) in; any in-place mutation leaks back into the stored dict and is
+    # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
+    # transport that was torn down after the first request, so the next request
+    # wrapped a closed transport and raised "Cannot send a request, as the client
+    # has been closed" on every retry. The revert resolved that specific path; this
+    # copy locks the contract so future transport/keepalive work can't reintroduce
+    # the same class of bug.
+    client_kwargs = dict(client_kwargs)
+    # The MoA virtual provider has no real OpenAI wire endpoint - the facade
+    # *is* the client. Rebuilding a native OpenAI client while
+    # agent.provider == "moa" (client replacement, stream-retry pool cleanup,
+    # credential rotation, fallback+restore) drops the facade: the next primary
+    # call either raises a `_moa_prepared_request` TypeError (#78382) or, when
+    # _client_kwargs carry an unrelated relay base_url, leaks the request to a
+    # foreign gateway. Rebuild the facade instead (build_moa_facade also
+    # re-wires the reference relay, see #53802).
+    if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
+        from agent.moa_loop import build_moa_facade
+        return build_moa_facade(agent, getattr(agent, "model", None) or "default")
+    ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
+    ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
+    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
+    _validate_proxy_env_urls()
+    _validate_base_url(client_kwargs.get("base_url"))
+    # ── Provider-supplied client (registration seam) ──────────────────────
+    # A provider whose wire protocol is not OpenAI-over-HTTP supplies its own
+    # client from its ProviderProfile.create_client(). Consulted before the
+    # built-in ladder so a profile registered from ~/.hermes/plugins/ or a pip
+    # entry point can ship a transport without editing this function — that is
+    # what makes an out-of-tree ACP provider possible at all. Returning None
+    # (the default) falls through to the paths below, so every existing
+    # provider is unaffected.
+    provider_client = _provider_supplied_client(agent, client_kwargs)
+    if provider_client is not None:
+        _ra().logger.info(
+            "%s client created from provider profile (%s, shared=%s) %s",
+            agent.provider,
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return provider_client
+    if agent.provider == "gemini":
+        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+        base_url = str(client_kwargs.get("base_url", "") or "")
+        if is_native_gemini_base_url(base_url):
+            safe_kwargs = {
+                k: v for k, v in client_kwargs.items()
+                if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
+            }
+            if "http_client" not in safe_kwargs:
+                keepalive_http = agent._build_keepalive_http_client(
+                    base_url, verify=httpx_verify,
+                )
+                if keepalive_http is not None:
+                    safe_kwargs["http_client"] = keepalive_http
+            client = GeminiNativeClient(**safe_kwargs)
+            _ra().logger.info(
+                "Gemini native client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                agent._client_log_context(),
+            )
+            return client
+    # Inject TCP keepalives so the kernel detects dead provider connections
+    # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
+    # this, a peer that drops mid-stream leaves the socket in a state where
+    # epoll_wait never fires, ``httpx`` read timeout may not trigger, and
+    # the agent hangs until manually killed.  Probes after 30s idle, retry
+    # every 10s, give up after 3 → dead peer detected within ~60s.
+    #
+    # Safety against #10933: the ``client_kwargs = dict(client_kwargs)``
+    # above means this injection only lands in the local per-call copy,
+    # never back into ``agent._client_kwargs``.  Each ``_create_openai_client``
+    # invocation therefore gets its OWN fresh ``httpx.Client`` whose
+    # lifetime is tied to the OpenAI client it is passed to.  When the
+    # OpenAI client is closed (rebuild, teardown, credential rotation),
+    # the paired ``httpx.Client`` closes with it, and the next call
+    # constructs a fresh one — no stale closed transport can be reused.
+    # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
+    # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
+    # What IS shared across those per-client wrappers is the underlying
+    # connection pool: ``build_keepalive_http_client`` mounts a
+    # process-shared ``HTTPTransport`` behind a per-client view whose
+    # ``close()`` is a no-op for the pool, so a closed wrapper never takes
+    # a sibling's (or the successor's) connections with it
+    # (tests/agent/test_shared_http_transport.py).
+    if "http_client" not in client_kwargs:
+        keepalive_http = agent._build_keepalive_http_client(
+            client_kwargs.get("base_url", ""), verify=httpx_verify,
+        )
+        if keepalive_http is not None:
+            client_kwargs["http_client"] = keepalive_http
+    # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
+    # which honors Retry-After and applies adaptive/jittered backoff. The OpenAI
+    # SDK default (max_retries=2) uses its own 1-2s backoff that ignores
+    # Retry-After and double-retries inside our loop — the same deadlock the
+    # Anthropic clients hit (#26293). This is the single chokepoint every primary
+    # OpenAI/aggregator client passes through (init, switch_model, recovery,
+    # restore, request-scoped); auxiliary_client builds its own clients and keeps
+    # SDK retries because it is NOT wrapped by the conversation loop.
+    client_kwargs.setdefault("max_retries", 0)
+    # Defense-in-depth: guarantee Copilot requests carry the integration
+    # headers regardless of which build path we came through. The primary
+    # header wiring lives in `_apply_client_headers_for_base_url`, but two
+    # rebuild paths (`primary_recovery`, `restore_primary` in this module)
+    # reconstruct the client purely from a `_primary_runtime` snapshot and do
+    # NOT re-run that wiring. If the snapshot's client_kwargs ever lacks
+    # `default_headers` (older snapshot, header-less resolver result), the
+    # client goes out WITHOUT `Copilot-Integration-Id: vscode-chat`; the
+    # Copilot server then routes it to the "copilot-language-server" integrator
+    # whose model allowlist omits enterprise-only models (claude-opus-4.8) →
+    # HTTP 400 model_not_available_for_integrator on every turn. This chokepoint
+    # is the single place every primary OpenAI client passes through, so filling
+    # missing Copilot headers here closes the whole class. We only ADD missing
+    # keys — never override headers a caller deliberately set.
     try:
         if base_url_host_matches(str(client_kwargs.get("base_url", "")), "githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
@@ -2940,7 +3174,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
-    if function_name == "todo":
+    if function_name == "todo_list":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
             return _finish_agent_tool(
@@ -3082,7 +3316,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
-    elif function_name == "tour":
+    elif function_name == "gui_tour":
         def _execute(next_args: dict) -> Any:
             from tools.tour_tool import tour_tool as _tour_tool
             return _finish_agent_tool(
@@ -3207,38 +3441,24 @@ def _tool_call_id_variants(tc: Any) -> set:
 # consistently whether the empty turn was caught at write time or send time.
 _INTERRUPTED_PLACEHOLDER = "[response interrupted]"
 
-# Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via
-# ``agent.sanitizer_heal_escalation_threshold`` (<= 0 disables).
-# Repeated heals of the same poisoned transcript used to WARNING on every send (#96870).
-# ``_EMPTY_HEAL_ESCALATE_AFTER`` is the built-in default; deployments tune it via
-# ``agent.sanitizer_heal_escalation_threshold`` in config.yaml (<= 0 disables escalation entirely — WARNINGs
-# still fire per window).
+# Repeated heals of the same poisoned transcript used to WARNING on every
+# send (#96870). Escalate once per session window, then stay quiet.
+# ``_EMPTY_HEAL_ESCALATE_AFTER`` is the built-in default; deployments tune it
+# via ``agent.sanitizer_heal_escalation_threshold`` in config.yaml (<= 0
+# disables escalation entirely — WARNINGs still fire per window).
 _EMPTY_HEAL_ESCALATE_AFTER = 3
 _EMPTY_HEAL_WINDOW_S = 600.0
 _empty_heal_log_state: Dict[str, Dict[str, Any]] = {}
 _empty_heal_log_lock = threading.Lock()
-# Sessions already told ONCE (out-of-band, never in conversation context); kept apart from the
-# windowed log state so a new window never re-arms the notice.
-# Session keys that already received the one-time user notice. Separate from the windowed log state so a new
-# 10-minute window never re-notifies: the user is told ONCE per session, ever (#96870 — out-of-band,
-# delivery channel only, never injected into conversation context).
+# Session keys that already received the one-time user notice. Separate from
+# the windowed log state so a new 10-minute window never re-notifies: the
+# user is told ONCE per session, ever (#96870 — out-of-band, delivery
+# channel only, never injected into conversation context).
 _empty_heal_user_notified: set = set()
-# One-shot pending notices keyed by session, drained via ``consume_pending_sanitizer_heal_notice``
-# and delivered via the status/warning callback.
+# One-shot pending notices keyed by session, drained by the conversation
+# loop through ``consume_pending_sanitizer_heal_notice`` and delivered via
+# the status/warning callback (the normal delivery channel).
 _empty_heal_pending_notice: Dict[str, str] = {}
-
-
-def _content_has_payload(content: Any) -> bool:
-    if isinstance(content, str):
-        return bool(content.strip())
-    if not isinstance(content, list):
-        return content not in (None, "")
-    # Any typed block counts, as long as a text block is not itself blank.
-    return any(
-        (block.get("type") != "text" or (isinstance(block.get("text"), str) and block["text"].strip()))
-        if isinstance(block, dict) else bool(block)
-        for block in content
-    )
 
 
 def _msg_has_payload(msg: Dict[str, Any]) -> bool:
@@ -3256,15 +3476,171 @@ def _msg_has_payload(msg: Dict[str, Any]) -> bool:
     )
 
 
-def fill_empty_non_final_wire_payload(msg: Dict[str, Any], *, is_final: bool) -> bool:
-    """Write the interrupted placeholder onto an empty non-final wire copy; True when filled.
-    Pass the per-call copy only; durable history must not be mutated."""
-    if is_final or not isinstance(msg, dict) or msg.get("role") not in ("user", "assistant"):
+def fill_empty_non_final_wire_payload(
+    msg: Dict[str, Any], *, is_final: bool
+) -> bool:
+    """Write the interrupted placeholder onto an empty non-final wire copy.
+
+    Used by the send-time projection so ``repair_empty_non_final_messages``
+    does not re-heal the same row on every call (#88955 hidden placeholders,
+    #96870 stream-death / host-fed empties). Pass the per-call copy only —
+    durable history must not be mutated. Returns True when *msg* was filled.
+    """
+    if is_final or not isinstance(msg, dict):
+        return False
+    if msg.get("role") not in ("user", "assistant"):
         return False
     if _msg_has_payload(msg):
         return False
     msg["content"] = _INTERRUPTED_PLACEHOLDER
     return True
+
+
+def _session_id_for_heal_log() -> str:
+    try:
+        from hermes_logging import _session_context
+
+        return str(getattr(_session_context, "session_id", None) or "")
+    except Exception:
+        return ""
+
+
+def _heal_escalation_threshold() -> int:
+    """Resolve the escalation threshold: config override, else the default.
+
+    ``agent.sanitizer_heal_escalation_threshold`` in config.yaml. Fail-safe:
+    any read error falls back to the module default so the sanitiser can
+    never be broken by a bad config file.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = (load_config_readonly().get("agent", {}) or {}).get(
+            "sanitizer_heal_escalation_threshold"
+        )
+        if raw is not None:
+            return int(raw)
+    except Exception:
+        pass
+    return _EMPTY_HEAL_ESCALATE_AFTER
+
+
+def consume_pending_sanitizer_heal_notice() -> Optional[str]:
+    """Drain the one-time user notice for the current session, if any.
+
+    Called by the conversation loop right after the pre-send sanitizer pass;
+    the returned text is delivered through the status/warning callback (the
+    normal out-of-band delivery channel: gateway status message, CLI stderr
+    print). It is NEVER appended to the conversation context, so prompt
+    caching and role alternation are untouched. Returns at most one notice
+    per session for its whole lifetime.
+    """
+    key = _session_id_for_heal_log() or "-"
+    with _empty_heal_log_lock:
+        return _empty_heal_pending_notice.pop(key, None)
+
+
+def get_sanitizer_heal_stats() -> Dict[str, Dict[str, Any]]:
+    """Read-only snapshot of per-session sanitiser heal counters.
+
+    Surfaced by diagnostics (``hermes doctor`` / debug share callers) so
+    repeated silent repairs are visible outside errors.log. Keys are session
+    ids; values carry ``heal_events`` (sanitizer invocations that healed at
+    least one message), ``messages_healed`` (total substituted turns) and
+    ``escalated`` (whether the ERROR + user notice fired).
+    """
+    with _empty_heal_log_lock:
+        return {
+            k: {
+                "heal_events": v.get("total_events", v.get("count", 0)),
+                "messages_healed": v.get("total_healed", 0),
+                "escalated": k in _empty_heal_user_notified,
+            }
+            for k, v in _empty_heal_log_state.items()
+        }
+
+
+def _log_empty_non_final_heal(healed: int) -> None:
+    """WARNING on the first heals in a window; one ERROR at the threshold.
+
+    Further heals in the same session window stay silent so a poisoned
+    transcript cannot flood ``errors.log`` (dozens of identical WARNINGs
+    per hour with no user-visible signal — #96870). At the threshold the
+    escalation also queues a ONE-TIME out-of-band user notice (drained by
+    ``consume_pending_sanitizer_heal_notice``) pointing at ``/debug share``
+    / ``hermes doctor`` — once per session, never re-armed by a new window.
+    """
+    key = _session_id_for_heal_log() or "-"
+    threshold = _heal_escalation_threshold()
+    now = time.monotonic()
+    with _empty_heal_log_lock:
+        state = _empty_heal_log_state.get(key)
+        if state is None or (now - state["window_start"]) > _EMPTY_HEAL_WINDOW_S:
+            prior_events = state.get("total_events", 0) if state else 0
+            prior_healed = state.get("total_healed", 0) if state else 0
+            state = {
+                "count": 0,
+                "window_start": now,
+                "escalated": False,
+                "total_events": prior_events,
+                "total_healed": prior_healed,
+            }
+            _empty_heal_log_state[key] = state
+        state["count"] += 1
+        state["total_events"] = state.get("total_events", 0) + 1
+        state["total_healed"] = state.get("total_healed", 0) + healed
+        count = state["count"]
+        total_events = state["total_events"]
+        total_healed = state["total_healed"]
+        if threshold > 0 and count >= threshold and not state["escalated"]:
+            state["escalated"] = True
+            level = "error"
+            if key not in _empty_heal_user_notified:
+                _empty_heal_user_notified.add(key)
+                _empty_heal_pending_notice[key] = (
+                    "⚠️ Your session transcript required repeated repair "
+                    f"({total_events} heal passes so far). Replies keep "
+                    "working, but a corrupted turn is stuck in this "
+                    "session's history — run /debug share or `hermes "
+                    "doctor` to capture diagnostics, or /new to start a "
+                    "clean session."
+                )
+        elif state["escalated"]:
+            level = "silent"
+        else:
+            level = "warning"
+
+    if level == "silent":
+        return
+    if level == "error":
+        _ra().logger.error(
+            "Pre-call sanitizer: repeated-heal escalation for session %s — "
+            "healed %d empty non-final message(s) this send; heal pattern: "
+            "%d heal events / %d messages healed this session "
+            "(%d in the current session window, threshold %d). The transcript "
+            "is being repaired on every send; /new drops the poisoned turns.",
+            key,
+            healed,
+            total_events,
+            total_healed,
+            count,
+            threshold,
+        )
+        return
+    _ra().logger.warning(
+        "Pre-call sanitizer: healed %d empty non-final message(s) by "
+        "substituting placeholder content — an empty-content turn was in "
+        "the transcript and would 400 the request ('messages must have "
+        "non-empty content' / INVALID_REQUEST_BODY). Self-recovering the "
+        "poisoned transcript in memory; no restart needed.",
+        healed,
+    )
+
+
+def repair_empty_non_final_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Heal empty-content non-final messages before they reach the provider.
 
 
 def _session_id_for_heal_log() -> str:
@@ -3807,6 +4183,67 @@ def _pair_tool_calls_positionally(messages: List[Dict[str, Any]]) -> List[Dict[s
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # 4. Align each tool result's wire-visible ``name`` with the function name
+    # of the call it answers. Google matches functionResponse.name against
+    # functionCall.name and rejects a mismatch with HTTP 400 "Request contains
+    # an invalid argument" (INVALID_ARGUMENT); behind an OpenAI-compatible
+    # gateway that surfaces only as a generic "Provider returned error".
+    #
+    # The mismatch is routine, not corruption. When tool_search defers
+    # MCP/plugin tools the model calls the bridge tool ``tool_call``, while
+    # ``make_tool_result_message()`` labels the result with the unwrapped
+    # internal tool name (``mcp__github__create_issue``) that dispatch, hooks,
+    # logging, and guardrails need. #72089 fixed exactly this for the native
+    # Gemini adapter, which now prefers ``tool_name_by_call_id`` over the
+    # result name; requests that reach Gemini through the OpenAI-compatible
+    # path (OpenRouter, Vertex/LiteLLM proxies, any OpenAI-shaped gateway) skip
+    # that translation entirely and still send the internal name on the wire.
+    #
+    # Normalizing here rather than in the OpenAI-compat serializer keeps it
+    # provider-agnostic: Gemini reaches Hermes under many model strings and
+    # base URLs, so sniffing for "is this really Google?" is unreliable, and
+    # every other provider either ignores the field or agrees with the call
+    # name. Runs on the per-call copy, so the stored trajectory keeps the real
+    # tool name for the session DB and the UI — only the wire payload changes.
+    # A no-op for the native Gemini path, which already resolves the same name.
+    # A result whose assistant call frame is missing entirely never reaches
+    # here — pass 1 above drops it as an orphan — so the only results this pass
+    # sees are ones whose call name is knowable.
+    call_names: Dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                # Strip on insert to match the lookup below (and pass 1's
+                # ``result_call_ids``), so an id that arrives padded still
+                # pairs instead of silently skipping realignment.
+                cid = (_ra().AIAgent._get_tool_call_id_static(tc) or "").strip()
+                nm = _ra().AIAgent._get_tool_call_name_static(tc)
+                if cid and nm:
+                    call_names[cid] = nm
+    realigned: List[Tuple[str, str]] = []
+    aligned: List[Dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            expected = call_names.get(cid)
+            current = msg.get("name")
+            # Only rewrite a name that is present and disagrees. A result with
+            # no ``name`` is already valid for Gemini (the id pairs it), so
+            # leave it absent rather than inventing a field: clean transcripts
+            # must still pass through byte-identical for prompt caching.
+            if expected and current and current != expected:
+                msg = {**msg, "name": expected}
+                realigned.append((current, expected))
+        aligned.append(msg)
+    if realigned:
+        messages = aligned
+        _ra().logger.debug(
+            "Pre-call sanitizer: realigned %d tool result name(s) with their "
+            "tool_call function name (%s)",
+            len(realigned),
+            ", ".join(f"{was} -> {now}" for was, now in realigned),
+        )
     return messages
 
 
@@ -4326,4 +4763,506 @@ def intent_ack_continuation_enabled(agent) -> bool:
     directly (``"codex_only"`` ⇒ require_workspace=True, ``"all"`` ⇒ False).
     """
     return intent_ack_continuation_mode(agent) != "off"
-# ---- END PLUGIN-COMPAT ----
+
+
+
+
+def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
+    """Copy provider-facing reasoning fields onto an API replay message.
+
+    Forwarder — the strip-vs-repad POLICY is owned by
+    ``agent.message_sanitization.apply_reasoning_content_policy`` (audit F4);
+    this only supplies the agent's cached provider-direction flag.
+    """
+    from agent.message_sanitization import apply_reasoning_content_policy
+
+    apply_reasoning_content_policy(
+        source_msg, api_msg, agent._needs_thinking_reasoning_pad()
+    )
+
+
+def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
+    """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
+
+    ``api_messages`` is built once, before the retry loop, while the *primary*
+    provider is active.  A mid-conversation fallback can then switch providers,
+    so the reasoning fields baked into ``api_messages`` are shaped for the
+    *prior* provider and must be reconciled against the *current* one:
+
+    * Switching TO a require-side provider (DeepSeek / Kimi / MiMo thinking
+      mode): assistant turns built when the prior provider did NOT need the
+      echo-back go out without ``reasoning_content`` and the new provider
+      rejects them with HTTP 400 ("The reasoning_content in the thinking mode
+      must be passed back").  Re-apply the pad.
+
+    * Switching TO a strict provider that rejects the field (Mistral,
+      Cerebras, Groq, SambaNova, …): assistant turns built under a reasoning
+      primary carry a ``reasoning_content`` pad (often a single space ``" "``),
+      and the strict provider rejects it with HTTP 400/422 ("Extra inputs are
+      not permitted").  Strip the field.  This is the exact cross-provider
+      fallback bug from #45655 — a DeepSeek primary pads history with ``" "``,
+      the request falls back to Mistral, and Mistral 422s on the stale pad.
+
+    Calling this immediately before building the request kwargs reconciles the
+    fields against the *current* provider.  It is idempotent and safe to call
+    every iteration; it covers every fallback path.
+
+    Returns the number of assistant turns whose reasoning_content was added or
+    removed.
+    """
+    from agent.message_sanitization import reapply_reasoning_echo
+
+    return reapply_reasoning_echo(
+        api_messages, agent._needs_thinking_reasoning_pad()
+    )
+
+
+def _iter_httpx_pools_with_owner(http_client: Any):
+    """Yield ``(pool, owner)`` pairs reachable from an httpx client.
+
+    Hermes' keepalive client (#10324 / ``_build_keepalive_http_client``) and
+    any ``HTTP(S)_PROXY`` configuration put live connections on *mounted*
+    transports (``client._mounts``), not only on the default
+    ``client._transport``. Walking the default transport alone makes
+    ``force_close_tcp_sockets`` return 0 while a stream is still mid-recv —
+    the interrupt logs success and the provider keeps burning the slot
+    (#72975).
+
+    ``owner`` is ``None`` for a pool this client owns outright, or the
+    ``_SharedTransport`` view id when the pool is process-shared with other
+    clients (``process_bootstrap.build_keepalive_http_client``). Callers must
+    then touch only the in-flight requests stamped with that owner.
+    """
+    seen_pools: set[int] = set()
+
+    def _emit(pool: Any, owner: Any):
+        if pool is None:
+            return
+        marker = id(pool)
+        if marker in seen_pools:
+            return
+        seen_pools.add(marker)
+        yield pool, owner
+
+    def _pools_for_transport(transport: Any):
+        if transport is None:
+            return
+        owner = id(transport) if type(transport).__name__ == "_SharedTransport" else None
+        # Normal httpx.HTTPTransport / HTTPProxy-as-transport: connections
+        # live under ``_pool``. HTTPProxy itself *is* a ConnectionPool and
+        # may be mounted directly — then ``_connections`` is on the
+        # transport.
+        pool = getattr(transport, "_pool", None)
+        if pool is not None:
+            yield from _emit(pool, owner)
+            return
+        if getattr(transport, "_connections", None) is not None:
+            yield from _emit(transport, owner)
+
+    try:
+        yield from _pools_for_transport(getattr(http_client, "_transport", None))
+        mounts = getattr(http_client, "_mounts", None) or {}
+        for _pattern, mounted in list(mounts.items()):
+            yield from _pools_for_transport(mounted)
+    except Exception:
+        return
+
+
+def _iter_httpx_pool_objects(http_client: Any):
+    """Yield httpcore pool objects reachable from an httpx client."""
+    for pool, _owner in _iter_httpx_pools_with_owner(http_client):
+        yield pool
+
+
+def _connection_candidates(conn: Any):
+    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    seen: set[int] = set()
+    stack = [conn]
+    while stack:
+        candidate = stack.pop()
+        if candidate is None:
+            continue
+        marker = id(candidate)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        yield candidate
+        inner = getattr(candidate, "_connection", None)
+        if inner is not None and id(inner) not in seen:
+            stack.append(inner)
+
+
+def _iter_pool_sockets(client: Any):
+    """Yield raw sockets reachable from an OpenAI/httpx client pool.
+
+    httpcore 1.x stores the concrete HTTP11/HTTP2 connection under
+    ``conn._connection``; older versions exposed stream attributes directly
+    on the pool entry. Proxy tunnels wrap another layer
+    (``TunnelHTTPConnection`` / ``ForwardHTTPConnection``). Keep the
+    traversal defensive because these are private transport internals and
+    vary across httpx/httpcore releases.
+
+    Also walks ``httpx`` mount transports — see ``_iter_httpx_pool_objects``
+    — and in-flight httpcore ``PoolRequest.connection`` objects, which stay
+    reachable even when ``_connections`` is empty during checkout (#85252).
+    """
+    try:
+        http_client = getattr(client, "_client", None)
+        if http_client is None:
+            # Some SDK wrappers *are* the httpx client (or expose the pool
+            # directly). Fall through so mount-aware discovery still runs.
+            http_client = client
+        pools = list(_iter_httpx_pools_with_owner(http_client))
+    except Exception:
+        return
+
+    if not pools:
+        return
+
+    from agent.process_bootstrap import HERMES_TRANSPORT_OWNER_EXT
+
+    seen: set[int] = set()
+    for pool, owner in pools:
+        # Empty-list is falsy: use ``is None`` so an empty ``_connections``
+        # still lets us walk in-flight ``_requests`` rather than skipping
+        # the pool entirely.
+        raw_conns = getattr(pool, "_connections", None)
+        if raw_conns is None:
+            raw_conns = getattr(pool, "_pool", None)
+        # A process-shared pool carries other clients' idle + in-flight
+        # connections: only this client's own in-flight requests (stamped by
+        # ``_SharedTransport.handle_request``) may be shut down.
+        connections = [] if owner is not None else list(raw_conns or [])
+        for pool_req in list(getattr(pool, "_requests", None) or []):
+            if owner is not None:
+                exts = getattr(getattr(pool_req, "request", None), "extensions", None) or {}
+                if exts.get(HERMES_TRANSPORT_OWNER_EXT) != owner:
+                    continue
+            conn = getattr(pool_req, "connection", None)
+            if conn is not None:
+                connections.append(conn)
+        for conn in connections:
+            for candidate in _connection_candidates(conn):
+                stream = (
+                    getattr(candidate, "_network_stream", None)
+                    or getattr(candidate, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    get_extra_info = getattr(stream, "get_extra_info", None)
+                    if callable(get_extra_info):
+                        try:
+                            sock = get_extra_info("socket")
+                        except Exception:
+                            sock = None
+                if sock is None:
+                    wrapped = getattr(stream, "stream", None)
+                    if wrapped is not None:
+                        sock = getattr(wrapped, "_sock", None)
+                if sock is None:
+                    # anyio-backed streams expose the raw socket through
+                    # SocketAttribute.raw_socket when available.
+                    wrapped = getattr(stream, "_stream", None)
+                    extra = getattr(wrapped, "extra", None)
+                    if callable(extra):
+                        try:
+                            from anyio.abc import SocketAttribute
+                            sock = extra(SocketAttribute.raw_socket)
+                        except Exception:
+                            sock = None
+                if sock is None:
+                    continue
+                marker = id(sock)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                yield sock
+
+
+def cleanup_dead_connections(agent) -> bool:
+    """Detect and clean up dead TCP connections on the primary client.
+
+    Inspects the httpx connection pool for sockets in unhealthy states
+    (CLOSE-WAIT, errors).  If any are found, force-closes all sockets
+    and rebuilds the primary client from scratch.
+
+    Returns True if dead connections were found and cleaned up.
+    """
+    client = getattr(agent, "client", None)
+    if client is None:
+        return False
+    try:
+        dead_count = 0
+        for sock in _iter_pool_sockets(client):
+            # Probe socket health with a non-blocking recv peek
+            import socket as _socket
+            try:
+                sock.setblocking(False)
+                data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)
+                if data == b"":
+                    dead_count += 1
+            except BlockingIOError:
+                pass  # No data available — socket is healthy
+            except OSError:
+                dead_count += 1
+            finally:
+                try:
+                    sock.setblocking(True)
+                except OSError:
+                    pass
+        if dead_count > 0:
+            _ra().logger.warning(
+                "Found %d dead connection(s) in client pool — rebuilding client",
+                dead_count,
+            )
+            agent._replace_primary_openai_client(reason="dead_connection_cleanup")
+            return True
+    except Exception as exc:
+        _ra().logger.debug("Dead connection check error: %s", exc)
+    return False
+
+
+
+def extract_api_error_context(error: Exception) -> Dict[str, Any]:
+    """Extract structured rate-limit details from provider errors."""
+    context: Dict[str, Any] = {}
+
+    body = getattr(error, "body", None)
+    payload = None
+    if isinstance(body, dict):
+        payload = body.get("error") if isinstance(body.get("error"), dict) else body
+    if isinstance(payload, dict):
+        reason = payload.get("code") or payload.get("type") or payload.get("error")
+        if isinstance(reason, str) and reason.strip():
+            context["reason"] = reason.strip()
+        message = payload.get("message") or payload.get("error_description")
+        if not message and isinstance(payload.get("error"), str):
+            # xAI uses a top-level string ``error`` beside a structured
+            # ``code`` (for example personal-team-blocked:spending-limit).
+            message = payload.get("error")
+        if isinstance(message, str) and message.strip():
+            context["message"] = message.strip()
+        for key in ("resets_at", "reset_at"):
+            value = payload.get(key)
+            if value not in {None, ""}:
+                context["reset_at"] = value
+                break
+        retry_after = payload.get("retry_after")
+        if retry_after not in {None, ""} and "reset_at" not in context:
+            try:
+                context["reset_at"] = time.time() + float(retry_after)
+            except (TypeError, ValueError):
+                pass
+
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers:
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after and "reset_at" not in context:
+            try:
+                context["reset_at"] = time.time() + float(retry_after)
+            except (TypeError, ValueError):
+                pass
+        ratelimit_reset = headers.get("x-ratelimit-reset")
+        if ratelimit_reset and "reset_at" not in context:
+            context["reset_at"] = ratelimit_reset
+
+    if "message" not in context:
+        raw_message = str(error).strip()
+        if raw_message:
+            context["message"] = raw_message[:500]
+
+    if "reset_at" not in context:
+        message = context.get("message") or ""
+        if isinstance(message, str):
+            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
+            if delay_match:
+                value = float(delay_match.group(1))
+                seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+                context["reset_at"] = time.time() + seconds
+            else:
+                resets_in_match = re.search(
+                    r"resets?\s+in\s+"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?",
+                    message,
+                    re.IGNORECASE,
+                )
+                if resets_in_match and any(resets_in_match.groups()):
+                    hours = float(resets_in_match.group(1) or 0)
+                    minutes = float(resets_in_match.group(2) or 0)
+                    seconds = float(resets_in_match.group(3) or 0)
+                    context["reset_at"] = time.time() + (hours * 3600) + (minutes * 60) + seconds
+                else:
+                    sec_match = re.search(
+                        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                        message,
+                        re.IGNORECASE,
+                    )
+                    if sec_match:
+                        context["reset_at"] = time.time() + float(sec_match.group(1))
+
+    return context
+
+
+
+def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+    """Append any pending /steer text to the last tool result in this turn.
+
+    Called at the end of a tool-call batch, before the next API call.
+    The steer is appended to the last ``role:"tool"`` message's content
+    with a clear marker so the model understands it came from the user
+    and NOT from the tool itself. Role alternation is preserved —
+    nothing new is inserted, we only modify existing content.
+
+    Args:
+        messages: The running messages list.
+        num_tool_msgs: Number of tool results appended in this batch;
+            used to locate the tail slice safely.
+    """
+    if num_tool_msgs <= 0 or not messages:
+        return
+    steer_text = agent._drain_pending_steer()
+    if not steer_text:
+        return
+    # Find the last tool-role message in the recent tail. Skipping
+    # non-tool messages defends against future code appending
+    # something else at the boundary.
+    target_idx = None
+    for j in range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1):
+        msg = messages[j]
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            target_idx = j
+            break
+    if target_idx is None:
+        # No tool result in this batch (e.g. all skipped by interrupt);
+        # put the steer back so the caller's fallback path can deliver
+        # it as a normal next-turn user message.
+        _lock = getattr(agent, "_pending_steer_lock", None)
+        if _lock is not None:
+            with _lock:
+                if agent._pending_steer:
+                    agent._pending_steer = agent._pending_steer + "\n" + steer_text
+                else:
+                    agent._pending_steer = steer_text
+        else:
+            existing = getattr(agent, "_pending_steer", None)
+            agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+        return
+    marker = format_steer_marker(steer_text)
+    existing_content = messages[target_idx].get("content", "")
+    if not isinstance(existing_content, str):
+        # Anthropic multimodal content blocks — preserve them and append
+        # a text block at the end.
+        try:
+            blocks = list(existing_content) if existing_content else []
+            blocks.append({"type": "text", "text": marker.lstrip()})
+            messages[target_idx]["content"] = blocks
+        except Exception:
+            # Fall back to string replacement if content shape is unexpected.
+            messages[target_idx]["content"] = f"{existing_content}{marker}"
+    else:
+        messages[target_idx]["content"] = existing_content + marker
+    _ra().logger.info(
+        "Delivered /steer to agent after tool batch (%d chars): %s",
+        len(steer_text),
+        steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
+    )
+
+
+
+def force_close_tcp_sockets(client: Any) -> int:
+    """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
+
+    When a provider drops a connection mid-stream — or the user issues an
+    interrupt — we want to unblock httpx's reader/writer immediately rather
+    than waiting for the kernel's per-connection timeout. ``shutdown(SHUT_RDWR)``
+    achieves that: it sends FIN, breaks any pending ``recv``/``send`` with EOF
+    or ``EPIPE``, but does NOT release the file descriptor.
+
+    Historically this helper also called ``socket.close()`` so the FD got
+    released immediately, but that's unsafe when (as is the case for both the
+    interrupt-abort path and stale-call kill path) the helper runs on a
+    different thread than the one driving the request:
+
+      * The Python ``socket.socket`` we close here is the SAME object held by
+        httpx's pool, so closing it via Python sets its ``_fd`` to -1 and
+        future operations on that Python object fail safely.
+      * BUT the SSL wrapper (``ssl.SSLSocket``'s underlying OpenSSL ``BIO``)
+        caches the raw integer FD. Once ``os.close(fd)`` runs, the kernel may
+        immediately recycle that integer to the next ``open()`` call — e.g.
+        the kanban dispatcher opening ``kanban.db``.
+      * The owning worker thread then unwinds httpx, the SSL layer flushes a
+        pending TLS record, and the encrypted bytes get written into the
+        wrong file (issue #29507: 24-byte TLS application-data record
+        clobbering SQLite header bytes 5..28).
+
+    The fix is to let the owning thread own the close. ``shutdown()`` from any
+    thread is FD-safe; ``close()`` is not. The httpx connection's own close
+    path — which runs from the worker thread when it unwinds — will release
+    the FD via the same ``socket.socket`` object, and because Python's socket
+    close atomically swaps ``_fd`` to -1 *before* issuing ``os.close``, there
+    is no FD-aliasing window when only one thread closes.
+
+    Returns the number of sockets shut down. (Field kept as
+    ``tcp_force_closed=N`` in the log line for backwards-compatible parsing.)
+    """
+    import socket as _socket
+
+    shutdown_count = 0
+    try:
+        for sock in _iter_pool_sockets(client):
+            try:
+                # Clear a blocking timeout first so a hung SSL_read on the
+                # owner thread notices the shutdown. Some stacks ignore
+                # SHUT_RDWR alone while recv is blocked with timeout=None
+                # (#85252). Still no close() — that is the #29507 race.
+                settimeout = getattr(sock, "settimeout", None)
+                if callable(settimeout):
+                    try:
+                        settimeout(0)
+                    except OSError:
+                        pass
+                sock.shutdown(_socket.SHUT_RDWR)
+            except OSError:
+                # Already shut down / not connected / FD invalid — all benign.
+                pass
+            # IMPORTANT (#29507): do NOT call sock.close() here. See docstring.
+            shutdown_count += 1
+    except Exception as exc:
+        _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)
+    return shutdown_count
+
+
+
+__all__ = [
+    "convert_to_trajectory_format",
+    "sanitize_tool_call_arguments",
+    "repair_message_sequence",
+    "strip_think_blocks",
+    "recover_with_credential_pool",
+    "try_recover_primary_transport",
+    "drop_thinking_only_and_merge_users",
+    "restore_primary_runtime",
+    "extract_reasoning",
+    "dump_api_request_debug",
+    "prompt_caching_disabled_from_config",
+    "blank_cache_policy_stub",
+    "plan_cache_sections_for_destination",
+    "anthropic_prompt_cache_policy",
+    "create_openai_client",
+    "switch_model",
+    "invoke_tool",
+    "repair_tool_call",
+    "sanitize_api_messages",
+    "looks_like_codex_intermediate_ack",
+    "copy_reasoning_content_for_api",
+    "cleanup_dead_connections",
+    "extract_api_error_context",
+    "apply_pending_steer_to_tool_results",
+    "_iter_pool_sockets",
+    "force_close_tcp_sockets",
+]

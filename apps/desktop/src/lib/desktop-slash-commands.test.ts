@@ -295,7 +295,6 @@ describe('desktop slash command curation', () => {
     // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
     const execNames = [
       '/bg',
-      '/btw',
       '/debug',
       '/goal',
       '/personality',

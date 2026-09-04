@@ -1,5 +1,23 @@
-"""Email platform adapter for the Hermes gateway: users talk to Hermes by sending email; IMAP (polled)
-receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in config.yaml (see website docs)."""
+"""
+Email platform adapter for the Hermes gateway.
+
+Allows users to interact with Hermes by sending emails.
+Uses IMAP to receive and SMTP to send messages.
+
+Environment variables:
+    EMAIL_IMAP_HOST     — IMAP server host (e.g., imap.gmail.com)
+    EMAIL_IMAP_PORT     — IMAP server port (default: 993)
+    EMAIL_IMAP_SECURITY — IMAP transport: tls, starttls, or plain (default: tls)
+    EMAIL_IMAP_TLS_VERIFY — Verify the IMAP TLS certificate (default: true)
+    EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
+    EMAIL_SMTP_PORT     — SMTP server port (default: 587)
+    EMAIL_SMTP_SECURITY — SMTP transport: tls, starttls, or plain (port-based default)
+    EMAIL_SMTP_TLS_VERIFY — Verify the SMTP TLS certificate (default: true)
+    EMAIL_ADDRESS       — Email address for the agent
+    EMAIL_PASSWORD      — Email password or app-specific password
+    EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
+    EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+"""
 
 import asyncio
 import email as email_lib
@@ -64,8 +82,41 @@ def _esecret_int(name: str, default: int) -> int:
 
 
 def _esecret_bool(name: str, default: bool = False) -> bool:
-    """Scope-aware boolean read."""
-    return is_truthy_value(raw, default=default) if (raw := str(_get_secret(name, "")).strip()) else default
+    """Scope-aware boolean read (``env_bool`` variant of ``_get_esecret``)."""
+    raw = str(_get_esecret(name, "")).strip()
+    return is_truthy_value(raw, default=default) if raw else default
+
+
+_SECURITY_ALIASES = {
+    "tls": "tls", "ssl": "tls", "implicit": "tls",
+    "starttls": "starttls",
+    "plain": "plain", "none": "plain",
+}
+
+
+def _normalize_security(value: Any, default: str = "tls") -> str:
+    """Map an IMAP/SMTP security setting to ``tls`` | ``starttls`` | ``plain``.
+
+    Unknown values log a warning and fall back to *default* rather than
+    failing the connection, so a typo never silently downgrades to plaintext.
+    """
+    raw = str(value or "").strip().lower().replace("-", "").replace("_", "")
+    if not raw:
+        return default
+    mode = _SECURITY_ALIASES.get(raw)
+    if mode is None:
+        logger.warning("Unknown email security mode %r; using %r", value, default)
+        return default
+    return mode
+
+
+def _tls_context(verify: bool, host: str) -> ssl.SSLContext:
+    """Verified context by default; unverified only when explicitly opted out."""
+    if verify:
+        return ssl.create_default_context()
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        logger.warning("TLS verification disabled for non-loopback host %s", host)
+    return ssl._create_unverified_context()
 
 
 def _normalize_security(value: Any, default: str = "tls") -> str:
@@ -345,12 +396,23 @@ class EmailAdapter(BasePlatformAdapter):
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
-        self._imap_security = _normalize_security(setting("EMAIL_IMAP_SECURITY", "imap_security"))
-        self._imap_tls_verify = tls_verify("EMAIL_IMAP_TLS_VERIFY", "imap_tls_verify")
-        self._smtp_host = setting("EMAIL_SMTP_HOST", "smtp_host").strip()
+        self._imap_security = _normalize_security(
+            _get_secret("EMAIL_IMAP_SECURITY", "") or extra.get("imap_security", "")
+        )
+        self._imap_tls_verify = _esecret_bool(
+            "EMAIL_IMAP_TLS_VERIFY",
+            is_truthy_value(extra.get("imap_tls_verify"), default=True),
+        )
+        self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
-        self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
-        self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
+        self._smtp_security = _normalize_security(
+            _get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security", ""),
+            default="tls" if self._smtp_port == 465 else "starttls",
+        )
+        self._smtp_tls_verify = _esecret_bool(
+            "EMAIL_SMTP_TLS_VERIFY",
+            is_truthy_value(extra.get("smtp_tls_verify"), default=True),
+        )
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
@@ -385,7 +447,13 @@ class EmailAdapter(BasePlatformAdapter):
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
         if self._imap_security == "tls":
-            return imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30, ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
+            return imaplib.IMAP4_SSL(
+                self._imap_host,
+                self._imap_port,
+                timeout=30,
+                ssl_context=_tls_context(self._imap_tls_verify, self._imap_host),
+            )
+
         imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
         if self._imap_security == "starttls":
             try:
@@ -394,6 +462,41 @@ class EmailAdapter(BasePlatformAdapter):
                 _close_imap(imap)
                 raise
         return imap
+
+    def _connect_smtp(self) -> smtplib.SMTP:
+        """Create an SMTP connection, selecting the correct protocol for the port.
+
+        Port 465 uses implicit TLS (``SMTP_SSL``).  All other ports use
+        ``SMTP`` + ``STARTTLS``.
+
+        When the host resolves to an IPv6 address that is unreachable
+        (common on networks without IPv6 routing), the default connection can
+        hang until the socket timeout expires.  We retry connection-level
+        failures through an IPv4-only socket path, without mutating global
+        resolver state.  TLS verification errors are not retried.
+
+        Returns a connected SMTP object with TLS established — callers
+        can proceed directly to ``login()``.
+        """
+        host = self._smtp_host
+        port = self._smtp_port
+        security = self._smtp_security
+        ctx = _tls_context(self._smtp_tls_verify, host)
+
+        def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
+            """Attempt one SMTP connection."""
+            smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
+            smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
+            if security == "tls":
+                return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
+            smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
+            if security == "starttls":
+                try:
+                    smtp.starttls(context=ctx)
+                except Exception:
+                    smtp.close()
+                    raise
+            return smtp
 
     @contextmanager
     def _inbox(self):
@@ -433,7 +536,19 @@ class EmailAdapter(BasePlatformAdapter):
     def _probe_imap(self, is_reconnect: bool) -> bool:
         """Connection test + seen-UID baseline. Sets a fatal error and returns False on failure."""
         try:
-            with self._inbox() as imap:
+            # Test IMAP connection. The handle is closed in ``finally`` —
+            # before this, a failure in login/select/search left the TCP
+            # socket open with no owner, leaking one fd per connect attempt.
+            # Under the gateway's reconnect watcher (fresh adapter instance
+            # per retry) against an unreachable/proxied host this grew
+            # monotonically until fd exhaustion on macOS's 256 soft limit
+            # (#79889).
+            imap = None
+            try:
+                imap = self._connect_imap()
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                imap.select("INBOX")
                 snapshot = self._seen_uids_snapshot.get(self._address)
                 if is_reconnect and snapshot is not None:
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
@@ -528,7 +643,12 @@ class EmailAdapter(BasePlatformAdapter):
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
         try:
-            with self._inbox() as imap:
+            imap = self._connect_imap()
+            try:
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                imap.select("INBOX")
+
                 status, data = imap.uid("search", None, "UNSEEN")
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
@@ -770,21 +890,70 @@ class EmailAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm", "chat_id": chat_id, "subject": self._thread_context.get(chat_id, {}).get("subject", "")}
 
 
-# Plugin glue: register() exposes the platform via the registry; EMAIL_* env → PlatformConfig seeding stays in core.
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
-    """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the Email adapter moved from gateway/platforms/email.py into this
+# bundled plugin. register() exposes the platform via the registry, replacing
+# the Platform.EMAIL elif in gateway/run.py, the _PLATFORM_CONNECTED_CHECKERS
+# entry in gateway/config.py, the _PLATFORMS["email"] static dict in
+# hermes_cli/gateway.py, and the _send_email dispatch in
+# tools/send_message_tool.py. EMAIL_* env→PlatformConfig seeding stays in core.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process Email delivery via SMTP (one-shot). Implements the
+    standalone_sender_fn contract; replaces the legacy _send_email helper."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.utils import formatdate
+
     extra = getattr(pconfig, "extra", {}) or {}
-    address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
-    smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
-    smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
-    smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
+    address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
+    password = _get_secret("EMAIL_PASSWORD", "")
+    smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")
+    try:
+        smtp_port = int(_get_secret("EMAIL_SMTP_PORT", "587") or "587")
+    except (ValueError, TypeError):
+        smtp_port = 587
+    smtp_security = _normalize_security(
+        _get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"),
+        default="tls" if smtp_port == 465 else "starttls",
+    )
+    smtp_tls_verify = _esecret_bool(
+        "EMAIL_SMTP_TLS_VERIFY",
+        is_truthy_value(extra.get("smtp_tls_verify"), default=True),
+    )
+
     if not all([address, password, smtp_host]):
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
-            msg[key] = value
-        server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
+        msg["From"] = address
+        msg["To"] = chat_id
+        msg["Subject"] = "Hermes Agent"
+        msg["Date"] = formatdate(localtime=True)
+
+        ctx = _tls_context(smtp_tls_verify, smtp_host)
+        if smtp_security == "tls":
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port)
+            if smtp_security == "starttls":
+                try:
+                    server.starttls(context=ctx)
+                except Exception:
+                    server.close()
+                    raise
         server.login(address, password)
         server.send_message(msg)
         server.quit()

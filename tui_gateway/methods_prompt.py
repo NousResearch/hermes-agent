@@ -683,18 +683,34 @@ def _(rid, params: dict) -> dict:
                         "This room is managed by its gateway. Update Hermes Desktop to continue it.",
                     )
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
+        # The refusal reason travels as machine-readable data, not as prose.
+        #
+        # An automated client has to tell "the machine is at capacity, retry later"
+        # from "this session has a live owner, and your write would interleave with
+        # theirs". Those call for different behaviour, and a client that had to
+        # distinguish them by matching the message text would silently change
+        # behaviour the next time the wording improved.
+        #
+        # Refused HERE, before the busy-queue check, before _ensure_session_db_row
+        # and before _start_agent_build: no user row is persisted and no model turn
+        # begins, so a refusal leaves the session exactly as it was.
         reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
-    session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
-    # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
-    # user row stays the words the user said); anything else clears it.
-    voice_context = params.get("voice_context")
-    session["voice_live_context"] = (
-        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
-    has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
+        return _err(
+            rid,
+            4090,
+            str(limit_message),
+            {"reason": reason} if reason else None,
+        )
+    # Which desktop window this message was typed into. Rewritten on every
+    # submit, because one session can be driven from the app window and the HUD
+    # in turn: a stale "hud" would tell the model the user is still floating
+    # over another app when they are back in Hermes.
+    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
+    has_truncation = (
+        truncate_user_ordinal is not None
+        or params.get("truncate_before_row_id") is not None
+        or params.get("truncate_before_message_id") is not None
+    )
     if has_truncation and isinstance(text, str):
         # A rewind/regenerate replays a turn from what the transcript shows. A
         # skill turn shows its invocation, so re-expand it here — otherwise
@@ -1234,7 +1250,18 @@ def _(rid, params: dict) -> dict:
             5071,
             f"session storage could not be written: {exc}",
         )
-    _start_agent_build(sid, session)
+    # A completed FAILED build must not wedge the session: the error frame
+    # says retryable, so a new send (or the error card's Retry) rebuilds the
+    # agent with fresh provider resolution instead of replaying the cached
+    # failure forever. Before this, only a model switch reset the failed
+    # generation — a session that failed once (local server off) kept
+    # erroring after the server came back, while new sessions worked. Falls
+    # through to the normal build when there is no completed failure to
+    # clear.
+    if not _restart_completed_failed_agent_build(
+        sid, session, session.get("agent_ready")
+    ):
+        _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
         # Patient wait (#63078): the user's message is already the accepted

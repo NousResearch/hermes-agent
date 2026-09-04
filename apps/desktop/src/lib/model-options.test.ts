@@ -169,19 +169,24 @@ describe('requestModelOptions', () => {
     expect(gateway.request).not.toHaveBeenCalled()
   })
 
-  it('scopes REST recovery to the catalog owner profile', async () => {
-    const restPayload = {
-      model: 'berry-local',
-      provider: 'hermes-local',
-      providers: [{ models: ['berry-local'], name: 'Hermes Local', slug: 'hermes-local' }]
-    }
+  it('does not recover an owner-routed failure through the ambient REST connection', async () => {
+    const ownerError = new Error('owner gateway unavailable')
+    const request = vi.fn(() => Promise.reject(ownerError))
 
-    const request = vi.fn(() => Promise.reject(new Error('gateway request unavailable')))
+    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).rejects.toBe(ownerError)
+    expect(getGlobalModelOptions).not.toHaveBeenCalled()
+  })
 
-    vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(restPayload)
+  it('keeps an empty owner-routed catalog instead of replacing it from ambient REST', async () => {
+    const ownerPayload = { model: 'berry-local', provider: 'hermes-local', providers: [] }
 
-    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toEqual(restPayload)
-    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true }, 'berry')
+    const request = vi.fn(() => Promise.resolve(ownerPayload)) as unknown as <T>(
+      method: string,
+      params?: Record<string, unknown>
+    ) => Promise<T>
+
+    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toBe(ownerPayload)
+    expect(getGlobalModelOptions).not.toHaveBeenCalled()
   })
 })
 

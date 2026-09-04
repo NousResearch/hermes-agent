@@ -14,14 +14,34 @@ import { ModelCatalogMenu } from './model-catalog-menu'
 import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
 
 export { ModelMenuCloseContext } from './model-catalog-menu'
-export type { ModelSelection } from './use-model-menu-controller'
+
+export interface ModelSelection {
+  model: string
+  provider: string
+  /** Runtime id of the surface that opened the menu. When set, the switch
+   *  targets that session (a tile) instead of the primary `$activeSessionId`. */
+  sessionId?: null | string
+}
+
+interface ModelMenuPanelProps {
+  gateway?: HermesGateway
+  ownerConnectionId?: string
+  onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
+  profile?: string
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+}
 
 /**
  * The composer's model menu: `ModelCatalogMenu` (the shared renderer) plus the
  * controller that gives a selection its meaning HERE (`useModelMenuController`).
  */
-export function ModelMenuPanel(props: ModelMenuHostProps) {
-  const { gateway, ownerConnectionId, profile = 'default', requestGateway } = props
+export function ModelMenuPanel({
+  gateway,
+  onSelectModel,
+  ownerConnectionId,
+  profile = 'default',
+  requestGateway
+}: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const [refreshing, setRefreshing] = useState(false)
@@ -45,7 +65,7 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
   // back to the catalog's reported current, and a non-reactive read would
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, activeSessionId),
+    queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResponse> =>
       requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
   })

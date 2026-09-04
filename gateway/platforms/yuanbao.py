@@ -43,8 +43,13 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
-    cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
@@ -64,8 +69,7 @@ from gateway.platforms.yuanbao_proto import (
     encode_send_private_heartbeat, encode_send_group_heartbeat, encode_query_group_info,
     encode_get_group_member_list, next_seq_no,
 )
-from gateway.session import build_session_key
-from gateway.session_transcript import TranscriptReadError
+from gateway.session import TranscriptReadError, build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -1247,6 +1251,11 @@ class QuoteContextMiddleware(InboundMiddleware):
                 getattr(adapter, "name", "yuanbao"), exc,
             )
         except Exception as exc:
+            logger.warning(
+                "[%s] quote transcript lookup: transcript unreadable: %s",
+                getattr(adapter, "name", "yuanbao"), exc,
+            )
+        except Exception as exc:
             logger.warning("[%s] quote transcript lookup failed: %s", getattr(adapter, "name", "yuanbao"), exc)
         return media_refs
 
@@ -1478,15 +1487,25 @@ class MediaResolveMiddleware(InboundMiddleware):
         elif kind == "video":
             # Yuanbao video resources carry no reliable extension; default to mp4.
             local_path = await cache_video_from_bytes_async(file_bytes)
-            mime = guess_mime_type(local_path) or (content_type if content_type.startswith("video/") else "video/mp4")
-        else:  # file
-            file_name = file_name or os.path.basename(urllib.parse.urlparse(fetch_url).path) or "file"
-            try:
-                local_path = await cache_document_from_bytes_async(file_bytes, file_name)
-            except Exception as exc:
-                logger.warning("[%s] inbound file cache failed: %s err=%s", adapter.name, log_tag, exc)
-                return None
-            mime = guess_mime_type(file_name) or content_type or "application/octet-stream"
+            mime = guess_mime_type(local_path) or (
+                content_type if content_type.startswith("video/") else "video/mp4"
+            )
+            cls._put_cached_resource(resource_id, local_path, mime)
+            return local_path, mime
+
+        # kind == "file"
+        if not file_name:
+            parsed = urllib.parse.urlparse(fetch_url)
+            file_name = os.path.basename(parsed.path) or "file"
+        try:
+            local_path = await cache_document_from_bytes_async(file_bytes, file_name)
+        except Exception as exc:
+            logger.warning(
+                "[%s] inbound file cache failed: %s err=%s",
+                adapter.name, log_tag, exc,
+            )
+            return None
+        mime = guess_mime_type(file_name) or content_type or "application/octet-stream"
         cls._put_cached_resource(resource_id, local_path, mime)
         return local_path, mime
 
@@ -1577,10 +1596,15 @@ class MediaResolveMiddleware(InboundMiddleware):
         if not store:
             return [], []
         try:
-            history = store.load_transcript(store.get_or_create_session(source).session_id)
+            session_entry = store.get_or_create_session(source)
+            history = store.load_transcript(session_entry.session_id)
         except TranscriptReadError as exc:
-            # Hydrate nothing rather than silently acting as if the session had no observed media.
-            logger.warning("[%s] Observed-media hydration: transcript unreadable: %s", adapter.name, exc)
+            # Hydrate nothing rather than silently acting as if the session
+            # had no observed media (#100788).
+            logger.warning(
+                "[%s] Observed-media hydration: transcript unreadable: %s",
+                adapter.name, exc,
+            )
             return [], []
         except Exception as exc:
             logger.warning("[%s] Observed-media hydration setup failed: %s", adapter.name, exc)

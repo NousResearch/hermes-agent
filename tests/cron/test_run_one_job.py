@@ -170,7 +170,7 @@ def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
     """Make run_job raise, and capture what the escape handler delivers."""
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": exec_id})
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",

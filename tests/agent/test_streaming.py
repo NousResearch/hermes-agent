@@ -408,7 +408,7 @@ class TestStreamingAccumulator:
         captured = {}
         fake_stream = MagicMock()
         fake_stream.final_response = None
-        chunks = [
+        fake_stream.__iter__.return_value = iter([
             _make_stream_chunk(tool_calls=[
                 _make_tool_call_delta(
                     index=0,
@@ -421,12 +421,10 @@ class TestStreamingAccumulator:
                 _make_tool_call_delta(index=0, arguments='"hello"}')
             ]),
             _make_stream_chunk(finish_reason="tool_calls"),
-        ]
-        fake_stream.__iter__.return_value = iter(chunks)
+        ])
 
         def relay_stream_impl(*args, **kwargs):
             captured["finalizer"] = kwargs["finalizer"]
-            captured["on_chunk"] = kwargs["on_chunk"]
             return fake_stream
 
         mock_relay_stream.side_effect = relay_stream_impl
@@ -446,10 +444,6 @@ class TestStreamingAccumulator:
 
         agent._interruptible_streaming_api_call({})
 
-        # Relay's contract: the collector sees every chunk as JSON, then the finalizer runs.
-        from agent.relay_llm import _jsonable
-        for chunk in chunks:
-            captured["on_chunk"](_jsonable(chunk))
         payload = captured["finalizer"]()
         tool_calls = payload["choices"][0]["message"]["tool_calls"]
         assert len(tool_calls) == 1

@@ -398,8 +398,14 @@ def _should_run_preflight_estimate(
 
 
 def _should_idle_compact(
-    *, enabled: bool, idle_after_seconds: int, idle_gap_seconds: float, tokens: int,
-    floor_tokens: int, cooldown_active: bool, last_compaction_tokens: int = 0,
+    *,
+    enabled: bool,
+    idle_after_seconds: int,
+    idle_gap_seconds: float,
+    tokens: int,
+    floor_tokens: int,
+    cooldown_active: bool,
+    last_compaction_tokens: int = 0,
 ) -> bool:
     """Pure predicate: idle compaction fires after a wall-clock gap of
     ``idle_after_seconds`` (opt-in, <= 0 disables), independent of ``threshold_tokens``;
@@ -414,11 +420,36 @@ def _should_idle_compact(
     floor's worth of NEW content first. ``0`` (nothing compacted yet / counter reset) keeps
     the original semantics exactly.
 
-    A session that compacted to well above that target therefore stays above it forever, so every later idle
-    resume re-runs a full summarisation over a transcript that has not grown — minutes of silently blocked
-    prompt on a slow route, reclaiming nothing (#97239).
+    It is orthogonal to the token-threshold trigger: it does NOT require the
+    context to exceed ``threshold_tokens``. It still skips work when the
+    context is at or below ``floor_tokens`` (the size compaction would reduce
+    *to*), so a small idle thread never pays for a summarisation that saves
+    nothing, and it defers to an active compression-failure cooldown.
+
+    ``floor_tokens`` alone is a *theoretical* target (``threshold_tokens ×
+    summary_target_ratio``) that a real pass routinely misses: the system
+    prompt, the tool schemas and the protected head/tail are an
+    incompressible floor. A session that compacted to well above that target
+    therefore stays above it forever, so every later idle resume re-runs a
+    full summarisation over a transcript that has not grown — minutes of
+    silently blocked prompt on a slow route, reclaiming nothing (#97239).
+
+    ``last_compaction_tokens`` is what the previous pass on this session
+    actually produced (``ContextCompressor.last_compression_rough_tokens``,
+    the same ``estimate_request_tokens_rough`` shape as ``tokens``). When it
+    is known, require the transcript to have accumulated at least one
+    ``floor_tokens`` worth of *new* content on top of it before paying for
+    another pass. ``0`` — no compaction recorded yet, or the counter reset by
+    a rebind/recalibration — keeps the original floor semantics exactly, so
+    the first idle compaction of any session is unaffected.
+
+    Pure predicate so the policy is unit-testable without a live agent.
     """
     if not enabled or idle_after_seconds <= 0 or idle_gap_seconds < idle_after_seconds or cooldown_active:
+        return False
+    if idle_gap_seconds < idle_after_seconds:
+        return False
+    if cooldown_active:
         return False
     effective_floor = floor_tokens
     if last_compaction_tokens > 0:
@@ -444,11 +475,63 @@ class TurnContext:
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
 
 
-def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: Any) -> None:
-    """Run ``fn`` under the session persist lock (when the agent has one), log-and-swallow
-    failures, then drop staged CLI input — unless it is an unmarked handoff kept for a
-    close retry (once ``_db_persisted`` the close path must not treat it as pre-worker
-    UI input). Eager clearing keeps a preflight crash from leaking stale input."""
+def build_turn_context(
+    agent,
+    user_message: Any,
+    system_message: Optional[str],
+    conversation_history: Optional[List[Dict[str, Any]]],
+    task_id: Optional[str],
+    stream_callback,
+    persist_user_message: Optional[Any],
+    persist_user_timestamp: Optional[float] = None,
+    persist_user_platform_id: Optional[str] = None,
+    *,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    restore_or_build_system_prompt,
+    install_safe_stdio,
+    sanitize_surrogates,
+    summarize_user_message_for_log,
+    set_session_context,
+    set_current_write_origin,
+    ra,
+    moa_active: bool = False,
+) -> TurnContext:
+    """Run the once-per-turn setup and return the loop's input context.
+
+    The callables/helpers the original prologue referenced from the
+    ``conversation_loop`` module are passed in explicitly to keep this module
+    free of an import cycle with ``agent.conversation_loop``.
+    """
+    # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
+    install_safe_stdio()
+
+    # Recover a session rotated by another path before binding log/turn ids or
+    # copying client-supplied history. Everything in this turn must consistently
+    # belong to the canonical child, including observability metadata.
+    recovered_history = recover_rotated_compression_session(agent)
+    if recovered_history is not None:
+        conversation_history = recovered_history
+
+    # NOTE: the DB session row is created later, AFTER the system prompt is
+    # restored/built (see _ensure_db_session() below the system-prompt block).
+    # Creating it here — before _cached_system_prompt is populated — inserts a
+    # row with system_prompt=NULL on a fresh API/gateway agent that carries
+    # client-managed history, which then trips the "stored system prompt is
+    # null; rebuilding from scratch" warning and a needless first-turn prefix
+    # cache miss. (Issue #45499.)
+
+    # Tag log records on this thread with the session ID for ``hermes logs``.
+    set_session_context(agent.session_id)
+
+    # Bind the skill write-origin ContextVar for this thread.
+    set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
+
+    # Restore the primary runtime if the previous turn activated fallback.
+    agent._restore_primary_runtime()
+
+    # Tell auxiliary_client what the live main provider/model are for this turn
+    # after primary restoration has settled the runtime.
     try:
         lock = getattr(agent, "_session_persist_lock", None)
         if lock is None:
@@ -486,19 +569,38 @@ def _publish_runtime_main(agent: Any) -> None:
             cache_scope=_cache_scope,
         )
 
-
-def _refresh_mcp_tools_between_turns(agent: Any) -> None:
-    """Late-connecting MCP servers land in THIS turn's snapshot, before the first API
-    call assembles ``tools=``. ``preserve_prefix`` keeps the tool array append-only so a
-    flapping ``check_fn`` can't fork the cache."""
+    # Between-turns MCP refresh: an MCP server that finished connecting since
+    # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
+    # connect, missing the bounded startup wait) lands in THIS turn's tool
+    # snapshot.  Timing is cache-safe by construction: it runs in the per-turn
+    # prologue, before this turn's first API call assembles ``tools=``, so it
+    # never mutates the prefix of an in-flight turn.  ``preserve_prefix`` makes
+    # the *content* cache-safe too (#100336): a plain rebuild re-derives the
+    # array from live availability, so a flapping ``check_fn`` silently drops a
+    # tool and a late arrival splices into sorted position — either one forks
+    # the tool block and re-prefills the whole history behind it, every turn it
+    # happens.  With the flag the live order is authoritative and the array
+    # only ever grows.  No-op when no MCP servers are registered (the common
+    # case, gated by the cheap ``has_registered_mcp_tools`` check) or when the
+    # tool set is unchanged (``refresh_agent_mcp_tools`` diffs by name and
+    # leaves the snapshot untouched on no-change).
     try:
-        # Import-cost gate: MCP tools are only registered by code that already imported
-        # ``tools.mcp_tool`` (~0.4s); not in sys.modules => nothing to do.
-        if not getattr(agent, "_skip_mcp_refresh", False) and "tools.mcp_tool" in sys.modules:
-            from tools.mcp_tool_discovery import has_registered_mcp_tools
-            from tools.mcp_tool_agent import refresh_agent_mcp_tools
-            if has_registered_mcp_tools():
-                refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True)
+        if not getattr(agent, "_skip_mcp_refresh", False):
+            # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
+            # package (~0.4s measured) even when the user has zero MCP servers
+            # configured.  MCP tools can only be registered by code that has
+            # already imported ``tools.mcp_tool`` (discovery, /reload-mcp,
+            # late-binding refresh) — so if it isn't in sys.modules yet, there
+            # is nothing to refresh and the import can be skipped outright.
+            # This keeps the no-MCP first turn off the heavy import path
+            # without changing behavior for MCP users.
+            import sys as _sys
+            if "tools.mcp_tool" in _sys.modules:
+                from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
+                if has_registered_mcp_tools():
+                    refresh_agent_mcp_tools(
+                        agent, quiet_mode=True, preserve_prefix=True,
+                    )
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 
@@ -514,7 +616,7 @@ def _bind_turn_identity(
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
-    # Unique task_id when not provided isolates VMs between tasks.
+    # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
     agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
@@ -688,8 +790,37 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]])
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
 
 
-def _tick_memory_nudge(agent: Any) -> bool:
-    """Advance the turn-based memory nudge counter; ``True`` when the review should fire."""
+    # Stamp the platform-side message id (e.g. the Discord/Telegram message id)
+    # as metadata on the user turn so it survives the early crash-resilience
+    # persist below (the turn-start flush).  Load-bearing for restart
+    # drain-window recovery: a recovery pass dedups via
+    # ``has_platform_message_id`` against this row.
+    if persist_user_platform_id is not None:
+        user_msg["platform_message_id"] = persist_user_platform_id
+    append_message(messages, user_msg)
+    current_turn_user_idx = len(messages) - 1
+    agent._persist_user_message_idx = current_turn_user_idx
+
+    # Track user turns for memory flush and periodic nudge logic.
+    agent._user_turn_count += 1
+    # Copilot x-initiator: the first API call of this user turn is
+    # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
+    agent._is_user_initiated_turn = True
+
+    # Reset the streaming context scrubber at the top of each turn.
+    scrubber = getattr(agent, "_stream_context_scrubber", None)
+    if scrubber is not None:
+        scrubber.reset()
+    # Reset the think scrubber for the same reason.
+    think_scrubber = getattr(agent, "_stream_think_scrubber", None)
+    if think_scrubber is not None:
+        think_scrubber.reset()
+
+    # Preserve the original user message (no nudge injection).
+    original_user_message = persist_user_message if persist_user_message is not None else user_message
+
+    # Track memory nudge trigger (turn-based, checked here).
+    should_review_memory = False
     if (agent._memory_nudge_interval > 0
             and "memory" in agent.valid_tool_names
             and agent._memory_store):
@@ -802,6 +933,18 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
             _idle_cooldown = getattr(
                 _compressor, "get_active_compression_failure_cooldown", lambda: None
             )()
+            # What the previous pass on this session actually produced — the
+            # honest floor, versus the theoretical ``_idle_floor`` above. Type
+            # pin: minimal compressor doubles (SimpleNamespace / MagicMock)
+            # expose truthy non-ints here, and only a real int may raise the
+            # floor. Anything else falls back to 0 = original semantics.
+            _idle_last_compaction = getattr(
+                _compressor, "last_compression_rough_tokens", 0
+            )
+            if not isinstance(_idle_last_compaction, int) or isinstance(
+                _idle_last_compaction, bool
+            ):
+                _idle_last_compaction = 0
             if _should_idle_compact(
                 enabled=agent.compression_enabled,
                 idle_after_seconds=_idle_after,
@@ -809,14 +952,16 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
                 tokens=_idle_tokens,
                 floor_tokens=_idle_floor,
                 cooldown_active=bool(_idle_cooldown),
+                last_compaction_tokens=_idle_last_compaction,
             ):
                 logger.info(
                     "Idle compaction: %ss idle >= %ss, ~%s tokens > %s floor "
-                    "(session %s)",
+                    "(last compaction produced ~%s) (session %s)",
                     int(_idle_gap),
                     _idle_after,
                     f"{_idle_tokens:,}",
                     f"{_idle_floor:,}",
+                    f"{_idle_last_compaction:,}" if _idle_last_compaction > 0 else "n/a",
                     agent.session_id or "none",
                 )
                 _idle_status = automatic_compaction_status_message(
@@ -915,10 +1060,18 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
         )
 
         if not _preflight_deferred:
-            _last = _compressor.last_prompt_tokens
-            # Do NOT overwrite the -1 sentinel (#36718).
-            if _last >= 0 and _preflight_tokens > _last:
-                _compressor.last_prompt_tokens = _preflight_tokens
+            # Display-only seed (see
+            # ContextCompressor.maybe_seed_preflight_display_tokens): a real
+            # provider reading always wins over the rough estimate, and the
+            # -1 post-compression sentinel (#36718) stays protected. On
+            # usage-less responses the seed also feeds the tool-loop
+            # compression gate — the one live path where an inflated seed
+            # could push compression below the user threshold.
+            _maybe_seed = getattr(
+                _compressor, "maybe_seed_preflight_display_tokens", None
+            )
+            if callable(_maybe_seed):
+                _maybe_seed(_preflight_tokens)
 
         _compression_cooldown = getattr(
             _compressor,
@@ -969,6 +1122,34 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
                         _compress_block_reason = _info(_preflight_tokens)[1]
                     except Exception:
                         _compress_block_reason = None
+        if _should_compress_now:
+            # Managed local runtime: growing the window beats compressing —
+            # the ladder's design order (same seam as the conversation
+            # loop's pre-API gate; see _maybe_grow_local_window there).
+            try:
+                from agent.conversation_loop import _maybe_grow_local_window
+
+                _grown = _maybe_grow_local_window(
+                    agent, _compressor, _preflight_tokens
+                )
+            except Exception:
+                _grown = None
+            if _grown:
+                _compressor.update_model(
+                    agent.model,
+                    _grown,
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    api_mode=getattr(agent, "api_mode", "") or "",
+                )
+                agent._buffer_status(
+                    f"📈 Context window grown to {_grown // 1024}K "
+                    f"(local model; conversation continues uncompressed)"
+                )
+                _should_compress_now = _compressor.should_compress(
+                    _preflight_tokens
+                )
         if _should_compress_now:
             _preflight_compressed = True
             # Compression is actually running (block cleared / was never

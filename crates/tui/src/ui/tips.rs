@@ -83,7 +83,7 @@ impl TipBar {
         let close = " × ";
         let close_w = close.width();
         let label = if width > 56 { "did you know" } else { "tip" };
-        let prefix = format!("  {label}  ·  ");
+        let prefix = format!("  {label} · ");
         let prefix_w = prefix.width();
         let body_w = width.saturating_sub(prefix_w + close_w).max(8);
         let tip = TIPS[state.tip_index % TIPS.len()];

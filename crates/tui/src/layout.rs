@@ -42,6 +42,50 @@ pub fn wrap_chunks(s: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// Wrap on spaces when a word fits the column; long tokens still hard-break.
+pub fn wrap_words(s: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![s.to_string()];
+    }
+    if s.is_empty() {
+        return vec![String::new()];
+    }
+    if s.width() <= width {
+        return vec![s.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut w = 0usize;
+    let mut break_at = 0usize;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        if w + cw > width && !cur.is_empty() {
+            if break_at > 0 {
+                let rest = cur.split_off(break_at);
+                out.push(cur.trim_end().to_string());
+                cur = rest.trim_start().to_string();
+                w = cur.width();
+                break_at = 0;
+            } else {
+                out.push(std::mem::take(&mut cur));
+                w = 0;
+            }
+            if ch == ' ' {
+                continue;
+            }
+        }
+        if ch == ' ' {
+            break_at = cur.len() + ch.len_utf8();
+        }
+        cur.push(ch);
+        w += cw;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +107,12 @@ mod tests {
     #[test]
     fn wrap_empty() {
         assert_eq!(wrap_chunks("", 8), vec![""]);
+    }
+
+    #[test]
+    fn wrap_words_breaks_on_space() {
+        assert_eq!(wrap_words("hello world", 8), vec!["hello", "world"]);
+        assert_eq!(wrap_words("hello world", 11), vec!["hello world"]);
+        assert_eq!(wrap_words("supercalifragilistic", 8)[0].width(), 8);
     }
 }

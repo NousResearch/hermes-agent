@@ -82,7 +82,7 @@ impl QueuePane {
             let active = state.queue_edit == Some(i);
             let hot = active || row_hot(&state.hover, i);
             let show_btns = hot && width > actions_width() + 16;
-            let num = format!("  #{}  ", i + 1);
+            let num = format!("{}#{} ", super::rhythm::GUTTER_STR, i + 1);
             let num_w = num.width();
             let btn_w = if show_btns { actions_width() } else { 0 };
             let preview_w = width.saturating_sub(num_w + btn_w + 1).max(8);

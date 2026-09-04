@@ -46,7 +46,7 @@ impl AttachPreview {
             return;
         }
         let mut lines: Vec<Line> = vec![Line::from(vec![Span::styled(
-            "  attached  ·  click [[ ]] to preview",
+            "  attached · click [[ ]] to preview",
             Style::default()
                 .fg(Theme::brand_gold())
                 .add_modifier(Modifier::BOLD),

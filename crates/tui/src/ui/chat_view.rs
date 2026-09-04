@@ -17,7 +17,7 @@ use super::stream::{
     tool_headline, tool_icon, tool_kind, ToolKind,
 };
 use super::theme::Theme;
-use crate::layout::{scroll_y, wrap_chunks};
+use crate::layout::{scroll_y, wrap_chunks, wrap_words};
 use crate::state::{AppState, ChatMessage, MessageRole};
 
 pub struct StreamCache {
@@ -344,7 +344,7 @@ fn emit_span(
                     body.push_str(leaf);
                     body.push(']');
                     push_user(lines, &body, &clock(messages[start].timestamp), col_width);
-                    lines.push(Line::raw(""));
+                    gap(lines);
                     return None;
                 }
             }
@@ -354,12 +354,12 @@ fn emit_span(
                 &clock(messages[start].timestamp),
                 col_width,
             );
-            lines.push(Line::raw(""));
+            gap(lines);
         }
         MessageRole::Assistant => {
             push_assistant(lines, &messages[start], highlighter, col_width, spin);
             if !messages[start].is_streaming {
-                lines.push(Line::raw(""));
+                gap(lines);
             }
         }
         MessageRole::Reasoning => {
@@ -382,6 +382,7 @@ fn emit_span(
                         Style::default().fg(Theme::text_dim()),
                     )));
                 }
+                gap(lines);
                 return None;
             }
             let running = is_running(status);
@@ -453,10 +454,12 @@ fn emit_span(
             } else if kind != ToolKind::Todo && kind != ToolKind::Edit {
                 push_tool_context(lines, name, &messages[start].content, col_width);
             }
+            gap(lines);
         }
         MessageRole::ImagePreview { path } => {
             let leaf = path.rsplit(['/', '\\']).next().unwrap_or(path);
             lines.extend(super::markdown::image_card(leaf, path, col_width));
+            gap(lines);
         }
         MessageRole::Compaction => {
             lines.push(Line::from(vec![
@@ -485,15 +488,23 @@ fn emit_span(
                 super::rhythm::FENCE_TAIL,
                 Style::default().fg(Theme::border_subtle()),
             )));
+            gap(lines);
         }
         MessageRole::System => {
             lines.push(Line::from(Span::styled(
-                format!("  {}", messages[start].content),
+                format!("{}{}", super::rhythm::GUTTER_STR, messages[start].content),
                 Style::default().fg(Theme::text_muted()),
             )));
+            gap(lines);
         }
     }
     click_id
+}
+
+fn gap(lines: &mut Vec<Line<'static>>) {
+    if !lines.last().is_some_and(super::rhythm::is_blank) {
+        lines.push(Line::raw(""));
+    }
 }
 
 fn push_user(lines: &mut Vec<Line<'static>>, text: &str, time: &str, col_width: usize) {
@@ -501,7 +512,7 @@ fn push_user(lines: &mut Vec<Line<'static>>, text: &str, time: &str, col_width: 
     let inner = col_width
         .saturating_sub(super::rhythm::GUTTER + 1 + time.width() + super::rhythm::GUTTER)
         .max(8);
-    let chunks = wrap_all(text, inner);
+    let chunks = wrap_prose(text, inner);
     for (n, chunk) in chunks.iter().enumerate() {
         let left = vec![
             Span::raw(super::rhythm::GUTTER_STR),
@@ -528,11 +539,11 @@ fn push_assistant(
     if start == lines.len() {
         let spans = if msg.is_streaming {
             vec![
-                Span::raw("  "),
+                Span::raw(super::rhythm::GUTTER_STR),
                 Span::styled(spin.to_string(), Style::default().fg(Theme::brand_gold())),
             ]
         } else {
-            vec![Span::raw("  ")]
+            vec![Span::raw(super::rhythm::GUTTER_STR)]
         };
         lines.push(timed_line(spans, &time, col_width));
         return;
@@ -540,7 +551,7 @@ fn push_assistant(
     if msg.is_streaming {
         if let Some(first) = lines.get_mut(start) {
             first.spans.push(Span::styled(
-                format!("  {spin}"),
+                format!("{}{spin}", super::rhythm::GUTTER_STR),
                 Style::default().fg(Theme::brand_gold()),
             ));
         }
@@ -570,11 +581,11 @@ fn push_reasoning(
         Style::default().fg(Theme::text_muted())
     };
     let header = if msg.is_streaming && !expanded {
-        format!("  {spin}  Thinking")
+        format!("{}{spin} Thinking", super::rhythm::GUTTER_STR)
     } else if expanded {
-        "  ▾ Thinking".to_string()
+        format!("{}▾ Thinking", super::rhythm::GUTTER_STR)
     } else {
-        "  ▸ Thinking".to_string()
+        format!("{}▸ Thinking", super::rhythm::GUTTER_STR)
     };
     let _ = dots;
     lines.push(timed_line(
@@ -602,7 +613,7 @@ fn push_reasoning(
         let inner = col_width
             .saturating_sub(super::rhythm::GUTTER + super::rhythm::NEST + 2)
             .max(8);
-        for (k, chunk) in wrap_chunks(beat, inner).into_iter().enumerate() {
+        for (k, chunk) in wrap_words(beat, inner).into_iter().enumerate() {
             lines.push(Line::from(vec![
                 Span::styled(
                     if k == 0 {
@@ -617,7 +628,7 @@ fn push_reasoning(
         }
     }
     if expanded && !msg.is_streaming {
-        lines.push(Line::raw(""));
+        gap(lines);
     }
 }
 
@@ -658,7 +669,7 @@ fn push_todo_card(
     };
     lines.push(tool_row(mark, head, color, running, spin));
     if !expanded {
-        lines.push(Line::raw(""));
+        gap(lines);
         return;
     }
     for task in todos.iter().take(16) {
@@ -687,7 +698,7 @@ fn push_todo_card(
         let title = crate::tips::ellipsize(&task.title, 64);
         lines.push(Line::from(vec![
             Span::raw(super::rhythm::NEST_STR),
-            Span::styled(format!("{glyph}  {title}"), style),
+            Span::styled(format!("{glyph} {title}"), style),
         ]));
     }
     if todos.len() > 16 {
@@ -696,7 +707,7 @@ fn push_todo_card(
             Style::default().fg(Theme::text_dim()),
         )));
     }
-    lines.push(Line::raw(""));
+    gap(lines);
 }
 
 fn push_tool_context(lines: &mut Vec<Line<'static>>, name: &str, content: &str, col_width: usize) {
@@ -754,7 +765,7 @@ fn push_run_detail(
             let title = crate::tips::ellipsize(step, inner.saturating_sub(4).max(8));
             lines.push(Line::from(vec![
                 Span::raw(super::rhythm::NEST_STR),
-                Span::styled(format!("{mark}  {title}"), Style::default().fg(color)),
+                Span::styled(format!("{mark} {title}"), Style::default().fg(color)),
             ]));
         }
     } else if !cmd.is_empty() {
@@ -785,7 +796,7 @@ fn push_run_detail(
             ),
             Style::default().fg(Theme::text_dim()),
         )));
-        lines.push(Line::raw(""));
+        gap(lines);
         return;
     }
     let raw_lines: Vec<&str> = trimmed.lines().collect();
@@ -819,7 +830,7 @@ fn push_run_detail(
             shown += 1;
         }
     }
-    lines.push(Line::raw(""));
+    gap(lines);
 }
 
 fn edit_row(
@@ -914,14 +925,14 @@ fn timed_line(mut left: Vec<Span<'static>>, time: &str, width: usize) -> Line<'s
     Line::from(left)
 }
 
-fn wrap_all(text: &str, inner: usize) -> Vec<String> {
+fn wrap_prose(text: &str, inner: usize) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.lines() {
         if raw.is_empty() {
             out.push(String::new());
             continue;
         }
-        out.extend(wrap_chunks(raw, inner));
+        out.extend(wrap_words(raw, inner));
     }
     if out.is_empty() {
         out.push(String::new());
@@ -983,7 +994,12 @@ mod tests {
         }];
         let state = AppState::new();
         rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
-        assert_eq!(cache.blocks[0].lines.len(), 1);
+        let nonempty: Vec<_> = cache.blocks[0]
+            .lines
+            .iter()
+            .filter(|l| !crate::ui::rhythm::is_blank(l))
+            .collect();
+        assert_eq!(nonempty.len(), 1);
         assert_eq!(cache.blocks[0].click_id.as_deref(), Some("r"));
         let blob: String = cache.blocks[0]
             .lines

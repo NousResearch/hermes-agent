@@ -450,7 +450,7 @@ pub fn image_card(alt: &str, url: &str, col_width: usize) -> Vec<Line<'static>> 
     let leaf = url.rsplit(['/', '\\']).next().unwrap_or(url);
     let mut meta = leaf.to_string();
     if let Some((w, h)) = image_dims(Path::new(url)) {
-        meta = format!("{leaf}  ·  {w}×{h}");
+        meta = format!("{leaf} · {w}×{h}");
     }
     out.push(Line::from(vec![
         Span::styled(RAIL, border),
@@ -687,7 +687,21 @@ fn wrap_spans(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> 
                 used = 0;
                 continue;
             }
-            let take = take_prefix(rest, avail);
+            let word = rest.split_once(' ').map(|(w, _)| w).unwrap_or(rest);
+            let word_w = word.width();
+            if used > 0 && word_w > avail && word_w <= width {
+                rows.push(Vec::new());
+                used = 0;
+                continue;
+            }
+            let mut take = take_prefix(rest, avail);
+            if take.len() < rest.len() {
+                if let Some(idx) = take.rfind(' ') {
+                    if idx > 0 {
+                        take = &take[..=idx];
+                    }
+                }
+            }
             if take.is_empty() {
                 rows.push(Vec::new());
                 used = 0;
@@ -697,7 +711,7 @@ fn wrap_spans(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> 
                 .expect("row")
                 .push(Span::styled(take.to_string(), span.style));
             used += take.width();
-            rest = &rest[take.len()..];
+            rest = rest[take.len()..].trim_start();
         }
     }
     if rows.len() == 1 && rows[0].is_empty() {

@@ -42,14 +42,8 @@ fn task_rows(state: &AppState) -> usize {
     }
 }
 
-fn dock_sep(state: &AppState, n: usize) -> u16 {
-    if n == 0 {
-        0
-    } else if state.compact {
-        1
-    } else {
-        2
-    }
+fn dock_sep(_state: &AppState, n: usize) -> u16 {
+    u16::from(n > 0)
 }
 
 pub fn dock_height(state: &AppState) -> u16 {
@@ -534,7 +528,7 @@ mod tests {
         let entries = dock_entries(&s);
         assert_eq!(entries.len(), 1);
         assert!(matches!(entries[0], DockEntry::Agent(5)));
-        assert_eq!(dock_height(&s), 3);
+        assert_eq!(dock_height(&s), 2);
         let (spans, stop_w) = dock_spans(&s.agent_rows[5], "●", 120, false, false);
         let blob: String = spans.iter().map(|sp| sp.content.as_ref()).collect();
         assert!(blob.contains("task 5"));

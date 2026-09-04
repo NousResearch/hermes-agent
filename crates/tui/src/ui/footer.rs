@@ -115,32 +115,32 @@ impl Footer {
 
 fn hint_text(state: &AppState) -> String {
     if state.pending_secret.is_some() {
-        "enter submit   esc cancel  ".into()
+        "enter submit · esc cancel".into()
     } else if state.pending_clarify.is_some() {
-        "enter confirm   esc dismiss  ".into()
+        "enter confirm · esc dismiss".into()
     } else if state.pending_approval.is_some() {
-        "y once   a always   n deny  ".into()
+        "y once · a always · n deny".into()
     } else if state.queue_edit.is_some() {
-        "enter send now   ctrl+x drop   esc cancel  ".into()
+        "enter send now · ctrl+x drop · esc cancel".into()
     } else if !state.prompt_queue.is_empty() {
         format!(
-            "↑↓ edit   enter send now   queued {}  ",
+            "↑↓ edit · enter send now · queued {}",
             state.prompt_queue.len()
         )
     } else if state.trace_focus {
-        "↑↓ step   p pause   e edit   r resume   esc composer  ".into()
+        "↑↓ step · p pause · e edit · r resume · esc composer".into()
     } else if let Some(u) = state.pending_undo.as_ref().filter(|u| u.live()) {
         u.hint().into()
     } else if state.metrics.is_compacting {
-        "folding the window  ".into()
+        "folding the window".into()
     } else if state.is_generating {
         match state.busy_mode {
-            crate::state::BusyMode::Queue => "esc interrupt   enter queues next  ".into(),
-            crate::state::BusyMode::Steer => "esc interrupt   enter steers this turn  ".into(),
-            crate::state::BusyMode::Interrupt => "esc interrupt   enter redirects  ".into(),
+            crate::state::BusyMode::Queue => "esc interrupt · enter queues next".into(),
+            crate::state::BusyMode::Steer => "esc interrupt · enter steers this turn".into(),
+            crate::state::BusyMode::Interrupt => "esc interrupt · enter redirects".into(),
         }
     } else {
-        "enter send   / commands   tab thoughts  ".into()
+        "enter send · / commands · tab thoughts".into()
     }
 }
 

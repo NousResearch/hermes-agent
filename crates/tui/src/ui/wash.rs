@@ -53,6 +53,14 @@ fn origin(width: usize, height: usize, frame: u64) -> Option<(i32, usize)> {
     Some((top, left))
 }
 
+fn row_on_caduceus(row: u16, width: usize, height: usize, frame: u64) -> bool {
+    let Some((top, _)) = origin(width, height, frame) else {
+        return false;
+    };
+    let rr = i32::from(row) - top;
+    rr >= 0 && (rr as usize) < CADUCEUS_ART.len()
+}
+
 fn caduceus_at(row: u16, col: usize, width: usize, height: usize, frame: u64) -> bool {
     let Some((top, left)) = origin(width, height, frame) else {
         return false;
@@ -105,7 +113,11 @@ pub fn apply(lines: &mut Vec<Line<'static>>, width: usize, height: usize, frame:
             stamp_bg(line, cell_bg(row, 0, frame, false));
             continue;
         }
-        stamp_shaped(line, row, width, height, frame);
+        if row_on_caduceus(row, width, height, frame) {
+            stamp_shaped(line, row, width, height, frame);
+        } else {
+            stamp_bg(line, cell_bg(row, 0, frame, false));
+        }
     }
     while lines.len() < height {
         let row = lines.len() as u16;

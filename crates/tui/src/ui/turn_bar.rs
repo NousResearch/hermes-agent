@@ -87,8 +87,13 @@ fn render_compact(frame: &mut Frame, area: Rect, state: &AppState, frame_count: 
     } else {
         String::new()
     };
-    let left = format!("  {spin}  folding context{dots}");
-    let right = format!("{}{}  ", fmt_duration(secs), window);
+    let left = format!("{}{spin} folding context{dots}", super::rhythm::GUTTER_STR);
+    let right = format!(
+        "{}{}{}",
+        fmt_duration(secs),
+        window,
+        super::rhythm::GUTTER_STR
+    );
     let width = area.width as usize;
     let pad = width.saturating_sub(left.width() + right.width()).max(1);
     let header = Line::from(vec![
@@ -146,10 +151,10 @@ fn render_status(frame: &mut Frame, area: Rect, state: &AppState, frame_count: u
         format!("{}  {tokens}  [esc stop]", fmt_duration(elapsed))
     };
     let right_w = right.width();
-    let budget = width.saturating_sub(spin.width() + right_w + 6);
+    let budget = width.saturating_sub(spin.width() + right_w + super::rhythm::GUTTER * 2 + 1);
     let label = truncate_width(&label, budget.max(4));
-    let left = format!("  {spin}  {label}");
-    let pad = width.saturating_sub(left.width() + right_w + 2);
+    let left = format!("{}{spin} {label}", super::rhythm::GUTTER_STR);
+    let pad = width.saturating_sub(left.width() + right_w + super::rhythm::GUTTER);
 
     let line = Line::from(vec![
         Span::styled(
@@ -160,7 +165,7 @@ fn render_status(frame: &mut Frame, area: Rect, state: &AppState, frame_count: u
         ),
         Span::raw(" ".repeat(pad.max(1))),
         Span::styled(
-            format!("{right}  "),
+            format!("{right}{}", super::rhythm::GUTTER_STR),
             Style::default().fg(Theme::text_muted()),
         ),
     ]);
@@ -177,10 +182,10 @@ fn render_status(frame: &mut Frame, area: Rect, state: &AppState, frame_count: u
             rows[0],
         );
         let detail = state.turn_detail().unwrap_or_default();
-        let detail = truncate_width(&detail, width.saturating_sub(4));
+        let detail = truncate_width(&detail, width.saturating_sub(super::rhythm::NEST));
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!("     {detail}"),
+                format!("{}{detail}", super::rhythm::NEST_STR),
                 Style::default().fg(Theme::text_secondary()),
             )))
             .style(Style::default().bg(Theme::bg_base())),

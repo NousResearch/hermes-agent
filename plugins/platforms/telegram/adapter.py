@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -30,6 +31,49 @@ def _redact_telegram_error_text(error: object) -> str:
         return redact_sensitive_text(text, force=True)
     except Exception:
         return "<telegram error redacted>"
+
+
+def _telegram_latency_diagnostics_enabled() -> bool:
+    """Return whether opt-in Telegram latency diagnostics are enabled."""
+    raw = os.getenv("HERMES_TELEGRAM_LATENCY_DIAGNOSTICS", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _telegram_chat_ref(chat_id: object) -> str:
+    """Return a stable, pseudonymous chat reference for correlation."""
+    value = str(chat_id or "").encode("utf-8", errors="replace")
+    return hashlib.blake2s(value, digest_size=6).hexdigest()
+
+
+def _telegram_message_age_ms(
+    timestamp: object,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[int]:
+    """Return non-negative Telegram message age in milliseconds.
+
+    Telegram timestamps are UTC.  Older fixtures and callers may provide a
+    naive datetime, so treat it as UTC rather than mixing aware/naive values.
+    Negative values caused by small host clock skew are clamped to zero.
+    """
+    if not isinstance(timestamp, datetime):
+        return None
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    try:
+        age_ms = round(
+            (
+                observed_at.astimezone(timezone.utc)
+                - timestamp.astimezone(timezone.utc)
+            ).total_seconds()
+            * 1000
+        )
+    except (OverflowError, ValueError):
+        return None
+    return max(0, age_ms)
 
 
 def _scoped_gate_env(name: str, default: str = "") -> str:
@@ -421,6 +465,40 @@ class TelegramAdapter(BasePlatformAdapter):
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
         return utf16_len
+
+    def _log_inbound_latency(self, event: MessageEvent, *, stage: str) -> None:
+        """Emit opt-in, content-free ingress timing at adapter boundaries."""
+        if not _telegram_latency_diagnostics_enabled():
+            return
+
+        now_monotonic = time.monotonic()
+        received_monotonic = getattr(
+            event, "_telegram_latency_received_monotonic", None
+        )
+        if stage == "adapter_received":
+            received_monotonic = now_monotonic
+            setattr(event, "_telegram_latency_received_monotonic", received_monotonic)
+        adapter_queue_ms: Optional[int] = None
+        if isinstance(received_monotonic, (int, float)):
+            adapter_queue_ms = max(
+                0, round((now_monotonic - received_monotonic) * 1000)
+            )
+
+        logger.info(
+            "[TelegramLatency] stage=%s chat_ref=%s update_id=%s message_id=%s "
+            "platform_age_ms=%s adapter_queue_ms=%s",
+            stage,
+            _telegram_chat_ref(getattr(event.source, "chat_id", None)),
+            event.platform_update_id,
+            event.message_id,
+            _telegram_message_age_ms(event.timestamp),
+            adapter_queue_ms,
+        )
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Record the Telegram-to-gateway boundary, then preserve base behavior."""
+        self._log_inbound_latency(event, stage="gateway_dispatch")
+        await super().handle_message(event)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
@@ -4842,30 +4920,88 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
-        if not self._bot or self._typing_in_cooldown(chat_id):
+        diagnostics_enabled = _telegram_latency_diagnostics_enabled()
+        chat_ref = _telegram_chat_ref(chat_id) if diagnostics_enabled else None
+        if not self._bot:
+            if diagnostics_enabled:
+                logger.info(
+                    "[TelegramLatency] operation=send_chat_action outcome=skipped "
+                    "reason=not_connected chat_ref=%s",
+                    chat_ref,
+                )
             return
+        if self._typing_in_cooldown(chat_id):
+            if diagnostics_enabled:
+                logger.info(
+                    "[TelegramLatency] operation=send_chat_action outcome=skipped "
+                    "reason=cooldown chat_ref=%s",
+                    chat_ref,
+                )
+            return
+
+        typing_started = time.monotonic() if diagnostics_enabled else None
+        if diagnostics_enabled:
+            logger.info(
+                "[TelegramLatency] operation=send_chat_action outcome=started chat_ref=%s",
+                chat_ref,
+            )
+
+        def _log_typing_result(outcome: str, error: object = None) -> None:
+            if typing_started is None:
+                return
+            duration_ms = max(0, round((time.monotonic() - typing_started) * 1000))
+            if error is None:
+                logger.info(
+                    "[TelegramLatency] operation=send_chat_action outcome=%s "
+                    "chat_ref=%s duration_ms=%d",
+                    outcome,
+                    chat_ref,
+                    duration_ms,
+                )
+            else:
+                logger.info(
+                    "[TelegramLatency] operation=send_chat_action outcome=%s "
+                    "chat_ref=%s duration_ms=%d error=%s",
+                    outcome,
+                    chat_ref,
+                    duration_ms,
+                    _redact_telegram_error_text(error),
+                )
+
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None
 
         async def _action(**kw) -> None:
             await self._bot.send_chat_action(chat_id=normalize_telegram_chat_id(chat_id), action="typing", **kw)
             self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+
         try:
             _is_dm_topic = self._dm_topic_fallback(metadata)
             message_thread_id = self._message_thread_id_for_typing(self._metadata_thread_id(metadata))
             await _action(message_thread_id=message_thread_id)
+            _log_typing_result("success")
+        except asyncio.CancelledError:
+            _log_typing_result("cancelled")
+            raise
         except Exception as e:
+            final_error = e
             # DM topic lanes: Telegram may reject message_thread_id — retry without it so the indicator at
             # least appears in the main DM view.
             if _is_dm_topic and message_thread_id is not None:
                 try:
                     await _action()
+                    _log_typing_result("fallback_success")
                     return
+                except asyncio.CancelledError:
+                    _log_typing_result("cancelled")
+                    raise
                 except Exception as fallback_exc:
+                    final_error = fallback_exc
                     if self._is_transient_typing_error(fallback_exc):
                         self._record_typing_cooldown(chat_id, fallback_exc)
             elif self._is_transient_typing_error(e):
                 self._record_typing_cooldown(chat_id, e)
+            _log_typing_result("failure", final_error)
             logger.debug("[%s] Failed to send Telegram typing indicator: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -6282,12 +6418,14 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         _chat_id_str = str(chat.id)
-        return MessageEvent(
+        event = MessageEvent(
             text=message.text or "", message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None),
             timestamp=message.date)
+        self._log_inbound_latency(event, stage="adapter_received")
+        return event
 
     # -- Message reactions (processing lifecycle) --
 

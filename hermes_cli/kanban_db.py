@@ -344,6 +344,7 @@ def _fire_dispatch_tick_hook(
             result.skipped_per_profile_capped,
             result.skipped_unassigned,
             result.skipped_nonspawnable,
+            result.skipped_self_review,
         )):
             outcome = "idle"
         invoke_hook(
@@ -6498,6 +6499,83 @@ def redact_review_value(value: Any) -> Any:
     return value
 
 
+DEFAULT_REPEATED_SELF_REVIEW_LIMIT = 3
+
+
+def _is_self_review_handoff(
+    reviewer: Optional[str], implementer: Optional[str]
+) -> bool:
+    """True when review would be claimed by the implementer (or by nobody)."""
+    resolved = _canonical_assignee(reviewer) if reviewer is not None else None
+    impl = _canonical_assignee(implementer) if implementer is not None else None
+    if resolved is None:
+        return True
+    return impl is not None and resolved == impl
+
+
+def _repeated_self_review_limit() -> int:
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config() or {}).get("kanban", {}).get(
+            "repeated_self_review_limit", DEFAULT_REPEATED_SELF_REVIEW_LIMIT
+        )
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_REPEATED_SELF_REVIEW_LIMIT
+    except Exception:
+        return DEFAULT_REPEATED_SELF_REVIEW_LIMIT
+
+
+def _consecutive_review_requested_count(
+    conn: sqlite3.Connection, task_id: str
+) -> int:
+    rows = conn.execute(
+        "SELECT outcome FROM task_runs "
+        "WHERE task_id = ? AND outcome IS NOT NULL "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        if row["outcome"] != "review_requested":
+            break
+        count += 1
+    return count
+
+
+def _latest_review_requested_payload(
+    conn: sqlite3.Connection, task_id: str
+) -> dict:
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["payload"]:
+        return {}
+    try:
+        payload = json.loads(row["payload"])
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def review_handoff_is_self_review(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Park-for-human: latest request_review has no distinct reviewer.
+
+    Rows parked in ``review`` without a ``review_requested`` event (CLI
+    status edits, older fixtures) keep the previous spawn rule: an
+    assigned profile is still dispatchable.
+    """
+    payload = _latest_review_requested_payload(conn, task_id)
+    if not payload:
+        return False
+    return _is_self_review_handoff(
+        payload.get("reviewer"), payload.get("implementer")
+    )
+
+
 def request_review(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6514,9 +6592,12 @@ def request_review(
     Unlike :func:`block_task`, this transition never touches block recurrence
     accounting.  The current implementer and resolved reviewer are recorded on
     the event so an autonomous reviewer can route requested changes back to the
-    right profile.  Supplying ``reviewer`` reassigns the task before it is
+    right profile. Supplying ``reviewer`` reassigns the task before it is
     exposed to the review dispatcher.  On re-review, omitting it reuses the
     reviewer provenance persisted by the latest ``changes_requested`` event.
+    A reviewer-less (or implementer-as-reviewer) handoff parks for a human:
+    the review lane will not spawn the implementer. Repeated self-review
+    handoffs trip ``kanban.repeated_self_review_limit`` (default 3; 0 disables).
 
     When the task is ``running`` under a live claim, a caller that supplies no
     ``expected_run_id`` must pass ``force=True`` (explicit human/CLI override)
@@ -6597,6 +6678,75 @@ def request_review(
                     )
                 reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
+        self_review = _is_self_review_handoff(reviewer, implementer)
+        limit = _repeated_self_review_limit()
+        if self_review and limit > 0:
+            streak = _consecutive_review_requested_count(conn, task_id)
+            if streak >= limit:
+                block_params: tuple[Any, ...]
+                if expected_run_id is None:
+                    block_params = (task_id,)
+                    block_guard = ""
+                else:
+                    block_params = (task_id, int(expected_run_id))
+                    block_guard = " AND current_run_id = ?"
+                blocked = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = 'needs_input'
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """ + block_guard,
+                    block_params,
+                )
+                if blocked.rowcount != 1:
+                    return _ret(
+                        False,
+                        "task is not in running/ready (or expected_run_id did not "
+                        "match the current run)",
+                    )
+                reason = (
+                    f"self-review loop detected: {streak} consecutive "
+                    f"review_requested handoffs with no distinct reviewer "
+                    f"(limit={limit})"
+                )
+                run_id = _end_run(
+                    conn,
+                    task_id,
+                    outcome="blocked",
+                    status="blocked",
+                    summary=reason,
+                    metadata=metadata,
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "blocked",
+                    {
+                        "reason": reason,
+                        "kind": "needs_input",
+                        "source": "self_review_loop",
+                    },
+                    run_id=run_id,
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "self_review_loop_detected",
+                    {
+                        "summary": reason,
+                        "implementer": implementer,
+                        "reviewer": reviewer,
+                        "streak": streak,
+                        "limit": limit,
+                    },
+                    run_id=run_id,
+                )
+                return _ret(False, reason)
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
         if expected_run_id is None:
@@ -8052,6 +8202,10 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_self_review: list[str] = field(default_factory=list)
+    """Review-lane task ids left parked because the latest handoff has no
+    distinct reviewer (reviewer is missing or is the implementer). Human
+    review, not an auto-spawn."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """Tasks deferred this tick because their assignee is already at
     ``kanban.max_in_progress_per_profile`` (#21582). Each entry is
@@ -10077,9 +10231,15 @@ def _dispatch_once_locked(
         except Exception:
             # Profiles module unavailable (test stubs, exotic envs) —
             # assume spawnable, matching the review loop's own fallback.
-            return any(row["assignee"] for row in review_rows)
+            return any(
+                row["assignee"] and not review_handoff_is_self_review(conn, row["id"])
+                for row in review_rows
+            )
         return any(
-            row["assignee"] and _rpe(row["assignee"]) for row in review_rows
+            row["assignee"]
+            and _rpe(row["assignee"])
+            and not review_handoff_is_self_review(conn, row["id"])
+            for row in review_rows
         )
 
     ready_budget = spawn_budget
@@ -10339,6 +10499,9 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        if review_handoff_is_self_review(conn, row["id"]):
+            result.skipped_self_review.append(row["id"])
             continue
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)

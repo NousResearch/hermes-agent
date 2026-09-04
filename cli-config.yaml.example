@@ -341,8 +341,12 @@ model:
 # is spawned with the bundled sdlc-review skill and can approve, request changes
 # back to the original implementer, or escalate a genuine external blocker.
 # Disable this only when every review is performed manually from the dashboard.
+# A request_review with no distinct reviewer parks for a human instead of
+# spawning the implementer. repeated_self_review_limit auto-blocks after that
+# many consecutive reviewer-less handoffs (0 disables).
 kanban:
   review_dispatch: true
+  repeated_self_review_limit: 3
 
 # =============================================================================
 # Terminal Tool Configuration

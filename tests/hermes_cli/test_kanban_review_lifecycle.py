@@ -120,24 +120,24 @@ def test_request_review_transitions_running_to_review(kanban_home: Path) -> None
 
 
 def test_repeated_review_requests_never_triage(kanban_home: Path) -> None:
-    """A task that goes review -> rerun -> review again (the executor
-    follow-up cycle) must stay in ``review`` every time. Under the old
-    ``kanban_block(review-required:)`` approach the second pass hit
-    ``block_recurrences >= 2`` and was wrongly routed to ``triage`` with a
-    ``block_loop_detected`` event. ``request_review`` must never do that."""
+    """A task that goes review -> rerun -> review again must not escalate
+    through ``block_recurrences`` into ``triage``. The old
+    ``kanban_block(review-required:)`` path did that on the second pass.
+    Self-review handoffs stay in ``review`` until
+    ``repeated_self_review_limit``, then block with
+    ``self_review_loop_detected`` instead of triaging."""
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="cycle me", assignee="worker")
 
-        for _ in range(4):
-            # Executor claims (ready->running or review->running) and finishes
-            # with a review request. claim_review_task handles review->running.
+        for i in range(4):
             task = kb.get_task(conn, tid)
             if task.status == "ready":
                 kb.claim_task(conn, tid)
-            else:
-                assert task.status == "review"
+            elif task.status == "review":
                 claimed = kb.claim_review_task(conn, tid)
                 assert claimed is not None
+            elif task.status != "running":
+                raise AssertionError(f"unexpected status {task.status}")
 
             run_id = kb.get_task(conn, tid).current_run_id
             ok = kb.request_review(
@@ -145,15 +145,20 @@ def test_repeated_review_requests_never_triage(kanban_home: Path) -> None:
                 summary="pass complete",
                 expected_run_id=run_id,
             )
-            assert ok is True
             row = _row(conn, tid)
-            assert row["status"] == "review", "must never leave the review lane"
             assert (row["block_recurrences"] or 0) == 0
+            if i < 3:
+                assert ok is True
+                assert row["status"] == "review"
+            else:
+                assert ok is False
+                assert row["status"] == "blocked"
 
-        # After several cycles: never triaged, never a false loop.
-        assert _row(conn, tid)["status"] == "review"
+        assert _row(conn, tid)["status"] == "blocked"
         assert _events(conn, tid, kind="block_loop_detected") == []
-        assert len(_events(conn, tid, kind="review_requested")) == 4
+        assert _row(conn, tid)["status"] != "triage"
+        assert len(_events(conn, tid, kind="review_requested")) == 3
+        assert len(_events(conn, tid, kind="self_review_loop_detected")) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +392,7 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         kb.claim_task(conn, tid)
         kb.request_review(
             conn, tid, summary="done",
+            reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -443,6 +449,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         kb.add_comment(conn, review_id, author="worker", body=pr_comment)
         assert kb.request_review(
             conn, review_id, summary="PR ready",
+            reviewer="lead-reviewer",
             expected_run_id=claimed.current_run_id,
         )
         # Ready-lane task with the same fresh PR comment.
@@ -506,6 +513,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
             conn,
             task_id,
             summary="ready",
+            reviewer="lead-reviewer",
             expected_run_id=implementation.current_run_id,
         )
         monkeypatch.setattr(
@@ -555,6 +563,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
                 conn,
                 task_id,
                 summary="ready",
+                reviewer="lead-reviewer",
                 expected_run_id=implementation.current_run_id,
             )
             review_ids.append(task_id)
@@ -708,3 +717,137 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+def test_self_review_handoff_is_not_auto_dispatched(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reviewer=None keeps the implementer and must not spawn them as reviewer."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    spawned: list[str] = []
+
+    def spawn(task, workspace, board=None):
+        spawned.append(task.assignee or "")
+        return 7
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="human gated", assignee="P")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, tid, summary="waiting for human approval",
+            expected_run_id=claimed.current_run_id,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "review"
+        assert task.assignee == "p"
+        ev = _events(conn, tid, kind="review_requested")[0][1]
+        assert ev["reviewer"] is None
+        assert ev["implementer"] == "p"
+
+        result = kb.dispatch_once(conn, spawn_fn=spawn)
+        parked = kb.get_task(conn, tid)
+        assert tid in result.skipped_self_review
+        assert tid not in [s[0] for s in result.spawned]
+        assert parked.status == "review"
+        assert parked.assignee == "p"
+        assert spawned == []
+
+        again = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert tid in again.skipped_self_review
+        assert spawned == []
+
+
+def test_implementer_named_as_reviewer_is_not_auto_dispatched(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="same profile", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, tid, summary="self",
+            reviewer="worker",
+            expected_run_id=claimed.current_run_id,
+        )
+        result = kb.dispatch_once(conn, dry_run=True)
+        assert tid in result.skipped_self_review
+        assert tid not in [s[0] for s in result.spawned]
+
+
+def test_self_review_loop_trips_breaker(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"repeated_self_review_limit": 3}},
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="loop", assignee="P")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        for i in range(3):
+            assert kb.request_review(
+                conn, tid, summary=f"park {i}",
+                expected_run_id=claimed.current_run_id,
+            )
+            assert kb.get_task(conn, tid).status == "review"
+            claimed = kb.claim_review_task(conn, tid)
+            assert claimed is not None
+
+        ok, reason = kb.request_review(
+            conn, tid, summary="park 3",
+            expected_run_id=claimed.current_run_id,
+            with_reason=True,
+        )
+        assert ok is False
+        assert reason is not None and "self-review loop" in reason
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        kinds = [kind for kind, _ in _events(conn, tid, kind="self_review_loop_detected")]
+        assert kinds == ["self_review_loop_detected"]
+        assert _events(conn, tid, kind="blocked")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_self_review_breaker_disabled_when_limit_zero(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"repeated_self_review_limit": 0}},
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="unbounded park", assignee="P")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        for i in range(4):
+            assert kb.request_review(
+                conn, tid, summary=f"park {i}",
+                expected_run_id=claimed.current_run_id,
+            )
+            assert kb.get_task(conn, tid).status == "review"
+            if i < 3:
+                claimed = kb.claim_review_task(conn, tid)
+                assert claimed is not None
+        assert _events(conn, tid, kind="self_review_loop_detected") == []

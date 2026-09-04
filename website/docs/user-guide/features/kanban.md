@@ -226,9 +226,14 @@ up on the next tick (60s by default).
 kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
-  review_dispatch: true            # default: spawn the assigned profile with
-                                   # the bundled sdlc-review skill. Set false
-                                   # for human-only review boards.
+  review_dispatch: true            # default: spawn a distinct reviewer with
+                                   # the bundled sdlc-review skill. A handoff
+                                   # with no reviewer (or reviewer=implementer)
+                                   # parks for a human instead of self-spawning.
+                                   # Set false for fully human-only review boards.
+  repeated_self_review_limit: 3    # auto-block after this many consecutive
+                                   # reviewer-less review_requested handoffs.
+                                   # 0 disables.
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`

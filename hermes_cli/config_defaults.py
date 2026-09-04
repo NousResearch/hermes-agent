@@ -2911,6 +2911,10 @@ DEFAULT_CONFIG = {
         # the assigned profile with the bundled sdlc-review skill. Disable for
         # boards where every review is performed manually from the dashboard.
         "review_dispatch": True,
+        # Consecutive reviewer-less (or implementer-as-reviewer)
+        # review_requested handoffs before request_review auto-blocks.
+        # 0 disables the breaker. Distinct-reviewer handoffs are unbounded.
+        "repeated_self_review_limit": 3,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

@@ -554,7 +554,13 @@ display:
 | `collapse` | At most **one** notice per session per `fallback_notice_interval_seconds`. The first names the primary model, the reason, and the model now in use; further hops are counted and folded into the next allowed notice ("3 further fallbacks since 09:12 UTC; now on …"). Provider auth/rate-limit/connection replies are deduped by error class over the same window. |
 | `off` | No user-facing fallback or provider-error notice at all |
 
+The window is per conversation: a collapsed notice in one channel never silences a different channel or DM.
+
+**A reply to a message you sent is never silence.** If the window already reported the outage, your message still gets one short line ("Still failing on the provider error reported earlier; details in the gateway logs") rather than nothing, and never the raw provider error. Only unsolicited status chatter collapses to nothing.
+
 The gateway log is unchanged in every mode — `off` silences chat, not diagnostics.
+
+The window lives in memory, so a gateway restart reopens it and allows one more notice. That is deliberate: the failure direction is one notice too many, never a lost one.
 
 ### Use Cases
 

@@ -1519,6 +1519,10 @@ DEFAULT_CONFIG = {
         #                hops are counted and folded into the next notice,
         #                and auth-error replies dedupe by error class
         #   "off"      — no user-facing notice (the log lines are unchanged)
+        # A reply to a message somebody sent is never silenced outright: a
+        # suppressed reply degrades to one terse line, never to nothing and
+        # never to the raw provider error.  Only unsolicited status chatter
+        # collapses to nothing.  The window is per platform + chat id.
         "fallback_notifications": "on",
         # Collapse window in seconds for display.fallback_notifications:
         # collapse. Ignored in "on"/"off".

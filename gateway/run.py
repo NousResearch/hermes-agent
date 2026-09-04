@@ -24360,6 +24360,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         The registry maps ``quick_key`` → ``(source, session_id)`` so the
         poller can rebuild a MessageEvent and enqueue via the adapter FIFO.
+        The stored session_id is only a starting point — the route can rotate
+        onto a new session underneath it, so each poll re-resolves it through
+        :meth:`_live_heartbeat_session_id`.
         In-memory by design: heartbeat STATE survives restarts in SessionDB,
         but firing resumes when the user touches /heartbeat again in the new
         gateway process (documented; durable schedules belong to cron).
@@ -24375,6 +24378,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         watch = getattr(self, "_heartbeat_watch", None)
         if watch:
             watch.pop(quick_key, None)
+
+    def _live_heartbeat_session_id(self, quick_key: str, fallback: str) -> str:
+        """Session id currently bound to a watched route.
+
+        The registry caches the id the route had when /heartbeat was set, but
+        a context compression rotates the route onto a fresh session and
+        carries the heartbeat over with ``migrate_heartbeat_to_session``, which
+        marks the parent row cleared. Polling the captured id would then read
+        that cleared row, conclude the heartbeat was removed, and drop the
+        watch — silencing the heartbeat for the rest of the process while
+        ``/heartbeat status`` (which resolves the live session) still reports
+        it as active and counting down.
+
+        ``peek_session_id`` is the read-only, lock-held accessor for the
+        key→session_id mapping that ``advance_compression_session`` repairs on
+        rotation. It never creates a session, so a route the user has since
+        ended stays absent and falls through to the caller's drop path.
+        """
+        try:
+            sid = self.session_store.peek_session_id(quick_key)
+        except Exception as exc:
+            logger.debug("heartbeat: session lookup for %s failed: %s", quick_key, exc)
+            return fallback
+        return sid or fallback
 
     def _start_heartbeat_poller(self) -> None:
         """Start the single gateway-wide heartbeat poll task (idempotent)."""
@@ -24401,6 +24428,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if quick_key in self._running_agents:
                             continue
                         from hermes_cli.heartbeat import HeartbeatManager
+
+                        # Follow the route if it rotated onto a new session
+                        # (compression) since the watch was registered, and
+                        # cache the result so the next tick starts from it.
+                        live_sid = self._live_heartbeat_session_id(quick_key, session_id)
+                        if live_sid != session_id:
+                            session_id = live_sid
+                            watch[quick_key] = (source, session_id)
 
                         mgr = HeartbeatManager(session_id=session_id)
                         if not mgr.has_heartbeat():

@@ -746,7 +746,10 @@ def _rpc_server_loop(
 
     if dispatch is None:
         def dispatch(tool_name, tool_args):
-            return handle_function_call(tool_name, tool_args, task_id=task_id)
+            dispatch_kwargs: Dict[str, Any] = {"task_id": task_id}
+            if tool_name == "read_file":
+                dispatch_kwargs["suppress_read_dedup"] = True
+            return handle_function_call(tool_name, tool_args, **dispatch_kwargs)
 
     conn = None
     try:
@@ -1102,9 +1105,12 @@ def _rpc_poll_loop(
 
                     # Dispatch through the standard tool handler
                     try:
+                        dispatch_kwargs: Dict[str, Any] = {"task_id": task_id}
+                        if tool_name == "read_file":
+                            dispatch_kwargs["suppress_read_dedup"] = True
                         with thread_scoped_silence():
                             tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
+                                tool_name, tool_args, **dispatch_kwargs
                             )
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",

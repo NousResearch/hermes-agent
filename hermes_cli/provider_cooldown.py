@@ -201,12 +201,14 @@ def demote_if_rate_limited(
       Provider and model move together: swapping one while keeping the other
       would send e.g. a Gemini model id to OpenRouter.
 
-    *chain* is a callable so the gateway's is not evaluated on the healthy
-    path: it re-applies the managed overlay and expands ``${VAR}`` on every
-    call (the raw yaml behind it is mtime-cached), and the gateway builds an
-    agent per message. Cron and one-shot close over a config dict they already
-    hold and read the same chain elsewhere regardless, so for them the callable
-    is shape rather than saving.
+    *chain* is a callable so the gateway's argument is not evaluated on the
+    healthy path: it re-applies the managed overlay and expands ``${VAR}``
+    per call (the raw yaml behind it is mtime-cached, on the canonical config
+    path), and the gateway resolves the runtime per message -- ahead of the
+    per-session agent cache, which exists precisely so the agent itself is
+    not rebuilt each turn.  Cron and one-shot close over a config dict they
+    already hold, and read the same chain elsewhere regardless, so for them
+    the callable is shape rather than saving.
 
     *is_rate_limited* governs the CHAIN ENTRIES only; whether the primary
     itself is benched is always asked of

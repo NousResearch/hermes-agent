@@ -16,6 +16,25 @@ from unittest.mock import Mock
 import pytest
 
 
+def _set_cgroup_topology(monkeypatch, manager):
+    """Make the runtime cgroup identify a user or system systemd manager."""
+    import tools.process_registry as process_registry
+
+    real_read_text = process_registry.Path.read_text
+    cgroup = (
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes.service\n"
+        if manager == "user"
+        else "0::/system.slice/hermes-gateway.service\n"
+    )
+
+    def read_text(path, *args, **kwargs):
+        if path == Path("/proc/self/cgroup"):
+            return cgroup
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(process_registry.Path, "read_text", read_text)
+
+
 @pytest.fixture
 def execution_ledger(tmp_path, monkeypatch):
     import cron.executions as executions
@@ -78,17 +97,84 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
 
 
 @pytest.mark.linux_only
-def test_restart_safe_gateway_child_fails_closed_without_scope(monkeypatch):
+@pytest.mark.parametrize(
+    ("manager", "uses_user_manager"),
+    [("user", True), ("system", False)],
+)
+def test_restart_safe_gateway_child_uses_its_cgroup_manager(
+    monkeypatch, manager, uses_user_manager
+):
+    """Cron workers must leave a user or system gateway through that manager."""
     import tools.process_registry as process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
-    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
+    _set_cgroup_topology(monkeypatch, manager)
+    monkeypatch.setattr(
+        process_registry, "_systemd_run_scope_available", lambda _manager: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        process_registry, "_systemd_run_user_scope_available", lambda: True
+    )
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/systemd-run")
 
-    with pytest.raises(RuntimeError, match="systemd-run --user --scope is unavailable"):
+    argv = process_registry.restart_safe_gateway_child_argv(
+        ["python", "worker.py"], unit_suffix="cron-job-1"
+    )
+
+    assert "--scope" in argv
+    assert ("--user" in argv) is uses_user_manager
+
+
+@pytest.mark.linux_only
+def test_restart_safe_gateway_child_fails_closed_when_its_manager_scope_is_unavailable(
+    monkeypatch,
+):
+    import tools.process_registry as process_registry
+
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setenv("INVOCATION_ID", "managed-system-service")
+    _set_cgroup_topology(monkeypatch, "system")
+    monkeypatch.setattr(
+        process_registry, "_systemd_run_scope_available", lambda _manager: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        process_registry, "_systemd_run_user_scope_available", lambda: True
+    )
+
+    with pytest.raises(RuntimeError, match="systemd-run --scope is unavailable"):
         process_registry.restart_safe_gateway_child_argv(
             ["python", "worker.py"], unit_suffix="cron-job-1"
         )
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize(
+    ("manager", "expected_prefix"),
+    [
+        ("user", ["/usr/bin/systemctl", "--user", "stop"]),
+        ("system", ["/usr/bin/systemctl", "stop"]),
+    ],
+)
+def test_systemd_scope_cleanup_uses_the_scope_manager(
+    monkeypatch, manager, expected_prefix
+):
+    """Scope cleanup must address the same manager used for worker creation."""
+    import tools.process_registry as process_registry
+
+    calls = []
+    _set_cgroup_topology(monkeypatch, manager)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        process_registry.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 0),
+    )
+
+    assert process_registry._stop_systemd_unit("hermes-worker-cron.scope") is True
+    assert calls == [expected_prefix + ["hermes-worker-cron.scope"]]
 
 
 def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeypatch):

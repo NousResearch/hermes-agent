@@ -1924,6 +1924,7 @@ display:
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
+  terminal_title: true    # TUI only: write OSC 0/1/2 terminal tab/window titles. Set false to leave a tmux/zellij pane name untouched
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)

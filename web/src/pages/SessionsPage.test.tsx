@@ -37,6 +37,7 @@ let root: Root;
 
 // SessionsPage mounts several providers and lazy UI effects; hosted runners
 // can legitimately need more than Vitest's default five-second test budget.
+// The polling interval stays short, while the overall wait remains bounded.
 async function waitFor(cond: () => boolean, timeoutMs = 15_000) {
   const start = Date.now();
   while (!cond()) {

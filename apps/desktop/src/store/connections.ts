@@ -51,7 +51,7 @@ export const $hasMultipleConnections = computed(
   registry => (registry?.connections.length ?? 0) > 1
 )
 
-const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord(LAST_PROFILE_STORAGE_KEY))
+export const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord(LAST_PROFILE_STORAGE_KEY))
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0

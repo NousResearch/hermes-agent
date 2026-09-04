@@ -2683,7 +2683,8 @@ def _run_single_child(
     # gateway inactivity timeout doesn't fire while the subagent is working.
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
-    _heartbeat_stop = threading.Event()
+    # Runs on the shared periodic scheduler thread (agent/periodic_scheduler)
+    # rather than one daemon thread per child; returning False stops it.
     # Stale detection: track the child's (tool, iteration, activity_ts) across
     # heartbeat cycles. If none advances, count the cycle as stale.
     # Different thresholds for idle vs in-tool (see _HEARTBEAT_STALE_CYCLES_*).
@@ -2693,87 +2694,85 @@ def _run_single_child(
     _last_seen_tool = [None]  # type: list
     _last_seen_activity_ts = [None]  # type: list
     _stale_count = [0]
+    _heartbeat_handle = [None]  # type: list
 
-    def _heartbeat_loop():
-        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
-            if parent_agent is None:
-                continue
-            touch = getattr(parent_agent, "_touch_activity", None)
-            if not touch:
-                continue
-            # Pull detail from the child's own activity tracker
-            desc = f"delegate_task: subagent {task_index} working"
-            try:
-                child_summary = child.get_activity_summary()
-                child_tool = child_summary.get("current_tool")
-                child_iter = child_summary.get("api_call_count", 0)
-                child_max = child_summary.get("max_iterations", 0)
-                child_activity_ts = child_summary.get("last_activity_ts")
+    def _heartbeat_tick():
+        if parent_agent is None:
+            return
+        touch = getattr(parent_agent, "_touch_activity", None)
+        if not touch:
+            return
+        # Pull detail from the child's own activity tracker
+        desc = f"delegate_task: subagent {task_index} working"
+        try:
+            child_summary = child.get_activity_summary()
+            child_tool = child_summary.get("current_tool")
+            child_iter = child_summary.get("api_call_count", 0)
+            child_max = child_summary.get("max_iterations", 0)
+            child_activity_ts = child_summary.get("last_activity_ts")
 
-                # Stale detection: count cycles where iteration, current_tool,
-                # AND last_activity_ts are all frozen. A child running a
-                # legitimately long-running tool keeps current_tool set; a
-                # child waiting on a slow model refreshes last_activity_ts
-                # via direct_api_call's activity heartbeat — neither should
-                # look stale at the idle threshold.
-                iter_advanced = child_iter > _last_seen_iter[0]
-                tool_changed = child_tool != _last_seen_tool[0]
-                activity_advanced = (
-                    child_activity_ts is not None
-                    and (
-                        _last_seen_activity_ts[0] is None
-                        or child_activity_ts > _last_seen_activity_ts[0]
-                    )
+            # Stale detection: count cycles where iteration, current_tool,
+            # AND last_activity_ts are all frozen. A child running a
+            # legitimately long-running tool keeps current_tool set; a
+            # child waiting on a slow model refreshes last_activity_ts
+            # via direct_api_call's activity heartbeat — neither should
+            # look stale at the idle threshold.
+            iter_advanced = child_iter > _last_seen_iter[0]
+            tool_changed = child_tool != _last_seen_tool[0]
+            activity_advanced = (
+                child_activity_ts is not None
+                and (
+                    _last_seen_activity_ts[0] is None
+                    or child_activity_ts > _last_seen_activity_ts[0]
                 )
-                if iter_advanced or tool_changed or activity_advanced:
-                    _last_seen_iter[0] = child_iter
-                    _last_seen_tool[0] = child_tool
-                    if child_activity_ts is not None:
-                        _last_seen_activity_ts[0] = child_activity_ts
-                    _stale_count[0] = 0
-                else:
-                    _stale_count[0] += 1
+            )
+            if iter_advanced or tool_changed or activity_advanced:
+                _last_seen_iter[0] = child_iter
+                _last_seen_tool[0] = child_tool
+                if child_activity_ts is not None:
+                    _last_seen_activity_ts[0] = child_activity_ts
+                _stale_count[0] = 0
+            else:
+                _stale_count[0] += 1
 
-                # Pick threshold based on whether the child is currently
-                # inside a tool call. In-tool threshold is high enough to
-                # cover legitimately slow tools; idle threshold stays
-                # tight so the gateway timeout can fire on a truly wedged
-                # child.
-                stale_limit = (
-                    _HEARTBEAT_STALE_CYCLES_IN_TOOL
-                    if child_tool
-                    else _HEARTBEAT_STALE_CYCLES_IDLE
+            # Pick threshold based on whether the child is currently
+            # inside a tool call. In-tool threshold is high enough to
+            # cover legitimately slow tools; idle threshold stays
+            # tight so the gateway timeout can fire on a truly wedged
+            # child.
+            stale_limit = (
+                _HEARTBEAT_STALE_CYCLES_IN_TOOL
+                if child_tool
+                else _HEARTBEAT_STALE_CYCLES_IDLE
+            )
+            if _stale_count[0] >= stale_limit:
+                logger.warning(
+                    "Subagent %d appears stale (no progress for %d "
+                    "heartbeat cycles, tool=%s) — stopping heartbeat",
+                    task_index,
+                    _stale_count[0],
+                    child_tool or "<none>",
                 )
-                if _stale_count[0] >= stale_limit:
-                    logger.warning(
-                        "Subagent %d appears stale (no progress for %d "
-                        "heartbeat cycles, tool=%s) — stopping heartbeat",
-                        task_index,
-                        _stale_count[0],
-                        child_tool or "<none>",
-                    )
-                    break  # stop touching parent, let gateway timeout fire
+                return False  # stop touching parent, let gateway timeout fire
 
-                if child_tool:
+            if child_tool:
+                desc = (
+                    f"delegate_task: subagent running {child_tool} "
+                    f"(iteration {child_iter}/{child_max})"
+                )
+            else:
+                child_desc = child_summary.get("last_activity_desc", "")
+                if child_desc:
                     desc = (
-                        f"delegate_task: subagent running {child_tool} "
+                        f"delegate_task: subagent {child_desc} "
                         f"(iteration {child_iter}/{child_max})"
                     )
-                else:
-                    child_desc = child_summary.get("last_activity_desc", "")
-                    if child_desc:
-                        desc = (
-                            f"delegate_task: subagent {child_desc} "
-                            f"(iteration {child_iter}/{child_max})"
-                        )
-            except Exception:
-                pass
-            try:
-                touch(desc)
-            except Exception:
-                pass
-
-    _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        except Exception:
+            pass
+        try:
+            touch(desc)
+        except Exception:
+            pass
 
     # Register the live agent in the module-level registry so the TUI can
     # target it by subagent_id (kill, pause, status queries).  Unregistered
@@ -2884,7 +2883,9 @@ def _run_single_child(
                 }
 
     try:
-        _heartbeat_thread.start()
+        from agent.periodic_scheduler import schedule as _schedule_periodic
+
+        _heartbeat_handle[0] = _schedule_periodic(_heartbeat_tick, _HEARTBEAT_INTERVAL)
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.start", preview=goal)
@@ -3618,14 +3619,12 @@ def _run_single_child(
         return _error_entry
 
     finally:
-        # Stop the heartbeat thread so it doesn't keep touching parent activity
-        # after the child has finished (or failed).  Guard the join: .start()
-        # now lives inside the try block, so if it raised (OS thread
-        # exhaustion) the thread was never started and Thread.join() would
-        # raise RuntimeError.  ident is None until start() succeeds.
-        _heartbeat_stop.set()
-        if _heartbeat_thread.ident is not None:
-            _heartbeat_thread.join(timeout=5)
+        # Stop the heartbeat so it doesn't keep touching parent activity
+        # after the child has finished (or failed).  The handle is None if
+        # scheduling itself raised (OS thread exhaustion on first use).
+        # wait=5 mirrors the old thread join: an in-flight tick finishes.
+        if _heartbeat_handle[0] is not None:
+            _heartbeat_handle[0].cancel(wait=5)
 
         # Drop the TUI-facing registry entry.  Safe to call even if the
         # child was never registered (e.g. ID missing on test doubles).

@@ -133,6 +133,9 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     # Meta
     ("meta/muse-spark-1.2",                    ""),
+    ("meta/muse-spark-1.2-contributor",        ""),
+    ("meta/muse-spark-1.3",                    ""),
+    ("meta/muse-spark-1.3-contributor",        ""),
     # Sakana
     ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
@@ -576,6 +579,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free",
+        "muse-spark-1.3-contributor-free",
     ],
     # OpenCode free tier — keyless (no OpenCode account needed). This is the
     # OFFLINE FLOOR only: provider_model_ids("opencode-free") revalidates live
@@ -596,6 +600,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free",
+        "muse-spark-1.3-contributor-free",
     ],
     # Synced against https://opencode.ai/docs/go/ + live GET /zen/go/v1/models
     # (2026-08-20).
@@ -628,6 +633,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "hy3",
         "hy3-preview",
         "muse-spark-1.2-contributor",
+        "muse-spark-1.3-contributor",
         # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
         # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).
         "ox-alpha-free",
@@ -1031,35 +1037,61 @@ def union_with_portal_paid_recommendations(
 # session while still picking up upgrades quickly.
 # ---------------------------------------------------------------------------
 _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
-_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+_free_tier_cache: dict[str, tuple[bool, float]] = {}
 
 
-def check_nous_free_tier(*, force_fresh: bool = False) -> bool:
+def _pricing_profile_key() -> str:
+    """Return the stable profile identity for process-local pricing caches."""
+    from hermes_constants import hermes_home_key
+
+    return hermes_home_key()
+
+
+def get_cached_nous_free_tier() -> Optional[bool]:
+    """Return this profile's live cached entitlement, or ``None`` if unknown."""
+    cached = _free_tier_cache.get(_pricing_profile_key())
+    if cached is None:
+        return None
+    result, cached_at = cached
+    if time.monotonic() - cached_at >= _FREE_TIER_CACHE_TTL:
+        return None
+    return result
+
+
+def check_nous_free_tier(
+    *, force_fresh: bool = False, cached_only: bool = False
+) -> bool:
     """Check if the current Nous Portal user is on a free (unpaid) tier.
 
     Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds to avoid
     hitting the Portal API on every call.  The cache is short-lived so
     that an account upgrade is reflected within a few minutes.
 
+    ``cached_only`` returns a live cached answer or the fail-open ``False``
+    default without contacting Portal.
+
     Returns True only when entitlement is known to be free.  Unknown/error
     states return False so this compatibility wrapper does not block users.
     """
-    global _free_tier_cache
     now = time.monotonic()
-    if not force_fresh and _free_tier_cache is not None:
-        cached_result, cached_at = _free_tier_cache
-        if now - cached_at < _FREE_TIER_CACHE_TTL:
+    profile_key = _pricing_profile_key()
+    if not force_fresh:
+        cached_result = get_cached_nous_free_tier()
+        if cached_result is not None:
             return cached_result
+
+    if cached_only:
+        return False
 
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
 
         account_info = get_nous_portal_account_info(force_fresh=force_fresh)
         result = account_info.is_free_tier
-        _free_tier_cache = (result, now)
+        _free_tier_cache[profile_key] = (result, now)
         return result
     except Exception:
-        _free_tier_cache = (False, now)
+        _free_tier_cache[profile_key] = (False, now)
         return False  # default to paid on error — don't block users
 
 
@@ -2094,6 +2126,25 @@ def warm_nous_reasoning_caps_async() -> None:
     _warm_reasoning_caps_async(_refresh_nous_reasoning_caps)
 
 
+def refresh_reasoning_caps_async(provider: Optional[str]) -> None:
+    """Force a background re-fetch of *provider*'s reasoning-capability catalog.
+
+    The in-memory cache is otherwise held for the process lifetime, so a
+    route that flips to reasoning-mandatory mid-process (GLM-5.3-flash, Sep
+    2026) keeps being sent disables it now rejects. Called from the
+    conversation loop's reasoning_mandatory recovery so the profile guard is
+    right again on the next request; no-op for providers without a catalog.
+    """
+    refresh = {
+        "nous": _refresh_nous_reasoning_caps,
+        "nous-portal": _refresh_nous_reasoning_caps,
+        "nousresearch": _refresh_nous_reasoning_caps,
+        "openrouter": _refresh_openrouter_reasoning_caps,
+    }.get(str(provider or "").strip().lower())
+    if refresh is not None:
+        _warm_reasoning_caps_async(refresh)
+
+
 # Canonical low→high ordering used for nearest-level clamping. Kept as an
 # alias of the single source of truth in ``agent.reasoning_effort``.
 from agent.reasoning_effort import EFFORT_LADDER as _REASONING_EFFORT_ORDER
@@ -2321,6 +2372,7 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
+_pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 
 # A failed fetch caches its empty result too, so an unreachable endpoint isn't
 # re-dialed on every call — but only until this deadline. Cached forever, one
@@ -2807,26 +2859,145 @@ def restrict_to_nous_policy(
     return kept
 
 
-def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita)."""
+def get_cached_nous_inference_base_url() -> str:
+    """Return the profile's persisted Nous endpoint without refreshing auth."""
+    try:
+        from hermes_cli.auth import (
+            _load_auth_store,
+            _load_provider_state,
+            _optional_base_url,
+            _validate_nous_inference_url_from_network,
+        )
+
+        state = _load_provider_state(_load_auth_store(), "nous") or {}
+        return (
+            _validate_nous_inference_url_from_network(
+                _optional_base_url(state.get("inference_base_url"))
+            )
+            or ""
+        ).rstrip("/").removesuffix("/v1")
+    except Exception:
+        return ""
+
+
+def pricing_cache_scope(
+    provider: str,
+    *,
+    current_provider: str = "",
+    current_base_url: str = "",
+) -> str:
+    """Return the current endpoint identity used by a provider's pricing cache.
+
+    This only resolves local configuration; it never fetches a catalog. Picker
+    prewarm single-flight uses the result to let an endpoint rotation start a
+    new worker while the previous endpoint is still slow or unreachable.
+    """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
+        return "https://openrouter.ai/api"
+    if normalized == "ai-gateway":
+        from hermes_constants import AI_GATEWAY_BASE_URL
+
+        return AI_GATEWAY_BASE_URL.rstrip("/")
+    if normalized == "novita":
+        return (
+            os.getenv("NOVITA_BASE_URL", "").strip()
+            or "https://api.novita.ai/openai/v1"
+        ).rstrip("/")
+    if normalized == "deepinfra":
+        cache_key, _url = _deepinfra_catalog_url()
+        return cache_key
+    if normalized == "fireworks":
+        return "models.dev/fireworks"
+    if normalized == "nous":
+        try:
+            from hermes_cli.auth import _nous_inference_env_override
+
+            env_base = _nous_inference_env_override()
+        except Exception:
+            env_base = None
+        if env_base:
+            return env_base.rstrip("/").removesuffix("/v1")
+        if normalize_provider(current_provider) == "nous" and current_base_url:
+            return current_base_url.rstrip("/").removesuffix("/v1")
+        persisted_base = get_cached_nous_inference_base_url()
+        if persisted_base:
+            return persisted_base
+        return _pricing_provider_cache_keys.get(
+            (_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE
+        )
+    return ""
+
+
+def get_pricing_for_provider(
+    provider: str,
+    *,
+    force_refresh: bool = False,
+    cached_only: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Return pricing for providers that publish it.
+
+    ``cached_only`` never starts provider I/O. Normal picker opens use it so
+    cold endpoints cannot hold the response path; a background prewarm fills
+    the same caches for later opens.
+    """
+    normalized = normalize_provider(provider)
+    if cached_only:
+        if normalized == "deepinfra":
+            cache_key, _url = _deepinfra_catalog_url()
+            if cache_key not in _deepinfra_catalog_cache:
+                return {}
+            return _fetch_deepinfra_pricing()
+
+        cache_key = _pricing_provider_cache_keys.get(
+            (_pricing_profile_key(), normalized)
+        )
+        if cache_key is None:
+            if normalized == "openrouter":
+                cache_key = "https://openrouter.ai/api"
+            elif normalized == "ai-gateway":
+                from hermes_constants import AI_GATEWAY_BASE_URL
+
+                cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
+            elif normalized == "fireworks":
+                cache_key = "models.dev/fireworks"
+        return (_cached_catalog(cache_key) or {}) if cache_key else {}
+
+    if normalized == "openrouter":
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = "https://openrouter.ai/api"
         return fetch_models_with_pricing(
             api_key=_resolve_openrouter_api_key(),
             base_url="https://openrouter.ai/api",
             force_refresh=force_refresh,
         )
     if normalized == "ai-gateway":
+        from hermes_constants import AI_GATEWAY_BASE_URL
+
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = AI_GATEWAY_BASE_URL.rstrip("/")
         return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "novita":
+        base_url = os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1"
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = base_url.rstrip("/")
         return _fetch_novita_pricing(force_refresh=force_refresh)
     if normalized == "deepinfra":
         return _fetch_deepinfra_pricing(force_refresh=force_refresh)
     if normalized == "fireworks":
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = "models.dev/fireworks"
         return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
+            _pricing_provider_cache_keys[
+                (_pricing_profile_key(), normalized)
+            ] = base_url.rstrip("/")
             return fetch_models_with_pricing(
                 api_key=api_key,
                 base_url=base_url,

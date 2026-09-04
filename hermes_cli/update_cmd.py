@@ -227,7 +227,7 @@ def _run_config_check_fresh() -> tuple:
     _reload_config_modules()
     from hermes_cli.config import check_config_version
 
-    return check_config_version()
+    return check_config_version(raise_on_parse_error=True)
 
 
 def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:

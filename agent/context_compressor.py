@@ -2380,7 +2380,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
 
         # Micro-compaction state reset
         self._micro_compact_cursor = 0
@@ -2685,7 +2685,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -2700,7 +2700,7 @@ class ContextCompressor(ContextEngine):
         self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = 0.0
         self._structural_no_op_backoff_until = 0.0
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
@@ -3315,7 +3315,7 @@ class ContextCompressor(ContextEngine):
         # sizes. Same durable-sync discipline as the strike reset above: clear
         # the model_config copy too, so a restart doesn't resurrect a runway
         # this recalibration just voided.
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
         self._clear_durable_proactive_prune_rearm()
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
@@ -3548,6 +3548,10 @@ class ContextCompressor(ContextEngine):
         # A committed prune is a prompt-cache boundary. Do not permit the next
         # one until the prompt has regrown the tokens just reclaimed.
         self._proactive_prune_rearm_tokens: int = 0
+        # Dedup key for the over-threshold "reclamation no-oped" warning
+        # (#101889) so a tool loop riding above the threshold warns once per
+        # distinct reason + rearm snapshot instead of every iteration.
+        self._last_reclaim_block_warn: "tuple[str, int] | None" = None
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -4442,6 +4446,76 @@ class ContextCompressor(ContextEngine):
 
         return result, pruned
 
+    def _reset_proactive_prune_rearm(self) -> None:
+        """Fully rearm the proactive prune and let a future lockout warn again.
+
+        Every path that zeroes the rearm mark (compaction, session
+        reset/end/rebind, model recalibration) is a reclamation or a fresh
+        start, so the over-threshold no-op dedup key must not survive it —
+        otherwise an identical lockout after a full compaction (rearm back
+        at 0) would be silent (#101889).
+        """
+        self._proactive_prune_rearm_tokens = 0
+        self._last_reclaim_block_warn = None
+
+    def _billed_basis_over_threshold(self, current_tokens: "int | None") -> bool:
+        """Whether a provider-billed reading says the session is over threshold.
+
+        ``current_tokens`` is the provider's ``prompt_tokens`` (or the
+        overhead-aware fallback estimate): it counts the system prompt and tool
+        schemas, which the message-only estimate behind
+        ``_proactive_prune_rearm_tokens`` does not. Used to stop schema
+        overhead from parking the prune rearm gate above a real request that is
+        already over ``threshold_tokens`` (#101889).
+        """
+        return (
+            current_tokens is not None
+            and self.threshold_tokens > 0
+            and current_tokens >= self.threshold_tokens
+        )
+
+    def _warn_reclamation_no_op(
+        self,
+        reason: str,
+        current_tokens: "int | None",
+        before: "int | None" = None,
+    ) -> None:
+        """Warn when an over-threshold session's reclamation path no-ops.
+
+        A session sitting above ``threshold_tokens`` with every reclamation
+        path declining is the failure mode from #101889: context keeps growing
+        until the provider's hard limit rejects the request, with nothing in
+        the log to explain it. Silent below the threshold (a declined prune
+        there is ordinary hysteresis, not a lockout). Deduped on
+        ``reason`` + the rearm snapshot so a busy tool loop logs once per
+        distinct state, not once per iteration; the key is cleared whenever
+        the session drops back under threshold or any reclamation resets the
+        rearm mark (prune commit, compaction, session reset/rebind, model
+        recalibration) so a later lockout warns again.
+        """
+        # The explicit None check is redundant with the predicate; it narrows
+        # ``current_tokens`` for the type checker on the format below.
+        if current_tokens is None or not self._billed_basis_over_threshold(
+            current_tokens
+        ):
+            self._last_reclaim_block_warn = None
+            return
+        key = (reason, int(self._proactive_prune_rearm_tokens))
+        if self._last_reclaim_block_warn == key:
+            return
+        self._last_reclaim_block_warn = key
+        logger.warning(
+            "Context is over the compression threshold (~%s of %s tokens) but "
+            "reclamation did not run: %s (message-token estimate %s, prune "
+            "rearm mark %s). The session may keep growing until the provider "
+            "rejects the request — /compact to compress history now.",
+            f"{int(current_tokens):,}",
+            f"{int(self.threshold_tokens):,}",
+            reason,
+            "n/a" if before is None else f"{int(before):,}",
+            f"{int(self._proactive_prune_rearm_tokens):,}",
+        )
+
     def prune_tool_results_only(
         self, messages: List[Dict[str, Any]], current_tokens: int | None = None,
     ) -> tuple[List[Dict[str, Any]], int]:
@@ -4483,6 +4557,13 @@ class ContextCompressor(ContextEngine):
         object is returned unchanged — the standard no-op caller contract
         (callers gate bookkeeping on ``result is not input``).
 
+        The rearm gate is measured on message bodies only, so it is bypassed
+        (never the reclaim gate) when a provider-billed ``current_tokens``
+        reading already puts the request over ``threshold_tokens``: schema
+        overhead must not park an over-threshold session below the rearm mark
+        forever with no reclamation and no log (#101889). Every no-op taken
+        while over threshold is logged once per distinct reason.
+
         Returns ``(messages, 0)`` — the input object — when disabled, below
         the trigger, or when the reclaim gate rejects the commit.
         """
@@ -4492,10 +4573,17 @@ class ContextCompressor(ContextEngine):
             return messages, 0
         # Nothing to reclaim until there are messages outside the protected tail.
         if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
+            self._warn_reclamation_no_op("prune:tail_only", current_tokens)
             return messages, 0
         before = sum(_estimate_msg_budget_tokens(m) for m in messages)
         if before < self._proactive_prune_rearm_tokens:
-            return messages, 0
+            # Message-only estimate is short of the runway. Honour it as
+            # prompt-cache hysteresis only while the real (billed) request is
+            # still under threshold — above it, the lockout is the bug. The
+            # under-threshold skip stays silent on purpose: ordinary
+            # hysteresis, not a stuck session.
+            if not self._billed_basis_over_threshold(current_tokens):
+                return messages, 0
         # Capability gate BEFORE the expensive multi-pass scan: a bound store that
         # can't persist the prune atomically (duck-typed/plugin session store
         # without archive_and_compact) makes every prune a permanent no-op, so
@@ -4507,6 +4595,7 @@ class ContextCompressor(ContextEngine):
             and session_id
             and not callable(getattr(session_db, "archive_and_compact", None))
         ):
+            self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages,
@@ -4517,6 +4606,7 @@ class ContextCompressor(ContextEngine):
         if not pruned_count:
             # Standard no-op contract: hand back the INPUT object so callers
             # can gate bookkeeping on `result is not input`.
+            self._warn_reclamation_no_op("prune:nothing_eligible", current_tokens)
             return messages, 0
         # Measured-savings gate (prompt-cache hysteresis): only commit when
         # the prune reclaims a meaningful batch of tokens. Estimated on the
@@ -4524,6 +4614,9 @@ class ContextCompressor(ContextEngine):
         after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
         reclaimed = max(0, before - after)
         if reclaimed < self.proactive_prune_min_reclaim_tokens:
+            self._warn_reclamation_no_op(
+                "prune:reclaim_below_minimum", current_tokens, before=before
+            )
             return messages, 0
         # ``after`` includes the tool batch appended since the provider's last
         # usage reading, so both the low-water mark and future gate use the
@@ -4556,6 +4649,8 @@ class ContextCompressor(ContextEngine):
             # the micro-compaction sync (#98450) — one stamp site for the class.
             stamp_db_persisted_markers(pruned_msgs)
         self._proactive_prune_rearm_tokens = next_rearm_tokens
+        # Reclamation just ran: let a future lockout warn again.
+        self._last_reclaim_block_warn = None
         return pruned_msgs, pruned_count
 
     # ------------------------------------------------------------------
@@ -8812,7 +8907,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._micro_compact_cursor = 0
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
 
         return compressed
 

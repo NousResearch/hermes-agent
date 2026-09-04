@@ -31,6 +31,7 @@ import os
 import selectors
 import socket
 import sys
+import threading
 import time
 import urllib.request
 from typing import Any, Optional
@@ -42,6 +43,19 @@ from utils import base_url_hostname, normalize_proxy_url
 # per process (after the first lazy load).
 _OPENAI_CLS_CACHE = None
 _HAPPY_EYEBALLS_DELAY_SECONDS = 0.25
+
+# Process-wide pool of sync ``httpx.HTTPTransport`` objects shared by every
+# keepalive client with the same (verify, proxy, happy-eyeballs) identity.
+# Each delegated child AIAgent used to get its own transport = its own TLS
+# pool, so a fan-out of N children held N separate socket sets to the same
+# provider. Bounded: past the cap, callers get a private transport again.
+_SHARED_TRANSPORTS: dict[tuple, Any] = {}
+_SHARED_TRANSPORTS_LOCK = threading.Lock()
+_SHARED_TRANSPORTS_MAX = 32
+# ``request.extensions`` key stamped by ``_SharedTransport.handle_request``;
+# the socket-abort walker in agent_runtime_helpers uses it to find only the
+# owning client's in-flight connections on a shared pool.
+HERMES_TRANSPORT_OWNER_EXT = "hermes_transport_owner"
 
 
 def _interleave_addrinfos(addrinfos: list[tuple]) -> list[tuple]:
@@ -418,6 +432,93 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return proxy
 
 
+def _shared_transport_cls():
+    """Lazily define the per-client transport view (httpx import is deferred)."""
+    global _SharedTransport
+    if _SharedTransport is not None:
+        return _SharedTransport
+    import httpx
+
+    class _SharedTransportImpl(httpx.BaseTransport):
+        """Per-client view of a process-shared ``httpx.HTTPTransport``.
+
+        ``httpx.Client.close()`` closes every mounted transport. Each OpenAI
+        client still owns its own ``httpx.Client`` (the #10933 contract:
+        closing one client must never poison the next), so the object we
+        mount must absorb that close while the underlying connection pool
+        keeps serving every other client. ``handle_request`` stamps the
+        owning view into ``request.extensions`` so socket-abort sweeps can
+        target only this client's in-flight connections on the shared pool.
+        """
+
+        __slots__ = ("_inner", "_closed")
+
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+            self._closed = False
+
+        # httpx-private ``_pool`` is what our socket walkers and the
+        # happy-eyeballs / ssl-verify tests introspect: expose the shared one.
+        @property
+        def _pool(self) -> Any:
+            return getattr(self._inner, "_pool", None)
+
+        def handle_request(self, request: Any) -> Any:
+            if self._closed:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
+            request.extensions[HERMES_TRANSPORT_OWNER_EXT] = id(self)
+            return self._inner.handle_request(request)
+
+        def close(self) -> None:
+            # Deliberately does NOT close ``_inner``: it is shared. Idle
+            # connections are reaped by ``keepalive_expiry``; the pool lives
+            # for the process (see ``close_shared_transports``).
+            self._closed = True
+
+    _SharedTransportImpl.__name__ = _SharedTransportImpl.__qualname__ = "_SharedTransport"
+    _SharedTransport = _SharedTransportImpl
+    return _SharedTransport
+
+
+_SharedTransport: Any = None
+
+
+def _shared_transport_key(base_url: str, verify: Any, proxy: Optional[str]) -> tuple:
+    """Identity under which sync direct transports are pooled process-wide."""
+    if verify is True or verify is False:
+        verify_key: Any = verify
+    elif isinstance(verify, str):
+        verify_key = ("path", verify)
+    else:
+        # An ssl.SSLContext (or custom object): share only by object identity,
+        # which is what a caller passing the same context twice expects.
+        verify_key = ("id", id(verify))
+    return (verify_key, proxy, _uses_codex_cloud_transport(base_url))
+
+
+def _get_shared_transport(key: tuple, build) -> Any:
+    with _SHARED_TRANSPORTS_LOCK:
+        transport = _SHARED_TRANSPORTS.get(key)
+        if transport is None:
+            transport = build()
+            if len(_SHARED_TRANSPORTS) < _SHARED_TRANSPORTS_MAX:
+                _SHARED_TRANSPORTS[key] = transport
+        return transport
+
+
+def close_shared_transports() -> int:
+    """Really close every process-shared transport (test teardown / atexit)."""
+    with _SHARED_TRANSPORTS_LOCK:
+        transports = list(_SHARED_TRANSPORTS.values())
+        _SHARED_TRANSPORTS.clear()
+    for transport in transports:
+        try:
+            transport.close()
+        except Exception:
+            pass
+    return len(transports)
+
+
 def build_keepalive_http_client(
     base_url: str = "",
     *,
@@ -444,6 +545,14 @@ def build_keepalive_http_client(
     ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
     client uses. It is passed on the client AND on the plain no-proxy mounts
     (a mounted transport owns the SSL context for its scheme).
+
+    Every call returns a NEW ``httpx.Client`` (per-client close semantics are
+    what #10933 pins), but sync clients with the same
+    (verify, proxy, happy-eyeballs) identity mount the SAME underlying
+    ``HTTPTransport`` through a :class:`_SharedTransport` view, so N delegated
+    children share one connection pool + SSL context instead of N. Async
+    clients are never shared: an httpcore async pool is bound to the event
+    loop that first used it.
     """
     try:
         import httpx
@@ -462,16 +571,47 @@ def build_keepalive_http_client(
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = {}
         if proxy is None:
-            http_transport = transport_cls(verify=verify)
-            https_transport = transport_cls(verify=verify)
-            # Async transports need no explicit racing: httpcore's anyio
-            # backend already implements RFC 8305 natively
-            # (``anyio.connect_tcp(happy_eyeballs_delay=0.25)``), covered by
-            # tests/agent/test_codex_happy_eyeballs.py.
-            if not async_mode and _uses_codex_cloud_transport(base_url):
-                _enable_happy_eyeballs(http_transport)
-                _enable_happy_eyeballs(https_transport)
-            mounts = {"http://": http_transport, "https://": https_transport}
+            happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
+            # One pool now serves every agent in the process, so its ceiling
+            # must cover a whole fan-out of concurrently streaming children,
+            # not one client. (Note: previously the mounts silently ran on
+            # httpx defaults — keepalive_expiry=5s — since Client-level
+            # ``limits`` only reach the default transport.)
+            direct_limits = limits if async_mode else httpx.Limits(
+                max_keepalive_connections=50,
+                max_connections=1000,
+                keepalive_expiry=20.0,
+            )
+
+            def _build_direct():
+                transport = transport_cls(verify=verify, limits=direct_limits)
+                # Async transports need no explicit racing: httpcore's anyio
+                # backend already implements RFC 8305 natively
+                # (``anyio.connect_tcp(happy_eyeballs_delay=0.25)``), covered
+                # by tests/agent/test_codex_happy_eyeballs.py.
+                if happy_eyeballs:
+                    _enable_happy_eyeballs(transport)
+                return transport
+
+            if async_mode:
+                mounts = {"http://": _build_direct(), "https://": _build_direct()}
+            else:
+                key = _shared_transport_key(base_url, verify, proxy)
+                view_cls = _shared_transport_cls()
+                mounts = {
+                    f"{scheme}://": view_cls(
+                        _get_shared_transport((scheme, *key), _build_direct)
+                    )
+                    for scheme in ("http", "https")
+                }
+                # Without this httpx builds a third, never-used direct
+                # transport (and pool + SSL context) per client.
+                return client_cls(
+                    limits=limits,
+                    timeout=timeout,
+                    transport=mounts["https://"],
+                    mounts=mounts,
+                )
         return client_cls(
             limits=limits,
             timeout=timeout,
@@ -506,5 +646,6 @@ __all__ = [
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
     "build_keepalive_http_client",
+    "close_shared_transports",
     "enable_happy_eyeballs_on_client",
 ]

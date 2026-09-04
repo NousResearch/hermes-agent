@@ -78,12 +78,101 @@ import io
 import json
 import os
 import sys
+import threading
 import traceback
 
 _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {spill_cap}
+_PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
+_PARENT_DEATH_FD = os.environ.pop("HERMES_KERNEL_PARENT_DEATH_FD", "")
+
+
+def _start_parent_death_pipe_watchdog():
+    """POSIX twin of the Windows handle watchdog: exit when the parent dies.
+
+    The host holds the only write end of an inherited pipe; a blocking read
+    returns EOF the instant the host exits by ANY means (SIGKILL, OOM, crash),
+    exactly like the MCP death supervisor. Stdin EOF alone is not enough: the
+    main loop only sees it between cells, so a kernel SIGKILLed mid-cell
+    outlived its host. Not PR_SET_PDEATHSIG — that is bound to the spawning
+    THREAD, and kernels are spawned from per-cell threads that exit.
+    """
+    global _PARENT_DEATH_FD
+    raw_fd = _PARENT_DEATH_FD
+    _PARENT_DEATH_FD = ""
+    if sys.platform == "win32" or not raw_fd:
+        return
+    try:
+        fd = int(raw_fd)
+        os.set_inheritable(fd, False)
+    except (OSError, ValueError):
+        return
+
+    def _wait():
+        try:
+            while os.read(fd, 1):
+                pass
+        except OSError:
+            pass
+        os._exit(0)
+
+    threading.Thread(target=_wait, name="hermes-parent-watchdog", daemon=True).start()
+
+
+def _start_parent_process_watchdog():
+    """Exit when the exact Windows parent process object is signaled.
+
+    The inherited SYNCHRONIZE handle names a process object, not a reusable
+    PID. Missing or invalid handles fail open so watchdog setup can never kill
+    an otherwise healthy kernel.
+    """
+    global _PARENT_PROCESS_HANDLE
+    raw_handle = _PARENT_PROCESS_HANDLE
+    _PARENT_PROCESS_HANDLE = ""
+    if sys.platform != "win32" or not raw_handle:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        handle = int(raw_handle)
+        if handle <= 0:
+            return
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.SetHandleInformation.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        kernel32.SetHandleInformation.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        # This process needs the handle, but user code spawned by a cell must
+        # not pass it any further. If Windows refuses to clear inheritance,
+        # disable the watchdog rather than leak the handle into cell children.
+        if not kernel32.SetHandleInformation(handle, 0x00000001, 0):
+            kernel32.CloseHandle(handle)
+            return
+    except (ImportError, OSError, TypeError, ValueError):
+        return
+
+    def _wait():
+        try:
+            result = kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+        finally:
+            kernel32.CloseHandle(handle)
+        if result == 0x00000000:  # WAIT_OBJECT_0: the parent exited
+            os._exit(0)
+
+    threading.Thread(target=_wait, name="hermes-parent-watchdog", daemon=True).start()
+
+
+_start_parent_process_watchdog()
+_start_parent_death_pipe_watchdog()
 
 # The persistent cell namespace. `__name__` is `__main__` so scripts behave
 # like the per-call path; builtins resolve normally through exec.
@@ -259,6 +348,7 @@ class SessionKernel:
         self.stop_event = threading.Event()
         self.rpc_token: str = ""
         self.sentinel: str = ""
+        self.death_pipe_w: Optional[int] = None
         self.tool_call_log: List = []
         self.tool_call_counter: List[int] = [0]
         # Cells currently attached to this kernel (bumped under _KERNELS_LOCK
@@ -420,6 +510,12 @@ atexit.register(shutdown_all_kernels)
 
 def _teardown(kernel: SessionKernel) -> None:
     kernel.stop_event.set()
+    if kernel.death_pipe_w is not None:
+        try:
+            os.close(kernel.death_pipe_w)
+        except OSError:
+            pass
+        kernel.death_pipe_w = None
     if kernel.proc is not None and kernel.proc.poll() is None:
         from tools.code_execution_tool import _kill_process_group
 
@@ -610,18 +706,75 @@ def _spawn(kernel: SessionKernel, *, task_id: str, child_python: str,
     # timeout — a kernel outlives the 300s window between cells.
     child_env["HERMES_RPC_PERSISTENT"] = "1"
 
-    kernel.proc = subprocess.Popen(
-        [child_python, runner_path],
-        # Strict mode resolves an empty cwd: the kernel's own staging dir
-        # then plays the per-call tmpdir's role.
-        cwd=child_cwd or kernel.tmpdir,
-        env=child_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.PIPE,
-        start_new_session=True,
-        creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-    )
+    parent_process_handle = None
+    close_parent_process_handle = None
+    startupinfo = None
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcessId.argtypes = []
+            kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            ]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            close_parent_process_handle = kernel32.CloseHandle
+            parent_process_handle = kernel32.OpenProcess(
+                0x00100000,  # SYNCHRONIZE
+                True,  # inherited only by the explicitly allow-listed child
+                kernel32.GetCurrentProcessId(),
+            )
+            if parent_process_handle:
+                child_env["HERMES_KERNEL_PARENT_PROCESS_HANDLE"] = str(
+                    int(parent_process_handle)
+                )
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.lpAttributeList = {
+                    "handle_list": [int(parent_process_handle)]
+                }
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            if parent_process_handle and close_parent_process_handle is not None:
+                close_parent_process_handle(parent_process_handle)
+            child_env.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", None)
+            parent_process_handle = None
+            close_parent_process_handle = None
+            startupinfo = None
+
+    death_r: Optional[int] = None
+    pass_fds: Tuple[int, ...] = ()
+    if not _IS_WINDOWS:
+        death_r, kernel.death_pipe_w = os.pipe()
+        child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
+        pass_fds = (death_r,)
+
+    try:
+        kernel.proc = subprocess.Popen(
+            [child_python, runner_path],
+            # Strict mode resolves an empty cwd: the kernel's own staging dir
+            # then plays the per-call tmpdir's role.
+            cwd=child_cwd or kernel.tmpdir,
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            start_new_session=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            close_fds=True,
+            pass_fds=pass_fds,
+            startupinfo=startupinfo,
+        )
+    finally:
+        if parent_process_handle and close_parent_process_handle is not None:
+            close_parent_process_handle(parent_process_handle)
+        if death_r is not None:
+            os.close(death_r)
 
     # Deliberately NOT propagate_context_to_thread: that would freeze the
     # spawning cell's context/callbacks into the server thread for the

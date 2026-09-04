@@ -24,7 +24,9 @@ from hermes_state_common import (
     FTS_STORAGE_VERSION,
     FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
+    FTS_TRIGRAM_EXCLUDED_SOURCES,
     FTS_TRIGRAM_SQL,
+    fts_trigram_session_sql,
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
@@ -169,7 +171,7 @@ class SessionSearchMixin:
                         "SELECT m.id, m.content, m.tool_name "
                         "FROM messages m JOIN sessions s ON s.id = m.session_id "
                         "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
-                        "AND s.source <> 'cron' "
+                        f"AND {fts_trigram_session_sql('s')} "
                         "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
                         (lo, hi),
                     )
@@ -329,7 +331,7 @@ class SessionSearchMixin:
                     "SELECT m.id, m.content, m.tool_name "
                     "FROM messages m JOIN sessions s ON s.id = m.session_id "
                     "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
-                    "AND s.source <> 'cron'",
+                    f"AND {fts_trigram_session_sql('s')}",
                     (progress, upper),
                 )
             # Publish progress in the same transaction as the rows it
@@ -1922,7 +1924,12 @@ class SessionSearchMixin:
             # query explicitly filtering on role='tool' must therefore use
             # the LIKE fallback, which scans the base table directly.
             _wants_tool_rows = bool(role_filter) and "tool" in role_filter
-            _wants_cron_rows = bool(source_filter) and "cron" in source_filter
+            # Cron and subagent transcripts are excluded too (see
+            # FTS_TRIGRAM_EXCLUDED_SOURCES); an explicit filter for them
+            # must likewise scan the base table.
+            _wants_cron_rows = bool(source_filter) and any(
+                src in FTS_TRIGRAM_EXCLUDED_SOURCES for src in source_filter
+            )
 
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ──────
             # When the bigram index is available it serves EVERY CJK query

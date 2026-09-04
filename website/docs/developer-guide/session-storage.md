@@ -169,6 +169,8 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 20 | Per-model usage attribution — seed `session_model_usage` rows from historical per-session aggregate totals |
 | 22 | Task-dimension usage attribution — rebuild `session_model_usage` so the `task` column participates in the PRIMARY KEY |
 | 23 | FTS storage redesign — external-content FTS tables replacing the v11 inline-mode copies (opt-in transition for existing DBs) |
+| 29 | Cron sessions leave the trigram (substring/CJK) index; `messages_fts_trigram_src` view + triggers filter on `sessions.source`, one-time rebuild purges historical rows |
+| 30 | Delegate-child (subagent) sessions leave the trigram index too — `source='subagent'` or the `$._delegate_from` marker (`FTS_TRIGRAM_SESSION_SQL`). Rows stay in `messages` and the standard `messages_fts` word index, so `session_search` still finds them; only the ~2.6× trigram shadow tables shrink. Same one-time rebuild as v29 |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 

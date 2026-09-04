@@ -3513,12 +3513,12 @@ class TestRunConversation:
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
 
-    def test_truly_empty_response_retries_3_times_then_empty(self, agent):
-        """Truly empty response (no content, no reasoning) retries 3 times then falls through to (empty)."""
+    def test_truly_empty_response_stops_after_repeated_empty(self, agent):
+        """Repeated empty responses stop after one retry and return an explanation."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
-        # 4 responses: 1 original + 3 nudge retries, all empty
+        # Extra responses prove the guard stops consuming after repetition.
         agent.client.chat.completions.create.side_effect = [
             empty_resp, empty_resp, empty_resp, empty_resp,
         ]
@@ -3532,7 +3532,7 @@ class TestRunConversation:
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
-        assert result["api_calls"] == 4  # 1 original + 3 retries
+        assert result["api_calls"] == 2  # 1 original + 1 retry
 
     def test_deterministic_empty_stops_retries_early(self, agent):
         """NS-503: consecutive zero-output-token empties with identical
@@ -3588,10 +3588,11 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 4  # legacy: 1 original + 3 retries
 
-    def test_empty_without_usage_keeps_full_retry_budget(self, agent):
-        """NS-503 fail-open: no usage data means no evidence of a
-        deterministic empty — legacy 3-retry behaviour must be preserved
-        (this is the flaky-provider case retries exist for)."""
+    def test_empty_without_usage_stops_after_one_retry_and_logs_calls(
+        self, agent, caplog
+    ):
+        """Two complete empty responses are enough evidence to stop even when
+        the provider omits usage; both attempts remain observable."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
@@ -3600,10 +3601,13 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.INFO, logger="agent.conversation_loop"),
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["api_calls"] == 4  # unchanged: 1 original + 3 retries
+        assert result["api_calls"] == 2
+        assert agent.session_api_calls == 2
+        assert caplog.text.count("usage=unavailable") == 2
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""

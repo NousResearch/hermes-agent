@@ -2272,7 +2272,7 @@ def _raw_config_has_explicit_version() -> bool:
     return isinstance(raw, dict) and "_config_version" in raw
 
 
-def check_config_version() -> Tuple[int, int]:
+def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
     """
     Check the raw on-disk config schema version.
 
@@ -2282,7 +2282,10 @@ def check_config_version() -> Tuple[int, int]:
     raw ``_config_version`` must remain visible as legacy instead of inheriting
     the latest default version in memory.
 
-    Returns (current_version, latest_version).
+    Returns (current_version, latest_version). Tolerant runtime status callers
+    retain the historical latest/latest fallback for malformed YAML. Mutation
+    and explicit validation paths can set ``raise_on_parse_error`` so a parse
+    failure or a non-mapping root cannot be mistaken for an up-to-date config.
     """
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
@@ -2291,14 +2294,28 @@ def check_config_version() -> Tuple[int, int]:
 
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = fast_safe_load(f) or {}
+            config = fast_safe_load(f)
     except Exception as e:
         # Invalid YAML needs a parse warning, not an automatic schema rewrite
         # that could replace the user's broken file with defaults.
         _warn_config_parse_failure(config_path, e)
+        if raise_on_parse_error:
+            raise InvalidUserConfigError(
+                f"Cannot inspect {config_path}: config.yaml is not valid YAML ({e})"
+            ) from e
         return latest, latest
 
+    if config is None:
+        config = {}  # empty file / bare document: valid first-run state
     if not isinstance(config, dict):
+        # A list/scalar root parses fine but is just as unusable as broken
+        # YAML: save_config() would refuse it later, after .env was already
+        # rewritten. Strict callers must see it up front too.
+        if raise_on_parse_error:
+            raise InvalidUserConfigError(
+                f"Cannot inspect {config_path}: config.yaml top-level value must be "
+                f"a mapping, got {type(config).__name__}"
+            )
         config = {}
     current = _coerce_config_version(config.get("_config_version"))
     return current, latest
@@ -2659,6 +2676,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
 
+    # Validate config.yaml before any migration side effect. In particular,
+    # sanitize_env_file() can rewrite .env, which must not happen when the
+    # migration will be refused for malformed YAML.
+    current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
+
     # ── Always: normalize safe .env line formatting ──
     try:
         fixes = sanitize_env_file()
@@ -2666,9 +2688,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             print(f"  ✓ Normalized .env line formatting ({fixes} line(s) changed)")
     except Exception:
         pass  # best-effort; don't block migration on sanitize failure
-
-    # Check config version
-    current_ver, latest_ver = check_config_version()
 
     # ── Auto-migration support floor (policy: v12, July 2026) ──
     # A config with an EXPLICIT on-disk ``_config_version`` below the floor is
@@ -6366,7 +6385,7 @@ def config_command(args):
         # Check what's missing
         missing_env = get_missing_env_vars(required_only=False)
         missing_config = get_missing_config_fields()
-        current_ver, latest_ver = check_config_version()
+        current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
         
         if not missing_env and not missing_config and current_ver >= latest_ver:
             print(color("✓ Configuration is up to date!", Colors.GREEN))
@@ -6420,7 +6439,7 @@ def config_command(args):
         print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
         print()
         
-        current_ver, latest_ver = check_config_version()
+        current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
         if current_ver >= latest_ver:
             print(f"  Config version: {current_ver} ✓")
         else:

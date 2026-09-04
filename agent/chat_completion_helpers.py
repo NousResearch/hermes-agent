@@ -1969,14 +1969,30 @@ def _consume_ephemeral_reasoning_off(agent) -> bool:
 
 
 def _reasoning_config_for_wire(agent):
-    """``agent.reasoning_config`` with the one-shot reasoning-off override applied."""
-    if _consume_ephemeral_reasoning_off(agent):
-        return {
-            **(agent.reasoning_config or {}),
-            "enabled": False,
-            "effort": "none",
-        }
-    return agent.reasoning_config
+    """``agent.reasoning_config`` with the one-shot reasoning-off override applied.
+
+    Once the route has answered a disable with "reasoning is mandatory"
+    (``agent._reasoning_disable_rejected``), every disable — configured or
+    the one-shot continuation override — is dropped for the rest of the
+    session: the request goes out without a reasoning config and the route
+    applies its own default.
+    """
+    cfg = agent.reasoning_config
+    ephemeral_off = _consume_ephemeral_reasoning_off(agent)
+    if getattr(agent, "_reasoning_disable_rejected", False):
+        # The route rejects disables. Resend exactly what the session has
+        # been sending — the user's own config — so the retry lands on the
+        # same provider cache key as every prior request. Only a config that
+        # is itself a disable is dropped (omitted → route default), and that
+        # session has never sent anything else, so nothing warm is lost.
+        if isinstance(cfg, dict) and (
+            cfg.get("enabled") is False or cfg.get("effort") == "none"
+        ):
+            return None
+        return cfg
+    if ephemeral_off:
+        cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
+    return cfg
 
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

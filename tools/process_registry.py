@@ -323,6 +323,35 @@ def _build_systemd_scope_argv(
     ]
 
 
+def restart_safe_gateway_child_argv(
+    command: List[str], *, unit_suffix: str
+) -> List[str]:
+    """Place a managed-systemd gateway child outside the gateway cgroup.
+
+    Children that must survive an intentional gateway restart cannot rely on
+    ``start_new_session`` alone: systemd still kills every process in the
+    service cgroup.  In that topology, require a transient user scope and fail
+    closed if it cannot be established.  Standalone processes, non-systemd
+    supervisors, and non-Linux hosts retain the direct command.
+    """
+    if not _IS_LINUX:
+        return command
+    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
+        return command
+    if not _systemd_run_user_scope_available():
+        raise RuntimeError(
+            "cannot create restart-safe systemd scope for gateway child: "
+            "systemd-run --user --scope is unavailable"
+        )
+    scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
+    if scoped == command:
+        raise RuntimeError(
+            "cannot create restart-safe systemd scope for gateway child: "
+            "systemd-run disappeared after the availability probe"
+        )
+    return scoped
+
+
 def _stop_systemd_unit(unit_name: str) -> bool:
     """Stop a transient systemd user scope by unit name.
 

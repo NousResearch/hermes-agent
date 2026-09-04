@@ -121,6 +121,9 @@ meta_ai = MetaAIProfile(
     api_mode="codex_responses",
     # Muse Spark is natively multimodal (image/video/pdf/audio in, text out).
     supports_vision=True,
+    # ...but only on user turns: an image envelope inside a role:tool message
+    # 400s "messages[N].content did not match any supported type" (#101668).
+    supports_vision_tool_messages=False,
     # Cheap contributor tier is a good default for auxiliary tasks
     # (compaction, title generation, vision) when this is the main provider.
     default_aux_model="muse-spark-1.2-contributor",

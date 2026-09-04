@@ -1741,7 +1741,7 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`. Disabled for all others (e.g. Claude). |
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`, `muse`. Disabled for all others (e.g. Claude). |
 | `true` | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them. |
 | `false` | Always disabled, regardless of model. |
 | `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
@@ -1776,7 +1776,7 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `grok`, `deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `mimo`, `mistral`. |
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `grok`, `deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `mimo`, `mistral`, `muse`. |
 | `true` | Always enabled, regardless of model. |
 | `false` | Always disabled, regardless of model. |
 | `["deepseek", "my-custom-model"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |

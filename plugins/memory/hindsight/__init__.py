@@ -169,7 +169,13 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     status) reports the real ImportError.
     """
     try:
-        importlib.import_module("hindsight")
+        # "hindsight" package (<=0.1.7) fails to build on Python 3.11+
+        # due to use_2to3 deprecation. hindsight-embed is the replacement
+        # for local-embedded mode and ships daemon_embed_manager directly.
+        try:
+            importlib.import_module("hindsight")
+        except Exception:
+            pass  # Legacy package not required when hindsight-embed is present
         importlib.import_module("hindsight_embed.daemon_embed_manager")
         importlib.import_module("sentence_transformers")
         return True, None

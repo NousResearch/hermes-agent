@@ -67,6 +67,7 @@ class _FakePeerClient:
     def __init__(self) -> None:
         self.dispatches = []
         self.revoked = []
+        self.exact_revoked = []
         self.session = {"session_id": "peer-group-session"}
 
     def prepare(self, **kwargs):
@@ -104,6 +105,10 @@ class _FakePeerClient:
 
     def revoke_grant(self, **kwargs):
         self.revoked.append(kwargs["grant"])
+        return {"revoked": True}
+
+    def revoke_grant_exact(self, **kwargs):
+        self.exact_revoked.append(kwargs["grant"])
         return {"revoked": True}
 
 class _UnavailablePeerClient(_FakePeerClient):

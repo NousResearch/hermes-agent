@@ -227,6 +227,11 @@ export function groupChatSyncSnapshot(
           ? {
               source: String(entry.from.source).slice(0, 128)
             }
+          : {}),
+        ...(entry?.from?.via
+          ? {
+              via: String(entry.from.via).slice(0, 128)
+            }
           : {})
       },
       text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),

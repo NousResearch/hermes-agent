@@ -103,7 +103,6 @@ type BotsMessages = {
     editMenu: string
     helpPromptPlaceholder: string
     descriptionHint: string
-    newChatWith: string
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string
@@ -334,7 +333,6 @@ const en: BotsMessages = {
     editMenu: 'Edit…',
     helpPromptPlaceholder: 'What should this bot help with?',
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
-    newChatWith: 'New chat with this bot',
     openBotChat: 'Open Bot Chat',
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
@@ -551,7 +549,6 @@ const ja: BotsMessages = {
     editMenu: '編集…',
     helpPromptPlaceholder: 'このボットは何を手伝いますか？',
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
-    newChatWith: 'このボットと新しいチャット',
     openBotChat: 'ボットチャットを開く',
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
@@ -764,7 +761,6 @@ const zh: BotsMessages = {
     editMenu: '编辑…',
     helpPromptPlaceholder: '这个机器人应该帮你做什么？',
     descriptionHint: '留空则根据机器人的名称和描述生成。',
-    newChatWith: '与此机器人开新聊天',
     openBotChat: '打开机器人聊天',
     duplicate: '复制',
     duplicateFailed: '复制失败',
@@ -977,7 +973,6 @@ const zhHant: BotsMessages = {
     editMenu: '編輯…',
     helpPromptPlaceholder: '這個機器人應該幫你做什麼？',
     descriptionHint: '留空則依機器人的名稱和描述產生。',
-    newChatWith: '與此機器人開新聊天',
     openBotChat: '開啟機器人聊天',
     duplicate: '複製',
     duplicateFailed: '複製失敗',

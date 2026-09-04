@@ -18,6 +18,7 @@ import os
 import sys
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,6 +48,20 @@ def hermes_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Token mint + mapping discovery
 # ---------------------------------------------------------------------------
+
+
+def test_pid_identity_uses_process_api_without_invoking_ps(monkeypatch):
+    process = SimpleNamespace(name=lambda: "iron-proxy.exe", exe=lambda: "C:/Hermes/iron-proxy.exe")
+    fake_psutil = SimpleNamespace(pid_exists=lambda _pid: True, Process=lambda _pid: process)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(ip, "_read_persisted_nonce", lambda: None)
+    monkeypatch.setattr(
+        ip.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("identity lookup must not invoke bare ps"),
+    )
+
+    assert ip._pid_alive(424242) is True
 
 
 def test_mint_proxy_token_has_prefix_and_length():

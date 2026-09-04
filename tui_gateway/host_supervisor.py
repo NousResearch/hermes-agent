@@ -94,6 +94,15 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
+        import psutil  # type: ignore
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        # ``os.kill(pid, 0)`` is not a no-op on Windows (bpo-14484). If
+        # psutil is unavailable, fail closed rather than signal a process.
+        if sys.platform == "win32":
+            return False
+    try:
         os.kill(pid, 0)
         return True
     except ProcessLookupError:
@@ -107,6 +116,14 @@ def _pid_alive(pid: int) -> bool:
 def _pid_command(pid: int) -> str:
     if pid <= 0:
         return ""
+    try:
+        import psutil  # type: ignore
+
+        argv = psutil.Process(pid).cmdline()
+        if argv:
+            return " ".join(str(part) for part in argv)
+    except Exception:
+        pass
     # Linux fast path.
     proc_cmdline = Path("/proc") / str(pid) / "cmdline"
     try:
@@ -115,6 +132,8 @@ def _pid_command(pid: int) -> str:
             return data.replace(b"\x00", b" ").decode("utf-8", errors="replace")
     except Exception:
         pass
+    if sys.platform == "win32":
+        return ""
     try:
         return subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "command="],

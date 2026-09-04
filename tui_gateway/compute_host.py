@@ -868,8 +868,9 @@ class ComputeHost:
 
 def _rss_mb(pid: int) -> float:
     try:
-        out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2).strip()
-        return int(out.splitlines()[-1].strip()) / 1024.0 if out else 0.0
+        import psutil  # type: ignore
+
+        return float(psutil.Process(pid).memory_info().rss) / (1024.0 * 1024.0)
     except Exception:
         return 0.0
 

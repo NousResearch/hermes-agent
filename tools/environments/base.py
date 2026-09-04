@@ -722,6 +722,97 @@ class BaseEnvironment(ABC):
             )
         return tuple(sorted(self._snapshot_passthrough_names))
 
+    def _snapshot_credential_exclusion_names(self) -> tuple[str, ...]:
+        """Credential env names stripped from the persisted session snapshot.
+
+        The snapshot (``hermes-snap-*.sh``) is a login-shell ``export -p`` dump
+        that any later command ``source``-s, so anything captured here lands in
+        every subsequent terminal/subprocess environment.  The provider blocklist
+        and the internal-secret predicate already guard *subprocess spawn* paths
+        (tools/environments/local._make_run_env / _sanitize_subprocess_env, the
+        Docker passthrough filter); this method reuses the SAME sources so the
+        snapshot dump matches those spawn paths and no credential survives in the
+        file on disk.
+
+        Set is intentionally EXPLICIT, not a broad ``KEY|SECRET|TOKEN|PASSWORD``
+        regex: the AWS credential chain (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+        / AWS_SESSION_TOKEN) is deliberately inheritable in the local terminal
+        (SECURITY.md 3.2; tools/environments/local.py leaves it out of
+        _HERMES_PROVIDER_ENV_BLOCKLIST), and a generic pattern would wrongly strip
+        it for every user who runs aws/terraform/cdk/boto3  unrecoverable, because
+        env_passthrough refuses to re-allow anything in that blocklist.
+        """
+        names: set[str] = set()
+        try:
+            from tools.environments.local import (
+                _HERMES_PROVIDER_ENV_BLOCKLIST,
+                _is_hermes_internal_secret,
+            )
+            # A: standard provider/messaging credential blocklist (371 entries)
+            names.update(_HERMES_PROVIDER_ENV_BLOCKLIST)
+            # C: snapshot-specific custom creds that are NOT in the blocklist.
+            # Hermes-internal dynamic secrets (AUXILIARY_*/GATEWAY_RELAY_*) are
+            # covered by _is_hermes_internal_secret, applied below to the live
+            # env so any future dynamic name is caught without a hardcoded list.
+            names.update(
+                (
+                    "Github_personal_TOKEN",
+                    "HERMES_DESKTOP_PASSWORD_STORE",
+                    "ANTHROPIC_AUTH_TOKEN",
+                )
+            )
+        except Exception:
+            logger.debug(
+                "Could not load credential snapshot exclusions",
+                exc_info=True,
+            )
+        return tuple(sorted(names))
+
+    def _snapshot_credential_exclusion_glob(self) -> "re.Pattern[str]":
+        """Regex for custom-provider API keys (``HERMES_CUSTOM_<slug>_API_KEY``).
+
+        These are user-supplied custom providers; their env names follow
+        ``config.py:4825`` ``HERMES_CUSTOM_{slug}_API_KEY`` and are NOT present in
+        ``_HERMES_PROVIDER_ENV_BLOCKLIST``, so they must be matched by shape.
+        """
+        return re.compile(r"^HERMES_CUSTOM_[A-Za-z0-9_]*_API_KEY$")
+
+    def _snapshot_credential_exclusions(self, live_env: dict | None = None) -> tuple[str, ...]:
+        """Return the full set of credential names to exclude from the snapshot.
+
+        This is the CANONICAL snapshot credential-exclusion policy, applied to
+        EVERY snapshot write (both ``init_session()`` bootstrap and the
+        ``_wrap_command()`` post-command re-dump).  It combines:
+
+        - The static provider blocklist (from ``_snapshot_credential_exclusion_names``)
+        - The custom-provider API-key glob (from ``_snapshot_credential_exclusion_glob``)
+        - Dynamic Hermes-internal secrets (``AUXILIARY_*``, ``GATEWAY_RELAY_*``)
+          via ``_is_hermes_internal_secret`` applied to the live environment
+
+        Args:
+            live_env: The live environment dict to scan for dynamic names.
+                      Defaults to ``os.environ`` if not provided.
+        """
+        names: set[str] = set(self._snapshot_credential_exclusion_names())
+        cred_glob = self._snapshot_credential_exclusion_glob()
+
+        if live_env is None:
+            live_env = dict(os.environ)
+
+        # Apply the custom-provider glob AND the internal-secret predicate
+        # to the live environment to catch dynamic names.
+        try:
+            from tools.environments.local import _is_hermes_internal_secret
+            for name in live_env:
+                if cred_glob.match(name) or _is_hermes_internal_secret(name):
+                    names.add(name)
+        except Exception:
+            logger.debug(
+                "Could not apply dynamic credential snapshot exclusions",
+                exc_info=True,
+            )
+        return tuple(sorted(names))
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
@@ -768,7 +859,15 @@ class BaseEnvironment(ABC):
         # every later expansion is consistent.
         _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
         _snap_tmp = '"$__hermes_snap_tmp"'
-        snapshot_excluded = self._snapshot_excluded_passthrough_names()
+        # Per-command snapshot exclusions: profile-scoped passthrough names +
+        # the canonical credential-exclusion policy (provider blocklist +
+        # custom-provider glob + dynamic internal-secret predicate).
+        # All feed into the `unset` list inside _export_dump_excluding_session_vars
+        # so the snapshot on disk carries no credential.
+        snapshot_excluded = (
+            *self._snapshot_excluded_passthrough_names(),
+            *self._snapshot_credential_exclusions(),
+        )
         bootstrap = (
             f"umask 077\n"
             f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
@@ -890,6 +989,13 @@ class BaseEnvironment(ABC):
 
         parts = []
         passthrough_names = self._snapshot_excluded_passthrough_names()
+        # Apply the SAME canonical credential-exclusion policy used by
+        # init_session() so the post-command snapshot re-dump strips
+        # credentials too (closes the two-writer root cause from #62336).
+        snapshot_excluded = (
+            *passthrough_names,
+            *self._snapshot_credential_exclusions(),
+        )
 
         # A shared snapshot may contain the previous profile's value. Save
         # the current process environment before sourcing it, then restore the
@@ -974,7 +1080,7 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(
                 f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) && "
-                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
+                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, snapshot_excluded)} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )

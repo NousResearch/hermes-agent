@@ -1041,6 +1041,64 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+        # Skill sources are mutable outside the conversation loop (a user can
+        # install/edit a local, external, or project skill while a gateway
+        # session is idle).  Check them only at this resume boundary: never
+        # mutate a live conversation mid-turn, and avoid a cache clear when
+        # the persisted fingerprint still matches.
+        _skills_stale = False
+        try:
+            from agent.prompt_builder import stored_skills_prompt_sources_stale
+
+            from agent.system_prompt import _agent_skills_dir
+
+            compact_categories = frozenset()
+            try:
+                from agent.coding_context import coding_compact_skill_categories
+                from agent.runtime_cwd import resolve_context_cwd
+
+                compact_categories = coding_compact_skill_categories(
+                    platform=getattr(agent, "platform", None),
+                    cwd=resolve_context_cwd(),
+                )
+            except Exception:
+                pass
+
+            _skills_stale = stored_skills_prompt_sources_stale(
+                stored_prompt,
+                skills_dir_override=_agent_skills_dir(agent),
+                compact_categories=compact_categories,
+            )
+        except Exception:
+            _skills_stale = False
+        if _skills_stale:
+            logger.info(
+                "Skill sources changed for resumed session %s; rebuilding system prompt.",
+                agent.session_id,
+            )
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+
+                # External/project roots are not part of the disk snapshot;
+                # drop only the in-process index and let the local manifest
+                # validation invalidate the snapshot when needed.
+                clear_skills_system_prompt_cache(clear_snapshot=False)
+            except Exception:
+                pass
+            agent._cached_system_prompt = agent._build_system_prompt(system_message)
+            if agent._session_db:
+                try:
+                    agent._session_db.update_system_prompt(
+                        agent.session_id, agent._cached_system_prompt
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Session DB update_system_prompt failed after skill-source "
+                        "refresh (session=%s): %s. The refresh will re-fire next turn.",
+                        agent.session_id,
+                        exc,
+                    )
+            return
         # Bot Chat capability epoch: an eternal bot session must adopt
         # user-initiated capability changes (skills/toolsets/MCP/SOUL/roster)
         # on the next message, not at /new or compression. The stored prompt

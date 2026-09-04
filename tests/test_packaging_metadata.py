@@ -193,6 +193,35 @@ def test_py_modules_ships_hermes_state_runtime_dependencies():
         )
 
 
+def test_py_modules_covers_hermes_state_local_imports():
+    """Every top-level sibling module hermes_state.py imports is in py-modules.
+
+    Derived from the source (``^from <module> import`` / ``^import <module>``
+    statements at column 0) rather than a hard-coded name, so the next
+    module-scope import added to hermes_state.py cannot slip through the
+    way hermes_state_registry did (#100561).
+    """
+    source = (REPO_ROOT / "hermes_state.py").read_text(encoding="utf-8")
+    imported = set(re.findall(r"^import (\w+)", source, re.MULTILINE))
+    imported |= set(re.findall(r"^from (\w+) import", source, re.MULTILINE))
+    # The stdlib/first-party modules that are not top-level siblings of the
+    # sealed install's py-modules list.
+    excluded = {"__future__", "agent", "hermes_cli", "gateway", "tools", "tests"}
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    shipped = set(data["tool"]["setuptools"]["py-modules"])
+
+    siblings = sorted(m for m in imported if m not in excluded)
+    assert siblings, "no local imports detected in hermes_state.py — the derivation rotted"
+
+    missing = [m for m in siblings if m not in shipped and (REPO_ROOT / f"{m}.py").is_file()]
+    assert not missing, (
+        f"{missing} are imported by hermes_state.py at module scope but missing "
+        "from [tool.setuptools].py-modules — sealed (Nix) installs fail with "
+        "ModuleNotFoundError at startup (#100561)"
+    )
+
+
 
 # ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py

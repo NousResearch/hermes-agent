@@ -26,6 +26,7 @@ import re
 logger = logging.getLogger(__name__)
 import os
 import threading
+from pathlib import Path
 import time
 import weakref
 from concurrent.futures import (
@@ -636,7 +637,101 @@ def _handle_control_action(
             "message; re-delegate a follow-up task if more work is needed."
         )
 
-    return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
+    if action == "tail":
+        return _handle_tail_action(subagent_id, parent_agent, lines)
+
+    return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, stop, or tail.")
+
+
+def _handle_tail_action(
+    subagent_id: Optional[str],
+    parent_agent: Any,
+    lines: int = 40,
+) -> str:
+    """Return the last ``lines`` of a child's live transcript.
+
+    Mirrors the ownership and registry checks used by steer/stop: only the
+    parent's own spawn tree is reachable, and only entries currently in
+    ``_active_subagents`` resolve. The transcript file itself is created
+    by ``tools/delegation_live_log.py`` at dispatch time and appended to by
+    the child as it runs, so reading it is a side-channel peek that does
+    not affect the child's loop.
+    """
+    sid = (subagent_id or "").strip()
+    if not sid:
+        return tool_error(
+            "action='tail' requires subagent_id (from the spawn dispatch "
+            "response or action='list')."
+        )
+    n = lines if isinstance(lines, int) and lines > 0 else 40
+    n = min(n, 1000)  # hard cap regardless of input
+
+    with _active_subagents_lock:
+        record = _active_subagents.get(sid)
+    if record is None or not _owns_subagent_record(record, parent_agent):
+        return tool_error(
+            f"No live subagent '{sid}' in this conversation's spawn tree. "
+            "It may have already finished (its result arrives as a normal "
+            "completion message). Use action='list' to see live children."
+        )
+
+    agent = record.get("agent")
+    transcript_path = getattr(agent, "_live_transcript_path", None)
+    if not transcript_path:
+        return tool_error(
+            f"Subagent '{sid}' has no live transcript file attached. This "
+            "should not happen for dispatched children — file a bug."
+        )
+
+    path_obj = Path(transcript_path)
+    if not path_obj.exists():
+        return json.dumps(
+            {
+                "action": "tail",
+                "subagent_id": sid,
+                "status": "transcript_missing",
+                "transcript_path": transcript_path,
+                "lines": 0,
+                "content": "",
+                "note": (
+                    "Transcript file path is registered but the file is gone "
+                    "(pruned or moved). The child may have already completed."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        # Memory-efficient tail: read once, keep the last N lines. Log files
+        # are bounded (~hundreds of lines for typical runs), so this is fine.
+        with path_obj.open("r", encoding="utf-8", errors="replace") as fh:
+            all_lines = fh.readlines()
+        tail = all_lines[-n:]
+        content = "".join(tail)
+        total = len(all_lines)
+        truncated = max(0, total - len(tail))
+    except OSError as exc:
+        return tool_error(
+            f"Could not read transcript for '{sid}': {exc}"
+        )
+
+    payload = {
+        "action": "tail",
+        "subagent_id": sid,
+        "status": record.get("status", "running"),
+        "transcript_path": transcript_path,
+        "lines_requested": n,
+        "lines_returned": len(tail),
+        "lines_total": total,
+        "lines_truncated": truncated,
+        "content": content,
+    }
+    if truncated:
+        payload["note"] = (
+            f"Showing the last {len(tail)} of {total} lines; raise 'lines' "
+            f"(up to 1000) or wait for completion to see more."
+        )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _extract_output_tail(
@@ -5130,14 +5225,17 @@ def _build_top_level_description() -> str:
         "transcript paths, and the completed result (one consolidated message, "
         "results in task order) re-enters the conversation on its own. Do NOT "
         "wait or poll; continue other work. While children run, `action` "
-        "(list/steer/stop) controls them live — steer when a transcript shows "
-        "a child drifting.\n\n"
+        "(list/steer/stop/tail) controls them live — steer when a transcript shows "
+        "a child drifting; tail to peek at one child's recent lines without "
+        "waiting on its completion message.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
         "- A single tool call -> call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot ask questions\n"
+        "- Watching a child mid-run -> delegate_task(action='tail', subagent_id=...) returns\n"
+        "  the last N lines of its live transcript without waiting on completion\n"
         "- Durable work that must survive this session -> cronjob or "
         "terminal(background=True, notify=True); /stop, /new, or "
         "process exit discards running subagents.\n\n"
@@ -5288,13 +5386,16 @@ DELEGATE_TASK_SCHEMA = {
             # re-add to the schema.
             "action": {
                 "type": "string",
-                "enum": ["spawn", "list", "steer", "stop"],
+                "enum": ["spawn", "list", "steer", "stop", "tail"],
                 "description": (
                     "Default 'spawn'. Live control of running children: "
                     "'list' = ids/goals/status/transcripts; 'steer' = queue "
                     "course-correction text into one child (subagent_id + "
                     "message) without stopping it; 'stop' = end one child "
-                    "early (subagent_id; partial result still returns). "
+                    "early (subagent_id; partial result still returns); "
+                    "'tail' = return the last N lines (default 40) of one "
+                    "child's live transcript (subagent_id + lines) for "
+                    "in-flight visibility without waiting on completion. "
                     "Control actions return immediately; goal/tasks are "
                     "ignored unless spawning."
                 ),

@@ -231,9 +231,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     # --- global --board flag ---
     # Applies to every subcommand below. When set, scopes all reads and
-    # writes to that board's DB. When omitted, resolves via the
-    # HERMES_KANBAN_BOARD env var, then the persisted current-board
-    # file, then "default". See kanban_db.get_current_board().
+    # writes to that board's DB — explicitly, outranking any inherited
+    # worker/board env pins (including HERMES_KANBAN_DB) for this call.
+    # When omitted, resolves via the HERMES_KANBAN_BOARD env var, then
+    # the persisted current-board file, then "default". See
+    # kanban_db.get_current_board().
     kanban_parser.add_argument(
         "--board",
         default=None,
@@ -1088,19 +1090,17 @@ def kanban_command(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Board-management commands operate on board metadata and the persisted
-    # current-board pointer itself. They must ignore the shared `--board`
-    # task-routing override; otherwise `/kanban --board beta boards show`
-    # reports beta as the current board even when the on-disk pointer is
-    # alpha.
-    if action == "boards":
-        return _dispatch_boards(args)
-
     # `--board <slug>` applies to every subcommand below by way of an
-    # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
-    # (rather than threading `board=` through 50+ kb.connect() sites)
-    # keeps the patch small and inherits the exact same resolution the
-    # dispatcher uses for workers — consistency is a feature here.
+    # explicit-board scope for the duration of this call (scoped via
+    # contextvars rather than threading `board=` through 50+ kb.connect()
+    # sites — keeps the patch small). The scope is *explicit*: it outranks
+    # the worker/board env pins, including HERMES_KANBAN_DB,
+    # HERMES_KANBAN_WORKSPACES_ROOT, and HERMES_KANBAN_ATTACHMENTS_ROOT,
+    # so a `--board other` call issued from inside a pinned worker session
+    # (or any inherited env) resolves to `other`'s own DB, workspaces, and
+    # attachments instead of being silently diverted back to the pinned
+    # board. Calls with NO --board flag keep the historical resolution
+    # (env pin wins) so worker behavior is unchanged.
     board_override = getattr(args, "board", None)
     board_scope = contextlib.nullcontext()
     if board_override:
@@ -1113,15 +1113,29 @@ def kanban_command(args: argparse.Namespace) -> int:
             print("kanban: --board requires a slug", file=sys.stderr)
             return 2
         # Boards other than 'default' must already exist — typoed slugs
-        # would otherwise silently create an empty board.
-        if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
+        # would otherwise silently create an empty board. Board-management
+        # subcommands (`boards ...`) are exempt from this pre-check:
+        # bootstrap-by-flag (`hermes kanban --board ghost boards create
+        # ghost`) was legal before the explicit scope existed (base
+        # 6051590677 dispatched `boards` before this check) and must stay
+        # legal — the check would otherwise reject the very slug the
+        # boards subcommand is about to create (t_4eff74eb critic round 2).
+        # With a not-yet-existing slug pinned, the scope still outranks
+        # the worker path pins, and the typo-aliasing risk the guard
+        # exists for cannot arise: no task-level subcommand dispatches
+        # under `boards ...`.
+        if (
+            action != "boards"
+            and normed != kb.DEFAULT_BOARD
+            and not kb.board_exists(normed)
+        ):
             print(
                 f"kanban: board {normed!r} does not exist. "
                 f"Create it with `hermes kanban boards create {normed}`.",
                 file=sys.stderr,
             )
             return 1
-        board_scope = kb.scoped_current_board(normed)
+        board_scope = kb.scoped_explicit_board(normed)
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
@@ -1130,7 +1144,32 @@ def kanban_command(args: argparse.Namespace) -> int:
     # HERMES_HOME. Previously only `init` and `daemon` triggered
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
+    #
+    # `boards` dispatches inside the scope too (same nullcontext when no
+    # --board flag was passed, so its default resolution is unchanged):
+    # `boards list` / `boards show` (and `boards export` with no slug)
+    # resolve the active board through get_current_board(), which the
+    # explicit scope pins, and read_board_metadata() computes each
+    # db_path via kanban_db_path(), which ignores the worker path pins
+    # only inside that scope. Without this, a pinned worker's
+    # `--board alpha boards list --json` reported the PINNED db_path
+    # (and its task totals) for every board — t_4eff74eb critic round 1.
+    #
+    # Task-level board-management operations (boards switch / rename /
+    # rm / create / set-default-workdir / import) intentionally run under
+    # the scope as well: they address their target board by slug and do
+    # not consult the active-board chain to FIND their target — so when
+    # the flagged board exists, the scope cannot change their target; it
+    # only keeps the scope's contextvar consistent for any helper that
+    # resolves paths during the call. When the flagged slug does NOT
+    # exist yet (bootstrap-by-flag — no exists-check for boards actions,
+    # see above), the scope pins that absent slug: creation helpers
+    # (create/import) then materialize the board at that slug's own
+    # directory rather than diverting anything to the worker's pinned
+    # board.
     with board_scope:
+        if action == "boards":
+            return _dispatch_boards(args)
         # `repair` must dispatch BEFORE the auto-init below: on a corrupt DB
         # init_db() itself raises KanbanDbCorruptError, which would turn
         # every `hermes kanban repair` into "could not initialize database"

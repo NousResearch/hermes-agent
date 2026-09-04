@@ -52,6 +52,14 @@ worker subprocess env so workers converge on the exact DB the
 dispatcher used to claim their task — even under unusual symlink or
 Docker layouts.
 
+Explicit-scope exception: inside :func:`scoped_explicit_board` (engaged
+by the CLI ``--board`` flag) the ``HERMES_KANBAN_DB``,
+``HERMES_KANBAN_WORKSPACES_ROOT``, and ``HERMES_KANBAN_ATTACHMENTS_ROOT``
+path pins are ignored for path resolution, so an explicit
+``--board <slug>`` always answers with that slug's own DB, workspaces,
+and attachments. Without an explicit board the pins keep their historical
+highest precedence — worker env is untouched.
+
 Schema is intentionally small: tasks, task_links, task_comments,
 task_events.  The ``workspace_kind`` field decouples coordination from git
 worktrees so that research / ops / digital-twin workloads work alongside
@@ -540,6 +548,45 @@ def scoped_current_board(slug: str):
     finally:
         _CURRENT_BOARD_OVERRIDE.reset(token)
 
+
+_EXPLICIT_BOARD_SLUG: ContextVar[Optional[str]] = ContextVar(
+    "hermes_kanban_explicit_board_slug",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def scoped_explicit_board(slug: str):
+    """Pin the active board AND outrank the path-pin env vars.
+
+    Engaged only when a caller passes an *explicit* board — today, the
+    CLI ``--board`` flag. ``HERMES_KANBAN_DB``,
+    ``HERMES_KANBAN_WORKSPACES_ROOT``, and
+    ``HERMES_KANBAN_ATTACHMENTS_ROOT`` are process-wide pins the
+    dispatcher injects into worker env; left alone they silently divert
+    an explicit ``--board other`` call back to the pinned board's files
+    (a worker saw its own board for every ``--board`` value, and
+    ``notify-subscribe`` wrote subscriptions to the wrong DB). Inside
+    this scope those three pins are ignored for path resolution and the
+    explicit slug outranks every implicit layer (``scoped_current_board``,
+    env vars, the ``current`` pointer), so the slug the caller typed is
+    the board that answers. Worker and default resolution (no explicit
+    ``--board``) are unchanged.
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    token: Token[Optional[str]] = _EXPLICIT_BOARD_SLUG.set(normed)
+    try:
+        yield
+    finally:
+        _EXPLICIT_BOARD_SLUG.reset(token)
+
+
+def _explicit_board_scope_engaged() -> bool:
+    """True inside :func:`scoped_explicit_board` (CLI ``--board`` scope)."""
+    return _EXPLICIT_BOARD_SLUG.get() is not None
+
 # Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
 # Strict enough to stop traversal (`..`) and embedded path separators, loose
 # enough that kebab-case names like ``atm10-server`` or ``hermes-agent``
@@ -622,6 +669,15 @@ def get_current_board() -> str:
     with a best-effort warning — the dispatcher must never crash because a
     user hand-edited a file or removed a board directory.
     """
+    explicit = _EXPLICIT_BOARD_SLUG.get()
+    if explicit:
+        try:
+            normed = _normalize_board_slug(explicit)
+            if normed and board_exists(normed):
+                return normed
+        except ValueError:
+            pass
+
     scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
     if scoped:
         try:
@@ -718,14 +774,16 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
        back-compat and for the dispatcher→worker handoff (defense in
        depth: dispatcher injects this into worker env so workers are
-       immune to any path-resolution disagreement).
+       immune to any path-resolution disagreement). Ignored inside
+       :func:`scoped_explicit_board` (the CLI ``--board`` flag), where an
+       explicit board must resolve to its own DB file.
     2. When ``board`` arg is None, the active board from
        :func:`get_current_board` is used.
     3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
     override = os.environ.get("HERMES_KANBAN_DB", "").strip()
-    if override:
+    if override and not _explicit_board_scope_engaged():
         return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
@@ -740,14 +798,15 @@ def workspaces_root(board: Optional[str] = None) -> Path:
 
     Anchored per-board so workspaces don't leak between projects.
     ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
-    precedence) — the dispatcher injects this into worker env.
+    precedence) — the dispatcher injects this into worker env. Ignored
+    inside :func:`scoped_explicit_board` (the CLI ``--board`` flag).
 
     ``default`` keeps the legacy path ``<root>/kanban/workspaces/`` so
     that existing scratch workspaces from before the boards feature are
     preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
     """
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
-    if override:
+    if override and not _explicit_board_scope_engaged():
         return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
@@ -765,7 +824,8 @@ def attachments_root(board: Optional[str] = None) -> Path:
     its own ``<root>/.../attachments/<task_id>/`` subdirectory.
 
     ``HERMES_KANBAN_ATTACHMENTS_ROOT`` pins the path directly (highest
-    precedence) for tests and unusual deployments.
+    precedence) for tests and unusual deployments. Ignored inside
+    :func:`scoped_explicit_board` (the CLI ``--board`` flag).
 
     ``default`` uses ``<root>/kanban/attachments/``; other boards use
     ``<root>/kanban/boards/<slug>/attachments/``.
@@ -777,7 +837,7 @@ def attachments_root(board: Optional[str] = None) -> Path:
     see the kanban docs.
     """
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
-    if override:
+    if override and not _explicit_board_scope_engaged():
         return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:

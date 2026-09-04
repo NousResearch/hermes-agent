@@ -316,6 +316,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
     useSessionListActions({ profileScope })
 
+  // Initial session load on app mount: the background sync effect in
+  // use-background-sync.ts triggers refreshSessions() when gatewayState
+  // becomes 'open', but if the gateway is already open when this effect
+  // mounts (common on fast local backends), the dependency-array watch
+  // may not fire. An explicit one-shot here guarantees the sidebar is
+  // populated even on fast local backends. #101843
+  useEffect(() => {
+    void refreshSessions()
+  }, [refreshSessions])
+
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {
       const sessionId = activeSessionIdRef.current

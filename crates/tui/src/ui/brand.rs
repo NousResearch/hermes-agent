@@ -18,7 +18,7 @@ const LOGO_ART: &[&str] = &[
 ];
 
 /// Official caduceus (`ui-tui/src/banner.ts`).
-const CADUCEUS_ART: &[&str] = &[
+pub(crate) const CADUCEUS_ART: &[&str] = &[
     "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
     "⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀",
     "⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀",

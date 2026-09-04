@@ -127,6 +127,7 @@ impl ChatScrollback {
             let y = scroll_y(total, view_h, state.scroll_from_bottom) as usize;
             state.hit_tools = tool_hits(&cache.blocks, y, view_h, area);
             let mut visible = take_visible(&cache.blocks, y, view_h);
+            super::wash::apply(&mut visible, col_width, view_h, frame_count);
             if let crate::state::HoverKind::Tool(id) = &state.hover {
                 for (hit, hid) in &state.hit_tools {
                     if hid == id {
@@ -137,7 +138,13 @@ impl ChatScrollback {
                     }
                 }
             }
-            Paragraph::new(Text::from(visible)).block(block)
+            // Drop the solid canvas Block so gold wash can show through empty cells.
+            let para = Paragraph::new(Text::from(visible));
+            if super::wash::active() {
+                para
+            } else {
+                para.block(block)
+            }
         };
 
         frame.render_widget(paragraph, area);

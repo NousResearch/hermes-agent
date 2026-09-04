@@ -206,6 +206,7 @@ impl AppState {
             || (self.active_view == ActiveView::Background && self.running_bg_count() > 0)
             || self.running_agent_count() > 0
             || self.running_process_count() > 0
+            || crate::ui::wash::animates()
     }
 
     const BOOT_MS: u128 = 2500;

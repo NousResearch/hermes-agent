@@ -1182,7 +1182,11 @@ mod tests {
         s.start_turn("hi".into());
         s.reveal_started = Some(Instant::now() - std::time::Duration::from_secs(2));
         s.finish_streaming();
+        // Gold wash keeps the idle canvas ticking.
+        assert!(s.needs_animation());
+        crate::ui::theme::apply(crate::palette::Palette::midnight());
         assert!(!s.needs_animation());
+        crate::ui::theme::apply(crate::palette::Palette::gold());
     }
 
     #[test]

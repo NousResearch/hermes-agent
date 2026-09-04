@@ -21,6 +21,7 @@ pub mod theme;
 pub mod tips;
 pub mod trace;
 pub mod turn_bar;
+pub mod wash;
 pub mod work;
 
 pub use attach::AttachPreview;

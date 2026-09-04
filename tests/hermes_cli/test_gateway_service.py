@@ -165,6 +165,45 @@ class TestTempHomeServiceDefinitionGuard:
 
 
 
+class TestLaunchdPlistComparison:
+    @staticmethod
+    def _plist(python_path: Path) -> str:
+        return f"""<plist><dict>
+<key>ProgramArguments</key><array><string>{python_path}</string><string>-m</string></array>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin</string></dict>
+</dict></plist>"""
+
+    def test_treats_symlinked_virtualenv_directory_as_current(self, tmp_path):
+        real_venv = tmp_path / ".venv"
+        bin_dir = real_venv / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "python").write_text("fixture", encoding="utf-8")
+        alias_venv = tmp_path / "venv"
+        alias_venv.symlink_to(real_venv, target_is_directory=True)
+
+        installed = self._plist(real_venv / "bin" / "python")
+        expected = self._plist(alias_venv / "bin" / "python")
+
+        assert gateway_cli._normalize_launchd_plist_for_comparison(
+            installed
+        ) == gateway_cli._normalize_launchd_plist_for_comparison(expected)
+
+    def test_keeps_distinct_virtualenv_directories_stale(self, tmp_path):
+        first = tmp_path / "first" / "bin"
+        second = tmp_path / "second" / "bin"
+        first.mkdir(parents=True)
+        second.mkdir(parents=True)
+        (first / "python").write_text("fixture", encoding="utf-8")
+        (second / "python").write_text("fixture", encoding="utf-8")
+
+        installed = self._plist(first / "python")
+        expected = self._plist(second / "python")
+
+        assert gateway_cli._normalize_launchd_plist_for_comparison(
+            installed
+        ) != gateway_cli._normalize_launchd_plist_for_comparison(expected)
+
+
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
         unit_path = tmp_path / "hermes-gateway.service"

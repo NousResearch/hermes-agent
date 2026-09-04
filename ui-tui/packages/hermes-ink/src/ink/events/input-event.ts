@@ -5,6 +5,46 @@ import { Event } from './event.js'
 const inputForSpecialSequence = (name: string): string =>
   name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
 
+/**
+ * Input text for a CSI-u / modifyOtherKeys-encoded key, preserving the
+ * shifted character. Both protocols report the *unshifted* codepoint (kitty
+ * reports the lowercase letter; xterm modifyOtherKeys reports the lowercase
+ * ASCII value), so a Shift+letter arrives as name='i', shift=true. Inserting
+ * `name` verbatim drops the capital (#37680). When Shift is the SOLE
+ * modifier, uppercase the decoded character instead — toUpperCase() handles
+ * every cased script, not just a-z (non-Latin layouts, #87631). Chorded
+ * Shift (ctrl/alt/meta/super) keys are bindings, not text, and keep the
+ * plain name so existing keymap lookups still match.
+ */
+const inputForShiftedKey = (keypress: ParsedKey): string => {
+  const soleShift =
+    keypress.shift && !keypress.ctrl && !keypress.meta && !keypress.option && !keypress.super
+
+  if (!soleShift) {
+    return inputForSpecialSequence(keypress.name ?? '')
+  }
+
+  const base = inputForSpecialSequence(keypress.name ?? '')
+
+  // Only single characters can be case-shifted; multi-char names ('return',
+  // 'space', arrows) have no shifted glyph. space is already resolved to ' '
+  // by inputForSpecialSequence and has no case.
+  if (base.length !== 1) {
+    return base
+  }
+
+  const shifted = base.toUpperCase()
+
+  // Guard against scripts where toUpperCase() changes string length (e.g.
+  // ß → SS, ﬁ → FI): inserting multi-char text for one keypress would
+  // corrupt the composer buffer, so keep the base character there.
+  if (shifted.length !== 1) {
+    return base
+  }
+
+  return shifted
+}
+
 export type Key = {
   upArrow: boolean
   downArrow: boolean
@@ -112,7 +152,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // so the raw "[57358u" doesn't leak into the prompt. See #38781.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      input = inputForShiftedKey(keypress)
     }
 
     processedAsSpecialSequence = true
@@ -130,7 +170,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // guards against future terminal behavior.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      input = inputForShiftedKey(keypress)
     }
 
     processedAsSpecialSequence = true

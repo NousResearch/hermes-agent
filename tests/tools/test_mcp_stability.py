@@ -547,6 +547,160 @@ class TestMCPInitialConnectionRetry:
 
 
 # ---------------------------------------------------------------------------
+# Cold-start identical-error parking (#79141)
+# ---------------------------------------------------------------------------
+
+
+class TestFailureFingerprint:
+    def test_same_error_fingerprints_identically(self):
+        from tools.mcp_tool import _failure_fingerprint
+        a = _failure_fingerprint(RuntimeError("Cannot find module /x/scoped-entry.js"))
+        b = _failure_fingerprint(RuntimeError("Cannot find module /x/scoped-entry.js"))
+        assert a == b
+
+    def test_different_error_types_fingerprint_distinctly(self):
+        from tools.mcp_tool import _failure_fingerprint
+        a = _failure_fingerprint(RuntimeError("Cannot find module /x/scoped-entry.js"))
+        b = _failure_fingerprint(ConnectionError("Cannot find module /x/scoped-entry.js"))
+        assert a != b
+
+    def test_error_message_controls_fingerprint(self):
+        from tools.mcp_tool import _failure_fingerprint
+        a = _failure_fingerprint(RuntimeError("Cannot find module /x/scoped-entry.js"))
+        b = _failure_fingerprint(RuntimeError("Cannot find module /y/other.js"))
+        assert a != b
+
+
+class TestColdStartParking:
+    """5 identical failures park cold; a different error resets the streak."""
+
+    def _make_task(self, name):
+        from tools.mcp_tool import MCPServerTask
+
+        return MCPServerTask(name)
+
+    def test_permanent_failure_never_advances_identical_streak(self):
+        """A permanent initial failure parks on attempt 1 (no retry ladder)
+        and must NOT advance the identical-error streak — the 5th permanent
+        revival would otherwise cold-park with a misleading message."""
+        from tools.mcp_tool import MCPServerTask, _PARKED_RETRY_INTERVAL
+
+        async def _run():
+            server = self._make_task("test-perm")
+            attempts = {"n": 0}
+            waits: list = []
+
+            async def fake_run_stdio(self_inner, config):
+                attempts["n"] += 1
+                # ENOENT-class permanent failure (classifies permanent)
+                raise FileNotFoundError("No such file or directory: /nope/mcp.js")
+
+            async def fake_wait(self_inner, timeout=None):
+                waits.append(timeout)
+                # Give the main coroutine a chance to run (the real wait
+                # blocks on events; a zero-delay fake would CPU-spin).
+                await asyncio.sleep(0.01)
+                return "shutdown" if self_inner._shutdown_event.is_set() else "reconnect"
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 patch.object(MCPServerTask, '_wait_for_reconnect_or_shutdown', fake_wait), \
+                 patch('tools.mcp_tool._jittered', lambda s: 0.001):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+                # Let several permanent revivals run, then stop.
+                await asyncio.sleep(0.2)
+                server._shutdown_event.set()
+                await task
+
+            # Permanent error parks on EVERY attempt (attempt 1 immediately,
+            # then every revival) — never burns a retry ladder, and the
+            # identical streak never reaches 5 (no cold park / no None wait).
+            assert attempts["n"] >= 4
+            assert server._identical_failures < 5
+            assert all(t == _PARKED_RETRY_INTERVAL for t in waits)
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_identical_failures_park_without_self_probe(self):
+        from tools.mcp_tool import MCPServerTask, _COLD_START_IDENTICAL_FAILURES
+
+        async def _run():
+            server = MCPServerTask("test-cold")
+            attempts = {"n": 0}
+            waits: list = []
+
+            async def fake_run_stdio(self_inner, config):
+                attempts["n"] += 1
+                raise RuntimeError("Cannot find module /x/scoped-entry.js")
+
+            async def fake_wait(self_inner, timeout=None):
+                # Record whether a self-probe timeout was used (5-min park)
+                waits.append(timeout)
+                if self_inner._shutdown_event.is_set():
+                    return "shutdown"
+                return "reconnect"  # external revive
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 patch.object(MCPServerTask, '_wait_for_reconnect_or_shutdown', fake_wait), \
+                 patch('tools.mcp_tool._jittered', lambda s: 0.001):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+                # Let the loop reach the cold-start park (5 identical), then stop.
+                await asyncio.sleep(0.2)
+                server._shutdown_event.set()
+                await task
+
+            # Cold-start reached: after the initial budget park (300s), the
+            # 5-identical streak trips and parks cold (None = no self-probe).
+            assert attempts["n"] >= 2 * _COLD_START_IDENTICAL_FAILURES
+            assert 300 in waits  # initial-connect budget park happened
+            assert None in waits  # cold-start park happened (no self-probe)
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_different_error_resets_streak(self):
+        from tools.mcp_tool import (
+            MCPServerTask,
+            _COLD_START_IDENTICAL_FAILURES,
+            _MAX_INITIAL_CONNECT_RETRIES,
+        )
+
+        async def _run():
+            server = MCPServerTask("test-reset")
+            attempts = {"n": 0}
+            waits: list = []
+
+            async def fake_run_stdio(self_inner, config):
+                attempts["n"] += 1
+                if attempts["n"] % 2 == 0:
+                    # Different error resets the identical streak
+                    raise ConnectionError("network blip")
+                raise RuntimeError("Cannot find module /x/scoped-entry.js")
+
+            async def fake_wait(self_inner, timeout=None):
+                waits.append(timeout)
+                if self_inner._shutdown_event.is_set():
+                    return "shutdown"
+                return "reconnect"
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 patch.object(MCPServerTask, '_wait_for_reconnect_or_shutdown', fake_wait), \
+                 patch('tools.mcp_tool._jittered', lambda s: 0.001):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+                await asyncio.sleep(0.2)
+                server._shutdown_event.set()
+                await task
+
+            # Alternating errors never accumulate 5 identical in a row: every
+            # park is a TIMED self-probe (300s), never a cold park (None).
+            assert attempts["n"] >= 2 * _MAX_INITIAL_CONNECT_RETRIES
+            assert attempts["n"] < 5 * _COLD_START_IDENTICAL_FAILURES
+            assert waits and all(t == 300 for t in waits)
+            assert None not in waits
+
+
+# ---------------------------------------------------------------------------
 # Fix: drain pending tasks before closing the MCP loop
 # ---------------------------------------------------------------------------
 

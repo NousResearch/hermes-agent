@@ -9198,7 +9198,10 @@ def _record_task_failure(
 
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
-    context (e.g. pid on crash, elapsed on timeout).
+    context (e.g. pid on crash, elapsed on timeout). It is also merged
+    into the below-threshold ``timed_out`` run metadata + event payload
+    so budget/elapsed metadata survives for notification rendering
+    (#79399).
 
     Resolution order for the effective threshold:
       1. per-task ``max_retries`` if set (nothing else overrides)
@@ -9224,6 +9227,12 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        # Late finalizers: a worker that already ended its task via
+        # kanban_block / kanban_complete must not emit a bogus failure
+        # on top of the handoff. Only a still-running (or still-claimable
+        # ready/review) task may be failed (#79399).
+        if row["status"] not in ("running", "ready", "review"):
             return False
         retry_status = (
             _retry_status_for_run(conn, task_id, row["current_run_id"])
@@ -9314,22 +9323,25 @@ def _record_task_failure(
                 )
             if end_run:
                 # Spawn path: close the open run with outcome.
+                run_meta = {"failures": failures, "retry_status": retry_status}
+                if event_payload_extra:
+                    run_meta.update(event_payload_extra)
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
                     error=error[:500],
-                    metadata={
-                        "failures": failures,
-                        "retry_status": retry_status,
-                    },
+                    metadata=run_meta,
                 )
+                event_payload = {
+                    "error": error[:500],
+                    "failures": failures,
+                    "retry_status": retry_status,
+                }
+                if event_payload_extra:
+                    event_payload.update(event_payload_extra)
                 _append_event(
                     conn, task_id, outcome,
-                    {
-                        "error": error[:500],
-                        "failures": failures,
-                        "retry_status": retry_status,
-                    },
+                    event_payload,
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.

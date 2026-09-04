@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -508,6 +509,110 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 # Respawn guard (check_respawn_guard + dispatch_once integration)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _record_task_failure metadata + late-finalizer guard (#79399)
+# ---------------------------------------------------------------------------
+
+
+def test_record_task_failure_below_threshold_preserves_budget_metadata(kanban_home):
+    """Iteration-budget exhaustion keeps budget_used/budget_max in run metadata (#79399)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="budget task")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+        assert kb.get_task(conn, tid).status == "running"
+
+        # Below the breaker threshold (failure_limit=5, this is failure 1).
+        blocked = kb._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert blocked is False
+        # Task dropped back to ready for respawn.
+        assert kb.get_task(conn, tid).status == "ready"
+
+        run = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert run is not None
+        meta = json.loads(run["metadata"] or "{}")
+        assert meta.get("budget_used") == 20
+        assert meta.get("budget_max") == 20
+
+        ev = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'timed_out' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert ev is not None
+        payload = json.loads(ev["payload"] or "{}")
+        assert payload.get("budget_used") == 20
+        assert payload.get("budget_max") == 20
+
+
+def test_record_task_failure_noop_after_blocked_handoff(kanban_home):
+    """A late iteration finalizer must not fail a task already blocked (#79399)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blocked handoff")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+
+        # Worker spends its final iteration on kanban_block → task blocked.
+        assert kb.block_task(conn, tid, reason="needs human input") is True
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        # Late finalizer fires after the handoff: must be a no-op.
+        result = kb._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert result is False
+        assert kb.get_task(conn, tid).status == "blocked"
+        # No timed_out event appended on top of the handoff.
+        kinds = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (tid,)
+            ).fetchall()
+        ]
+        assert "timed_out" not in kinds
+
+
+def test_record_task_failure_noop_after_completed_handoff(kanban_home):
+    """A late iteration finalizer must not fail a task already done (#79399)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="completed handoff")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+
+        assert kb.complete_task(conn, tid, result="done") is True
+        assert kb.get_task(conn, tid).status == "done"
+
+        result = kb._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert result is False
+        assert kb.get_task(conn, tid).status == "done"
 
 
 

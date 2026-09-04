@@ -970,6 +970,12 @@ _ACTIVE_TASK_MAX_CHARS = 1400
 # Hard floor of verbatim recent messages when the budget is exhausted; using the
 # full protect_last_n would recreate the nothing-compactable large-tool-output case.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+# Default cap for the compaction tail message floor.  ``protect_last_n`` is
+# honored up to this cap; the cap avoids preserving a whole run of bulky
+# tool outputs on every compaction.  Overridable via
+# ``compression.max_tail_message_floor`` in config.yaml (#45259 hardened the
+# floor from 3 to ``min(protect_last_n, 8)``; this makes the 8 configurable).
+_DEFAULT_MAX_TAIL_MESSAGE_FLOOR = 8
 
 # Skip the LLM call when the compressible middle is below this fraction of the
 # threshold (and a prior ineffectiveness strike exists); dropping alone suffices.
@@ -2260,10 +2266,18 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        max_tail_message_floor: int = 0,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
+        # Configurable cap for the tail message floor (see
+        # _find_tail_cut_by_tokens).  0 = use the module-level default
+        # (_DEFAULT_MAX_TAIL_MESSAGE_FLOOR = 8), preserving backward
+        # compatibility.  Set higher (e.g. 20) to keep more recent
+        # messages verbatim during compaction at the cost of a smaller
+        # summarization window when tool outputs are bulky.
+        self.max_tail_message_floor = max(0, int(max_tail_message_floor or 0))
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.
@@ -3878,6 +3892,13 @@ Write only the summary body. Do not include any preamble or prefix."""
                 return 0
         return self.protect_first_n
 
+    @property
+    def _effective_max_tail_message_floor(self) -> int:
+        """Resolved tail-floor cap: config override or module default."""
+        if self.max_tail_message_floor > 0:
+            return self.max_tail_message_floor
+        return _DEFAULT_MAX_TAIL_MESSAGE_FLOOR
+
     def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
         """Head messages to protect: the system prompt (if present) plus the decaying ``protect_first_n`` extra rows.
 
@@ -4192,7 +4213,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Bounded recent-message floor: protect_last_n is a minimum up to a cap so bulky tool runs
         # aren't all kept.
         available_tail = max(0, n - head_end - 1)
-        min_tail_floor = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+        min_tail_floor = max(3, min(self.protect_last_n, self._effective_max_tail_message_floor))
         # Keep >= 2 non-head messages summarizable so a tiny middle still saves messages.
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0

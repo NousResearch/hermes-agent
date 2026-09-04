@@ -1453,6 +1453,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
         # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
         min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
+        # Configurable cap for the tail message floor (see _find_tail_cut_by_tokens
+        # in context_compressor.py).  0 = use the module-level default (8).
+        max_tail_message_floor=max(0, int(cfg.get("max_tail_message_floor", 0) or 0)),
         max_attempts=min(max_attempts, 10),
         # Opt-in proactive tool-result prune trigger (0 = disabled; negatives = disabled).
         proactive_prune_tokens=max(0, _parse_config_int(cfg.get("proactive_prune_tokens", 0), 0)),
@@ -1848,6 +1851,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
+            max_tail_message_floor=cs.max_tail_message_floor,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

@@ -538,6 +538,8 @@ DEFAULT_CONFIG = {
         # 0.20×threshold verbatim tail (100-240K tokens on big windows).
         "tail_mode": "lean",
         "protect_last_n": 20,         # minimum recent messages kept uncompressed
+        "max_tail_message_floor": 0,  # cap for the tail floor (0 = default 8; set higher to keep more
+                                      # recent messages verbatim)
         # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
         # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
         "min_tail_user_messages": 1,

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $subagentsBySession, interruptSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { $draftingToolSessions } from '@/store/tool-drafting'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -31,12 +32,14 @@ function draftedTool(sessionId = SID) {
 describe('drafting-tool label lifecycle', () => {
   beforeEach(() => {
     sessionStates.clear()
+    $subagentsBySession.set({})
     $draftingToolSessions.set({})
   })
 
   afterEach(() => {
     cleanup()
     sessionStates.clear()
+    $subagentsBySession.set({})
     $draftingToolSessions.set({})
     vi.restoreAllMocks()
   })
@@ -89,5 +92,27 @@ describe('drafting-tool label lifecycle', () => {
     emit('tool.generating', { name: 'write_file' })
 
     expect(draftedTool()).toBeUndefined()
+  })
+
+  it('accepts a terminal subagent update after stop without accepting progress', async () => {
+    upsertSubagent(SID, { goal: 'initial', status: 'running', subagent_id: 'child', task_index: 0 })
+    interruptSessionSubagents(SID)
+    sessionStates.set(SID, { ...createClientSessionState(), interrupted: true })
+    await mountStream()
+
+    emit('subagent.progress', { goal: 'stale progress', status: 'running', subagent_id: 'child', task_index: 0 })
+    expect($subagentsBySession.get()[SID]?.[0]?.goal).toBe('initial')
+
+    emit('subagent.complete', {
+      status: 'completed',
+      subagent_id: 'child',
+      summary: 'finished after parent stop',
+      task_index: 0
+    })
+
+    expect($subagentsBySession.get()[SID]?.[0]).toMatchObject({
+      status: 'completed',
+      summary: 'finished after parent stop'
+    })
   })
 })

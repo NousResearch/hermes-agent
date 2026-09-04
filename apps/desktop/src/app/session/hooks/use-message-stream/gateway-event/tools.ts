@@ -129,7 +129,9 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-    if (sessionId && payload && !sessionInterrupted(sessionId)) {
+    // Stop suppresses stale progress, but terminal events remain
+    // authoritative: children may finish after their parent is interrupted.
+    if (sessionId && payload && (event.type === 'subagent.complete' || !sessionInterrupted(sessionId))) {
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         pruneDelegateFallbackSubagents(sessionId)
       }

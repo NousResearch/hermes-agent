@@ -37,7 +37,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionStates, isSessionRemote } from '@/store/session-states'
-import { clearSessionSubagents } from '@/store/subagents'
+import { interruptSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
@@ -699,7 +699,7 @@ export function usePromptActions({
     })
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
+    interruptSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
     setSessionDraftingTool(sessionId, '')
     // Stop ends the turn, so the gateway is no longer blocked on any prompt it

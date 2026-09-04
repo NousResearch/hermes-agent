@@ -27,6 +27,7 @@ import {
   setSessions
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -3818,6 +3819,38 @@ describe('usePromptActions sleep/wake session recovery', () => {
       busy: false,
       interrupted: true,
       turnStartedAt: null
+    })
+  })
+
+  it('terminalizes primary Stop rows without deleting a late-completion target', async () => {
+    $subagentsBySession.set({})
+    upsertSubagent(RUNTIME_SESSION_ID, {
+      goal: 'child',
+      status: 'running',
+      subagent_id: 'child',
+      task_index: 0
+    })
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.cancelRun()
+
+    expect($subagentsBySession.get()[RUNTIME_SESSION_ID]?.[0]?.status).toBe('interrupted')
+
+    upsertSubagent(
+      RUNTIME_SESSION_ID,
+      { status: 'completed', subagent_id: 'child', summary: 'finished after primary stop', task_index: 0 },
+      false,
+      'subagent.complete'
+    )
+
+    expect($subagentsBySession.get()[RUNTIME_SESSION_ID]?.[0]).toMatchObject({
+      status: 'completed',
+      summary: 'finished after primary stop'
     })
   })
 

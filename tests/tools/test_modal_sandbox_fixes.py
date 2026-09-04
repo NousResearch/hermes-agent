@@ -377,6 +377,57 @@ class TestDockerHostBindApproval:
         assert A._should_skip_container_guards("daytona") is True
         assert A._should_skip_container_guards("local") is False
 
+    def test_should_skip_container_guards_honors_plugin_flag(self):
+        """Regression: a plugin-registered backend's declared
+        skip_container_guards flag must actually be consulted here.
+
+        This exact wiring (added by 0484910787) was accidentally reverted
+        to a hardcoded tuple by an unrelated commit (c8c3f4c448) the very
+        next day -- nothing caught it because no test exercised a
+        plugin-registered backend through this function. Guards against
+        that regression recurring for any plugin backend (e.g. a
+        TerminalEnvironmentProvider shipped as a standalone plugin, per
+        PR #94400 -- this is exactly the mechanism third-party cloud
+        sandboxes are meant to use instead of hardcoded built-in entries).
+        """
+        import tools.approval as A
+        from agent import terminal_env_registry as reg
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+        class _Isolated(TerminalEnvironmentProvider):
+            name = "isolatedbox"
+            is_container = True  # skip_container_guards defaults to this
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, **kwargs):
+                raise NotImplementedError
+
+        class _NotIsolated(TerminalEnvironmentProvider):
+            name = "openbox"
+
+            @property
+            def skip_container_guards(self):
+                return False
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, **kwargs):
+                raise NotImplementedError
+
+        reg._reset_for_tests()
+        try:
+            reg.register_provider(_Isolated())
+            reg.register_provider(_NotIsolated())
+            assert A._should_skip_container_guards("isolatedbox") is True
+            assert A._should_skip_container_guards("openbox") is False
+            # Unregistered/unknown backend fails soft to False (approval ON).
+            assert A._should_skip_container_guards("nosuchbackend") is False
+        finally:
+            reg._reset_for_tests()
+
     def test_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker still bypasses dangerous-command approval."""
         import tools.approval as A

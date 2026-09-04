@@ -1169,6 +1169,105 @@
   }
 }
 
+/* ── #99889: per-instance @keyframes → static stylesheet ────────────────
+   Each of these was previously rendered as a per-instance <style> tag inside
+   its component (DecodeText, pane-shell LayoutTreeRoot, Starmap Timeline,
+   onboarding Glyph). Inserting/removing a <style> that defines an
+   `@keyframes` rule invalidates every animating element in the document
+   (StyleRecalcInvalidation reason "@keyframes rule change" = 2,651 events in
+   the 60 s trace). Moving them here makes the registry change once at load.
+   The same bug family as #72844/#91473 and #91383; the per-instance form is
+   also what multiplied decode-cursor duplicates in the live DOM on every
+   Sessions/Bots tab switch.                                 — fix #99889 */
+@keyframes decode-cursor {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.decode-cursor-blink {
+  animation: decode-cursor 1s step-end infinite;
+}
+@keyframes ob-decode-cursor {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.ob-decode-cursor-blink {
+  animation: ob-decode-cursor 1s step-end infinite;
+}
+@keyframes hermes-zone-fade {
+  from {
+    opacity: 0.001;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes starmap-twinkle {
+  0%,
+  100% {
+    opacity: var(--o, 1);
+  }
+  50% {
+    opacity: calc(var(--o, 1) * 0.35);
+  }
+}
+
+/* ── #99889: contain expensive style subtrees ─────────────────────────
+   The 60 s trace shows single Document::recalcStyle slices of 300–1,232 ms
+   over ~6 k nodes (worst 1,385 ms) despite only ~20 ms of JS. The cost is
+   per-element selector matching, not recalc frequency: 2,266 "Affected by
+   :has()" invalidations and heavy color-mix/custom-property recomputation
+   across the whole document. Containment lets Blink skip subtrees that are
+   off-screen or style-isolated; :has() inside a `contain: style` boundary
+   does not re-evaluate outside it. These are the narrowest scopes that
+   still cover the expensive selectors in this file:
+     html:has([data-hud-shell]) / [data-hud-shell]:has(...)  → hud
+     [data-pane-shell]:has(...) / [data-tree-group]          → pane tree
+     [data-slot='aui_assistant-message-content'] :has(...)   → transcript
+   Loader SVG circles/paths (7,922/5,632 invalidations + 4,941 SVG-resource
+   invalidations) are also isolated so their per-frame Attribute mutations
+   (cx/cy/r/opacity + d) don't dirty ancestor style.               — #99889 */
+[data-hud-shell],
+[data-pane-shell],
+[data-tree-group] {
+  contain: layout style;
+}
+[data-slot='aui_assistant-message-content'] {
+  contain: style;
+}
+/* SVG loader: every rAF tick mutates <circle cx/cy/r/opacity> and <path d>;
+   without containment that schedules style+layout up the tree. `contain:
+   layout style paint` + `content-visibility: auto` keeps the work inside the
+   40×40 box and lets off-screen loaders (e.g. in a keep-alive Bots tab) skip
+   entirely. The compositor hint avoids layer churn on each tick. */
+.loader-svg {
+  contain: layout style paint;
+  content-visibility: auto;
+  contain-intrinsic-size: 40px 40px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .decode-cursor-blink,
+  .ob-decode-cursor-blink {
+    animation: none !important;
+  }
+}
+:root[data-renderer-animations-paused] .decode-cursor-blink,
+:root[data-renderer-animations-paused] .ob-decode-cursor-blink {
+  animation-play-state: paused !important;
+}
+
 /* No focus rings, anywhere. Kills the native outline plus Tailwind's
    `focus-visible:ring-*` (a box-shadow driven by --tw-ring-*). Unlayered so it
    beats the utilities layer without !important on the outline. The composer /

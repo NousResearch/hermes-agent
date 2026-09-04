@@ -127,10 +127,8 @@ export function DecodedLabel({ leaving, text }: { leaving?: boolean; text: strin
       <GlyphText text={decoded} />
       <span
         aria-hidden="true"
-        className="dither ml-1.5 -mr-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary"
-        style={{ animation: 'ob-decode-cursor 1s step-end infinite' }}
+        className="dither ml-1.5 -mr-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary ob-decode-cursor-blink"
       />
-      <style>{'@keyframes ob-decode-cursor { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }'}</style>
     </span>
   )
 }

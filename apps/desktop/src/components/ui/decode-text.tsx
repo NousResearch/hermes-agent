@@ -108,14 +108,12 @@ export function DecodeText({
       )}
       {...props}
     >
-      {cursor && <style>{'@keyframes decode-cursor { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }'}</style>}
       {staticPrefix}
       {tail}
       {cursor && (
         <span
           aria-hidden="true"
-          className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px]"
-          style={{ animation: 'decode-cursor 1s step-end infinite' }}
+          className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px] decode-cursor-blink"
         />
       )}
     </span>

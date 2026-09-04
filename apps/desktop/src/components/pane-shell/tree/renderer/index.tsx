@@ -50,8 +50,6 @@ export function LayoutTreeRoot({ children }: { children?: ReactNode }) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
-      {/* ZonesOverlay::GetAnimationAlpha ramp: clamp(t / 200ms, 0.001, 1). */}
-      <style>{`@keyframes hermes-zone-fade { from { opacity: 0.001 } to { opacity: 1 } }`}</style>
       {/* THE SEAM INVARIANT: boundaries are drawn by the tree (one sash
           hairline per seam) — content mounted in a zone must not paint its
           own edge chrome. App components (asides, the shadcn sidebar) carry

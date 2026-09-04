@@ -932,16 +932,83 @@ class BaseEnvironment(ABC):
             if not isinstance(fd, int) or fd < 0:
                 _drain_iterable(stream)
                 return
-            # select.select does NOT work on pipe fds on Windows (only sockets).
-            # Use blocking os.read in a daemon thread instead — safe because
-            # EOF arrives promptly when bash exits.
+            # select.select does NOT work on pipe fds on Windows (only sockets),
+            # so poll the pipe with PeekNamedPipe and mirror the POSIX path's
+            # proc.poll() early-exit. A plain blocking os.read here waits for
+            # EOF, which only arrives when EVERY writer closes the pipe — but a
+            # backgrounded grandchild (``cmd &``, ``( cmd & )``, a spawned
+            # daemon) inherits the stdout write handle and keeps it open after
+            # bash exits, so the read would block for that grandchild's whole
+            # lifetime. Worse, the still-pending read then makes the follow-up
+            # ``proc.stdout.close()`` block too (Windows CloseHandle waits for
+            # in-flight synchronous I/O), so _wait_for_process itself returns
+            # only when the grandchild finally dies — the Windows analogue of
+            # issue #8340 and the tail of MCL-012. Instead: drain everything
+            # currently buffered, and once bash has exited and the pipe has been
+            # idle for ~300ms, stop even if a grandchild still holds the write
+            # end. Any output that grandchild writes afterward goes to an
+            # orphaned pipe (harmless — the kernel reaps it when our end closes).
             if os.name == "nt":
+                import msvcrt
+                import ctypes
+                from ctypes import wintypes
+                _peek = None
+                try:
+                    _handle = msvcrt.get_osfhandle(fd)
+                    _peek = ctypes.windll.kernel32.PeekNamedPipe
+                    _peek.restype = wintypes.BOOL
+                    _peek.argtypes = [
+                        wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                        ctypes.POINTER(wintypes.DWORD),
+                        ctypes.POINTER(wintypes.DWORD),
+                        ctypes.POINTER(wintypes.DWORD),
+                    ]
+                except Exception:
+                    _peek = None
+                idle_after_exit = 0
                 try:
                     while True:
-                        chunk = os.read(fd, 4096)
-                        if not chunk:
+                        avail = wintypes.DWORD(0)
+                        ok = False
+                        if _peek is not None:
+                            try:
+                                ok = bool(_peek(wintypes.HANDLE(_handle), None, 0,
+                                                None, ctypes.byref(avail), None))
+                            except Exception:
+                                ok = False
+                        if not ok:
+                            # Broken pipe (all writers closed) or unpeekable
+                            # handle: drain any buffered remainder without
+                            # blocking — no writer is left to stall the read —
+                            # then stop.
+                            while True:
+                                try:
+                                    chunk = os.read(fd, 4096)
+                                except (ValueError, OSError):
+                                    break
+                                if not chunk:
+                                    break
+                                output.append(decoder.decode(chunk))
                             break
-                        output.append(decoder.decode(chunk))
+                        if avail.value:
+                            try:
+                                chunk = os.read(fd, min(4096, avail.value))
+                            except (ValueError, OSError):
+                                break
+                            if not chunk:
+                                break
+                            output.append(decoder.decode(chunk))
+                            idle_after_exit = 0
+                        elif proc.poll() is not None:
+                            # bash is gone and the pipe is momentarily empty.
+                            # Give it two more cycles to catch a buffered tail,
+                            # then stop — do not wait on a grandchild's pipe.
+                            idle_after_exit += 1
+                            if idle_after_exit >= 3:
+                                break
+                            time.sleep(0.1)
+                        else:
+                            time.sleep(0.05)
                 except (ValueError, OSError):
                     pass
                 finally:

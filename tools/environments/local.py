@@ -908,18 +908,46 @@ def _bash_starts(bash: str) -> bool:
         return cached
 
     try:
-        result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=15,
-            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
-        )
-        ok = result.returncode == 0
-        if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}"
-            _bash_probe_details_cache[bash] = combined.strip()[:2000]
-            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+        if _IS_WINDOWS:
+            # ``capture_output=True`` opens inheritable OS pipes for stdout/stderr.
+            # When Hermes runs under an ACP host (e.g. the War Room's Node server)
+            # that handed it piped stdio, a bash grandchild inherits and holds the
+            # probe pipe's write end open. ``subprocess.run(timeout=...)`` only
+            # bounds the wait for the *direct* child to exit — the reader-thread
+            # ``join()`` inside ``communicate()`` is UNBOUNDED — so ``_bash_starts``
+            # blocks forever despite ``timeout=15`` and wedges the very first
+            # terminal command (MCL-012; observed as init_session never reaching
+            # ``_wait_for_process``). Capture to a temp file instead: no reader
+            # threads, ``wait()`` is genuinely timeout-bounded, stdin is detached
+            # from any inherited pipe, and a lingering grandchild still writing to
+            # the already-read file is harmless. Console-hosted CLI runs never hit
+            # this (no inheritable stdio pipe to leak), which is why the same
+            # probe is fast from ``hermes`` on a terminal.
+            with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as _cap:
+                _proc = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
+                    stdout=_cap, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    timeout=15,
+                    creationflags=windows_hide_flags(),
+                )
+                _cap.seek(0)
+                _probe_out = _cap.read()
+            ok = _proc.returncode == 0
+            if not ok:
+                _bash_probe_details_cache[bash] = _probe_out.strip()[:2000]
+                logger.debug("bash probe failed for %s: %s", bash, _probe_out.strip()[:200])
+        else:
+            result = subprocess.run(
+                [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=15,
+            )
+            ok = result.returncode == 0
+            if not ok:
+                combined = f"{result.stdout or ''}{result.stderr or ''}"
+                _bash_probe_details_cache[bash] = combined.strip()[:2000]
+                logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
     except Exception as exc:
         _bash_probe_details_cache[bash] = str(exc)[:2000]
         logger.debug("bash probe error for %s: %s", bash, exc)

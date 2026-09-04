@@ -118,9 +118,94 @@ _OAUTH_TOKEN_FIELDS = (
 
 _oauth_heal_notices: List[str] = []
 
-# provider -> (profile auth.json path, auth.json mtime_ns, singleton mtime_ns) of the last store
+# provider -> fingerprint (see ``_heal_forked_single_use_oauth_grants``) of the last store
 # verified fork-free; lets load_pool() skip the locked scan.
-_oauth_heal_clean_marks: Dict[str, Tuple[str, Optional[int], Optional[int]]] = {}
+_oauth_heal_clean_marks: Dict[str, Tuple[Any, ...]] = {}
+
+# Filename for the ON-DISK twin of ``_oauth_heal_clean_marks``. The in-memory mark only silences
+# the heal for the life of ONE process, so every fresh `hermes` invocation and every new worker
+# re-pays the heal's two nested EXCLUSIVE auth-store locks just to discover there is nothing to
+# consolidate. Behind a sibling holding those locks that costs a full AUTH_LOCK_TIMEOUT_SECONDS
+# per provider (measured: 30s for two providers on an otherwise-idle machine) before the process
+# can do anything at all.
+_OAUTH_HEAL_CLEAN_MARK_FILENAME = "oauth_heal_clean.json"
+
+
+def _size(p: Optional[Path]) -> Optional[int]:
+    try:
+        return p.stat().st_size if p is not None else None
+    except OSError:
+        return None
+
+
+def _oauth_heal_clean_mark_path() -> Optional[Path]:
+    """Where the persisted clean marks live, or None when unavailable."""
+    try:
+        from hermes_cli.auth import _auth_file_path
+
+        return _auth_file_path().parent / "cache" / _OAUTH_HEAL_CLEAN_MARK_FILENAME
+    except Exception:
+        return None
+
+
+def _persisted_oauth_heal_fingerprint(provider_id: str) -> Optional[list]:
+    """The stored clean-mark fingerprint for ``provider_id``, or None.
+
+    Pure cache read: any problem at all (absent, unreadable, corrupt, wrong shape) means "no
+    mark", which falls through to the locked heal — the pre-existing behaviour. It must never
+    raise into a credential path.
+    """
+    path = _oauth_heal_clean_mark_path()
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    stored = data.get(provider_id)
+    return stored if isinstance(stored, list) else None
+
+
+def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None:
+    """Record ``provider_id`` as clean for this exact fingerprint.
+
+    Best-effort by design: a failed write only means the next process re-runs the heal, which is
+    what it did before this cache existed.
+    """
+    path = _oauth_heal_clean_mark_path()
+    if path is None:
+        return
+    try:
+        from utils import atomic_json_write
+
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        marks = {
+            key: value for key, value in existing.items()
+            if isinstance(key, str) and isinstance(value, list)
+        }
+        new_mark = list(fingerprint)
+        if marks.get(provider_id) == new_mark:
+            return  # already recorded; skip the rewrite
+        marks[provider_id] = new_mark
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 0o600 like the MCP schema cache: this names credential-store paths.
+        atomic_json_write(path, marks, mode=0o600)
+    except Exception:
+        logger.debug(
+            "%s: could not persist the forked-OAuth clean mark", provider_id, exc_info=True)
+
+
+def _mark_oauth_heal_clean(provider_id: str, fingerprint: tuple) -> None:
+    """Stamp the clean mark both in memory and on disk."""
+    _oauth_heal_clean_marks[provider_id] = fingerprint
+    _persist_oauth_heal_clean_mark(provider_id, fingerprint)
 
 
 def consume_oauth_heal_notices() -> List[str]:
@@ -466,20 +551,45 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
     root_singleton = root_path.parent / ".anthropic_oauth.json" if is_anthropic else None
 
     # Hot-path short-circuit: load_pool() runs per model call. Once this profile's store was
-    # verified clean for *provider_id*, skip the locked read-modify-write until the profile's own
-    # files change (mtime key).
-    fingerprint = (str(profile_path), _mtime_ns(profile_path), _mtime_ns(profile_singleton))
+    # verified clean for *provider_id*, skip the locked read-modify-write until one of the files
+    # it reads changes.
+    #
+    # The ROOT store is part of the fingerprint even though only the profile side is read above:
+    # this heal consolidates root -> profile, so a new forked grant appearing in ROOT must
+    # invalidate the mark. The in-memory mark omitted it and got away with it because it died
+    # with the process; a persisted mark would otherwise keep skipping a heal that has become
+    # necessary. Sizes ride along with the mtimes for the same reason: a metadata-preserving
+    # rewrite (``rsync -t``, ``tar -p``, a restore) would otherwise leave a stale mark looking
+    # current indefinitely rather than for one process.
+    fingerprint = (
+        str(profile_path),
+        _mtime_ns(profile_path),
+        _mtime_ns(profile_singleton),
+        str(root_path),
+        _mtime_ns(root_path),
+        _mtime_ns(root_singleton),
+        _size(profile_path),
+        _size(profile_singleton),
+        _size(root_path),
+        _size(root_singleton),
+    )
     if _oauth_heal_clean_marks.get(provider_id) == fingerprint:
         return None
-    if fingerprint[1] is None and fingerprint[2] is None:
+    # Same check against the on-disk mark, BEFORE taking any lock: a fresh process would
+    # otherwise pay two nested exclusive auth-store locks — a full AUTH_LOCK_TIMEOUT_SECONDS
+    # each behind a sibling holding them — only to find nothing to consolidate.
+    if _persisted_oauth_heal_fingerprint(provider_id) == list(fingerprint):
         _oauth_heal_clean_marks[provider_id] = fingerprint
+        return None
+    if fingerprint[1] is None and fingerprint[2] is None:
+        _mark_oauth_heal_clean(provider_id, fingerprint)
         return None
     if _is_same_auth_store(profile_path, root_path):
         # The profile's auth.json IS the root store (symlink/hardlink alias — a deliberate way to
         # share one grant). Both "sides" would read the same file, every OAuth row would match
         # itself, and the strip would write through the alias and delete the shared credential.
         # Nothing to consolidate; the mtime mark keeps this off the per-call hot path.
-        _oauth_heal_clean_marks[provider_id] = fingerprint
+        _mark_oauth_heal_clean(provider_id, fingerprint)
         # See #101356.
         logger.debug("%s: forked-OAuth heal skipped, %s is the root store", provider_id, profile_path)
         return None
@@ -496,7 +606,7 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
             run.heal_provider_block()
             run.heal_profile_singleton(profile_singleton)
             if not run.dirty:
-                _oauth_heal_clean_marks[provider_id] = fingerprint
+                _mark_oauth_heal_clean(provider_id, fingerprint)
                 return None
             run.sync_root_singleton_with_pkce_row()
             summary = run.summary

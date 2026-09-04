@@ -787,12 +787,19 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
-    try:
-        profiles = await run_in_threadpool(profiles_mod.list_profiles)
+
+    def _list_profiles():
+        profiles = profiles_mod.list_profiles()
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
+
+    try:
+        # Profile projection reads presentation metadata and avatar presence
+        # from disk, so keep the complete list + projection pass off the loop.
+        return await run_in_threadpool(_list_profiles)
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        profiles = await run_in_threadpool(_fallback_profile_dicts, profiles_mod)
+        return {"profiles": profiles}
 
 
 @router.post("/api/profiles")

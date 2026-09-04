@@ -133,6 +133,64 @@ def assert_serves_concurrently(client, blocker: _Blocker, fire) -> None:
     )
 
 
+# ── GET /api/profiles — roster projection reads profile documents ───────────
+
+
+def test_list_profiles_projection_runs_off_loop(client, monkeypatch, loop_probe):
+    seen, probe = loop_probe
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [object()])
+
+    def fake_projection(_profile):
+        probe("profile_projection")
+        return {"name": "demo"}
+
+    monkeypatch.setattr(web_server, "_profile_to_dict", fake_projection)
+
+    resp = client.get("/api/profiles")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"profiles": [{"name": "demo"}]}
+    assert_off_loop(seen, "profile_projection")
+
+
+def test_list_profiles_projection_does_not_block_dashboard(client, monkeypatch):
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [object()])
+    blocker = _Blocker(result={"name": "demo"})
+    monkeypatch.setattr(web_server, "_profile_to_dict", blocker)
+
+    assert_serves_concurrently(
+        client, blocker, lambda: client.get("/api/profiles")
+    )
+
+
+def test_list_profiles_fallback_runs_off_loop(client, monkeypatch, loop_probe):
+    seen, probe = loop_probe
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli import web_server
+
+    def fail_list():
+        raise RuntimeError("force fallback")
+
+    def fake_fallback(_profiles_mod):
+        probe("profile_fallback")
+        return [{"name": "fallback"}]
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", fail_list)
+    monkeypatch.setattr(web_server, "_fallback_profile_dicts", fake_fallback)
+
+    resp = client.get("/api/profiles")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"profiles": [{"name": "fallback"}]}
+    assert_off_loop(seen, "profile_fallback")
+
+
 # ── DELETE /api/profiles/{name} — the 10 s gateway-stop sleep ────────────────
 
 

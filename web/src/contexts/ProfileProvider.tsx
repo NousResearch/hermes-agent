@@ -96,7 +96,14 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         // sticky active profile so Chat and management pages match what the
         // Profiles page shows as "active" (machine dashboard runs as
         // `current`, usually default).
-        if (urlProfile === null && active !== current) {
+        //
+        // Only the machine dashboard may auto-align. On an isolated
+        // per-profile dashboard (`<profile> dashboard --isolated`), the
+        // sticky active profile belongs to a DIFFERENT agent — aligning to
+        // it would silently retarget this dashboard's chats to that other
+        // profile (banner, chat TUI env, and model all resolve from the
+        // wrong profile). Empty string = the dashboard's own profile.
+        if (urlProfile === null && active !== current && current === "default") {
           setManagementProfile(active);
           setProfileState(active);
         }

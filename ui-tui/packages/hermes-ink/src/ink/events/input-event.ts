@@ -112,7 +112,13 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // so the raw "[57358u" doesn't leak into the prompt. See #38781.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      // keycodeToName() lowercases printable ASCII (so the key NAME is
+      // always lowercase for bindings like ctrl+a). But when the shift
+      // modifier is set, the original key was uppercase — restore it, or
+      // Shift+letter types lowercase in the composer. This mirrors the
+      // plain-byte path below, where 'A' (0x41) keeps its case.
+      input =
+        keypress.shift && /^[a-z]$/.test(keypress.name) ? keypress.name.toUpperCase() : inputForSpecialSequence(keypress.name)
     }
 
     processedAsSpecialSequence = true
@@ -130,7 +136,12 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // guards against future terminal behavior.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      // Same shift-restore as the CSI u branch: keycodeToName() lowercases,
+      // so a shifted printable (e.g. ESC[27;2;65~ = Shift+A) must come back
+      // as uppercase. Without this, Ghostty/iTerm2/kitty with modifyOtherKeys
+      // on would type lowercase for every Shift+letter.
+      input =
+        keypress.shift && /^[a-z]$/.test(keypress.name) ? keypress.name.toUpperCase() : inputForSpecialSequence(keypress.name)
     }
 
     processedAsSpecialSequence = true

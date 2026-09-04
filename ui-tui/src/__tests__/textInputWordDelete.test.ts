@@ -26,6 +26,26 @@ describe('Ctrl+Delete → ESC d decode contract', () => {
   })
 })
 
+describe('legacy Alt+Backspace decode contract (#90061)', () => {
+  it.each(['\x1b\x7f', '\x1b\x08'])('decodes %j as backspace with meta=true so word-delete fires', seq => {
+    // xterm-class terminals and macOS Terminal.app encode Alt+Backspace as
+    // ESC + DEL (0x7f) or ESC + BS (0x08). textInput.tsx gates word-delete on
+    // `wordMod = isActionMod(k) || k.meta`, so if the Alt modifier is dropped
+    // here, Alt+Backspace deletes a single char instead of a word.
+    const event = new InputEvent(parseOne(seq))
+
+    expect(event.key.backspace).toBe(true)
+    expect(event.key.meta).toBe(true)
+  })
+
+  it('keeps a plain DEL as backspace with meta=false (single-char delete)', () => {
+    const event = new InputEvent(parseOne('\x7f'))
+
+    expect(event.key.backspace).toBe(true)
+    expect(event.key.meta).toBe(false)
+  })
+})
+
 describe('deleteWordForward', () => {
   it('deletes the word to the right of the cursor', () => {
     // cursor before "hello" → removes "hello" and the trailing space.

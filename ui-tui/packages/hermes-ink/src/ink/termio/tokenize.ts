@@ -191,6 +191,18 @@ function tokenize(
           // without that timing boundary the legacy encoding is ambiguous.
           i++
           emitSequence(data.slice(seqStart, i))
+        } else if (legacyAltEnter && (code === C0.DEL || code === C0.BS)) {
+          // Legacy terminals (xterm-class, macOS Terminal.app) encode
+          // Alt+Backspace as ESC followed by DEL (0x7f) or BS (0x08) — the
+          // same "ESC prefix = Alt" convention as Alt+Enter above. Without
+          // this branch those bytes fall through to the invalid-ESC path and
+          // become a text token, which the key parser then splits into a
+          // standalone Escape plus a plain Backspace — dropping the Alt/meta
+          // modifier so Alt+Backspace deletes one char instead of a word.
+          // Keep both bytes in one token so parse-keypress.ts's existing
+          // `\x1b\x7f` / `\x1b\x08` branches can preserve Alt.
+          i++
+          emitSequence(data.slice(seqStart, i))
         } else if (isCSIIntermediate(code)) {
           // Intermediate byte (e.g., ESC ( for charset) - continue buffering
           result.state = 'escapeIntermediate'

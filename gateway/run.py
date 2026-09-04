@@ -11578,10 +11578,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.display_config import resolve_display_setting
         platform_key = _platform_config_key(event.source.platform)
 
-        # In steer mode the user's text has already been injected into the
-        # active run. Some mobile chat setups want that steering to be silent,
-        # like STT transcript echo suppression: keep the behavior, drop only
-        # the confirmation bubble.
+        # Some busy-input modes echo a visible confirmation bubble back to the
+        # user after their mid-turn message is dispatched (steer / redirect /
+        # interrupt). Each mode has a per-platform toggle so group chats can
+        # opt out of the prefix without losing the underlying dispatch behavior:
+        # the user's text still lands in the running run (steer/redirect) or
+        # still aborts it (interrupt); only the confirmation echo is suppressed.
+        # These gates mirror the existing busy_steer_ack_enabled pattern.
         if is_steer_mode:
             steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
             if steer_ack_env is not None:
@@ -11597,6 +11600,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if not steer_ack_enabled:
                 logger.debug("Busy steer ack suppressed for session %s", session_key)
+                return True
+        elif is_redirect_mode:
+            redirect_ack_env = os.environ.get(
+                "HERMES_GATEWAY_BUSY_REDIRECT_ACK_ENABLED"
+            )
+            if redirect_ack_env is not None:
+                redirect_ack_enabled = redirect_ack_env.strip().lower() in {
+                    "1", "true", "yes", "on",
+                }
+            else:
+                redirect_ack_enabled = bool(
+                    resolve_display_setting(
+                        _load_gateway_config(),
+                        platform_key,
+                        "busy_redirect_ack_enabled",
+                        True,
+                    )
+                )
+            if not redirect_ack_enabled:
+                logger.debug(
+                    "Busy redirect ack suppressed for session %s", session_key
+                )
+                return True
+        elif not is_queue_mode:
+            # Plain interrupt path (busy_input_mode=interrupt, not redirected).
+            interrupt_ack_env = os.environ.get(
+                "HERMES_GATEWAY_BUSY_INTERRUPT_ACK_ENABLED"
+            )
+            if interrupt_ack_env is not None:
+                interrupt_ack_enabled = interrupt_ack_env.strip().lower() in {
+                    "1", "true", "yes", "on",
+                }
+            else:
+                interrupt_ack_enabled = bool(
+                    resolve_display_setting(
+                        _load_gateway_config(),
+                        platform_key,
+                        "busy_interrupt_ack_enabled",
+                        True,
+                    )
+                )
+            if not interrupt_ack_enabled:
+                logger.debug(
+                    "Busy interrupt ack suppressed for session %s", session_key
+                )
                 return True
 
         self._session_state(session_key).turn.busy_ack_ts = now

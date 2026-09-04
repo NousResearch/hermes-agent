@@ -237,6 +237,7 @@ start_ui() {
   [ "$NO_UI" -eq 1 ] && return
   local html="$SCRIPT_DIR/ui.html" py browser port="" i
   py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
+  [ -x "${py:-/nonexistent}" ] || py="${INSTALL_ROOT:+$INSTALL_ROOT/.venv/bin/python3}"
   [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
   browser="$(find_browser)"
   if [ -n "$browser" ] && [ -n "$py" ] && ! default_browser_is_chromium "$py"; then
@@ -712,6 +713,10 @@ sleep 1
 start_ui
 
 HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
+# uv-default and shared-venv checkouts (doctor-verified healthy) use .venv
+# instead; mirror managed_uv.py's _default_live_venv() precedence rather than
+# telling a healthy install it needs repair.
+[ -x "$HERMES_BIN" ] || HERMES_BIN="$INSTALL_ROOT/.venv/bin/hermes"
 [ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
 
 # Heal a venv the reverted TCC anchor left bricked BEFORE invoking the CLI:

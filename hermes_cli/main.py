@@ -6567,6 +6567,30 @@ def _run_npm_watching_for_engine_failure(
     return subprocess.CompletedProcess(cmd, returncode, None, "".join(captured))
 
 
+def _is_native_build_tools_missing(output: str) -> bool:
+    """Return True when npm/node-gyp output indicates missing native build tools.
+
+    Linux desktop installs run ``npm ci`` which must compile ``node-pty`` when
+    no prebuild exists for the current platform.  Without ``g++``/``make``
+    the build fails with ``gyp ERR!`` / ``make: g++: ...`` (localized
+    variants exist, e.g. ``Tidak ada berkas`` on Indonesian locales).
+    Detecting that case lets the caller emit actionable remediation
+    (``build-essential``) instead of the generic ``npm ci`` hint (#102081).
+    """
+
+    lowered = output.lower()
+    # node-gyp + node-pty is the signature of the desktop native-addon build.
+    if "gyp err!" in lowered and "node-pty" in lowered:
+        return True
+    if "make: g++" in lowered:
+        return True
+    if "g++: not found" in lowered or "g++: command not found" in lowered:
+        return True
+    if "gyp err! build error" in lowered and "prebuild" in lowered:
+        return True
+    return False
+
+
 def _missing_web_build_tool(output: str) -> str | None:
     """Return the build tool a failed ``npm run build`` could not resolve.
 
@@ -8642,6 +8666,14 @@ def cmd_gui(args: argparse.Namespace):
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
+                    combined = f"{install_result.stdout or ''}\n{install_result.stderr or ''}"
+                    if _is_native_build_tools_missing(combined):
+                        print("  → Native build tools missing — node-pty must be compiled on this platform")
+                        print("    but 'g++' / 'make' were not found (node-gyp rebuild failed).")
+                        print("    Install them and retry:")
+                        print("      Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y build-essential python3 make g++")
+                        print("      Fedora/RHEL:   sudo dnf install gcc-c++ make python3")
+                        print("      Arch:          sudo pacman -S base-devel python")
                     print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
                     sys.exit(install_result.returncode or 1)
                 repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)

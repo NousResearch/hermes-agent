@@ -4009,6 +4009,21 @@ def detect_provider_for_model(
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
         return None
 
+    # --- Step 1.5: the CURRENT provider's live catalog is authoritative ---
+    # A model the current provider actually serves (e.g. ollama-cloud serving
+    # glm-5.3-flash, which is not in the static _PROVIDER_MODELS list) must NOT
+    # be re-routed to OpenRouter merely because its bare name also appears in
+    # the OpenRouter catalog. This fixed the silent hijack where an
+    # ollama-cloud session was rebuilt on OpenRouter (billing via
+    # openrouter.ai) because the live catalog was never consulted.
+    try:
+        live_ids = provider_model_ids(current_provider)
+        live_lower = {_strip_ollama_cloud_suffix(m.lower()) for m in live_ids}
+        if name.lower() in live_lower:
+            return None
+    except Exception:
+        pass
+
     # --- Step 2: check OpenRouter catalog ---
     # First try exact match (handles provider/model format)
     or_slug = _find_openrouter_slug(name)

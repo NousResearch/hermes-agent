@@ -3,19 +3,29 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
+import { rememberDesktopCommandsCatalog, type CommandsCatalogLike } from '@/lib/desktop-slash-commands'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 
 import { isSkillItem } from '../composer-utils'
 
-import { useSlashCompletions } from './use-slash-completions'
+import { canonicalizeSlashCommandCompletions, useSlashCompletions } from './use-slash-completions'
 
-const CATALOG = {
+const CATALOG: CommandsCatalogLike = {
   categories: [{ name: 'Session', pairs: [['/new', 'Start a new session']] }],
   pairs: [
     ['/new', 'Start a new session'],
     ['/work', 'Kick off a task in a fresh worktree']
   ]
+}
+
+const ALIAS_CATALOG: CommandsCatalogLike = {
+  ...CATALOG,
+  canon: {
+    '/background': '/background',
+    '/bg': '/background',
+    '/btw': '/background'
+  }
 }
 
 // A catalog shaped like a real install: a couple of skills the user lives in,
@@ -74,6 +84,7 @@ async function completions(api: { search: (query: string) => readonly Unstable_T
 afterEach(() => {
   cleanup()
   queryClient.clear()
+  rememberDesktopCommandsCatalog(undefined)
 })
 
 describe('useSlashCompletions', () => {
@@ -128,6 +139,113 @@ describe('useSlashCompletions', () => {
     const skills = commandsOf((await completions(api, '')).filter(isSkillItem))
 
     expect(skills).toEqual(['/work', '/research', '/docx'])
+  })
+
+  it('shows the matched alias beside its canonical command', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? ALIAS_CATALOG
+          : { items: [{ text: '/btw ', display: '/btw', meta: 'Run a prompt in the background' }] }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const items = await completions(api, 'bt')
+
+    expect(commandsOf(items)).toEqual(['/background'])
+    expect(items[0]?.label).toBe('background (btw)')
+    expect(items[0]?.description).toBe('Run a prompt in the background')
+  })
+
+  it('waits briefly for an in-flight catalog before canonicalizing alias results', async () => {
+    let resolveCatalog!: (catalog: CommandsCatalogLike) => void
+    const catalogPromise = new Promise<CommandsCatalogLike>(resolve => {
+      resolveCatalog = resolve
+    })
+    const request = vi.fn().mockImplementation((method: string) =>
+      method === 'commands.catalog'
+        ? catalogPromise
+        : Promise.resolve({ items: [{ text: '/btw ', display: '/btw', meta: 'Run a prompt in the background' }] })
+    )
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await act(async () => {
+      api.search('bt')
+      await new Promise(resolve => setTimeout(resolve, 120))
+    })
+    expect(request).toHaveBeenCalledWith('complete.slash', { text: '/bt' })
+
+    await act(async () => {
+      resolveCatalog(ALIAS_CATALOG)
+      await Promise.resolve()
+    })
+    const items = api.search('bt')
+
+    expect(commandsOf(items)).toEqual(['/background'])
+    expect(items[0]?.label).toBe('background (btw)')
+  })
+
+  it('does not withhold command completions when the catalog stalls', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      method === 'commands.catalog'
+        ? new Promise(() => {})
+        : Promise.resolve({ items: [{ text: '/help', display: '/help', meta: 'Show help' }] })
+    )
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await act(async () => {
+      api.search('help')
+      await new Promise(resolve => setTimeout(resolve, 300))
+    })
+
+    expect(commandsOf(api.search('help'))).toEqual(['/help'])
+  })
+
+  it('matches aliases case-insensitively', () => {
+    rememberDesktopCommandsCatalog(ALIAS_CATALOG)
+
+    expect(
+      canonicalizeSlashCommandCompletions(
+        [{ text: '/btw', display: '/btw', meta: 'Run a prompt in the background' }],
+        '/BT'
+      )
+    ).toEqual([
+      {
+        text: '/background',
+        display: '/background (btw)',
+        meta: 'Run a prompt in the background'
+      }
+    ])
+  })
+
+  it('does not annotate a canonical command match with its aliases', async () => {
+    const request = vi.fn().mockResolvedValue({
+      items: [{ text: '/background', display: '/background', meta: 'Run a prompt in the background' }]
+    })
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const items = await completions(api, 'background')
+
+    expect(commandsOf(items)).toEqual(['/background'])
+    expect(items[0]?.label).toBe('background')
+  })
+
+  it('deduplicates canonical and alias matches into one command row', () => {
+    rememberDesktopCommandsCatalog(ALIAS_CATALOG)
+
+    const items = canonicalizeSlashCommandCompletions(
+      [
+        { text: '/background', display: '/background', meta: 'Run a prompt in the background' },
+        { text: '/bg', display: '/bg', meta: 'Run a prompt in the background' },
+        { text: '/btw', display: '/btw', meta: 'Run a prompt in the background' }
+      ],
+      '/b'
+    )
+
+    expect(items.map(item => item.text)).toEqual(['/background'])
   })
 
   // Typing is a search, and a search that hides a match is broken. Order

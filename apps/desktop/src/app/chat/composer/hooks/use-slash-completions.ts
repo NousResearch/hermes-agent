@@ -5,6 +5,7 @@ import { useCallback, useEffect } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
+  canonicalDesktopSlashCommand,
   type CommandsCatalogLike,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
@@ -51,8 +52,56 @@ function commandText(value: string): string {
   return value.startsWith('/') ? value : `/${value}`
 }
 
+export function canonicalizeSlashCommandCompletions(
+  items: readonly CompletionEntry[],
+  query: string
+): CompletionEntry[] {
+  const canonicalItems = new Map<string, CompletionEntry>()
+  const normalizedQuery = commandText(query).toLowerCase()
+
+  for (const item of items) {
+    const command = commandText(item.text).trim()
+    const normalizedCommand = command.toLowerCase()
+    const canonical = canonicalDesktopSlashCommand(command)
+    const matchedAlias =
+      !canonical.startsWith(normalizedQuery) &&
+      normalizedCommand !== canonical &&
+      normalizedCommand.startsWith(normalizedQuery)
+        ? normalizedCommand
+        : null
+
+    const canonicalItem = {
+      ...item,
+      text: canonical,
+      display: matchedAlias ? `${canonical} (${matchedAlias.slice(1)})` : canonical
+    }
+
+    // A command token resolves to one canonical command in the registry/catalog,
+    // so duplicate canonical and alias rows share this key. Prefer the labelled
+    // alias row only when the alias itself — not the canonical token — matched.
+    if (!canonicalItems.has(canonical) || matchedAlias) {
+      canonicalItems.set(canonical, canonicalItem)
+    }
+  }
+
+  return [...canonicalItems.values()]
+}
+
 /** How many recent sessions to surface inline before the "Browse all…" entry. */
 const SESSION_INLINE_LIMIT = 7
+
+/** Briefly prefer catalog-backed alias labels without blocking ordinary rows. */
+const CATALOG_ALIAS_GRACE_MS = 200
+
+function waitForCatalogAliasGrace(catalogReady: Promise<void>): Promise<void> {
+  return new Promise(resolve => {
+    const timer = globalThis.setTimeout(resolve, CATALOG_ALIAS_GRACE_MS)
+    void catalogReady.then(() => {
+      globalThis.clearTimeout(timer)
+      resolve()
+    })
+  })
+}
 
 /** Live `/` completions backed by the gateway's `complete.slash` RPC. */
 export function useSlashCompletions(options: {
@@ -194,6 +243,19 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
+        // Start the catalog and completion requests together. Dynamic aliases
+        // live in the catalog, so command-row canonicalization gives that
+        // shared warm-up a short grace period; otherwise a fast complete.slash
+        // response can briefly render `/btw` instead of `/background (btw)`.
+        // The grace is bounded so a stalled catalog cannot withhold ordinary
+        // completions until the gateway's request timeout.
+        const catalogReady = cachedSlashCompletion('catalog', () =>
+          gateway.request<CommandsCatalogLike>('commands.catalog')
+        )
+          .then(catalog => {
+            filterDesktopCommandsCatalog(catalog)
+          })
+          .catch(() => undefined)
         const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
           gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
         )
@@ -206,7 +268,15 @@ export function useSlashCompletions(options: {
         const isArgCompletion = replaceFrom > 1
         const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
 
-        const decorated = (result.items ?? [])
+        if (!isArgCompletion) {
+          await waitForCatalogAliasGrace(catalogReady)
+        }
+
+        const completionItems = isArgCompletion
+          ? (result.items ?? [])
+          : canonicalizeSlashCommandCompletions(result.items ?? [], text)
+
+        const decorated = completionItems
           .map(item => {
             if (!isArgCompletion) {
               return item

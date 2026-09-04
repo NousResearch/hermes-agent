@@ -1,5 +1,15 @@
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 
+// Liveness probes must never ride a cached response or a pooled keep-alive
+// socket: Chromium/electron net can hand back a stale cached 200 (masking a
+// dead backend) and node's keep-alive agent can surface a stale pooled socket
+// as a transport error (counting backend death that isn't). Probes therefore
+// always request a fresh, single-use connection.
+export const REMOTE_LIVENESS_PROBE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'Cache-Control': 'no-store',
+  Pragma: 'no-cache',
+  Connection: 'close'
+})
 // Dispatch is synchronous user intent: a cached descriptor must prove its
 // forwarded endpoint is alive before it can be returned. Keep this probe much
 // shorter than the background liveness budget so a dead tunnel reconnects

@@ -16,6 +16,8 @@ from unittest.mock import patch  # noqa: F401 - kept for parity with siblings
 import hermes_cli.update_cmd as update_cmd
 import hermes_cli.update_inventory as update_inventory
 from hermes_cli import main as cli_main
+import hermes_cli.main_install_repair as main_install_repair
+import hermes_cli.main_dashboard as main_dashboard
 
 
 def _ledger_entry(**over):
@@ -142,6 +144,7 @@ def test_ledger_manual_serve_holders_filters_correctly(monkeypatch):
 
 def test_serve_relaunch_commands_built_from_structured_identity(monkeypatch):
     monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: None)
+    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
     entries = [
         _ledger_entry(),                                  # default profile
         _ledger_entry(pid=5000, profile="work", port=9200, host=""),
@@ -160,7 +163,11 @@ def test_relaunch_stopped_serves_is_idempotent(monkeypatch):
     monkeypatch.setattr(
         cli_main, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
     )
+    monkeypatch.setattr(
+        main_dashboard, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
+    )
     monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: None)
+    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
     token = {"pending": True, "entries": [_ledger_entry()]}
 
     update_cmd._relaunch_stopped_serves(token)
@@ -174,6 +181,9 @@ def test_relaunch_stopped_serves_untriggered_token_noop(monkeypatch):
     calls = []
     monkeypatch.setattr(
         cli_main, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
+    )
+    monkeypatch.setattr(
+        main_dashboard, "_respawn_dashboard_processes", lambda cmds: calls.append(cmds) or []
     )
     update_cmd._relaunch_stopped_serves({"pending": False, "entries": [_ledger_entry()]})
     assert calls == []

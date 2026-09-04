@@ -20,6 +20,7 @@ import {
 } from '../chrome'
 
 import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
+import { ProjectIcon } from './project-icon'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
@@ -37,7 +38,7 @@ export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <ProjectIcon fallback={isNoProject ? 'home' : 'folder-library'} name={icon} size={SIDEBAR_LEAD_ICON_SIZE} />
     </SidebarRowLeadGlyph>
   )
 }

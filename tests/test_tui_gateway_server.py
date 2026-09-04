@@ -4549,6 +4549,58 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert captured["platform"] == "tui"
 
 
+def _capture_make_agent_kwargs(monkeypatch) -> dict:
+    """Stub AIAgent so ``server._make_agent`` records the kwargs it was built with."""
+    captured = {}
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    _setup_make_agent_mocks(monkeypatch, {})
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    return captured
+
+
+def test_make_agent_passes_the_authenticated_dashboard_user_as_user_id(monkeypatch):
+    """The identity stamped at WS-upgrade auth (WSTransport.auth_identity) reaches the agent as
+    ``user_id``, the same kwarg gateways pass, so memory providers scope memory to the login (#89794)."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    transport = types.SimpleNamespace(auth_identity={"user_id": "oidc|abc123", "provider": "oidc"})
+    monkeypatch.setitem(server._sessions, "sid-auth", {"session_key": "k", "transport": transport})
+
+    server._make_agent("sid-auth", "k")
+
+    assert captured["user_id"] == "oidc|abc123"
+
+
+@pytest.mark.parametrize("identity", [
+    None,
+    {"user_id": "server-internal", "provider": "server-internal"},
+    {"user_id": "", "provider": "oidc"},
+    {"user_id": "abc", "provider": ""},
+])
+def test_make_agent_passes_no_user_id_without_an_authenticated_human(monkeypatch, identity):
+    """Legacy token, stdio and the PTY child's server-internal credential name no human; the
+    agent must not receive a user id memory would treat as a person."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    transport = types.SimpleNamespace(auth_identity=identity)
+    monkeypatch.setitem(server._sessions, "sid-anon", {"session_key": "k", "transport": transport})
+
+    server._make_agent("sid-anon", "k")
+
+    assert captured["user_id"] is None
+
+
+def test_make_agent_passes_no_user_id_for_an_unknown_session(monkeypatch):
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    server._sessions.pop("sid-missing", None)
+
+    server._make_agent("sid-missing", "k")
+
+    assert captured["user_id"] is None
+
+
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     chain = [
         {"provider": "openrouter", "model": "openai/gpt-5.5"},

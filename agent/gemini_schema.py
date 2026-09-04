@@ -47,6 +47,7 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     if not isinstance(schema, dict):
         return {}
 
+    prefix_items = schema.get("prefixItems")
     cleaned: Dict[str, Any] = {}
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:
@@ -127,6 +128,45 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
             cleaned.pop("required", None)
         elif len(valid_required) != len(required_val):
             cleaned["required"] = valid_required
+
+    # Gemini's Schema validator requires an ``items`` field on every array
+    # node — a bare ``{"type": "array"}`` (valid standard JSON Schema, where
+    # element types are simply unconstrained) fails the ENTIRE
+    # GenerateContentRequest with HTTP 400
+    # ``...parameters.properties[<name>].items: missing field`` before any model
+    # output. MCP / plugin / dynamic tool schemas routinely omit ``items``, so
+    # populate a schema when it is absent. For a bounded homogeneous
+    # ``prefixItems`` tuple, collapse the repeated positional schema into
+    # ``items`` without inventing length bounds. Otherwise use an empty schema,
+    # which preserves the unconstrained-element meaning of a genuinely bare
+    # array. A declared ``items`` is left untouched. The legacy
+    # ``FunctionDeclaration.parameters`` allow-list does not pass
+    # ``prefixItems`` through; the newer JSON Schema path is separate.
+    if cleaned.get("type") == "array" and "items" not in cleaned:
+        cleaned_prefix = []
+        if (
+            isinstance(prefix_items, list)
+            and prefix_items
+            and all(isinstance(item, dict) for item in prefix_items)
+        ):
+            cleaned_prefix = [
+                sanitize_gemini_schema(item) for item in prefix_items
+            ]
+
+        max_items = cleaned.get("maxItems")
+        bounded_to_prefix = (
+            isinstance(max_items, int)
+            and not isinstance(max_items, bool)
+            and 0 <= max_items <= len(cleaned_prefix)
+        )
+        if (
+            cleaned_prefix
+            and bounded_to_prefix
+            and all(item == cleaned_prefix[0] for item in cleaned_prefix[1:])
+        ):
+            cleaned["items"] = cleaned_prefix[0]
+        else:
+            cleaned["items"] = {}
 
     return cleaned
 

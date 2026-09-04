@@ -54,6 +54,54 @@ def test_turn_lease_serializes_separate_session_db_instances(tmp_path):
     second.release_session_turn_lease("shared", second_holder)
 
 
+@pytest.mark.parametrize(
+    ("delete", "raises_busy"),
+    [
+        (lambda db: db.delete_session("shared"), True),
+        (lambda db: db.delete_sessions(["shared"]), True),
+        (lambda db: db.delete_session_if_empty("shared"), True),
+        (lambda db: db.delete_empty_sessions(), True),
+        (lambda db: db.prune_sessions(older_than_days=None, include_pinned=True), True),
+        (lambda db: db.prune_empty_ghost_sessions(), False),
+    ],
+    ids=["single", "bulk", "if-empty", "empty-sweep", "prune", "ghost-sweep"],
+)
+def test_destructive_session_paths_fence_live_turn_leases_and_reclaim_stale(
+    tmp_path, delete, raises_busy
+):
+    """Every session-row delete shares the durable turn's admission fence."""
+    path = tmp_path / "state.db"
+    owner = SessionDB(path)
+    deleter = SessionDB(path)
+    old = time.time() - 2 * 86400
+    owner.create_session("shared", source="tui")
+    owner.end_session("shared", "test")
+    owner._conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+        (old, old, "shared"),
+    )
+    owner._conn.commit()
+    holder = f"pid={os.getpid()}:turn=live"
+    assert owner.try_acquire_session_turn_lease("shared", holder, ttl_seconds=30)
+
+    if raises_busy:
+        with pytest.raises(SessionTurnLeaseLostError):
+            delete(deleter)
+    else:
+        assert delete(deleter) == 0
+    assert deleter.get_session("shared") is not None
+
+    owner._conn.execute(
+        "UPDATE session_turn_leases SET expires_at = ? WHERE conversation_id = ?",
+        (time.time() - 1, "shared"),
+    )
+    owner._conn.commit()
+
+    assert delete(deleter)
+    assert deleter.get_session("shared") is None
+    assert not owner.refresh_session_turn_lease("shared", holder, ttl_seconds=30)
+
+
 def test_turn_lease_is_scoped_to_conversation_root(tmp_path):
     """Compression descendants share one durable serialization domain."""
     db = SessionDB(tmp_path / "state.db")

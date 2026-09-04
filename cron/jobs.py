@@ -1594,6 +1594,19 @@ def record_ticker_error(message: str) -> None:
     """
     store = _current_cron_store()
     path = store.cron_dir / "ticker_last_error"
+    # Sanitize potential API keys or tokens from the message before persisting.
+    # This removes common patterns like "API_KEY=abcd1234..." or "token: abcdef...".
+    # The regex is case‑insensitive and looks for a key name followed by = or :
+    # and a long alphanumeric string (>=8 chars). The value is replaced with ***.
+    import re
+    # Updated sanitization regex to also catch keys with spaces and additional
+    # token types (bearer, secret). The pattern now matches:
+    #   - "api key", "api-key", "api_key" (case‑insensitive)
+    #   - "token", "bearer", "secret"
+    # followed by optional whitespace, ':' or '=', then a value consisting of
+    # alphanumerics, dashes, underscores, or periods (minimum 8 characters).
+    sanitized = re.sub(r"(?i)(api[\s_-]?key|token|bearer|secret)[\s=:]+[A-Za-z0-9\-_.]{8,}", r"\1=***", message)
+    sanitized = sanitized.strip()
     try:
         ensure_dirs()
         fd, tmp_path = tempfile.mkstemp(
@@ -1601,7 +1614,7 @@ def record_ticker_error(message: str) -> None:
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(f"{time.time()}\n{message.strip()}\n")
+                f.write(f"{time.time()}\n{sanitized}\n")
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, path)

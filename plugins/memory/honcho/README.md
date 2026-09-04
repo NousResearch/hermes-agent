@@ -429,3 +429,9 @@ Presets:
 ```bash
 HONCHO_E2E=1 uv run pytest tests/integration/test_honcho_peer_mapping_live.py -m integration -q
 ```
+
+`tests/integration/test_honcho_gateway_live_e2e.py` goes one layer further: a real `GatewayRunner` under a sandbox home, a Telegram adapter with only its outbound send mocked, and a live model. It needs `HERMES_LIVE_TESTS=1` and an OpenRouter key as well (`HERMES_LIVE_MODEL` picks the model).
+
+```bash
+HONCHO_E2E=1 HERMES_LIVE_TESTS=1 uv run pytest tests/integration/test_honcho_gateway_live_e2e.py -m integration -q
+```

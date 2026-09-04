@@ -6639,6 +6639,29 @@ class TurnRunner:
                 ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
             except Exception:
                 pass
+            # Pausing the refresh loop is enough where the indicator is
+            # ephemeral: Telegram/Discord typing expires in ~5s on its own once
+            # refreshes stop.  Slack's assistant status is durable — it stays on
+            # screen until explicitly cleared — so the last written
+            # "still working…" freezes above the question and the user reads the
+            # prompt as work in progress rather than as a question waiting on
+            # them.  Clear it BEFORE the prompt is scheduled: the clear and the
+            # post are both dispatched to the event loop, and clearing after the
+            # post can land behind the answer-time resume and blank an indicator
+            # that is legitimately active again (cf. #92201).
+            # _stop_typing_with_metadata is the shared chokepoint that forwards
+            # thread metadata only to adapters whose stop_typing accepts it, so
+            # metadata-less adapters are unaffected and a concurrent sibling
+            # thread in the same channel is never cleared by mistake.
+            safe_schedule_threadsafe(
+                ctx._status_adapter._stop_typing_with_metadata(
+                    ctx._status_chat_id,
+                    ctx._status_thread_metadata,
+                ),
+                ctx._loop_for_step,
+                logger=logger,
+                log_message="Clarify status clear failed to schedule",
+            )
 
             # Ordering barrier (#clarify-ordering): flush any buffered
             # assistant prose (interim commentary / streamed deltas) to the

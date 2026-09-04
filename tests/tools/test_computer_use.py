@@ -20,12 +20,20 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_backend():
     """Tear down the cached backend between tests."""
-    from tools.computer_use.tool import reset_backend_for_tests
+    from tools.computer_use.tool import reset_backend_for_tests, set_approval_callback
     reset_backend_for_tests()
-    # Force the noop backend.
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
-        yield
-    reset_backend_for_tests()
+    # Force the noop backend and install an auto-approve callback so tests
+    # can exercise dispatch without being blocked by the default-deny approval
+    # gate (security fix: default deny when no callback is wired).
+    def _auto_approve(action, args, summary):
+        return "always_approve"
+    set_approval_callback(_auto_approve)
+    try:
+        with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+            yield
+    finally:
+        reset_backend_for_tests()
+        set_approval_callback(None)
 
 
 @pytest.fixture

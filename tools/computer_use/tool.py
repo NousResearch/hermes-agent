@@ -271,7 +271,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
 def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -> Optional[str]:
     """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND session_id: foreground
     delivery is a visible focus change, so a background ``approve_session`` must NOT cover it; the blanket
-    ``always_approve`` does. No CLI approval wired -> default allow (gateway approval runs one layer out).
+    ``always_approve`` does. No CLI approval wired -> default DENY (gateway has no computer_use approval infra).
 
     ``always_approve`` (the blanket "auto-approve everything" unlock) still covers foreground, since the
     user explicitly opted into unattended operation. State is keyed on session_id so concurrent runs don't
@@ -282,7 +282,21 @@ def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -
         if _session_auto_approve.get(session_id) or scope_key in _always_allow.get(session_id, set()):
             return None
     if (cb := _approval_callback) is None:
-        return None
+        # No CLI approval wired — default DENY so destructive actions require
+        # explicit approval on all surfaces (CLI, Desktop, gateway). The CLI's
+        # callback implements the interactive prompt; non-CLI surfaces must not
+        # silently approve destructive computer_use actions. The -z/--yolo flag
+        # opts into unrestricted mode via _cua_permission_mode() which bypasses
+        # this gate entirely.
+        return json.dumps({
+            "error": (
+                "computer_use approval required but no approval callback is "
+                "available. Destructive actions cannot proceed without an "
+                "approval mechanism. Run with -z/--yolo to opt into unrestricted "
+                "mode, or ensure an approval callback is registered."
+            ),
+            "action": action,
+        })
     try:
         verdict = cb(action, args, _summarize_action(action, args))
     except Exception as e:
@@ -297,7 +311,7 @@ def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -
         return None
     return json.dumps({"error": ("approval prompt timed out — the user did not respond. Silence is not consent; "
                                  "do not retry without the user.") if verdict == "timeout" else "denied by user",
-                       "action": action})
+                          "action": action})
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     fg = " [FOREGROUND — briefly raises the window / changes focus]" if args.get("delivery_mode") == "foreground" else ""

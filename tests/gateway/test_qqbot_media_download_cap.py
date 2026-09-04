@@ -9,6 +9,8 @@ these two adapters were never covered.
 import os
 from unittest.mock import MagicMock, patch
 
+from types import SimpleNamespace
+
 import pytest
 
 from gateway.config import Platform
@@ -122,3 +124,58 @@ class TestCapConfig:
         a = _adapter()
         with patch.dict(os.environ, {"QQBOT_MAX_MEDIA_BYTES": raw}):
             assert a._qq_max_media_bytes() == 100 * 1024 * 1024
+
+
+class TestCapComesFromConfigFirst:
+    """The cap is a behavioural threshold, so config.yaml owns it (AGENTS.md).
+
+    ``platforms.qqbot.extra.max_media_bytes`` is the documented surface; the
+    env var stays only as an internal bridge for env-only deployments.
+    """
+
+    def _adapter(self, extra=None):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        a = QQAdapter.__new__(QQAdapter)
+        a._app_id = "test"
+        a.config = SimpleNamespace(extra=extra if extra is not None else {})
+        return a
+
+    def test_config_value_wins(self, monkeypatch):
+        monkeypatch.setenv("QQBOT_MAX_MEDIA_BYTES", "999")
+        a = self._adapter({"max_media_bytes": 12345})
+
+        assert a._qq_max_media_bytes() == 12345
+
+    def test_env_is_still_honoured_without_config(self, monkeypatch):
+        monkeypatch.setenv("QQBOT_MAX_MEDIA_BYTES", "4242")
+
+        assert self._adapter({})._qq_max_media_bytes() == 4242
+
+    def test_default_when_neither_is_set(self, monkeypatch):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        monkeypatch.delenv("QQBOT_MAX_MEDIA_BYTES", raising=False)
+
+        assert self._adapter({})._qq_max_media_bytes() == QQAdapter._QQ_MAX_MEDIA_BYTES_DEFAULT
+
+    @pytest.mark.parametrize("bad", ["abc", -5, 0, "", None])
+    def test_unusable_config_values_fall_through_not_disarm(self, bad, monkeypatch):
+        """A typo must not remove the cap; it falls through to the next layer."""
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        monkeypatch.delenv("QQBOT_MAX_MEDIA_BYTES", raising=False)
+
+        assert (
+            self._adapter({"max_media_bytes": bad})._qq_max_media_bytes()
+            == QQAdapter._QQ_MAX_MEDIA_BYTES_DEFAULT
+        )
+
+    def test_a_missing_extra_block_is_tolerated(self, monkeypatch):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        monkeypatch.delenv("QQBOT_MAX_MEDIA_BYTES", raising=False)
+        a = self._adapter(None)
+        a.config = SimpleNamespace()
+
+        assert a._qq_max_media_bytes() == QQAdapter._QQ_MAX_MEDIA_BYTES_DEFAULT

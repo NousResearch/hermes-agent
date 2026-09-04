@@ -1012,19 +1012,52 @@ class QQAdapter(BasePlatformAdapter):
     _QQ_MAX_MEDIA_BYTES_DEFAULT = 100 * 1024 * 1024
 
     def _qq_max_media_bytes(self) -> int:
-        raw = os.getenv("QQBOT_MAX_MEDIA_BYTES", "").strip()
-        if raw:
-            try:
-                parsed = int(raw)
-            except ValueError:
-                logger.warning(
-                    "[%s] Ignoring invalid QQBOT_MAX_MEDIA_BYTES=%r",
-                    self._log_tag, raw,
-                )
-            else:
-                if parsed > 0:
-                    return parsed
+        """Byte ceiling for an inbound media download.
+
+        Resolution order, per AGENTS.md ("behavioral settings ... go in
+        config.yaml", platform knobs under ``extra``):
+
+        1. ``platforms.qqbot.extra.max_media_bytes`` — the documented knob,
+           read from the same ``config.extra`` block this adapter already uses
+           for its other settings.
+        2. ``QQBOT_MAX_MEDIA_BYTES`` — kept as an internal bridge for
+           env-only deployments; the rubric allows the bridge as long as the
+           user-facing surface is config.yaml.
+        3. The built-in default.
+
+        A non-positive or unparseable value at either layer is ignored rather
+        than honoured: disarming a size cap is not a sane reading of a typo.
+        """
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if isinstance(extra, dict) and "max_media_bytes" in extra:
+            parsed = self._coerce_media_cap(
+                extra.get("max_media_bytes"), "platforms.qqbot.extra.max_media_bytes"
+            )
+            if parsed is not None:
+                return parsed
+        parsed = self._coerce_media_cap(
+            os.getenv("QQBOT_MAX_MEDIA_BYTES", "").strip() or None,
+            "QQBOT_MAX_MEDIA_BYTES",
+        )
+        if parsed is not None:
+            return parsed
         return self._QQ_MAX_MEDIA_BYTES_DEFAULT
+
+    def _coerce_media_cap(self, value, source: str):
+        """Positive int from *value*, or None (with a warning) when unusable."""
+        if value is None or value == "":
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            logger.warning("[%s] Ignoring invalid %s=%r", self._log_tag, source, value)
+            return None
+        if parsed <= 0:
+            logger.warning(
+                "[%s] Ignoring non-positive %s=%r", self._log_tag, source, value
+            )
+            return None
+        return parsed
 
     async def _download_media_with_cap(
         self, url: str, *, headers: dict, follow_redirects: bool = False,

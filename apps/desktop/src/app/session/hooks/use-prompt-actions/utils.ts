@@ -553,6 +553,15 @@ export function renderRpcResult(response: unknown, name: string): string {
     return 'Steer rejected — agent declined input'
   }
 
+  // reload.mcp — { status: 'confirm_required' | 'reloaded', message?, loaded_rev? }
+  if (r.status === 'confirm_required' || r.status === 'reloaded') {
+    if (r.status === 'confirm_required') {
+      return typeof r.message === 'string' && r.message ? r.message : '/reload-mcp requires confirmation'
+    }
+
+    return 'MCP servers reloaded'
+  }
+
   // process.stop — { killed: number }
   if ('killed' in r && typeof r.killed === 'number') {
     return r.killed > 0

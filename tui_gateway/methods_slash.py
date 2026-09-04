@@ -300,9 +300,21 @@ def _mirror_fast(sid, session, agent, arg) -> None:
         _emit("session.info", sid, _session_info(agent, session))
 
 
-def _mirror_reload_mcp(sid, session, agent, arg) -> None:
-    if agent and hasattr(agent, "reload_mcp_tools"):
-        agent.reload_mcp_tools()
+def _mirror_reload_mcp(sid, session, agent, arg) -> str:
+    """Live-session side effect for a worker-run ``/reload-mcp``: the worker subprocess
+    reloads its OWN throwaway MCP pool, so without this mirror the live session's pool
+    (and tool snapshot) never changes. Re-enter the shared ``reload.mcp`` RPC with
+    ``confirm=True`` (the worker already ran the interactive gate) so every reload
+    path — local pool rebuild, compute-host forwarding, revision-generation bump,
+    session tool refresh — stays in lockstep. Previously this called
+    ``agent.reload_mcp_tools()``, which no agent ever implemented — a silent no-op
+    since the mirror was introduced."""
+    if session is not None and session.get("running"):
+        return "session busy — /interrupt the current turn before reloading MCP servers"
+    response = _methods["reload.mcp"]("reload-mcp-mirror", {"session_id": sid, "confirm": True})
+    if error := response.get("error"):
+        return f"reload failed: {error.get('message')}"
+    return ""
 
 
 def _mirror_stop(sid, session, agent, arg) -> None:

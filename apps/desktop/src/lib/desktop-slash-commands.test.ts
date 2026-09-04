@@ -211,6 +211,37 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/compact')).toBe(false)
   })
 
+  it('routes /reload-mcp through the reload.mcp RPC with confirm parsing', () => {
+    // /reload-mcp used to be desktop-blocked ("advanced"); the backend
+    // reload.mcp RPC is first-class, so the desktop drives it directly —
+    // same arg contract as the TUI handler (ui-tui ops.ts).
+    const surface = resolveDesktopCommand('/reload-mcp')?.surface
+    expect(surface?.kind).toBe('rpc')
+
+    if (surface?.kind !== 'rpc') {
+      throw new Error('expected rpc surface')
+    }
+
+    expect(surface.rpc).toBe('reload.mcp')
+    // Bare command → no confirm: the backend answers confirm_required and the
+    // user re-invokes with an explicit argument.
+    expect(surface.buildParams({ arg: '', command: '/reload-mcp', name: 'reload-mcp', sessionId: 's-1' }))
+      .toEqual({ session_id: 's-1' })
+    expect(surface.buildParams({ arg: 'now', command: '/reload-mcp', name: 'reload-mcp', sessionId: 's-1' }))
+      .toEqual({ session_id: 's-1', confirm: true })
+    expect(surface.buildParams({ arg: 'always', command: '/reload-mcp', name: 'reload-mcp', sessionId: 's-1' }))
+      .toEqual({ session_id: 's-1', confirm: true, always: true })
+    // Long timeout: a full reload reconnects every server (cold stdio fleet).
+    expect(surface.timeoutMs).toBeGreaterThan(30_000)
+    expect(isDesktopSlashCommand('/reload-mcp')).toBe(true)
+    expect(isDesktopSlashSuggestion('/reload-mcp')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/reload-mcp')).toBeNull()
+    // /reload_mcp is an alias — executes but stays out of the popover.
+    expect(resolveDesktopCommand('/reload_mcp')?.surface).toEqual(surface)
+    expect(isDesktopSlashCommand('/reload_mcp')).toBe(true)
+    expect(isDesktopSlashSuggestion('/reload_mcp')).toBe(false)
+  })
+
   it('routes only stateless session commands through dedicated gateway RPCs', () => {
     const expected = {
       '/save': 'session.save',

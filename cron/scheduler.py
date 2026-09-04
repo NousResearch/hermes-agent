@@ -2226,9 +2226,14 @@ def _is_known_delivery_platform(platform_name: str) -> bool:
     Hardcoded built-ins in ``_KNOWN_DELIVERY_PLATFORMS`` are checked first;
     plugin platforms registered via ``PlatformEntry`` are accepted if they
     provide a ``cron_deliver_env_var``.
+    Multi-account Weixin (#47129): ``weixin:<account>`` targets inherit the
+    base ``weixin`` delivery capability; the account segment selects which
+    persisted credentials the send path uses (see send_message_tool).
     """
     name = platform_name.lower()
     if name in _KNOWN_DELIVERY_PLATFORMS:
+        return True
+    if name.startswith("weixin:") and name.split(":", 1)[1].strip():
         return True
     return bool(_plugin_cron_env_var(name))
 
@@ -2243,6 +2248,10 @@ def _resolve_home_env_var(platform_name: str) -> str:
     env_var = _HOME_TARGET_ENV_VARS.get(name)
     if env_var:
         return env_var
+    # Multi-account Weixin (#47129): ``weixin:<account>`` has no per-account
+    # home env var; fall back to the base platform's resolution.
+    if name.startswith("weixin:"):
+        return _HOME_TARGET_ENV_VARS.get("weixin", "")
     return _plugin_cron_env_var(name)
 
 

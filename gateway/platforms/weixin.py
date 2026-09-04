@@ -1209,6 +1209,28 @@ class WeixinAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
         self._account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
+
+        # Multi-account identity (#47129): when this adapter instance serves an
+        # EXTRA discovered Weixin account (registered by gateway/platforms/
+        # weixin_multi.py as ``weixin:<account>``), rebind ``self.platform`` to
+        # the qualified dynamic member so ``BasePlatformAdapter.build_source()``
+        # emits ``weixin:<account>`` session sources instead of collapsing every
+        # account into the shared ``Platform.WEIXIN`` identity. The registry is
+        # populated BEFORE the factory runs (see weixin_multi.register), so the
+        # dynamic enum member exists here. Single-account setups keep the plain
+        # WEIXIN identity — zero behavior change for existing users.
+        if self._account_id and str(getattr(self.platform, "value", "")) == "weixin":
+            try:
+                qualified = Platform(f"weixin:{self._account_id}")
+                if qualified is not None and qualified.value != "weixin":
+                    self.platform = qualified
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug(
+                    "weixin: could not bind qualified platform identity for "
+                    "account %s: %s",
+                    self._account_id,
+                    e,
+                )
         self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
         self._base_url = str(extra.get("base_url") or _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
         self._cdn_base_url = str(

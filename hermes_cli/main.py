@@ -15015,6 +15015,13 @@ def main():
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
 
     # =========================================================================
+    # weixin command  (parser built in hermes_cli/weixin_cmd.py)
+    # =========================================================================
+    from hermes_cli.weixin_cmd import build_weixin_parser
+
+    build_weixin_parser(subparsers)
+
+    # =========================================================================
     # completion command
     # =========================================================================
     completion_parser = subparsers.add_parser(

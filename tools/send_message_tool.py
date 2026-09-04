@@ -414,14 +414,42 @@ def _handle_send(args):
     if not pconfig or not pconfig.enabled:
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.
-        if platform_name == "weixin":
-            wx_token = get_secret("WEIXIN_TOKEN", "").strip()
+        # Multi-account (#47129): ``weixin:<account>`` names resolve through
+        # the weixin_multi discovery layer first (accounts/*.json), falling
+        # back to the single-account .env synthesis for plain ``weixin``.
+        if platform_name == "weixin" or platform_name.startswith("weixin:"):
             wx_account = get_secret("WEIXIN_ACCOUNT_ID", "").strip()
-            if wx_token and wx_account:
+            if platform_name.startswith("weixin:"):
+                extra_account = platform_name.split(":", 1)[1].strip()
+                try:
+                    from gateway.platforms.weixin_multi import (
+                        _build_extra_platform_config,
+                        _load_persisted_account,
+                    )
+                    from hermes_constants import get_hermes_home
+
+                    persisted = _load_persisted_account(
+                        str(get_hermes_home()), extra_account
+                    )
+                except Exception as load_err:
+                    return tool_error(
+                        f"Weixin multi-account lookup failed for "
+                        f"'{extra_account}': {load_err}"
+                    )
+                if persisted is None:
+                    return tool_error(
+                        f"Unknown Weixin account '{extra_account}'. Configure it "
+                        f"under ~/.hermes/weixin/accounts/{extra_account}.json or "
+                        f"use the default account via platform 'weixin'."
+                    )
+                from gateway.config import PlatformConfig
+
+                pconfig = _build_extra_platform_config(extra_account, persisted, PlatformConfig(enabled=True))
+            elif get_secret("WEIXIN_TOKEN", "").strip() and wx_account:
                 from gateway.config import PlatformConfig
                 pconfig = PlatformConfig(
                     enabled=True,
-                    token=wx_token,
+                    token=get_secret("WEIXIN_TOKEN", "").strip(),
                     extra={
                         "account_id": wx_account,
                         "base_url": get_secret("WEIXIN_BASE_URL", "").strip(),

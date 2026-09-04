@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 from agent.deadline import run_bounded_async
 
 
+def _telegram_latency_diagnostics_enabled() -> bool:
+    """Opt-in switch for per-message latency/typing diagnostics (#102761).
+
+    Disabled by default: this adds INFO-level logging on the hot inbound
+    path and must never fire unless an operator asks for it.
+    """
+    return env_var_enabled("HERMES_TELEGRAM_LATENCY_DIAGNOSTICS")
+
+
 def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
     text = "" if error is None else str(error)
@@ -244,7 +253,7 @@ from plugins.platforms.telegram.telegram_network import (
     parse_fallback_ip_env,
     tcp_keepalive_socket_options,
 )
-from utils import atomic_replace, env_float, env_int
+from utils import atomic_replace, env_float, env_int, env_var_enabled
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
@@ -8719,6 +8728,24 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot or self._typing_in_cooldown(chat_id):
             return
 
+        _diag = _telegram_latency_diagnostics_enabled()
+        _diag_start = time.monotonic() if _diag else None
+
+        def _log_typing_result(
+            outcome: str, thread_id: Optional[int], exc: Optional[Exception] = None
+        ) -> None:
+            if not _diag:
+                return
+            logger.info(
+                "[%s] Telegram sendChatAction(typing) %s in %.3fs (chat_id=%s, thread_id=%s)%s",
+                self.name,
+                outcome,
+                time.monotonic() - _diag_start,
+                chat_id,
+                thread_id,
+                f": {_redact_telegram_error_text(exc)}" if exc is not None else "",
+            )
+
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None
         try:
@@ -8731,6 +8758,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_thread_id=message_thread_id,
             )
             self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+            _log_typing_result("succeeded", message_thread_id)
         except Exception as e:
             # For DM topic lanes, Telegram may reject message_thread_id.
             # Fall back to sending typing without thread_id so the typing
@@ -8742,12 +8770,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         action="typing",
                     )
                     self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+                    _log_typing_result("succeeded", None)
                     return
                 except Exception as fallback_exc:
                     if self._is_transient_typing_error(fallback_exc):
                         self._record_typing_cooldown(chat_id, fallback_exc)
             elif self._is_transient_typing_error(e):
                 self._record_typing_cooldown(chat_id, e)
+            _log_typing_result("failed", message_thread_id, e)
             # Typing failures are non-fatal; log at debug level only.
             logger.debug(
                 "[%s] Failed to send Telegram typing indicator: %s",
@@ -11013,6 +11043,9 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
+        if _telegram_latency_diagnostics_enabled():
+            self._log_telegram_message_age(message.date, update_id, message.message_id)
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
@@ -11025,6 +11058,36 @@ class TelegramAdapter(BasePlatformAdapter):
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,
+        )
+
+    def _log_telegram_message_age(
+        self,
+        platform_timestamp: Optional[datetime],
+        update_id: Optional[int],
+        message_id: Any,
+    ) -> None:
+        """Log wall-clock age of ``platform_timestamp`` at adapter accept time.
+
+        Diagnostic-only (see #102761): correlates with `update_id`/`message_id`,
+        never the message text. Clock skew that makes Telegram's timestamp
+        look like it is in the future is clamped to zero rather than logged
+        as a negative age.
+        """
+        if platform_timestamp is None:
+            return
+        try:
+            ts = platform_timestamp
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_seconds = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+        except Exception:
+            return
+        logger.info(
+            "[%s] Telegram message age at adapter accept: %.3fs (update_id=%s, message_id=%s)",
+            self.name,
+            age_seconds,
+            update_id,
+            message_id,
         )
 
     # ── Message reactions (processing lifecycle) ──────────────────────────

@@ -4823,6 +4823,51 @@ class DiscordAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
+    def toolsets_for_source(self, source) -> Optional[List[str]]:
+        """Per-user toolset role resolution.
+
+        Config format (in platform extra):
+            toolset_roles:
+              research: [web, skills]   # named toolset bundles
+            user_roles:
+              "<numeric Discord user ID>": research         # single role
+              "<other numeric user ID>": [research, admin]  # multiple, additive
+
+        A user's configured role (or roles, unioned and deduped) REPLACES the
+        platform-level ``platform_toolsets.discord`` resolution for this run
+        only. Resolution is validated through the same ``_get_platform_tools``
+        path as all other toolset config, so unknown or platform-restricted
+        toolset names are dropped rather than trusted. Users without an entry
+        — or whose roles resolve to nothing (missing ``toolset_roles``,
+        unknown role names, empty bundles) — keep the platform default.
+        """
+        user_id = str(getattr(source, "user_id", "") or "")
+        if not user_id:
+            return None
+        extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
+        user_roles = extra.get("user_roles")
+        assigned = user_roles.get(user_id) if isinstance(user_roles, dict) else None
+        if isinstance(assigned, str):
+            assigned = [assigned]
+        if not isinstance(assigned, list) or not assigned:
+            return None
+        roles = extra.get("toolset_roles")
+        if not isinstance(roles, dict):
+            return None
+        toolsets: List[str] = []
+        for role in assigned:
+            role_name = str(role).strip()
+            if not role_name:
+                continue
+            bundle = roles.get(role_name)
+            if not isinstance(bundle, list):
+                continue  # unknown role: nothing added, defaults apply
+            for toolset in bundle:
+                name = str(toolset).strip()
+                if name and name not in toolsets:
+                    toolsets.append(name)
+        return toolsets or None
+
     def _extra_or_env_flag(self, key: str, env_key: str, env_default: str, *, truthy: bool) -> bool:
         """Boolean from ``config.extra[key]`` (str parsed permissively) else ``env_key``.
         ``truthy=True`` env values must be in {true,1,yes,on}; ``truthy=False`` env values are on

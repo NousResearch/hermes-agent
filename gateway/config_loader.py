@@ -210,6 +210,8 @@ _SHARED_KEYS: tuple = (
     ),
     ("channel_skill_bindings", _DISCORD_SLACK, None),
     ("channel_prompts", None, _str_keyed),
+    ("toolset_roles", None, _str_keyed),
+    ("user_roles", None, _str_keyed),
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 

@@ -3679,6 +3679,30 @@ def get_install_id() -> Optional[str]:
 _CONFIG_MUTATION_LOCK = threading.RLock()
 
 
+def _serialized_config_write(fn):
+    """Run a config read-modify-write under :data:`_CONFIG_MUTATION_LOCK`.
+
+    Applied to handlers that perform the load->mutate->save span *off* the
+    event loop, where the loop no longer serializes them for free. Two shapes
+    reach that state here: work dispatched through ``asyncio.to_thread``, and
+    plain ``def`` FastAPI route handlers, which the framework runs in its own
+    threadpool. Both can interleave, and the later save then writes back a
+    snapshot read before the other side committed.
+
+    A decorator rather than an inline ``with`` so the handler bodies keep their
+    indentation and diff cleanly. ``functools.wraps`` preserves ``__wrapped__``,
+    which is what FastAPI follows to build the request signature.
+    """
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        with _CONFIG_MUTATION_LOCK:
+            return fn(*args, **kwargs)
+
+    return _wrapped
+
+
+
+
 def _topology_cache_get(fn: Any) -> Optional[Dict[str, Any]]:
     if (
         _TOPOLOGY_CACHE["data"] is not None
@@ -7319,28 +7343,35 @@ async def update_memory_provider_config(
 
     def _run():
         with _profile_scope(profile):
-            if surface == "declared":
-                declared = get_provider_config_schema(name)
-                if declared is None:
-                    raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
-                _update_memory_provider_config(declared, _stringify_submitted_values(values))
-                _invalidate_plugins_hub_cache()
-                return {"ok": True}
+            # Runs off-loop via asyncio.to_thread, and both branches mutate
+            # config.yaml: the declared branch through
+            # _update_memory_provider_config, the provider branch through
+            # _write_memory_provider_config_values plus its own
+            # load->mutate->save of memory.provider. Without the mutation lock
+            # a concurrent update interleaves and one side's write is lost.
+            with _CONFIG_MUTATION_LOCK:
+                if surface == "declared":
+                    declared = get_provider_config_schema(name)
+                    if declared is None:
+                        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+                    _update_memory_provider_config(declared, _stringify_submitted_values(values))
+                    _invalidate_plugins_hub_cache()
+                    return {"ok": True}
 
-            provider = _load_memory_provider(name)
-            if provider is None:
-                raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
-            _write_memory_provider_config_values(name, provider, values)
-            _require_memory_provider_ready(name)
-            config = load_config()
-            memory_config = config.get("memory")
-            if not isinstance(memory_config, dict):
-                memory_config = {}
-                config["memory"] = memory_config
-            memory_config["provider"] = name
-            save_config(config)
-            _invalidate_plugins_hub_cache()
-            return {"ok": True, "active": name}
+                provider = _load_memory_provider(name)
+                if provider is None:
+                    raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+                _write_memory_provider_config_values(name, provider, values)
+                _require_memory_provider_ready(name)
+                config = load_config()
+                memory_config = config.get("memory")
+                if not isinstance(memory_config, dict):
+                    memory_config = {}
+                    config["memory"] = memory_config
+                memory_config["provider"] = name
+                save_config(config)
+                _invalidate_plugins_hub_cache()
+                return {"ok": True, "active": name}
 
     try:
         return await asyncio.to_thread(_run)
@@ -7772,6 +7803,7 @@ def get_moa_models(profile: Optional[str] = None):
 
 
 @app.put("/api/model/moa")
+@_serialized_config_write
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     try:
@@ -7906,6 +7938,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
 
 
+@_serialized_config_write
 def _apply_model_assignment_sync(
     scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
 ):
@@ -8854,6 +8887,7 @@ def list_custom_endpoints(profile: Optional[str] = None):
 
 
 @app.post("/api/providers/custom-endpoints")
+@_serialized_config_write
 def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     try:
@@ -8873,6 +8907,7 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
 
 
 @app.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
+@_serialized_config_write
 def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
     try:
@@ -8924,6 +8959,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
 
 
 @app.delete("/api/providers/custom-endpoints/{endpoint_id}")
+@_serialized_config_write
 def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Remove a configured custom endpoint from ``providers``."""
     try:

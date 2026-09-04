@@ -1329,6 +1329,40 @@ def _(rid, params: dict) -> dict:
             payload["warning"] = warning
         return _ok(rid, payload)
     except Exception as e:
+        # v0.1.x self-heal: a dead-but-referenced slash worker (proc already
+        # exited — "slash worker exited") must not hard-fail every subsequent
+        # slash command including /reset. Close it, re-spawn a fresh one once,
+        # and retry — mirroring the 4001 resume+retry self-heal below. If the
+        # re-spawn itself fails, surface the original error.
+        if "slash worker exited" in str(e):
+            try:
+                worker.close()
+            except Exception:
+                pass
+            session["slash_worker"] = None
+            try:
+                with _sessions_lock:
+                    spawn_lock = session.setdefault(
+                        "_slash_spawn_lock", threading.Lock()
+                    )
+                with spawn_lock:
+                    new_worker = _SlashWorker(
+                        session["session_key"],
+                        getattr(session.get("agent"), "model", _resolve_model()),
+                        profile_home=session.get("profile_home"),
+                    )
+                    _attach_worker(params.get("session_id", ""), session, new_worker)
+                    output = new_worker.run(cmd)
+                    warning = _mirror_slash_side_effects(
+                        params.get("session_id", ""), session, cmd
+                    )
+                    payload = {"output": output or "(no output)"}
+                    if warning:
+                        payload["warning"] = warning
+                    return _ok(rid, payload)
+            except Exception as retry_err:
+                session["slash_worker"] = None
+                return _err(rid, 5030, f"slash worker re-spawn failed: {retry_err}")
         try:
             worker.close()
         except Exception:

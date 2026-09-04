@@ -351,6 +351,12 @@ def _(rid, params: dict) -> dict:
                             "started_at": s.get("started_at") or 0,
                             "message_count": s.get("message_count") or 0,
                             "source": s.get("source") or "",
+                            # Token usage for client-side Insights aggregations.
+                            # list_sessions_rich(compact_rows=True) already returns
+                            # these from the sessions table; the hand-picked field
+                            # list below omitted them, so every client saw zeros.
+                            "input_tokens": s.get("input_tokens") or 0,
+                            "output_tokens": s.get("output_tokens") or 0,
                         }
                         for s in rows
                     ]

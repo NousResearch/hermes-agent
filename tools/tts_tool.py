@@ -3758,13 +3758,17 @@ def _text_to_speech_single(
         return tool_error(error_msg, success=False)
     except FileNotFoundError as e:
         # Missing dependencies or files
-        error_msg = f"TTS dependency missing ({provider}): {e}"
-        logger.error("%s", error_msg, exc_info=True)
+        _detail = str(e)
+        error_msg = f"TTS dependency missing ({provider}): {_detail}"
+        logger.error("TTS dependency missing (%s): %s", provider,
+                     _detail[:2000] if len(_detail) > 2000 else _detail)
         return tool_error(error_msg, success=False)
     except Exception as e:
         # Unexpected errors
-        error_msg = f"TTS generation failed ({provider}): {e}"
-        logger.error("%s", error_msg, exc_info=True)
+        _detail = str(e)
+        error_msg = f"TTS generation failed ({provider}): {_detail}"
+        logger.error("TTS generation failed (%s): %s", provider,
+                     _detail[:2000] if len(_detail) > 2000 else _detail)
         return tool_error(error_msg, success=False)
 
 

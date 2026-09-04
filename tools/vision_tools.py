@@ -1702,8 +1702,10 @@ async def vision_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
         
     except Exception as e:
-        error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
+        _detail = str(e)
+        error_msg = f"Error analyzing image: {_detail}"
+        logger.error("Error analyzing image: %s",
+                     _detail[:2000] if len(_detail) > 2000 else _detail)
         
         # Detect vision capability errors — give the model a clear message
         # so it can inform the user instead of a cryptic API error.
@@ -2242,8 +2244,10 @@ async def video_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     except Exception as e:
-        error_msg = f"Error analyzing video: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
+        _detail = str(e)
+        error_msg = f"Error analyzing video: {_detail}"
+        logger.error("Error analyzing video: %s",
+                     _detail[:2000] if len(_detail) > 2000 else _detail)
 
         err_str = str(e).lower()
         if any(hint in err_str for hint in (

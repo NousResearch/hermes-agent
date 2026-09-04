@@ -1772,7 +1772,8 @@ display:
   #              Falls back to 'queue' if the agent isn't running yet or if
   #              images are attached (steer only carries text).
   # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
-  # Toggle at runtime with /busy <interrupt|queue|steer>.
+  # CLI: toggle at runtime with /busy <interrupt|queue|steer>.
+  # Gateway: use /queue <message>, /steer <message>, or /stop.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).

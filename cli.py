@@ -12694,7 +12694,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Show a random tip on new session
                 try:
                     from hermes_cli.tips import get_random_tip
-                    _tip = get_random_tip()
+                    _tip = get_random_tip(surface="cli")
                     try:
                         from hermes_cli.skin_engine import get_active_skin
                         _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
@@ -12709,7 +12709,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Show a random tip on new session
                 try:
                     from hermes_cli.tips import get_random_tip
-                    _tip = get_random_tip()
+                    _tip = get_random_tip(surface="cli")
                     try:
                         from hermes_cli.skin_engine import get_active_skin
                         _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
@@ -18362,7 +18362,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Show a random tip to help users discover features
         try:
             from hermes_cli.tips import get_random_tip
-            _tip = get_random_tip()
+            _tip = get_random_tip(surface="cli")
             try:
                 _tip_color = _welcome_skin.get_color("banner_dim", "#B8860B")
             except Exception:

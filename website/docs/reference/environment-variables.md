@@ -199,7 +199,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `OPENVIKING_URL` | OpenViking server URL (default: `http://127.0.0.1:1933`) |
 | `OPENVIKING_ACCOUNT` | Tenant account for local/trusted mode (default: `default`) |
 | `OPENVIKING_USER` | Tenant user for local/trusted mode (default: `default`) |
-| `OPENVIKING_ACTOR_PEER_ID` | Hermes agent ID used for peer-scoped memories (default: `hermes`) |
+| `OPENVIKING_ACTOR_PEER_ID` | Optional peer ID for separate assistant context (default: none; uses user memory) |
 | `BRV_API_KEY` | ByteRover API key (optional, for cloud sync — local-first by default) ([app.byterover.dev](https://app.byterover.dev)) |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |

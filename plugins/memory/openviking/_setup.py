@@ -1,9 +1,9 @@
 """Interactive ``hermes memory setup`` wizard for the OpenViking provider.
 
-Pure UI flow: prompts, menus, and persistence of the chosen connection (Hermes
-``.env`` only, or mirrored to an ``ovcli.conf.<name>`` profile that Hermes then
-links). Network validation and file writers live in the package ``__init__`` and
-are looked up there at call time so tests can monkeypatch them on the plugin module.
+Pure UI flow: prompts, menus, and persistence of the chosen connection as an
+``ovcli.conf.<name>`` profile that Hermes links. Network validation and file
+writers live in the package ``__init__`` and are looked up there at call time so
+tests can monkeypatch them on the plugin module.
 """
 
 from __future__ import annotations
@@ -64,11 +64,15 @@ def _prompt_profile_name(prompt, select, cancelled) -> str | object:
     ov = _ov()
     while True:
         name = ov._clean_config_value(prompt("OpenViking profile name"))
-        if ov._is_valid_ovcli_profile_name(name):
+        if name == "active":
+            message = "The profile name 'active' is reserved by the OpenViking CLI."
+        elif ov._is_valid_ovcli_profile_name(name):
             return name
+        else:
+            message = "Profile names can only contain letters, numbers, '-' and '_'."
         if _retry_or_cancel_manual_setup(
             select, "  Invalid OpenViking profile name",
-            "Profile names can only contain letters, numbers, '-' and '_'.", cancelled,
+            message, cancelled,
         ) is _SETUP_CANCELLED:
             return _SETUP_CANCELLED
 
@@ -230,7 +234,14 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
         return _SETUP_CANCELLED
 
 
-def _link_ovcli_profile(*, config: dict, provider_config: dict, env_path: Path, ovcli_path: Path) -> None:
+def _link_ovcli_profile(
+    *,
+    config: dict,
+    provider_config: dict,
+    env_path: Path,
+    ovcli_path: Path,
+    update_process_env: bool = True,
+) -> None:
     ov = _ov()
     for key in ("endpoint", "api_key", "root_api_key", "account", "user", "agent", "api_key_type"):
         provider_config.pop(key, None)
@@ -242,31 +253,14 @@ def _link_ovcli_profile(*, config: dict, provider_config: dict, env_path: Path, 
         provider_config.pop("ovcli_config_path", None)
     config["memory"]["provider"] = "openviking"
     config["memory"]["openviking"] = provider_config
-    ov._write_env_vars(env_path, {}, remove_keys=ov._OPENVIKING_ENV_KEYS)
-    for key in ov._OPENVIKING_ENV_KEYS:
-        os.environ.pop(key, None)
-
-
-def _save_hermes_only_config(*, config: dict, provider_config: dict, env_path: Path, values: dict) -> None:
-    ov = _ov()
-    provider_config["use_ovcli_config"] = False
-    provider_config.pop("ovcli_config_path", None)
-    # A newly selected connection must not inherit the previous YAML peer; a
-    # non-empty peer, if supplied, is saved with the connection below.
-    provider_config.pop("agent", None)
-    config["memory"]["provider"] = "openviking"
-    config["memory"]["openviking"] = provider_config
-    # Publish the file writer's cleaned values to the current process as well.
-    writes = {env_key: ov._env_line_safe(value) for env_key, key in zip(ov._OPENVIKING_ENV_KEYS, ov._CONNECTION_KEYS)
-              if (value := ov._clean_config_value(values.get(key)))}
-    ov._write_env_vars(env_path, writes, remove_keys=ov._OPENVIKING_ENV_KEYS)
-    os.environ.update(writes)
-    for key in set(ov._OPENVIKING_ENV_KEYS) - set(writes):
-        os.environ.pop(key, None)
+    ov._write_env_vars(env_path, {}, remove_keys=ov._OPENVIKING_ENV_KEYS_TO_REMOVE)
+    if update_process_env:
+        for key in ov._OPENVIKING_ENV_KEYS_TO_REMOVE:
+            os.environ.pop(key, None)
 
 
 def _profile_display_name(profile) -> str:
-    return {"env": _ov()._OVCLI_CONFIG_ENV, "active": "ovcli.conf"}.get(profile.source, profile.name)
+    return _ov()._profile_display_name(profile)
 
 
 def _print_openviking_ready(message: str, path: Optional[Path] = None) -> None:
@@ -342,23 +336,21 @@ def _run_create_profile_setup(*, prompt, select, cancelled, config: dict, provid
     if values is None:
         return False
 
-    save_choice = select("  Save OpenViking config",
-                         [("Keep in Hermes only", "write values only to Hermes .env"),
-                          ("Mirror to OpenViking store", "write ~/.openviking/ovcli.conf.<name> and link it")],
-                         default=1, cancel_returns=cancelled)
-    if save_choice == cancelled:
+    ovcli_path = _mirror_manual_config_to_openviking_store(
+        prompt=prompt,
+        select=select,
+        cancelled=cancelled,
+        values=values,
+    )
+    if ovcli_path is _SETUP_CANCELLED:
         return _SETUP_CANCELLED
-
-    if save_choice == 1:
-        ovcli_path = _mirror_manual_config_to_openviking_store(prompt=prompt, select=select, cancelled=cancelled, values=values)
-        if ovcli_path is _SETUP_CANCELLED:
-            return _SETUP_CANCELLED
-        _link_ovcli_profile(config=config, provider_config=provider_config, env_path=env_path, ovcli_path=ovcli_path)
-        _print_openviking_ready("Created and linked OpenViking profile.", ovcli_path)
-        return True
-
-    _save_hermes_only_config(config=config, provider_config=provider_config, env_path=env_path, values=values)
-    _print_openviking_ready("Connection saved to Hermes .env.")
+    _link_ovcli_profile(
+        config=config,
+        provider_config=provider_config,
+        env_path=env_path,
+        ovcli_path=ovcli_path,
+    )
+    _print_openviking_ready("Created and linked OpenViking profile.", ovcli_path)
     return True
 
 

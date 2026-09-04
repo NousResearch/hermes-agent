@@ -1046,8 +1046,23 @@ def _detect_container() -> bool:
         or _proc_file_has_marker("/proc/1/cgroup", ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio"))
     ):
         return True
-    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo.
-    return _proc_file_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo — but ONLY on the
+    # root ("/") mount entry. A Docker/containerd HOST also lists every container's overlay under
+    # /var/lib/docker|containerd in its own mountinfo, so scanning the whole file misdetects the host.
+    return _root_mount_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio", "docker"))
+
+
+def _root_mount_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+    """True when the mountinfo entry whose mount point is "/" mentions a container runtime."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) > 4 and fields[4] == "/":
+                    return any(marker in line for marker in markers)
+    except OSError:
+        return False
+    return False
 
 
 def get_config_path() -> Path:

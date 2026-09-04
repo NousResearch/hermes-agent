@@ -80,7 +80,7 @@ Ink stays `hermes --tui`. Native is opt-in (`HERMES_TUI_NATIVE=1` / `--native`).
 
 Composer: Enter send, Shift+Enter newline, `!cmd` runs `shell.exec`, `/editor` opens `$VISUAL`/`$EDITOR`, queue while busy, `↓` jump-to-tail when scrolled up. Ctrl+P command palette. `/paste` `/image` attach pictures. `/reload` re-reads `.env`. `/mouse` releases capture for tmux. `/init` writes `AGENTS.md`. `/export` copies the transcript.
 
-Likely-to-succeed mutations (YOLO, interrupt, send, model, pause, file restore, `/clear`) paint immediately, then reconcile with the gateway. Failure rolls the UI back or offers `u` Undo, and the toast says how to retry. Loaders use `…`, skip a flash under 180ms, and stay at least 400ms once painted. Esc/`/exit` twice if a draft or queue would be lost. `HERMES_TUI_REDUCED_MOTION=1` (or `PREFERS_REDUCED_MOTION`) freezes looping chrome.
+Likely-to-succeed mutations (YOLO, interrupt, send, model, pause, file restore, `/clear`) paint immediately, then reconcile with the gateway. Failure rolls the UI back or offers `u` Undo, and the toast says how to retry. Loaders use `…`, skip a flash under 180ms, and stay at least 400ms once painted. Esc/`/exit` twice if a draft or queue would be lost. `/motion` toggles looping chrome (`/motion off`, `/motion on`). `HERMES_TUI_REDUCED_MOTION=1` (or `PREFERS_REDUCED_MOTION`) is the env default.
 
 ## Develop
 

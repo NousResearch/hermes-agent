@@ -27,6 +27,7 @@ pub struct StreamCache {
     focus: bool,
     epoch: u64,
     expand_epoch: u64,
+    motion_epoch: u64,
     blocks: Vec<CachedBlock>,
 }
 
@@ -45,6 +46,7 @@ impl StreamCache {
             focus: false,
             epoch: 0,
             expand_epoch: 0,
+            motion_epoch: 0,
             blocks: Vec::new(),
         }
     }
@@ -58,12 +60,14 @@ impl StreamCache {
         epoch: u64,
         expand_epoch: u64,
     ) {
+        let motion_epoch = super::motion::epoch();
         if self.width != width
             || self.theme_id != theme_id
             || self.thinking != thinking
             || self.focus != focus
             || self.epoch != epoch
             || self.expand_epoch != expand_epoch
+            || self.motion_epoch != motion_epoch
         {
             self.blocks.clear();
             self.width = width;
@@ -72,6 +76,7 @@ impl StreamCache {
             self.focus = focus;
             self.epoch = epoch;
             self.expand_epoch = expand_epoch;
+            self.motion_epoch = motion_epoch;
         }
     }
 }

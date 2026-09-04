@@ -467,6 +467,13 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         local: true,
     },
     SlashCommand {
+        name: "/motion",
+        args_hint: "[on|off]",
+        description:
+            "Toggle chrome motion · gold wash, shimmer, spinners (env: HERMES_TUI_REDUCED_MOTION)",
+        local: true,
+    },
+    SlashCommand {
         name: "/commit",
         args_hint: "",
         description: "Draft a commit message from git diff (llm.oneshot, does not commit)",
@@ -1089,6 +1096,7 @@ mod tests {
             "/projects",
             "/cli",
             "/vim",
+            "/motion",
             "/commit",
             "/handoff",
             "/mem",

@@ -763,6 +763,18 @@ impl crate::ui::modals::ViewsOverlay {
             ]),
             Line::from(vec![
                 Span::styled(
+                    "  /motion        ",
+                    Style::default()
+                        .fg(Theme::brand_gold())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Toggle chrome motion — gold wash, shimmer, spinners  (/motion off)",
+                    Style::default().fg(Theme::text_secondary()),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
                     "  /background    ",
                     Style::default()
                         .fg(Theme::accent_cyan())

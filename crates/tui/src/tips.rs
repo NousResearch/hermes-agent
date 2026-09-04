@@ -37,7 +37,7 @@ pub const TIPS: &[&str] = &[
     "hermes doctor --fix diagnoses config and dependency issues.",
     "Type /help for keys. Click × on this bar to hide it — /tips brings it back.",
     "Esc quits. If the composer still has a draft, press Esc again to confirm.",
-    "HERMES_TUI_REDUCED_MOTION=1 freezes the scan, shimmer, and spinner.",
+    "/motion toggles wash, shimmer, and spinners. HERMES_TUI_REDUCED_MOTION=1 is the env default.",
     "Approvals: y once, a always, n deny. YOLO is the session-wide bypass.",
     "Paste a local image path in the composer — /open launches the latest one.",
 ];

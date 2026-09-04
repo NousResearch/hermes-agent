@@ -2,8 +2,19 @@
 //!
 //! Cadence matches `ui-tui` (`appChrome.tsx`, `thinking.tsx`, `content/faces.ts`).
 //! Transcript spinners stay 1 cell so the stream does not jitter.
+//! `/motion` overrides `HERMES_TUI_REDUCED_MOTION` / `PREFERS_REDUCED_MOTION` for this process.
+
+use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const TICK_MS: u64 = 50;
+
+thread_local! {
+    /// 0 = follow env, 1 = motion on, -1 = reduced.
+    static OVERRIDE: Cell<i8> = const { Cell::new(0) };
+}
+
+static EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// Classic braille (`unicode-animations` `braille`, 80ms).
 const BRAILLE: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -64,6 +75,34 @@ const THINK_MS: u64 = 90;
 const TOOL_MS: u64 = 70;
 
 pub fn reduced_motion() -> bool {
+    match OVERRIDE.with(|c| c.get()) {
+        1 => false,
+        -1 => true,
+        _ => env_reduced(),
+    }
+}
+
+pub fn enabled() -> bool {
+    !reduced_motion()
+}
+
+/// `/motion` session override. `true` plays chrome; `false` freezes it.
+pub fn set_enabled(on: bool) {
+    OVERRIDE.with(|c| c.set(if on { 1 } else { -1 }));
+    EPOCH.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn toggle() -> bool {
+    let on = reduced_motion();
+    set_enabled(on);
+    on
+}
+
+pub fn epoch() -> u64 {
+    EPOCH.load(Ordering::Relaxed)
+}
+
+fn env_reduced() -> bool {
     flag("HERMES_TUI_REDUCED_MOTION") || flag("PREFERS_REDUCED_MOTION")
 }
 
@@ -183,6 +222,7 @@ mod tests {
 
     #[test]
     fn think_and_tool_families_move() {
+        reset_override();
         let a = think_spinner(0);
         let b = think_spinner(8);
         assert!(!a.is_empty());
@@ -192,6 +232,35 @@ mod tests {
         assert!(!t0.is_empty());
         assert!(!t1.is_empty());
         assert_ne!(tool_spinner(0, 0), tool_spinner(0, 3));
+    }
+
+    #[test]
+    fn slash_override_freezes_and_restores() {
+        let _reset = OverrideReset;
+        set_enabled(false);
+        assert!(reduced_motion());
+        assert!(!enabled());
+        assert_eq!(frame(12), 0);
+        assert_eq!(think_spinner(0), think_spinner(8));
+        let before = epoch();
+        set_enabled(true);
+        assert!(enabled());
+        assert!(!reduced_motion());
+        assert_eq!(frame(12), 12);
+        assert!(epoch() > before);
+        assert!(!toggle());
+        assert!(!enabled());
+    }
+
+    fn reset_override() {
+        OVERRIDE.with(|c| c.set(0));
+    }
+
+    struct OverrideReset;
+    impl Drop for OverrideReset {
+        fn drop(&mut self) {
+            reset_override();
+        }
     }
 
     fn matches_truthy(v: &str) -> bool {

@@ -590,6 +590,30 @@ pub(crate) async fn dispatch_slash(
                 s.set_toast("vim normal · i insert  dd dw gg  esc leaves");
             }
         }
+        "/motion" => {
+            let mut s = state.lock().await;
+            let a = arg.trim().to_ascii_lowercase();
+            if matches!(a.as_str(), "status" | "show" | "?") {
+                s.set_toast(if crate::ui::motion::enabled() {
+                    "motion on"
+                } else {
+                    "motion off"
+                });
+            } else {
+                let next = match a.as_str() {
+                    "on" | "true" | "1" | "yes" => {
+                        crate::ui::motion::set_enabled(true);
+                        true
+                    }
+                    "off" | "false" | "0" | "no" => {
+                        crate::ui::motion::set_enabled(false);
+                        false
+                    }
+                    _ => crate::ui::motion::toggle(),
+                };
+                s.set_toast(if next { "motion on" } else { "motion off" });
+            }
+        }
         "/handoff" => {
             request_handoff(state, client, arg).await;
         }

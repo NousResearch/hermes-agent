@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v2"
+SCANNER_VERSION = "skills-guard-v3"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -418,18 +418,27 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
-    """Structural checks + pattern scan of every text file in a skill dir (or a single file). A gitignore-style
-    `.skillignore` / `.clawhubignore` excludes dev/docs artifacts from BOTH passes; the ignore file itself is
-    always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level."""
+def scan_skill(skill_path: Path, source: str = "community", *, honor_ignore_file: bool = False) -> ScanResult:
+    """Structural checks + pattern scan of every text file in a skill dir (or a single file). *source*
+    (e.g. "openai/skills") sets the trust level.
+
+    A gitignore-style `.skillignore` / `.clawhubignore` narrows BOTH passes, but ONLY when the caller passes
+    *honor_ignore_file* to vouch that the directory is the author's own working copy. The file travels inside
+    the skill, so honoring it on a fetched bundle let the payload decide what the scanner may look at: a
+    one-line `*` (fnmatch's `*` crosses `/`) hid a `curl | bash` + `~/.ssh` exfil script from the structural
+    check AND the pattern scan, turning a `dangerous` verdict that `--force` cannot override into `safe`.
+    Default off, so every install/quarantine/audit/sync path scans the whole bundle."""
     name, trust = skill_path.name, _resolve_trust_level(source)
     findings: List[Finding] = []
     if skill_path.is_dir():
-        ignore = _load_skill_ignore(skill_path)
+        ignore = _load_skill_ignore(skill_path) if honor_ignore_file else None
         findings.extend(_check_structure(skill_path, ignore=ignore))
-        for f in skill_path.rglob("*"):
-            if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
+        for f in (p for p in skill_path.rglob("*") if p.is_file()):
+            rel = str(f.relative_to(skill_path))
+            if not (ignore and ignore(rel)):
                 findings.extend(scan_file(f, rel))
+        if not honor_ignore_file:
+            findings.extend(_unhonored_ignore_findings(skill_path))
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name))
     verdict = _determine_verdict(findings)
@@ -567,12 +576,23 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
     return findings
 
 
-# `.skillignore` is Hermes-native; `.clawhubignore` is honored for skills published through ClawHub.
+# `.skillignore` is Hermes-native; `.clawhubignore` is the ClawHub spelling. Both are AUTHORING conveniences
+# read only from a local working copy (`scan_skill(..., honor_ignore_file=True)`), never from fetched content.
 _SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
 
 
+def _unhonored_ignore_findings(skill_dir: Path) -> List[Finding]:
+    """Surface the ignore files a bundle shipped that this scan did NOT honor — otherwise the report gives no
+    hint that the content tried to configure the scanner. Informational (``low``), so it never moves a verdict."""
+    return [Finding("ignore_file_not_honored", "low", "structural", name, 0, "scanner ignore file",
+                    "skill ships a scanner ignore file; it does not narrow this scan (content cannot "
+                    "choose what the scanner reads)")
+            for name in _SKILL_IGNORE_FILENAMES if (skill_dir / name).is_file()]
+
+
 def _load_skill_ignore(skill_dir: Path):
-    """Build ``ignore(rel_posix_path) -> bool`` from `.skillignore` / `.clawhubignore`. gitignore basics: blank
+    """Build ``ignore(rel_posix_path) -> bool`` from `.skillignore` / `.clawhubignore`. Only for a local
+    author's own working copy — see ``scan_skill``. gitignore basics: blank
     lines and ``#`` comments skipped; trailing ``/`` = directory (it and everything under it); ``*``/``?`` globs via
     fnmatch on the full path and each segment; leading ``/`` anchors to the root. Ignore files always excluded;
     ``SKILL.md`` never."""

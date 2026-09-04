@@ -271,7 +271,7 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
-import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { cookieJarToClearOnRemoval, LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -15195,7 +15195,21 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
-  const registry = removeConnection(readDesktopConnectionsRegistry(), key)
+  const before = readDesktopConnectionsRegistry()
+  const cookieUrlToClear = cookieJarToClearOnRemoval(key, before)
+
+  // Clear the removed connection's cookie jar before its registry entry is
+  // gone. clearOauthSession() re-resolves the partition from the on-disk
+  // registry, so this must run before writeDesktopConnectionsRegistry() below
+  // removes the entry that resolution depends on. Otherwise a later re-add of
+  // the same URL inherits whatever cookies were left behind — often a
+  // long-since-invalidated session — and the UI reports "Signed in" from the
+  // stale jar without the login window ever running (#98242).
+  if (cookieUrlToClear) {
+    await clearOauthSession(cookieUrlToClear)
+  }
+
+  const registry = removeConnection(before, key)
   writeDesktopConnectionsRegistry(registry)
   // Tear down anything the removed connection still had running: pooled
   // backends under its composite keys and any ssh tunnel scopes it owned.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { cookieJarToClearOnRemoval, LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 
 // #92183 — two basic-auth (cookie-flow) gateways registered in the v2
 // connections registry must not share one cookie jar. Chromium cookie jars
@@ -140,5 +140,36 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     const got = resolveOauthPartition('https://gw-a.example.com', { registry: reg })
 
     expect(got).toContain('alpha')
+  })
+})
+
+// #98242 — re-adding a removed remote gateway flashed "Signed in" and skipped
+// the login page. Removing a connection never cleared its cookie jar, so
+// re-registering the same URL (most commonly as the new primary, which rides
+// the shared legacy jar) inherited stale cookies from the old, already-dead
+// session and read as signed in without ever running the login flow.
+describe('cookieJarToClearOnRemoval (#98242 stale session on re-add)', () => {
+  it('names the URL of a removed cookie-auth (oauth/basic) connection', () => {
+    const reg = registry('conn-a', [remote('conn-a', 'https://gw.example.com')])
+
+    expect(cookieJarToClearOnRemoval('conn-a', reg)).toBe('https://gw.example.com')
+  })
+
+  it('returns null for a token-auth connection (never rode a cookie jar)', () => {
+    const reg = registry('local', [remote('conn-a', 'https://gw.example.com', { authMode: 'token' })])
+
+    expect(cookieJarToClearOnRemoval('conn-a', reg)).toBeNull()
+  })
+
+  it('returns null for the local connection', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }])
+
+    expect(cookieJarToClearOnRemoval('local', reg)).toBeNull()
+  })
+
+  it('returns null for an id that is not in the registry', () => {
+    const reg = registry('local', [remote('conn-a', 'https://gw.example.com')])
+
+    expect(cookieJarToClearOnRemoval('conn-b', reg)).toBeNull()
   })
 })

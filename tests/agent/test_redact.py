@@ -1,6 +1,8 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
+import json
 import logging
+import shlex
 
 import pytest
 
@@ -190,15 +192,15 @@ class TestControlCharSplitTokens:
         assert longest not in result
 
     def test_newline_split_token_masks(self):
-        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        tok = "ghp_" + "abcdef1234567890ABCDEF1234567890abcdef"
         self._assert_split_masked(f"{tok[:10]}\n{tok[10:]}", tok)
 
     def test_esc_split_token_masks(self):
-        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        tok = "ghp_" + "abcdef1234567890ABCDEF1234567890abcdef"
         self._assert_split_masked(f"{tok[:10]}\x1b{tok[10:]}", tok)
 
     def test_zero_width_split_token_masks(self):
-        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        tok = "ghp_" + "abcdef1234567890ABCDEF1234567890abcdef"
         self._assert_split_masked(f"{tok[:10]}\u200b{tok[10:]}", tok)
 
     def test_complete_token_does_not_swallow_next_line(self):
@@ -314,16 +316,317 @@ class TestApiKeyHeaders:
         assert "x-api-key:" in result
         assert "opaque-provider-key" not in result
 
+    def test_x_api_key_in_prefixed_log_line_masked(self):
+        text = (
+            "INFO POST https://api.example x-api-key: "
+            "opaque-provider-key-1234567890"
+        )
+        result = redact_sensitive_text(text)
+        assert "opaque-provider-key" not in result
+        assert result.startswith("INFO POST https://api.example x-api-key:")
+
     def test_x_api_key_in_curl_command_masked(self):
         text = 'curl -H "x-api-key: sk-local-VERYsecret-999888" https://api.example.com'
         result = redact_sensitive_text(text)
         assert "VERYsecret" not in result
         assert "https://api.example.com" in result
 
+    @pytest.mark.parametrize("quote", ['"', "'"])
+    def test_x_api_key_in_quoted_curl_preserves_delimiter(self, quote):
+        text = (
+            f"curl -H {quote}x-api-key: opaque-provider-key-1234567890{quote} "
+            "https://api.example.com"
+        )
+        result = redact_sensitive_text(text)
+        assert "opaque-provider-key" not in result
+        assert shlex.split(result)[-1] == "https://api.example.com"
+
+    @pytest.mark.parametrize("operator", [";", "&&", "||", "|"])
+    def test_x_api_key_in_unquoted_curl_preserves_operator(self, operator):
+        text = f"curl -Hx-api-key:opaque-provider-key-1234567890{operator}echo ok"
+        result = redact_sensitive_text(text)
+        assert "opaque-provider-key" not in result
+        assert f"{operator}echo ok" in result
+
+    def test_empty_x_api_key_curl_header_preserves_url(self):
+        text = "curl -H x-api-key: https://example.com"
+        assert redact_sensitive_text(text) == text
+
     def test_api_key_header_masked(self):
         text = "api-key: anotherOpaqueSecret1234567"
         result = redact_sensitive_text(text)
         assert "anotherOpaqueSecret" not in result
+
+    def test_x_api_key_json_form_masked(self):
+        # JSON-serialized header (request dumps): the closing quote sits between
+        # the name and the colon, so the bare header regex can't see it, and the
+        # value has no vendor prefix for _PREFIX_RE to catch.
+        text = '{"x-api-key": "opaque-local-backend-key-1234567890"}'
+        result = redact_sensitive_text(text)
+        assert "opaque-local-backend-key" not in result
+        assert '"x-api-key":' in result
+
+    def test_apikey_json_escaped_quote_remains_valid(self):
+        text = json.dumps({"apikey": 'ab"opaque-local-backend-key-1234567890'})
+        result = redact_sensitive_text(text)
+        assert "opaque-local-backend-key" not in result
+        assert json.loads(result)["apikey"]
+
+    def test_apikey_json_env_lookup_remains_unchanged(self):
+        text = '{"apiKey": "os.getenv(\'API_KEY\')"}'
+        assert redact_sensitive_text(text) == text
+
+    def test_x_api_key_json_form_skipped_for_code_file(self):
+        # Code fixtures must pass through unchanged, like _JSON_FIELD_RE.
+        text = '{"x-api-key": "test-fixture-value-1234567890"}'
+        assert redact_sensitive_text(text, code_file=True) == text
+
+
+class TestCookieHeaders:
+    def test_cookie_header_masked(self):
+        text = "Cookie: session=opaque-session-secret-1234567890"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert "Cookie:" in result
+
+    def test_set_cookie_header_masked(self):
+        text = "Set-Cookie: sessionid=opaque-session-secret-123456; HttpOnly; Path=/"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert "Set-Cookie:" in result
+
+    @pytest.mark.parametrize("quote", ['"', "'"])
+    def test_cookie_in_curl_preserves_shell_quote(self, quote):
+        text = (
+            f"curl -H {quote}Cookie: "
+            f"session=opaque-session-secret-1234567890{quote} https://example.com"
+        )
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert result.count(quote) == 2, result
+        assert f"{quote} https://example.com" in result
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_cookie_in_multiline_request_masked(self, newline):
+        text = (
+            "Cookie: session=opaque-session-secret-1234567890"
+            f"{newline}Host: example.com"
+        )
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert f"{newline}Host: example.com" in result
+
+    def test_cookie_in_unquoted_curl_header_masked(self):
+        text = "curl -H Cookie:sid=opaque-session-secret-1234567890 https://example.com"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert result.endswith(" https://example.com")
+
+    def test_cookie_in_joined_short_curl_header_masked(self):
+        text = "curl -HCookie:sid=opaque-session-secret-1234567890 https://example.com"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert result.endswith(" https://example.com")
+
+    @pytest.mark.parametrize("operator", [";", "&&", "||", "|", ">", "<", "("])
+    def test_unquoted_curl_cookie_preserves_shell_operator(self, operator):
+        text = f"curl -HCookie:sid=opaque-session-secret-1234567890{operator}echo ok"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert f"{operator}echo ok" in result
+
+    def test_cookie_with_escaped_quotes_in_curl_masked(self):
+        text = (
+            'curl -H "Cookie: prefs=\\"abc\\"; '
+            'sid=opaque-session-secret-1234567890" https://example.com'
+        )
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert result.endswith('" https://example.com')
+        args = shlex.split(result)
+        assert args[-1] == "https://example.com"
+        assert args[2] == "Cookie: ***"
+
+    def test_line_continued_quoted_curl_cookie_masked(self):
+        text = (
+            'curl -H \\\n  "Cookie: sid=opaque-session-secret-1234567890" '
+            "https://example.com"
+        )
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert shlex.split(result)[-1] == "https://example.com"
+
+    @pytest.mark.parametrize(
+        ("header", "secret"),
+        [
+            ("x-api-key", "opaque-provider-key-1234567890"),
+            ("Cookie", "sid=opaque-session-secret-1234567890"),
+        ],
+    )
+    def test_line_continued_unquoted_curl_preserves_url_line(self, header, secret):
+        text = f"curl -H \\\n  {header}:{secret} \\\n  https://example.com"
+        result = redact_sensitive_text(text)
+        assert secret not in result
+        assert "*** \\\n  https://example.com" in result
+
+    def test_cookie_value_line_continuation_masked(self):
+        text = (
+            'curl -H "Cookie: sid=opaque-session-secret\\\n'
+            '-1234567890" https://example.com'
+        )
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert shlex.split(result)[-1] == "https://example.com"
+
+    @pytest.mark.parametrize("expression", ["$(read-token)", "`read-token`"])
+    def test_unquoted_curl_cookie_preserves_command_substitution(self, expression):
+        text = f"curl -HCookie:sid={expression} https://example.com"
+        result = redact_sensitive_text(text)
+        assert f"***{expression}" in result
+        assert result.endswith(" https://example.com")
+
+    @pytest.mark.parametrize("escaped", [r"\;Path=/", r"\ value", r"\$TOKEN", r"\`cmd\`"])
+    def test_unquoted_curl_cookie_consumes_escaped_atom(self, escaped):
+        text = f"curl -HCookie:sid=opaque-secret{escaped} https://example.com"
+        result = redact_sensitive_text(text)
+        assert "opaque-secret" not in result
+        assert escaped not in result
+        assert result.endswith(" https://example.com")
+
+    @pytest.mark.parametrize("tail", ['\\"abc', "\\\\", "$HOME", "`id`"])
+    def test_double_quoted_cookie_mask_is_shell_safe(self, tail):
+        text = f'curl -H "Cookie: sid=1234567890{tail}" https://example.com'
+        result = redact_sensitive_text(text)
+        assert "1234567890" not in result
+        assert shlex.split(result)[-1] == "https://example.com"
+
+    def test_cookie_in_curl_verbose_header_masked(self):
+        text = "> Cookie: sid=opaque-session-secret-1234567890\r\n> Host: example.com"
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert "\r\n> Host: example.com" in result
+
+    def test_cookie_case_insensitive(self):
+        text = "set-cookie: csrftoken=opaque-csrf-secret-1234567890; SameSite=Lax"
+        result = redact_sensitive_text(text)
+        assert "opaque-csrf-secret" not in result
+
+    def test_cookie_mixed_case_not_bypassed(self):
+        # Mixed-case headers must not bypass the redactor (no casing substring gate).
+        text = "CoOkie: sid=opaque-mixedcase-secret-1234567890"
+        result = redact_sensitive_text(text)
+        assert "opaque-mixedcase-secret" not in result
+
+    def test_set_cookie_mixed_case_not_bypassed(self):
+        text = "sEt-CoOkie: sessionid=opaque-mixedcase-secret-123456; HttpOnly"
+        result = redact_sensitive_text(text)
+        assert "opaque-mixedcase-secret" not in result
+
+    def test_cookie_prose_unchanged(self):
+        # "cookie:" with no name=value pair is plain prose, not a header.
+        text = "the cookie: chocolate chip is the best recipe"
+        assert redact_sensitive_text(text) == text
+
+    @pytest.mark.parametrize("code_file", [False, True])
+    def test_document_cookie_assignment_unchanged(self, code_file):
+        text = "document.cookie: name=value is assigned here"
+        assert redact_sensitive_text(text, code_file=code_file) == text
+
+    def test_repeated_malformed_cookie_markers_unchanged(self):
+        text = '"Cookie:"' * 2_000
+        assert redact_sensitive_text(text) == text
+
+    def test_repeated_unclosed_cookie_headers_are_bounded(self):
+        text = '"Cookie: a=x' * 2_000
+        result = redact_sensitive_text(text)
+        assert len(result) <= len(text)
+
+    def test_line_start_cookie_example_skipped_for_code_file(self):
+        text = "Cookie: name=example-value"
+        assert redact_sensitive_text(text, code_file=True) == text
+
+    def test_empty_cookie_line_does_not_consume_next_line(self):
+        text = "Cookie:\nNAME=value"
+        assert redact_sensitive_text(text) == text
+
+    def test_quoted_cookie_example_without_curl_context_unchanged(self):
+        text = 'Documentation example: "Cookie: name=example-value"'
+        assert redact_sensitive_text(text) == text
+
+    def test_cookie_json_form_masked(self):
+        text = '{"Cookie": "sessionid=opaque-session-secret-1234567890; HttpOnly"}'
+        result = redact_sensitive_text(text)
+        assert "opaque-session-secret" not in result
+        assert '"Cookie":' in result
+
+    def test_request_dump_headers_block_masked(self):
+        # The real serialize-then-redact sink (agent_runtime_helpers request
+        # dump): both the opaque api key and the cookie must be masked.
+        text = (
+            '{"headers": {"x-api-key": "opaqueCustomBackendKey99887766", '
+            '"Cookie": "sid=opaqueSession5544332211; Path=/"}}'
+        )
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueCustomBackendKey" not in result
+        assert "opaqueSession5544332211" not in result
+
+    def test_request_dump_with_url_masks_headers(self):
+        text = json.dumps({
+            "url": "https://example.com/resource",
+            "headers": {
+                "x-api-key": "opaqueCustomBackendKey99887766",
+                "Cookie": "sid=opaqueSession5544332211; Path=/",
+            },
+        })
+        result = redact_sensitive_text(text, force=True)
+        parsed = json.loads(result)
+        assert "opaqueCustomBackendKey" not in result
+        assert "opaqueSession5544332211" not in result
+        assert parsed["url"] == "https://example.com/resource"
+
+    def test_cookie_json_form_with_escaped_quote_masked(self):
+        # A JSON cookie value containing an escaped quote must be masked whole,
+        # not truncated at the embedded quote (which would leak the suffix).
+        text = '{"Cookie": "sid=abc\\"def; csrftoken=opaqueCsrfSecret998877"}'
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueCsrfSecret" not in result
+        assert json.loads(result)["Cookie"]
+
+    def test_secret_header_json_form_with_escaped_quote_masked(self):
+        text = '{"x-api-key": "ab\\"opaqueKeyTail1234567890"}'
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueKeyTail" not in result
+        assert json.loads(result)["x-api-key"]
+
+    @pytest.mark.parametrize("header", ["x-api-key", "Cookie"])
+    def test_json_escape_at_mask_boundary_remains_valid(self, header):
+        value = 'abcd="opaque-session-secret-1234567890"; Path=/'
+        text = json.dumps({header: value})
+        result = redact_sensitive_text(text, force=True)
+        assert "opaque-session-secret" not in result
+        assert header in json.loads(result)
+
+    @pytest.mark.parametrize("header", ["x-api-key", "Cookie"])
+    @pytest.mark.parametrize("suffix", ["", "\\", "\\q"])
+    def test_truncated_json_header_fails_closed(self, header, suffix):
+        text = f'{{"{header}": "opaque-session-secret-1234567890{suffix}'
+        result = redact_sensitive_text(text, force=True)
+        assert "opaque-session-secret" not in result
+
+    @pytest.mark.parametrize("header", ["x-api-key", "Cookie"])
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_truncated_json_header_does_not_consume_next_line(self, header, newline):
+        text = f'{{"{header}": "opaque-session-secret-1234567890{newline}"unrelated": "keep"'
+        result = redact_sensitive_text(text, force=True)
+        assert "opaque-session-secret" not in result
+        assert f'{newline}"unrelated": "keep"' in result
+
+    @pytest.mark.parametrize("header", ["x-api-key", "Cookie"])
+    def test_truncated_json_backslash_preserves_crlf(self, header):
+        text = f'{{"{header}": "opaque-session-secret-1234567890\\\r\nnext-line'
+        result = redact_sensitive_text(text, force=True)
+        assert "opaque-session-secret" not in result
+        assert "\r\nnext-line" in result
 
 
 class TestTelegramTokens:
@@ -374,10 +677,11 @@ class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""
 
     def test_full_env_dump(self):
-        env_dump = """HOME=/home/user
+        openrouter_key = "sk-or-v1-" + "reallyLongSecretKeyValue12345678"
+        env_dump = f"""HOME=/home/user
 PATH=/usr/local/bin:/usr/bin
 OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345
-OPENROUTER_API_KEY=sk-or-v1-reallyLongSecretKeyValue12345678
+OPENROUTER_API_KEY={openrouter_key}
 FIRECRAWL_API_KEY=fc-shortkey123456789012
 TELEGRAM_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
 SHELL=/bin/bash

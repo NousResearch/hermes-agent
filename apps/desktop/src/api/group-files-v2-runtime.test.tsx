@@ -247,7 +247,7 @@ describe('Files v2 concrete UI paths', () => {
     })
     await open()
     expect(screen.getByText("File browsing isn't available for this Group Chat yet.")).toBeTruthy()
-    expect(screen.queryByText('Files this Desktop has seen.')).toBeNull()
+    expect(screen.queryByText(translateBots('group.filesClassicDescription'))).toBeNull()
     expect(mocks.requestProfile).not.toHaveBeenCalled()
   })
 
@@ -295,7 +295,7 @@ describe('Files v2 concrete UI paths', () => {
     $groupChats.set({ Core: room })
     const view = await open(room)
     await screen.findByText('Résumé.pdf')
-    expect(screen.getByText('Files this Desktop has seen.')).toBeTruthy()
+    expect(screen.getByText(translateBots('group.filesClassicDescription'))).toBeTruthy()
     const input = screen.getByRole('textbox', { name: 'Search files' })
     expect(globalThis.document.activeElement).toBe(input)
     fireEvent.keyDown(input, { key: 'ArrowDown' })

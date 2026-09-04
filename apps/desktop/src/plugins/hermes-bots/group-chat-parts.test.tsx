@@ -336,8 +336,13 @@ describe('hosted approval history', () => {
     await waitFor(() =>
       expect(host.notify).toHaveBeenCalledWith({
         kind: 'error',
-        message: 'Could not send this approval. Check the gateway connection and try again.'
+        message: translateBots('group.hostedApprovalRetry')
       })
     )
+    const respond = screen.getByRole('button', { name: 'Respond' }) as HTMLButtonElement
+    await waitFor(() => expect(respond.disabled).toBe(false))
+    fireEvent.click(respond)
+    await waitFor(() => expect(answerGroupClarify).toHaveBeenCalledTimes(2))
+    expect(answerGroupClarify.mock.calls[1]).toEqual(answerGroupClarify.mock.calls[0])
   })
 })

@@ -4,6 +4,7 @@ import type * as groupChat from './group-chat'
 import type * as groupRounds from './group-rounds'
 import { pluginSdkMock, scriptedStorage } from './group-test-utils'
 import type * as hostedRuntime from './hosted-room-runtime'
+import { translateBots } from './i18n-test-helper'
 import type { GroupChat, GroupMember } from './types'
 
 const { host } = vi.hoisted(() => ({
@@ -491,7 +492,7 @@ describe('hosted Group Chat runtime', () => {
     await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
 
     expect(loaded.chat.$groupChats.get().Release).toMatchObject({
-      continuityIssue: 'Could not reconnect this Bot. Check its gateway and try again.',
+      continuityIssue: translateBots('group.reconnectFailed'),
       hostedStatus: {
         canRetry: true,
         canStop: false,

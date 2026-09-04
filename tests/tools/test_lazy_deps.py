@@ -208,6 +208,14 @@ class TestIsSatisfiedVersionAware:
         assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is True
 
 
+    def test_mem0_compatible_newer_release_is_satisfied(self, monkeypatch):
+        """A supported Mem0 upgrade must not be reinstalled as an old pin."""
+        self._fake_version(monkeypatch, {"mem0ai": "2.0.19"})
+
+        assert ld._is_satisfied(ld.LAZY_DEPS["memory.mem0"][0]) is True
+        assert ld.feature_missing("memory.mem0") == ()
+
+
     def test_bare_package_name_presence_is_enough(self, monkeypatch):
         # No version constraint — presence alone counts as satisfied.
         self._fake_version(monkeypatch, {"somepkg": "1.0.0"})

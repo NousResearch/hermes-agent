@@ -1,7 +1,7 @@
 ---
 name: computer-use
 description: "Drive the desktop in the background without stealing focus."
-version: 2.1.0
+version: 2.2.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT
 platforms: [macos, windows, linux]
@@ -247,7 +247,46 @@ recipe — focus lands on the visible button either way.
 Windows / Linux), standalone Edge, and Electron builds. Arc, Dia, Brave,
 Firefox, Safari and similar are rejected — drive their page content with the
 native ladder + keyboard activation, or use the separate headless `browser_*`
-tools when the user's session isn't required.
+tools when the user's session isn't required. Note: Arc/Dia tabs have been
+observed crash-looping React-heavy admin SPAs (Shopify admin "Code 5" error
+pages) — prefer a certified engine for long UI sessions.
+
+### Buried windows eat your clicks (z-order)
+
+Mouse clicks are delivered by the OS to the **topmost window at that screen
+point** — the target app's identity never matters. If the window you're
+driving sits *under* another window (e.g. the Hermes desktop app is z-above
+the browser), every click — AX hit-test, background CGEvent, even foreground
+delivery when the raise doesn't stick — lands on the window above it, and the
+target sees nothing. Keyboard events are the exception: they're targeted by
+PID and reach buried windows fine. Symptoms: keys work, clicks never do;
+click responses say "pressed the background element" or "not driver-verified"
+and nothing changes.
+
+Fix: bring the target genuinely to the front and **verify it stayed there**:
+
+```
+focus_app(app="Dia", raise_window=true)   # requires approval; check response
+# → frontmost_pid: 996, frontmost_ordinary_window_id: 130  ← verify these
+click(element=…, delivery_mode="foreground")
+```
+
+Because foreground delivery *restores the previously-frontmost app after
+acting*, the window sinks again between calls — re-run `focus_app` (and
+verify `frontmost_pid`) before **every** foreground action in a sequence.
+Check `list_windows` for z-order if the target's window vanishes from
+`focus_app` results (the user may have closed it, or it moved Spaces).
+
+### Coordinates are screen points; capture images are scaled
+
+Element bounds in the AX JSON are **screen coordinates** (the AXWindow entry
+carries the menu-bar/taskbar offset, e.g. `AXWindow @ (0, 34, 1175, 1028)` on
+macOS). Coordinate clicks expect the same screen-point space. The capture
+screenshot, by contrast, is a **scaled image** (window points × a Retina/zoom
+factor, e.g. 1.334×) — do NOT multiply AX bounds by the capture scale before
+clicking, and do NOT read element positions off a vision screenshot in pixels.
+When bounds and reality disagree, click the center of the element's stated
+bounds and verify with a fresh capture.
 
 ### Key shortcuts vary per platform
 
@@ -360,6 +399,8 @@ in your conversation context.
 | `cua_browser_state` refuses the browser (Arc, Dia, Firefox, Safari) | Unsupported engine for the typed route — native ladder + keyboard activation only, or headless `browser_*` tools when the user's session isn't needed |
 | `AXUIElementPerformAction(AXPress) returned -25206` | `kAXErrorFailure` — transient macOS AX failure. Retry once; if it persists, use a coordinate click or the keyboard rung |
 | Clicks land off-target or "the coordinates were right but nothing happened" | Capture scale drifts between captures (observed 1.33× → 1.24× on the same window; Retina scaling varies). Re-capture before every click, prefer `element=N` over pixel math, and validate a pixel target with a probe click that has a visible effect |
+| All mouse clicks do nothing, but keyboard input works | The target window is **buried under another window** (z-order). Clicks go to the topmost window at that point. `focus_app(raise_window=true)`, verify `frontmost_pid` in the response, then click — and re-focus before every foreground action (foreground delivery restores the previous frontmost after acting) |
+| `type` delivers 0 characters in a browser (Arc/Dia) | Printable-char CGEvent synthesis can be dropped by the engine; non-printable keys (return/escape) still deliver. Don't fight it: click the address bar and pick a suggestion with Enter (keyboard-activated), or switch to a certified engine with the typed route |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
 
 ## When NOT to use `computer_use`

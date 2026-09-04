@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { StarmapContextMenuBoundary } from './index'
+import { StarmapContextMenuBoundary } from './context-menu-boundary'
 
 describe('StarmapContextMenuBoundary', () => {
   afterEach(() => {

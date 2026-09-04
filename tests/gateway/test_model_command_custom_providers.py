@@ -68,3 +68,41 @@ async def test_direct_model_switch_offloads_to_thread(tmp_path, monkeypatch):
     # switch_model was offloaded to a worker thread, not run on the event loop.
     assert "_fake_switch" in offloaded
     assert result is not None and "nope" in result
+
+
+@pytest.mark.asyncio
+async def test_direct_custom_model_switch_uses_configured_api_key(tmp_path, monkeypatch):
+    """Gateway `/model` must authenticate the custom `/models` probe."""
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "gpt-5.6-sol",
+                    "provider": "custom",
+                    "base_url": "http://127.0.0.1:8317/v1",
+                    "api_key": "test-custom-key",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    captured = {}
+
+    def _fake_switch(**kwargs):
+        captured.update(kwargs)
+        return ModelSwitchResult(success=False, error_message="stop after capture")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
+
+    result = await _make_runner()._handle_model_command(_make_event("/model Kimi-K3"))
+
+    assert result is not None and "stop after capture" in result
+    assert captured["current_api_key"] == "test-custom-key"

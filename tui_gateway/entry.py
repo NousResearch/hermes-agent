@@ -33,6 +33,31 @@ _mcp_discovery_thread = None
 _mcp_discovery_enabled = False
 
 
+def _register_configured_hooks() -> None:
+    """Register declarative hooks in the TUI gateway process.
+
+    ``hermes --tui`` launches this module in a child process.  Hook
+    registration performed by the parent CLI therefore does not carry into
+    the process that actually invokes tools.  Mirror the CLI and messaging
+    gateway startup paths here, before the first RPC request is accepted.
+    """
+    try:
+        from agent.outbound_webhooks import (
+            register_from_config as register_outbound_webhooks,
+        )
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+
+        hooks_cfg = load_config()
+        register_from_config(hooks_cfg, accept_hooks=False)
+        register_outbound_webhooks(hooks_cfg)
+    except Exception:
+        logger.debug(
+            "hook registration failed at TUI gateway startup",
+            exc_info=True,
+        )
+
+
 def _install_sidecar_publisher() -> None:
     """Mirror every dispatcher emit to the dashboard sidebar via WS when set (best-effort)."""
     url = os.environ.get("HERMES_TUI_SIDECAR_URL")
@@ -239,6 +264,7 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 
 
 def main():
+    _register_configured_hooks()
     _install_sidecar_publisher()
 
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",

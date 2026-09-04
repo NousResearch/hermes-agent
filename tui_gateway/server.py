@@ -1960,7 +1960,7 @@ def _reclaim_orphaned_leases() -> None:
 # accumulates detached sessions (the report's ``detached_sessions=5``) whose
 # agents sit resident for the full TTL. The cap evicts the least-recently-active
 # DETACHED sessions sooner so live agents don't pile up under memory pressure.
-# Default-on but provably safe: it only touches sessions with no live client
+# Opt-in but provably safe: it only touches sessions with no live client
 # (reopening re-resumes them from the DB) and never a running / pending /
 # mid-build / live-transport one. 0/null disables.
 def _max_live_sessions() -> int:

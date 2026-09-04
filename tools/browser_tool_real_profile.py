@@ -36,6 +36,21 @@ def _cdp_http_ready(http_cdp: str) -> bool:
     return _cdp_ready(http_cdp, timeout=1.0)
 
 
+def _real_profile_daemon_env() -> dict[str, str]:
+    """Reaper-visible lifecycle environment for this Hermes process's attach daemon."""
+    _bt = _origin()
+    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{_bt._REAL_PROFILE_SESSION}")
+    os.makedirs(socket_dir, mode=0o700, exist_ok=True)
+    from tools import browser_tool_lifecycle as _lifecycle
+    from tools import browser_tool_real_profile_daemon as _daemon
+
+    if not _daemon.register(socket_dir, _bt._REAL_PROFILE_SESSION):
+        raise OSError("could not publish real-profile daemon ownership")
+    _lifecycle._write_owner_pid(socket_dir, _bt._REAL_PROFILE_SESSION)
+    _lifecycle._start_browser_cleanup_thread()
+    return _session._agent_browser_command_env(socket_dir)
+
+
 def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> Optional[subprocess.CompletedProcess]:
     """Run ``agent-browser --session <name> <cmd...>``; None when agent-browser is missing or the run fails."""
     _bt = _origin()
@@ -44,9 +59,19 @@ def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> 
     except FileNotFoundError:
         return None
     try:
-        return subprocess.run([*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
-                              env=_bt._build_browser_env(), stdin=subprocess.DEVNULL)
+        env = _real_profile_daemon_env()
+        argv = [*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd]
+        if cmd == ("close",):
+            from tools import browser_tool_real_profile_daemon as _daemon
+
+            with _daemon.exclusive_current_owner(env["AGENT_BROWSER_SOCKET_DIR"], session_name) as exclusive:
+                if not exclusive:
+                    _bt.logger.warning("Refusing to close shared real-profile daemon while another owner may be live")
+                    return None
+                return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                      timeout=15, env=env, stdin=subprocess.DEVNULL)
+        return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=15, env=env, stdin=subprocess.DEVNULL)
     except (subprocess.SubprocessError, OSError) as e:
         _bt.logger.debug("real-profile %s failed: %s", log_label, e)
         return None
@@ -75,9 +100,10 @@ def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
     return bool(m) and _read_devtools_port(data_dir) == m.group(1)
 
 
-def _agent_browser_close_session(session_name: str) -> None:
-    """Best-effort close of an agent-browser session (stale/wrong-dir cleanup)."""
-    _agent_browser_session_cmd(session_name, "close", log_label="session close")
+def _agent_browser_close_session(session_name: str) -> bool:
+    """Close a stale session only when this is its sole provably live Hermes owner."""
+    proc = _agent_browser_session_cmd(session_name, "close", log_label="session close")
+    return proc is not None and proc.returncode == 0
 
 
 _REAL_PROFILE_CHROME_FLAGS = (
@@ -169,7 +195,7 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
             "--cdp", str(port), "open", "about:blank"]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=_bt._get_open_command_timeout(first_open=True), env=_bt._build_browser_env(),
+                              timeout=_bt._get_open_command_timeout(first_open=True), env=_real_profile_daemon_env(),
                               stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return None, _RP + "the real-profile browser took too long to start. Retry, or turn the toggle off."
@@ -230,13 +256,20 @@ def _real_profile_cdp() -> tuple:
         # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
         # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
         # hermes process) holds the user-data-dir open — that corrupts the databases.
+        from tools import browser_tool_real_profile_daemon as _daemon
+
+        legacy_state = _daemon.legacy_state_path()
+        if legacy_state is not None:
+            return None, (_RP + "unowned pre-upgrade agent-browser state is still present at "
+                          f"{legacy_state}; close that hermes-real-profile session before retrying.")
         copy_dir = real_profile_copy_dir(browser)
         existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _bt._real_profile_cdp_cache["cdp"] = existing
             return existing, None
         if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
-            _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+            if not _agent_browser_close_session(_bt._REAL_PROFILE_SESSION):
+                return None, _RP + "the stale browser session is still owned by another live Hermes process; retry later."
 
         copy_dir, err = snapshot_real_profile(browser)
         if err or not copy_dir:

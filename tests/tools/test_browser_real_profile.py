@@ -223,6 +223,22 @@ class TestRealProfileCdpLaunch:
         assert cdp is None
         assert err and "boom" in err
 
+    def test_legacy_unowned_daemon_state_blocks_snapshot(self, tmp_path):
+        """Never overlay the credential copy while a pre-fix daemon may still own it."""
+        import tools.browser_tool as bt
+        from tools import browser_tool_real_profile_daemon as daemon
+
+        self._reset()
+        legacy = tmp_path / ".agent-browser" / f"{bt._REAL_PROFILE_SESSION}.pid"
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch.object(daemon, "legacy_state_path", return_value=legacy), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile") as snapshot:
+            cdp, err = bt_real_profile._real_profile_cdp()
+
+        assert cdp is None and err and "unowned pre-upgrade" in err
+        snapshot.assert_not_called()
+
     def test_launch_returns_http_cdp(self, tmp_path):
         import tools.browser_tool as bt
         self._reset()
@@ -275,6 +291,7 @@ class TestRealProfileCdpLaunch:
 
         def fake_run(argv, **kw):
             captured["argv"] = argv
+            captured["env"] = kw["env"]
             return proc
 
         class FakeChrome:
@@ -295,6 +312,7 @@ class TestRealProfileCdpLaunch:
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", side_effect=fake_run), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             bt_real_profile._real_profile_cdp()
         # The chrome launch itself is headless (no window, no focus steal).
@@ -303,6 +321,11 @@ class TestRealProfileCdpLaunch:
         assert "--headless" not in captured["argv"]
         assert "--profile" not in captured["argv"]
         assert "--cdp" in captured["argv"]
+        socket_dir = captured["env"]["AGENT_BROWSER_SOCKET_DIR"]
+        assert os.path.basename(socket_dir) == f"agent-browser-{bt._REAL_PROFILE_SESSION}"
+        assert captured["env"]["AGENT_BROWSER_IDLE_TIMEOUT_MS"]
+        assert os.path.isfile(os.path.join(socket_dir, f"{bt._REAL_PROFILE_SESSION}.owner_pid"))
+        assert os.path.isfile(os.path.join(socket_dir, f"{bt._REAL_PROFILE_SESSION}.owners.json"))
         self._reset()
 
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
@@ -330,7 +353,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
              patch.object(bt_real_profile, "_cdp_on_data_dir", return_value=False), \
              patch.object(bt_real_profile, "_agent_browser_close_session",
-                          side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
+                          side_effect=lambda s: (closed.__setitem__("n", closed["n"] + 1), True)[1]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
@@ -338,6 +361,40 @@ class TestRealProfileCdpLaunch:
         assert closed["n"] == 1  # stale wrong-dir session was closed
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
+
+    def test_get_close_and_attach_share_reapable_lifecycle_env(self, tmp_path):
+        """Stale-endpoint refresh commands must address the same owned daemon state."""
+        import tools.browser_tool as bt
+        from tools import browser_tool_lifecycle as bt_lifecycle
+
+        calls = []
+        proc = Mock(returncode=0, stdout="", stderr="")
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs["env"]))
+            return proc
+
+        with patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", side_effect=fake_run), \
+             patch.object(bt_lifecycle, "_start_browser_cleanup_thread"), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                          return_value="http://127.0.0.1:41000"):
+            bt_real_profile._agent_browser_session_cmd(
+                bt._REAL_PROFILE_SESSION, "get", "cdp-url", log_label="test get"
+            )
+            bt_real_profile._agent_browser_close_session(bt._REAL_PROFILE_SESSION)
+            cdp, err = bt_real_profile._attach_agent_browser_to_real_profile(41000, str(tmp_path))
+
+        assert err is None and cdp == "http://127.0.0.1:41000"
+        assert len(calls) == 3
+        socket_dirs = {env["AGENT_BROWSER_SOCKET_DIR"] for _, env in calls}
+        assert socket_dirs == {str(tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}")}
+        assert all(env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] for _, env in calls)
+        assert all(argv[argv.index("--session") + 1] == bt._REAL_PROFILE_SESSION for argv, _ in calls)
+        owner_path = next(iter(socket_dirs)) + f"/{bt._REAL_PROFILE_SESSION}.owners.json"
+        owners = json.loads(open(owner_path, encoding="utf-8").read())["owners"]
+        assert owners == [{"pid": os.getpid(), "start_time": owners[0]["start_time"]}]
 
     def test_cdp_on_data_dir_matches_devtoolsactiveport(self, tmp_path):
         (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")

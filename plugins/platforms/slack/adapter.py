@@ -65,6 +65,11 @@ try:  # sibling module; support both package and flat plugin-dir import
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
+try:  # sibling module; support both package and flat plugin-dir import
+    from .reaction_hooks_mixin import SlackReactionHooksMixin
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from reaction_hooks_mixin import SlackReactionHooksMixin  # type: ignore
+
 
 logger = logging.getLogger(__name__)
 
@@ -1103,7 +1108,7 @@ def _is_slack_voice_clip(file_obj: Dict[str, Any]) -> bool:
     return name.startswith("audio_message")
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(SlackReactionHooksMixin, BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
 
@@ -4469,77 +4474,6 @@ class SlackAdapter(BasePlatformAdapter):
             text = text.replace(key, placeholders[key])
 
         return text
-
-    # ----- Reactions -----
-
-    async def _add_reaction(
-        self, channel: str, timestamp: str, emoji: str, team_id: str = ""
-    ) -> bool:
-        """Add an emoji reaction to a message. Returns True on success."""
-        if not self._app:
-            return False
-        try:
-            await self._get_client(channel, team_id=team_id or None).reactions_add(
-                channel=channel, timestamp=timestamp, name=emoji
-            )
-            return True
-        except Exception as e:
-            # Don't log as error — may fail if already reacted or missing scope
-            logger.debug("[Slack] reactions.add failed (%s): %s", emoji, e)
-            return False
-
-    async def _remove_reaction(
-        self, channel: str, timestamp: str, emoji: str, team_id: str = ""
-    ) -> bool:
-        """Remove an emoji reaction from a message. Returns True on success."""
-        if not self._app:
-            return False
-        try:
-            await self._get_client(channel, team_id=team_id or None).reactions_remove(
-                channel=channel, timestamp=timestamp, name=emoji
-            )
-            return True
-        except Exception as e:
-            logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
-            return False
-
-    def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
-
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
-            return
-        ts = getattr(event, "message_id", None)
-        team_id = str(getattr(event.source, "scope_id", "") or "")
-        marker = self._workspace_message_marker(team_id, ts) if ts else None
-        if not ts or marker not in self._reacting_message_ids:
-            return
-        channel_id = getattr(event.source, "chat_id", None)
-        if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes", team_id)
-
-    async def on_processing_complete(
-        self, event: MessageEvent, outcome: ProcessingOutcome
-    ) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
-        if not self._reactions_enabled():
-            return
-        ts = getattr(event, "message_id", None)
-        team_id = str(getattr(event.source, "scope_id", "") or "")
-        marker = self._workspace_message_marker(team_id, ts) if ts else None
-        if not ts or marker not in self._reacting_message_ids:
-            return
-        self._reacting_message_ids.discard(marker)
-        channel_id = getattr(event.source, "chat_id", None)
-        if not channel_id:
-            return
-        await self._remove_reaction(channel_id, ts, "eyes", team_id)
-        if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(channel_id, ts, "white_check_mark", team_id)
-        elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(channel_id, ts, "x", team_id)
 
     # ----- User identity resolution -----
 

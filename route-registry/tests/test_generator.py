@@ -566,7 +566,7 @@ class TestPlan:
                 assert main == "minimax/minimax-m3-free"
                 assert entry["main_model"] == "deepseek-v4-flash"
                 model_change = next(c for c in entry["changes"] if c["field"] == "model")
-                primary = by_id["slot-dsflash-2"]["hermes"]
+                primary = by_id["slot-dsflash-1"]["hermes"]
                 assert model_change["old"]["default"] == main
                 assert model_change["new"] == {
                     **model_change["old"],
@@ -601,6 +601,25 @@ class TestPlan:
                     assert not any(c["field"] == "model" for c in entry["changes"])
                 checked += 1
                 continue
+            if entry["surface"] in {"ceecee", "dezzy-brand", "dezzy-component-lib", "dezzy-design-system", "dezzy-image-prompt", "dezzy-ux-prototype", "misa-misa", "quan-ux"}:
+                # 2026-09-04 approved remap: paid minimax mains move to free
+                # qwen3.8-flash (bai). Same shape as the gemma branch above.
+                assert entry["main_model"] == "qwen3.8-flash"
+                if main in ("minimax-m3", "minimax/minimax-m3-free"):
+                    model_change = next(c for c in entry["changes"] if c["field"] == "model")
+                    primary = by_id["slot-qwenflash-1"]["hermes"]
+                    _old_main = model_change["old"]
+                    if isinstance(_old_main, dict):
+                        _old_main = _old_main.get("default")
+                    assert _old_main == main
+                    assert model_change["new"]["default"] == primary["model"]
+                    assert model_change["new"]["provider"] == primary["provider"]
+                    assert model_change["new"]["base_url"] == primary["base_url"]
+                else:
+                    assert main == "qwen3.8-flash"
+                    assert not any(c["field"] == "model" for c in entry["changes"])
+                checked += 1
+                continue
             assert entry["main_model"] == main, (
                 f"{entry['surface']}: registry says {entry['main_model']}, live is {main}"
             )
@@ -611,12 +630,12 @@ class TestPlan:
             self, tmp_hermes_home, by_id, surfaces, registry):
         plan = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
         chain = _chain_entries(plan, "content-strategist")
-        primary = by_id["slot-dsflash-2"]["hermes"]
+        primary = by_id["slot-dsflash-1"]["hermes"]
         assert generator._deployment_key(primary) not in {
             generator._deployment_key(entry) for entry in chain
         }
         assert [entry["route_slot"] for entry in chain] == [
-            "slot-dsflash-1", "slot-dsflash-4", "codex-fallback", "local-final"
+            "slot-dsflash-4", "codex-fallback", "local-final"
         ]
 
     def test_content_migration_refuses_unexpected_live_main(self, tmp_hermes_home):
@@ -626,6 +645,21 @@ class TestPlan:
         cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
         with pytest.raises(generator.ValidationError, match="expected old main.*operator-changed/model"):
             generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
+
+    def test_scalar_live_main_migrates_to_mapping(self, by_id):
+        """Scalar live mains migrate to a fresh mapping from the primary slot.
+
+        No fields to preserve; mismatch still refuses loudly.
+        """
+        surf = {"surface": "probe", "slots": [], "primary_model_migration": {
+            "expected_old_main": "minimax-m3", "primary_slot": "slot-qwenflash-1"}}
+        out = generator._migrated_model({"model": "minimax-m3"}, surf, by_id)
+        primary = by_id["slot-qwenflash-1"]["hermes"]
+        assert out == {"default": primary["model"], "provider": primary["provider"],
+                       "base_url": primary["base_url"],
+                       "reasoning_effort": primary["reasoning_effort"]}
+        with pytest.raises(generator.ValidationError, match="expected old main"):
+            generator._migrated_model({"model": "something-else"}, surf, by_id)
 
     def test_content_migration_preserves_unrelated_model_fields(self, tmp_hermes_home):
         cfg = tmp_hermes_home / "profiles" / "content-strategist" / "config.yaml"
@@ -647,7 +681,7 @@ class TestPlan:
         # simulate the applied state: live main now equals the primary model
         cfg = tmp_hermes_home / "profiles" / "content-strategist" / "config.yaml"
         doc = yaml.safe_load(cfg.read_text())
-        primary = by_id["slot-dsflash-2"]["hermes"]
+        primary = by_id["slot-dsflash-1"]["hermes"]
         doc["model"]["default"] = primary["model"]
         doc["model"]["provider"] = primary["provider"]
         doc["model"]["base_url"] = primary["base_url"]

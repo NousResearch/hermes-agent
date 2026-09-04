@@ -103,14 +103,14 @@ slots:
 - slot: slot-mini-m3-4
   model_id: minimax-m3
   provider_account: b-ai/2
-  class: perm
-  status: approved
-  approved_at: '2026-09-02T00:00:00Z'
+  class: gated
+  status: candidate
+  approved_at: null
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: false
+  disabled: true
   hermes:
     provider: custom:bai
     model: minimax-m3
@@ -263,14 +263,14 @@ slots:
 - slot: slot-dsflash-2
   model_id: deepseek-v4-flash
   provider_account: b-ai/1
-  class: perm
-  status: approved
-  approved_at: '2026-09-02T00:00:00Z'
+  class: gated
+  status: candidate
+  approved_at: null
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: false
+  disabled: true
   hermes:
     provider: custom:bai
     model: deepseek-v4-flash
@@ -279,14 +279,14 @@ slots:
 - slot: slot-dsflash-3
   model_id: deepseek-v4-flash
   provider_account: b-ai/2
-  class: perm
-  status: approved
-  approved_at: '2026-09-02T00:00:00Z'
+  class: gated
+  status: candidate
+  approved_at: null
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: false
+  disabled: true
   hermes:
     provider: custom:bai
     model: deepseek-v4-flash
@@ -343,14 +343,14 @@ slots:
 - slot: slot-dspro-2
   model_id: deepseek-v4-pro
   provider_account: b-ai/1
-  class: perm
-  status: approved
-  approved_at: '2026-09-02T00:00:00Z'
+  class: gated
+  status: candidate
+  approved_at: null
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: false
+  disabled: true
   hermes:
     provider: custom:bai
     model: deepseek-v4-pro
@@ -407,14 +407,14 @@ slots:
 - slot: slot-kimik3-1
   model_id: kimi-k3
   provider_account: b-ai/4
-  class: perm
-  status: approved
-  approved_at: '2026-09-02T00:00:00Z'
+  class: gated
+  status: candidate
+  approved_at: null
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: false
+  disabled: true
   hermes:
     provider: custom:bai
     model: kimi-k3
@@ -489,14 +489,14 @@ slots:
 - slot: slot-qwen27b-3
   model_id: qwen3.8-27b
   provider_account: b-ai/4
-  class: perm
-  status: approved
-  approved_at: '2026-09-02T00:00:00Z'
+  class: gated
+  status: candidate
+  approved_at: null
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: false
+  disabled: true
   hermes:
     provider: custom:bai
     model: qwen3.8-27b
@@ -596,15 +596,15 @@ slots:
     reasoning_effort: medium
 - slot: slot-qwenflash-1
   model_id: qwen3.8-flash
-  provider_account: b-ai/2
-  class: needs_classification
-  status: candidate
-  approved_at: null
+  provider_account: b-ai/4
+  class: perm
+  status: approved
+  approved_at: '2026-09-04T00:00:00Z'
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: true
+  disabled: false
   hermes:
     provider: custom:bai
     model: qwen3.8-flash
@@ -647,8 +647,8 @@ pool_requirements:
   custom:bai:
     strategy: fill_first
     accounts:
-    - b-ai/1
-    - b-ai/2
+    # 2026-09-04: b-ai/1 and b-ai/2 removed, both live-proven at zero
+    # balance failing even free models. Re-add on top-up.
     - b-ai/3
     - b-ai/4
   custom:xkiro-free:

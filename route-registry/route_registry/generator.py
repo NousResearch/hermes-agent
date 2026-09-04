@@ -464,6 +464,21 @@ def _migrated_model(doc: dict[str, Any], surf: dict[str, Any],
     if not migration:
         return None
     current = doc.get("model")
+    if isinstance(current, str):
+        # Scalar live main (shape B): nothing to preserve — migrate only
+        # when it exactly matches the declared old main, emitting a fresh
+        # mapping from the primary slot. (2026-09-04: unblocks minimax-m3
+        # scalar surfaces moving to free qwen3.8-flash.)
+        if current != migration.get("expected_old_main"):
+            raise ValidationError(
+                f"surface {surf['surface']}: expected old main "
+                f"{migration.get('expected_old_main')!r}, found {current!r}; refusing migration")
+        primary = by_id[migration["primary_slot"]]["hermes"]
+        out: dict[str, Any] = {"default": primary["model"]}
+        for key in ("provider", "base_url", "reasoning_effort"):
+            if key in primary:
+                out[key] = primary[key]
+        return out
     if not isinstance(current, dict):
         raise ValidationError(
             f"surface {surf['surface']}: primary migration requires a model mapping")

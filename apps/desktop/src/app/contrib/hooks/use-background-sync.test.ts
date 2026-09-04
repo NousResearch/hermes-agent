@@ -989,6 +989,352 @@ describe('typing-aware sessions.changed deferral', () => {
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
+
+  it('holds sessions.changed refresh for the full IME composition, then lands once after keyboard quiet', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true, data: 'ก' }))
+      notifySessionsChanged()
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    act(() => {
+      window.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true, data: 'กำ' }))
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_499)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats insertFromComposition as a commit even when isComposing remains true', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true, data: 'ก' }))
+      notifySessionsChanged()
+      window.dispatchEvent(
+        new window.InputEvent('input', {
+          bubbles: true,
+          data: 'กำ',
+          inputType: 'insertFromComposition',
+          isComposing: true
+        })
+      )
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_499)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    {
+      activity: () =>
+        window.dispatchEvent(new window.KeyboardEvent('keydown', { bubbles: true, isComposing: false, key: 'a' })),
+      source: 'keyboard'
+    },
+    {
+      activity: () =>
+        window.dispatchEvent(
+          new window.InputEvent('input', {
+            bubbles: true,
+            data: 'a',
+            inputType: 'insertText',
+            isComposing: false
+          })
+        ),
+      source: 'input'
+    }
+  ])('recovers from a missed compositionend after trustworthy non-composing $source activity', async ({ activity }) => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true, data: 'ก' }))
+      notifySessionsChanged()
+      activity()
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_499)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats beforeinput text insertion as typing even when an IME emits no keydown', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(
+        new window.InputEvent('beforeinput', { bubbles: true, data: 'ก', inputType: 'insertText' })
+      )
+      notifySessionsChanged()
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_499)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not leak composition warmth when one of two sync mounts unmounts mid-composition', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    const first = renderTypingSync(refreshSessions)
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true, data: 'ก' }))
+      first.unmount()
+      window.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true, data: 'กำ' }))
+      notifySessionsChanged()
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_499)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    {
+      activity: () =>
+        window.dispatchEvent(new window.KeyboardEvent('keydown', { bubbles: true, isComposing: true, key: 'Process' })),
+      metadata: 'KeyboardEvent.isComposing'
+    },
+    {
+      activity: () => {
+        const event = new window.KeyboardEvent('keydown', { bubbles: true, isComposing: false, key: 'Process' })
+        Object.defineProperties(event, {
+          keyCode: { value: 229 },
+          which: { value: 229 }
+        })
+        window.dispatchEvent(event)
+      },
+      metadata: 'legacy keyCode/which 229'
+    },
+    {
+      activity: () =>
+        window.dispatchEvent(
+          new window.InputEvent('input', {
+            bubbles: true,
+            data: 'ก',
+            inputType: 'insertText',
+            isComposing: true
+          })
+        ),
+      metadata: 'InputEvent.isComposing'
+    },
+    {
+      activity: () =>
+        window.dispatchEvent(
+          new window.InputEvent('beforeinput', {
+            bubbles: true,
+            data: 'ก',
+            inputType: 'insertCompositionText',
+            isComposing: false
+          })
+        ),
+      metadata: 'composition inputType'
+    }
+  ])('holds refresh while $metadata reports active IME composition', async ({ activity }) => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      activity()
+      notifySessionsChanged()
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+  })
+
+  it('keeps composition active when focus moves between elements inside the renderer', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+    const input = document.createElement('input')
+    document.body.append(input)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true, data: 'ก' }))
+      notifySessionsChanged()
+      input.dispatchEvent(new window.FocusEvent('blur', { bubbles: false }))
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    act(() => {
+      input.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true, data: 'กำ' }))
+      input.remove()
+    })
+  })
+
+  it('releases an abandoned composition state on window blur and lands at the next quiet check', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true, data: 'ก' }))
+      notifySessionsChanged()
+      window.dispatchEvent(new window.Event('blur'))
+    })
+
+    // The renderer is no longer typing as soon as the whole window blurs. The
+    // already-scheduled trailing refresh remains bounded by one quiet interval.
+    expect(isTypingBurstActive()).toBe(false)
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_500)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not create phantom typing warmth when an idle renderer blurs', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(new window.Event('blur'))
+      notifySessionsChanged()
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(0)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not carry abandoned composition warmth across a full sync teardown', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    const first = renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => {
+      window.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true, data: 'ก' }))
+      first.unmount()
+    })
+
+    renderTypingSync(refreshSessions)
+    refreshSessions.mockClear()
+    act(() => notifySessionsChanged())
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_500)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalled()
+  })
 })
 
 describe('isTypingBurstActive', () => {

@@ -13281,6 +13281,19 @@ def cmd_memory(args):
             "\n  Memory reset complete. New sessions will start with a blank slate."
         )
         print(f"  Files were in: {display_hermes_home()}/memories/\n")
+    elif sub == "add":
+        from hermes_cli.memory_write import add_builtin_memory
+        from hermes_constants import display_hermes_home
+
+        target = getattr(args, "target", "memory") or "memory"
+        result = add_builtin_memory(content=getattr(args, "content", ""), target=target)
+        if not result.get("success"):
+            print(f"\n  Memory add failed: {result.get('error', 'unknown error')}\n")
+            return 1
+        filename = "USER.md" if target == "user" else "MEMORY.md"
+        print(f"\n  {result.get('message', 'Entry added.')}")
+        print(f"  Wrote {display_hermes_home()}/memories/{filename}")
+        print("  Open sessions keep their current snapshot until the next session.\n")
     else:
         from hermes_cli.memory_setup import memory_command
 

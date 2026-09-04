@@ -15,7 +15,8 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         "memory",
         help="Configure external memory provider",
         description=(
-            "Set up and manage external memory provider plugins.\n\n"
+            "Set up and manage external memory provider plugins, and write\n"
+            "built-in MEMORY.md / USER.md entries without an agent turn.\n\n"
             "Available providers: honcho, openviking, mem0, hindsight,\n"
             "holographic, retaindb, byterover.\n\n"
             "Only one external provider can be active at a time.\n"
@@ -49,5 +50,19 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         choices=["all", "memory", "user"],
         default="all",
         help="Which store to reset: 'all' (default), 'memory', or 'user'",
+    )
+    _add_parser = memory_sub.add_parser(
+        "add",
+        help="Append a built-in memory entry without calling a model",
+    )
+    _add_parser.add_argument(
+        "content",
+        help="Entry text to store in MEMORY.md or USER.md",
+    )
+    _add_parser.add_argument(
+        "--target",
+        choices=["memory", "user"],
+        default="memory",
+        help="Which store to write: memory (MEMORY.md) or user (USER.md)",
     )
     memory_parser.set_defaults(func=cmd_memory)

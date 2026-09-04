@@ -8864,6 +8864,11 @@ def _resolve_task_provider_model(
             return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+        if cfg_base_url:
+            # Local / OpenAI-compatible servers often have a base_url and no
+            # API key (Ollama, llama.cpp, LM Studio). Do not drop the endpoint
+            # just because provider is still the default "auto".
+            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 
@@ -8882,6 +8887,45 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 # (they finish before the deadline) and is a minimum, so a higher config value
 # is kept unchanged.
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
+
+
+_LOCAL_PRESET_KEYS = ("base_url", "model", "api_key", "provider", "api_mode", "key_env")
+
+
+def _apply_auxiliary_local_preset(
+    task: str,
+    task_config: Dict[str, Any],
+    aux: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Inherit empty fields from ``auxiliary.local`` when ``task`` is listed.
+
+    ``auxiliary.local.tasks`` is required and explicit — an empty list means
+    the preset is inert so a leftover base_url cannot silently reroute every
+    side task. Per-task non-empty keys are never overwritten.
+    """
+    if not isinstance(aux, dict):
+        return task_config
+    local = aux.get("local")
+    if not isinstance(local, dict):
+        return task_config
+    raw_tasks = local.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        return task_config
+    wanted = {str(name).strip() for name in raw_tasks if str(name).strip()}
+    if task not in wanted:
+        return task_config
+    merged = dict(task_config)
+    for key in _LOCAL_PRESET_KEYS:
+        existing = str(merged.get(key) or "").strip()
+        if existing:
+            continue
+        incoming = local.get(key)
+        if incoming is None:
+            continue
+        text = str(incoming).strip()
+        if text:
+            merged[key] = text
+    return merged
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
@@ -8907,6 +8951,12 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
+
+    # Shared auxiliary.local preset fills empty per-task fields only.
+    # Explicit auxiliary.<task>.* values always win. ``local`` itself is
+    # not a task slot.
+    if task != "local":
+        task_config = _apply_auxiliary_local_preset(task, task_config, aux)
 
     # Layer plugin-declared defaults underneath user config so
     # ctx.register_auxiliary_task(defaults={...}) takes effect without

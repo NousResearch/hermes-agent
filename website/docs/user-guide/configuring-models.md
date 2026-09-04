@@ -75,6 +75,8 @@ Click **Show auxiliary** to reveal the 11 task slots:
 
 Every auxiliary task defaults to `auto` — meaning Hermes tries your main model for that job too. If that route is unavailable or hits a capacity-style failure, `auto` follows any task-specific `auxiliary.<task>.fallback_chain`, then the main `fallback_providers` / `fallback_model` chain, then Hermes' built-in auxiliary discovery chain. Override a specific task when you want a cheaper or faster model for a side-job.
 
+Hermes does **not** ship an in-process LLM. Local models stay on your endpoint (Ollama, llama.cpp, LM Studio, or any OpenAI-compatible `/v1` server). To point several side tasks at one local model without repeating `base_url` on every slot, set `auxiliary.local` and list the tasks that should inherit it. Per-task values still win. Housekeeping that should not wait on any model at all — appending MEMORY.md / USER.md, installing a skill — uses the CLI (`hermes memory add`, `hermes skills install`) instead of a chat turn. Obsidian notes are ordinary vault files; write them with file tools or the `obsidian` skill rather than a second model.
+
 ### Common override patterns
 
 | Task | When to override |

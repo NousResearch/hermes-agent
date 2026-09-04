@@ -1166,6 +1166,18 @@ DEFAULT_CONFIG = {
     # Each aux task is independent — main-agent provider_routing and
     # openrouter.min_coding_score do NOT propagate to aux calls by design.
     "auxiliary": {
+        # Shared local/OpenAI-compatible preset for side tasks. Empty by
+        # default (no routing change). When base_url + tasks are set, listed
+        # auxiliary.<task> slots inherit these fields unless the slot already
+        # has its own non-empty value. This is not a bundled in-process model
+        # — point it at Ollama, llama.cpp, LM Studio, or any /v1 endpoint.
+        "local": {
+            "base_url": "",
+            "model": "",
+            "api_key": "",
+            "provider": "",
+            "tasks": [],
+        },
         # Same-provider retries for a transient transport blip (connection
         # reset / timeout / 5xx / 408) on ANY auxiliary call before falling
         # back. Default 2 (→ 3 total attempts), clamped [0,6]. Matters most for

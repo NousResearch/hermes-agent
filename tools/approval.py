@@ -1515,7 +1515,7 @@ _INTERPRETER_EXEC_FLAGS = {
     "perl": {"-e", "--eval"},
     "ruby": {"-e"},
     "php": {"-r"},
-    "powershell": {"-command", "-c", "-file", "-f"},
+    "powershell": {"-command", "-c"},
 }
 _INTERPRETER_WITH_ARG = {
     "python": {"-W", "-X", "--check-hash-based-pycs"},

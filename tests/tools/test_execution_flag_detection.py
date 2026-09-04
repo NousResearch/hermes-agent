@@ -107,7 +107,6 @@ def test_read_tool_exec_like_operands_owned_by_other_syntax_are_not_flagged(comm
         "perl -wne 'print' file.txt",
         "ruby3.2 -e 'puts 1'",
         "php -r 'echo 1;'",
-        "powershell -ExecutionPolicy Bypass -File helper.ps1",
         "pwsh -Command 'Get-Process'",
         "python3.11 << 'PY'\nprint(1)\nPY",
     ],
@@ -207,6 +206,8 @@ def test_exec_flag_payload_reaches_hardline_floor(command):
         "pip install --pre somepackage",
         "man -k pager",
         "man -p e ls",
+        "powershell -ExecutionPolicy Bypass -File helper.ps1",
+        "pwsh -File script.ps1",
     ],
 )
 def test_non_executing_flags_are_not_flagged(command):

@@ -6,8 +6,9 @@ stdout drain thread used by ``BaseEnvironment._wait_for_process``.
 """
 
 import codecs
+import logging
 import os
-import select
+import selectors
 import subprocess
 import threading
 import time
@@ -17,6 +18,8 @@ from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
+
+logger = logging.getLogger(__name__)
 
 # Sentinel capacity for full-fidelity capture: large enough that the collector
 # never evicts, so bounded and unbounded modes share one code path.
@@ -398,28 +401,90 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
 
 
 def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder) -> None:
-    """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle."""
+    """POSIX drain: selectors-based poll, stopping ~300ms after bash exits with the pipe idle.
+
+    select.select() only accepts fds < FD_SETSIZE (1024), so a pipe fd >= 1024
+    raised ValueError — misread as EOF, silently discarding all output
+    (#94928). selectors.DefaultSelector() has no fd limit and logs a genuine
+    readiness error instead. A non-pollable fd (regular file -> EPERM from
+    epoll, or an already-closed one) falls back to direct reads rather than
+    dropping output.
+    """
     idle_after_exit = 0
-    while True:
+    _selector = selectors.DefaultSelector()
+    try:
         try:
-            ready, _, _ = select.select([fd], [], [], 0.1)
-        except (ValueError, OSError):
-            return  # fd already closed
-        if ready:
+            _selector.register(fd, selectors.EVENT_READ)
+        except (ValueError, OSError) as _exc:
+            # register() fails for a non-pollable fd (e.g. a regular file,
+            # which epoll rejects with EPERM) or an already-closed one. Drain
+            # with direct reads instead of silently dropping the output. Switch
+            # the fd to non-blocking and reuse the idle-after-exit bound so a
+            # still-live pipe (whose register failure is pathological) cannot
+            # hold the drain for the full timeout: regular files read to EOF
+            # without ever blocking, and the bound mirrors the selector path.
+            logger.warning(
+                "drain: could not register fd %s with selector (%r); falling back to polling read",
+                fd, _exc,
+            )
             try:
-                chunk = os.read(fd, 4096)
+                os.set_blocking(fd, False)
             except (ValueError, OSError):
-                return
-            if not chunk:
-                return  # true EOF — all writers closed
-            output.append(decoder.decode(chunk))
-            idle_after_exit = 0
-        elif proc.poll() is not None:
-            # bash is gone and the pipe was idle ~100ms; allow two more cycles
-            # for a buffered tail, then stop (a grandchild may hold the pipe).
-            idle_after_exit += 1
-            if idle_after_exit >= 3:
-                return
+                pass
+            try:
+                while True:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except BlockingIOError:
+                        chunk = None
+                    except (ValueError, OSError):
+                        break
+                    if chunk:
+                        output.append(decoder.decode(chunk))
+                        idle_after_exit = 0
+                        continue
+                    if chunk == b"":
+                        break  # true EOF — all writers closed
+                    # No data right now; idle bound like the selector path.
+                    if proc.poll() is not None:
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+                    time.sleep(0.1)
+            finally:
+                try:
+                    os.set_blocking(fd, True)
+                except (ValueError, OSError):
+                    pass
+        else:
+            while True:
+                try:
+                    ready = _selector.select(timeout=0.1)
+                except (ValueError, OSError) as _exc:
+                    logger.warning(
+                        "drain: readiness poll failed for fd %s (%r); "
+                        "stopping drain — output may be truncated",
+                        fd, _exc,
+                    )
+                    break
+                if ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except (ValueError, OSError):
+                        break
+                    if not chunk:
+                        break  # true EOF — all writers closed
+                    output.append(decoder.decode(chunk))
+                    idle_after_exit = 0
+                elif proc.poll() is not None:
+                    # bash is gone and the pipe was idle ~100ms; allow two more
+                    # cycles for a buffered tail, then stop (a grandchild may
+                    # hold the pipe).
+                    idle_after_exit += 1
+                    if idle_after_exit >= 3:
+                        break
+    finally:
+        _selector.close()
 
 
 def _start_drain_thread(proc: ProcessHandle, output: _BoundedOutputCollector) -> threading.Thread:

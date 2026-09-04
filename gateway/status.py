@@ -703,9 +703,11 @@ def _build_pid_record() -> dict:
         "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped credential locks are machine-global rather than
-        # HERMES_HOME-local.  Persist the owning gateway's process home so an
-        # explicit cross-profile --replace can place its planned-takeover
-        # marker where the target process will actually read it.
+        # HERMES_HOME-local.  Persist the owning gateway's process home so
+        # conflict errors can name the holder and same-home ``--replace``
+        # can place its planned-takeover marker where that process will
+        # actually read it.  A live sibling profile (different home) is
+        # never SIGTERM'd for the token — that is a config conflict (#88521).
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
     }
 
@@ -2260,23 +2262,34 @@ def take_over_scoped_lock_holder(
     graceful_attempts: int = 20,
     force_attempts: int = 20,
 ) -> Optional[int]:
-    """Terminate one verified scoped-lock holder for explicit ``--replace``.
+    """Terminate one verified same-home scoped-lock holder for ``--replace``.
 
     Returns the original owner PID only after that exact PID/start-time identity
-    has exited (or ``terminate_pid`` reports it already gone).  Validation or
-    marker-write failure returns ``None`` without signalling anything.  This is
-    deliberately stricter than the same-home PID-file replacement path: a
-    cross-home handoff must place a consumable marker in the target's home or a
-    service supervisor could revive the target and start a flap loop.
+    has exited (or ``terminate_pid`` reports it already gone).  Validation
+    failure, a live holder in a *different* HERMES_HOME, or marker-write
+    failure returns ``None`` without signalling anything.
 
-    On POSIX, after the owner is confirmed dead, its previously snapshotted
-    child processes are reaped best-effort (see :func:`reap_gateway_children`)
-    so orphaned adapter subprocesses cannot keep holding token locks.
+    Token locks are machine-global, so two profiles can claim the same bot
+    token.  ``--replace`` may reap a leftover process of *this* profile
+    (same HERMES_HOME) that still holds the lock; it must not SIGTERM a live
+    sibling profile.  Docker s6 starts every profile with ``--replace``, and
+    killing the sibling starts a supervisor flap that also reaps cron
+    children (#88521).  The caller then takes the retryable lock-conflict
+    path.
+
+    On POSIX, after a same-home owner is confirmed dead, its previously
+    snapshotted child processes are reaped best-effort
+    (see :func:`reap_gateway_children`) so orphaned adapter subprocesses
+    cannot keep holding token locks.
     """
     owner = _validated_scoped_lock_gateway_owner(record)
     if owner is None:
         return None
     owner_pid, owner_start_time, target_home = owner
+
+    # Live sibling profile: config conflict, not a stale same-slot holder.
+    if not _same_hermes_home(target_home, _get_process_hermes_home()):
+        return None
 
     # Snapshot descendants while the owner is still alive — after it exits
     # they are reparented and undiscoverable (POSIX; [] on Windows where

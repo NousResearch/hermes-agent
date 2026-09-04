@@ -115,11 +115,10 @@ class TestScopedLockTakeoverReapsChildren:
         return record
 
     def _verified_owner_env(self, tmp_path, monkeypatch, *, alive_polls):
-        replacer_home = tmp_path / "replacer"
-        target_home = tmp_path / "target"
-        replacer_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(replacer_home))
-        record = self._owner_record(target_home)
+        home = tmp_path / "profile"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        record = self._owner_record(home)
         alive = iter(alive_polls)
         monkeypatch.setattr(status, "_pid_exists", lambda _pid: next(alive))
         monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)

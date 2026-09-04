@@ -3797,10 +3797,10 @@ class BasePlatformAdapter(ABC):
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
         """Acquire a scoped lock for this adapter. Returns True on success.
 
-        A live cross-HERMES_HOME holder may be replaced only when the runner
-        explicitly arms this adapter for its initial ``--replace`` connect.
-        The status module validates PID/start-time/home ownership, places the
-        marker in the target's home, and performs the bounded termination.
+        When the runner arms this adapter for its initial ``--replace``
+        connect, a leftover *same-HERMES_HOME* holder may be terminated.
+        A live holder in another HERMES_HOME is a config conflict: the
+        lock stays retryable and that sibling is not SIGTERM'd (#88521).
         """
         from gateway.status import (
             acquire_scoped_lock,

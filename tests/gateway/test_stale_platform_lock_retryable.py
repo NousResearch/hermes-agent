@@ -12,11 +12,12 @@ process grab the lock first).
 so the reconnect watcher can retry after a delay — not permanently kill
 the platform.
 
-#65176 — a live gateway token conflict may attempt one-shot takeover only
-during the initial connect of an explicit ``gateway run --replace`` startup.
-``gateway run --replace`` only kills same-HERMES_HOME PID-file holders.
-A normal start or reconnect must retain the retryable conflict behavior and
-must never evict the active holder.
+#65176 / #88521 — a live gateway token conflict may attempt one-shot
+takeover only during the initial connect of an explicit ``gateway run
+--replace`` startup, and only when the holder is the *same* HERMES_HOME.
+A live sibling profile is a config conflict: retryable, never SIGTERM'd.
+A normal start or reconnect must retain the retryable conflict behavior
+and must never evict the active holder.
 """
 
 from typing import Any, Dict
@@ -182,3 +183,37 @@ def test_lock_conflict_keeps_pid_only_wording_for_legacy_record(adapter):
         "Telegram bot token already in use (PID 99999). "
         "Stop the other gateway first."
     )
+
+
+def test_replace_does_not_takeover_live_sibling_home(adapter):
+    """#88521: --replace must not treat a different HERMES_HOME as replaceable."""
+    existing = {
+        "pid": 4242,
+        "kind": "hermes-gateway",
+        "argv": ["hermes", "gateway", "run"],
+        "start_time": 123,
+        "profile": "personal",
+        "hermes_home": "/opt/data/profiles/personal",
+    }
+    adapter._platform_lock_takeover_allowed = True
+
+    with patch(
+        "gateway.status.acquire_scoped_lock",
+        return_value=(False, existing),
+    ), patch(
+        "gateway.status.take_over_scoped_lock_holder",
+        return_value=None,
+    ) as takeover, patch.object(
+        adapter, "_write_runtime_status_safe"
+    ):
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token", "test-token", "Telegram bot token"
+        )
+
+    assert result is False
+    assert adapter._fatal_error_retryable is True
+    assert adapter._fatal_error_code == "telegram-bot-token_lock"
+    assert "PID 4242" in adapter.fatal_error_message
+    assert "'personal' profile gateway" in adapter.fatal_error_message
+    takeover.assert_called_once_with(existing)
+

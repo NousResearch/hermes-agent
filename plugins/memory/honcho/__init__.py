@@ -166,11 +166,14 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return False
 
     def save_config(self, values, hermes_home):
-        """Merge ``values`` into $HERMES_HOME/honcho.json (Honcho SDK native format)."""
+        """Merge ``values`` into $HERMES_HOME/honcho.json (Honcho SDK native format).
+        A file that exists but does not parse raises instead of being replaced by ``values`` alone."""
         from pathlib import Path
-        from utils import atomic_json_write, read_json_or_empty
+        from utils import atomic_json_write
+        from plugins.memory.honcho.oauth import _read_config_strict
         config_path = Path(hermes_home) / "honcho.json"
-        atomic_json_write(config_path, {**read_json_or_empty(config_path), **values}, mode=0o600)
+        existing = _read_config_strict(config_path)
+        atomic_json_write(config_path, {**existing, **values}, mode=0o600)
 
     def get_config_schema(self):
         return [

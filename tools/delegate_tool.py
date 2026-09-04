@@ -120,6 +120,9 @@ def _get_subagent_approval_callback():
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
+# Stagger the first wave of parallel children so a rate-limited provider
+# (B.AI 1302) is not hit by max_workers simultaneous first requests.
+_SPAWN_STAGGER_SECONDS = 2.0
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
@@ -4275,7 +4278,7 @@ def delegate_task(
             from tools.daemon_pool import DaemonThreadPoolExecutor
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
-                for i, t, child in children:
+                for submit_i, (i, t, child) in enumerate(children):
                     child_context = contextvars.copy_context()
                     future = executor.submit(
                         child_context.run,
@@ -4289,6 +4292,14 @@ def delegate_task(
                         owner_session_record=_origin_owner_session_record,
                     )
                     futures[future] = i
+                    # Only stagger while filling the pool; queued work already
+                    # waits for a free worker.
+                    if (
+                        _SPAWN_STAGGER_SECONDS > 0
+                        and submit_i < len(children) - 1
+                        and len(futures) < max_children
+                    ):
+                        time.sleep(_SPAWN_STAGGER_SECONDS)
 
                 # Poll futures with interrupt checking.  as_completed() blocks
                 # until ALL futures finish — if a child agent gets stuck,

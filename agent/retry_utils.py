@@ -139,6 +139,64 @@ def _error_text(error: Any) -> str:
     return " ".join(str(part) for part in parts if part is not None).lower()
 
 
+# B.AI (api.b.ai) account-level 429 code 1302 ("您的账户已达到速率限制，请您控制请求频率").
+# Short 2–5s retries deepen the hole; skip them and walk the long table immediately.
+# Cap the shared in-process cooldown so concurrent subagents wait instead of
+# stampeding the same account.
+# Start at 60s so the wait outlasts the credential-pool sole-key 429 TTL
+# (EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60); a 30s retry would bounce
+# off a still-benched key and look like another 429.
+_BAI_ACCOUNT_RATE_LIMIT_LONG_BACKOFF = (60.0, 90.0, 120.0, 180.0)
+_BAI_COOLDOWN_CAP_SECONDS = 180.0
+_bai_cooldown_until = 0.0
+_bai_cooldown_lock = threading.Lock()
+
+
+def is_bai_endpoint(*, base_url: str | None, provider: str | None = None) -> bool:
+    """True for the B.AI OpenAI-compatible endpoint used by Hermes ``b-ai``."""
+    base = (base_url or "").lower()
+    prov = (provider or "").lower()
+    return prov == "b-ai" or "api.b.ai" in base
+
+
+def is_bai_account_rate_limit_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
+    """Return True for B.AI account-level 429s (code 1302).
+
+    Unlike Z.AI coding-plan overload (1305, often clears in seconds), 1302 is
+    an account frequency cap. Fast retries make it worse, so callers should
+    use the long backoff schedule from attempt 1.
+    """
+    del model  # matcher is endpoint + body, not model family
+    status = getattr(error, "status_code", None)
+    text = _error_text(error)
+    return (
+        status == 429
+        and is_bai_endpoint(base_url=base_url)
+        and ("1302" in text or "达到速率限制" in text)
+    )
+
+
+def record_bai_rate_limit_cooldown(seconds: float) -> None:
+    """Extend the in-process B.AI cooldown so sibling subagents wait too."""
+    global _bai_cooldown_until
+    try:
+        wait = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if wait <= 0:
+        return
+    until = time.time() + min(wait, _BAI_COOLDOWN_CAP_SECONDS)
+    with _bai_cooldown_lock:
+        if until > _bai_cooldown_until:
+            _bai_cooldown_until = until
+
+
+def bai_rate_limit_cooldown_remaining() -> float:
+    """Seconds left on the in-process B.AI cooldown, or 0 if idle."""
+    with _bai_cooldown_lock:
+        return max(0.0, _bai_cooldown_until - time.time())
+
+
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
     """Return True for Z.AI Coding Plan transient overload 429s.
 
@@ -159,6 +217,12 @@ def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, err
     )
 
 
+def _long_backoff_wait(base_delay: float) -> float:
+    # A smaller jitter ratio keeps long waits readable while still avoiding
+    # synchronized retry storms across concurrent Hermes sessions.
+    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2)
+
+
 def adaptive_rate_limit_backoff(
     attempt: int,
     *,
@@ -170,25 +234,31 @@ def adaptive_rate_limit_backoff(
 ) -> tuple[float, str | None]:
     """Provider-aware rate-limit backoff.
 
-    For most providers this returns ``default_wait`` unchanged. For Z.AI
-    Coding Plan GLM-5.2 overloads, keep the first ``short_attempts`` retries on
-    the normal short exponential schedule, then switch to progressively longer
-    waits (30s → 60s → 90s → 120s, capped) plus light jitter.
+    For most providers this returns ``default_wait`` unchanged.
+
+    * Z.AI Coding Plan GLM-5.2 overloads: keep the first ``short_attempts``
+      retries on the normal short exponential schedule, then switch to
+      progressively longer waits (30s → 60s → 90s → 120s) plus light jitter.
+    * B.AI account 429 (code 1302): skip the short tier — those retries
+      deepen the frequency cap — and walk the long table from attempt 1.
 
     ``attempt`` is 1-based, matching the retry loop's logged attempt number.
     Returns ``(wait_seconds, reason_label)`` where ``reason_label`` is suitable
     for status/log decoration when a provider-specific policy fired.
     """
+    if is_bai_account_rate_limit_error(base_url=base_url, model=model, error=error):
+        idx = min(max(attempt, 1) - 1, len(_BAI_ACCOUNT_RATE_LIMIT_LONG_BACKOFF) - 1)
+        wait = _long_backoff_wait(_BAI_ACCOUNT_RATE_LIMIT_LONG_BACKOFF[idx])
+        record_bai_rate_limit_cooldown(wait)
+        return wait, "bai_account_rate_limit"
+
     if not is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
         return default_wait, None
     if attempt <= short_attempts:
         return default_wait, "zai_coding_overload_short"
 
     idx = min(attempt - short_attempts - 1, len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) - 1)
-    base_delay = _ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]
-    # A smaller jitter ratio keeps long waits readable while still avoiding
-    # synchronized retry storms across concurrent Hermes sessions.
-    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+    return _long_backoff_wait(_ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]), "zai_coding_overload_long"
 
 
 def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:
@@ -206,3 +276,13 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
     """
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+def bai_account_rate_limit_retry_ceiling() -> int:
+    """Retry-loop ceiling so every B.AI 1302 long-backoff entry can run.
+
+    B.AI skips the short tier, so the ceiling is one past the last long-table
+    entry. Same give-up-before-backoff invariant as
+    ``zai_coding_overload_retry_ceiling``.
+    """
+    return len(_BAI_ACCOUNT_RATE_LIMIT_LONG_BACKOFF) + 1

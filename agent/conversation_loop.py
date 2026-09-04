@@ -95,6 +95,10 @@ from agent.prompt_caching import (
 from agent.provider_projection import splice_provider_projection
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
+    bai_account_rate_limit_retry_ceiling,
+    bai_rate_limit_cooldown_remaining,
+    is_bai_account_rate_limit_error,
+    is_bai_endpoint,
     is_zai_coding_overload_error,
     jittered_backoff,
     zai_coding_overload_retry_ceiling,
@@ -3387,6 +3391,52 @@ def run_conversation(
                 except Exception:
                     pass  # Never let rate guard break the agent loop
 
+            # ── B.AI account rate-limit cooldown ──────────────────
+            # Concurrent subagents share one B.AI account. After any sibling
+            # hits 1302, wait out the shared cooldown instead of firing
+            # another request that deepens the frequency cap.
+            if is_bai_endpoint(
+                base_url=str(getattr(agent, "base_url", "") or ""),
+                provider=str(getattr(agent, "provider", "") or ""),
+            ):
+                try:
+                    _bai_remaining = bai_rate_limit_cooldown_remaining()
+                except Exception:
+                    _bai_remaining = 0.0
+                if _bai_remaining > 0.5:
+                    agent._buffer_status(
+                        f"⏱️ B.AI rate limited. Waiting {_bai_remaining:.1f}s before retrying..."
+                    )
+                    _bai_sleep_end = time.time() + min(_bai_remaining, 180.0)
+                    _bai_wait_aborted = False
+                    while time.time() < _bai_sleep_end:
+                        if agent._interrupt_requested:
+                            if agent.clear_interrupt(preserve_redirect=True):
+                                _retry.restart_with_redirected_messages = True
+                                _bai_wait_aborted = True
+                                break
+                            agent._vprint(
+                                f"{agent.log_prefix}⚡ Interrupt detected during B.AI rate-limit wait, aborting.",
+                                force=True,
+                            )
+                            _interrupt_text = (
+                                "Operation interrupted: waiting out B.AI rate limit."
+                            )
+                            close_interrupted_tool_sequence(messages, _interrupt_text)
+                            agent._persist_session(messages, conversation_history)
+                            agent.clear_interrupt()
+                            return {
+                                "final_response": _interrupt_text,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "interrupted": True,
+                            }
+                        time.sleep(0.2)
+                    if _bai_wait_aborted:
+                        break
+
             try:
                 agent._reset_stream_delivery_tracking()
                 # Per-attempt first-chunk timestamp, refreshed each attempt so
@@ -6031,8 +6081,13 @@ def run_conversation(
                 _is_zai_coding_overload = is_zai_coding_overload_error(
                     base_url=str(_base), model=_model, error=api_error
                 )
+                _is_bai_account_rate_limit = is_bai_account_rate_limit_error(
+                    base_url=str(_base), model=_model, error=api_error
+                )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+                if _is_bai_account_rate_limit:
+                    max_retries = max(max_retries, bai_account_rate_limit_retry_ceiling())
                 _should_fallback = (
                     (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
@@ -7258,7 +7313,7 @@ def run_conversation(
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
-                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
+                if (is_rate_limited or _is_zai_coding_overload or _is_bai_account_rate_limit) and not _retry_after:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(
                         retry_count,
                         base_url=str(_base),
@@ -7266,18 +7321,20 @@ def run_conversation(
                         error=api_error,
                         default_wait=wait_time,
                     )
-                if is_rate_limited or _is_zai_coding_overload:
+                if is_rate_limited or _is_zai_coding_overload or _is_bai_account_rate_limit:
                     _policy_note = ""
                     if _backoff_policy == "zai_coding_overload_long":
                         _policy_note = " (Z.AI Coding overload adaptive long backoff)"
                     elif _backoff_policy == "zai_coding_overload_short":
                         _policy_note = " (Z.AI Coding overload short retry)"
+                    elif _backoff_policy == "bai_account_rate_limit":
+                        _policy_note = " (B.AI account rate-limit long backoff)"
                     _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
                     _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
                     # Normal retries are buffered to avoid noisy transient chatter. Long
-                    # Z.AI Coding waits are different: they can last minutes, so surface
+                    # Z.AI / B.AI waits are different: they can last minutes, so surface
                     # progress immediately instead of making the TUI look frozen.
-                    if _backoff_policy == "zai_coding_overload_long":
+                    if _backoff_policy in {"zai_coding_overload_long", "bai_account_rate_limit"}:
                         agent._emit_status(_rate_limit_status)
                     else:
                         agent._buffer_status(_rate_limit_status)

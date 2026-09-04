@@ -169,6 +169,87 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
     assert long_waits == [30.0, 60.0, 90.0, 120.0]
 
 
+def _bai_rate_limit_error():
+    return SimpleNamespace(
+        status_code=429,
+        body={
+            "error": {
+                "message": "您的账户已达到速率限制，请您控制请求频率",
+                "type": "upstream_error",
+                "code": "1302",
+            }
+        },
+    )
+
+
+def test_bai_1302_is_detected():
+    from agent.retry_utils import is_bai_account_rate_limit_error
+
+    err = _bai_rate_limit_error()
+    assert is_bai_account_rate_limit_error(
+        base_url="https://api.b.ai/v1", model="test-model", error=err
+    )
+    assert not is_bai_account_rate_limit_error(
+        base_url="https://api.openai.com/v1", model="test-model", error=err
+    )
+
+
+def test_bai_1302_uses_long_backoff_from_attempt_1(monkeypatch):
+    """Account-level 1302 must not use the 2–5s short retry schedule."""
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    monkeypatch.setattr(retry_utils, "_bai_cooldown_until", 0.0)
+
+    err = _bai_rate_limit_error()
+    waits = []
+    for attempt in range(1, 5):
+        wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://api.b.ai/v1",
+            model="test-model",
+            error=err,
+            default_wait=2.0,
+        )
+        waits.append((wait, policy))
+
+    assert [w for w, _ in waits] == [60.0, 90.0, 120.0, 180.0]
+    assert all(p == "bai_account_rate_limit" for _, p in waits)
+
+
+def test_bai_retry_ceiling_covers_long_table():
+    from agent.retry_utils import (
+        bai_account_rate_limit_retry_ceiling,
+        _BAI_ACCOUNT_RATE_LIMIT_LONG_BACKOFF,
+    )
+
+    ceiling = bai_account_rate_limit_retry_ceiling()
+    last_attempt_with_backoff = ceiling - 1
+    assert last_attempt_with_backoff >= len(_BAI_ACCOUNT_RATE_LIMIT_LONG_BACKOFF)
+
+
+def test_bai_cooldown_is_shared_across_callers(monkeypatch):
+    monkeypatch.setattr(retry_utils, "_bai_cooldown_until", 0.0)
+    assert retry_utils.bai_rate_limit_cooldown_remaining() == 0.0
+    retry_utils.record_bai_rate_limit_cooldown(12.0)
+    remaining = retry_utils.bai_rate_limit_cooldown_remaining()
+    assert 10.0 <= remaining <= 12.0
+    retry_utils.record_bai_rate_limit_cooldown(3.0)
+    # Shorter wait must not shrink an existing cooldown.
+    assert retry_utils.bai_rate_limit_cooldown_remaining() >= remaining - 0.5
+
+
+def test_non_bai_429_keeps_default_wait():
+    err = SimpleNamespace(status_code=429, body={"error": {"message": "rate limited"}})
+    wait, policy = adaptive_rate_limit_backoff(
+        1,
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o",
+        error=err,
+        default_wait=4.0,
+    )
+    assert wait == 4.0
+    assert policy is None
+
+
 # ---------------------------------------------------------------------------
 # parse_retry_after_seconds — shared Retry-After parser
 # ---------------------------------------------------------------------------

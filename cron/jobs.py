@@ -3786,13 +3786,37 @@ def _sweep_completed_oneshots(
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Refresh this owner's ``fire_claim`` lease.
+
+    A heartbeat is not an external side effect: it only compare-and-swaps
+    ``fire_claim["at"]`` when ``fire_claim["by"]`` still equals
+    ``expected_owner``.  ``_jobs_lock()`` already serializes that CAS with both
+    an in-process lock and a cross-process flock, so it is safe on its own.
+
+    Taking the fire fence here is actively harmful.  The run thread holds the
+    per-job fence across its whole side effect (see ``_fire_job_lock``), and the
+    fence's reentrancy is thread-local, so it does not extend to the heartbeat
+    thread.  Any execution outliving ``_RUN_CLAIM_HEARTBEAT_SECONDS`` therefore
+    blocked here for ``_JOBS_LOCK_TIMEOUT_SECONDS`` and returned False, which
+    the scheduler reads as "ownership lost" and uses to interrupt a perfectly
+    healthy run -- reported to the operator as "Interrupted by shutdown before
+    terminal completion."
+
+    So: prefer the fence to keep the common path serialized with other owner
+    mutations, but when it is unavailable fall back to the CAS instead of
+    reporting a loss of ownership we have not actually observed.  A genuine
+    takeover still returns False, because ``by`` no longer matches.
+    """
     with _fire_job_lock(job_id) as acquired:
-        if not acquired:
-            return False
-        return _heartbeat_fire_claim_locked(
-            job_id,
-            expected_owner=expected_owner,
-        )
+        if acquired:
+            return _heartbeat_fire_claim_locked(
+                job_id,
+                expected_owner=expected_owner,
+            )
+
+    # Fence unavailable (held by this job's own run thread, or contended
+    # cross-process). The owner check below is authoritative either way.
+    return _heartbeat_fire_claim_locked(job_id, expected_owner=expected_owner)
 
 
 def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:

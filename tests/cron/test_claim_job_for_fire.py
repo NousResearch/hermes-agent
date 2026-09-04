@@ -263,3 +263,47 @@ def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
     assert result == {"outer": True, "inner": True}
     thread.join(timeout=2)
     assert thread.is_alive() is False
+
+
+def test_heartbeat_survives_fence_held_by_its_own_run(temp_home, monkeypatch):
+    """A heartbeat must not report ownership lost merely because the fence is busy.
+
+    Regression for the false "Interrupted by shutdown before terminal
+    completion." that killed every cron job outliving the heartbeat interval:
+    the run thread holds the per-job fence across its side effect, the
+    heartbeat thread (a different thread, so the fence's thread-local
+    reentrancy does not apply) could not acquire it, and that timeout was
+    reported to the scheduler as a lost claim.
+    """
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="long-run")
+    assert jobs.claim_job_for_fire(job["id"]) is True
+    owner = jobs.get_job(job["id"])["fire_claim"]["by"]
+
+    # Keep the failing path fast; the real value is 30s.
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.2)
+
+    fence_held = threading.Event()
+    release = threading.Event()
+
+    def hold_fence():
+        with jobs.fire_claim_fence(job["id"], expected_owner=owner) as owns:
+            assert owns is True
+            fence_held.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_fence, daemon=True)
+    holder.start()
+    try:
+        assert fence_held.wait(timeout=5)
+        # The run thread owns the fence; the heartbeat still confirms ownership.
+        assert jobs.heartbeat_fire_claim(job["id"], expected_owner=owner) is True
+        # A genuine takeover is still detected while the fence is busy.
+        assert (
+            jobs.heartbeat_fire_claim(job["id"], expected_owner="replacement-owner")
+            is False
+        )
+    finally:
+        release.set()
+        holder.join(timeout=5)

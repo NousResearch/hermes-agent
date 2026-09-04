@@ -525,17 +525,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const rafId = requestAnimationFrame(() => {
-      // The backfill PREPENDS older turns, so everything on screen slides down
-      // by their height. Anchor first and let the restore effect below re-apply
-      // it in the same commit the taller tree lands in — otherwise the view is
-      // stranded near the TOP until use-stick-to-bottom's ResizeObserver
-      // catches up a frame or two later (measured: an 11.5k px jump showing
-      // ~160ms of unrelated old turns, on every session load).
-      anchorBeforePrepend()
-
       // Functional max, not a plain set: an urgent "Show earlier" click can
       // land between scheduling and committing this transition, and a plain
-      // set would rebase over it and shrink the budget back down.
+      // set would rebase over it and shrink the budget back down. The backfill
+      // PREPENDS older turns; rather than manually anchoring via scrollTop
+      // reassignment (which produces the full-viewport lurch #99920), let
+      // use-stick-to-bottom's ResizeObserver track the height change naturally.
       startTransition(() => setRenderBudget(budget => Math.max(budget, Math.min(budget + BACKFILL_STEP, paneBudget))))
     })
 

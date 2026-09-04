@@ -609,7 +609,9 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     loading (the historical env-driven behavior still applies).
     """
     try:
-        if Path(home_path).resolve() != _process_hermes_home().resolve():
+        from hermes_constants import get_process_hermes_home
+
+        if Path(home_path).resolve() != get_process_hermes_home().resolve():
             return
         from hermes_cli.config import apply_terminal_config_to_env
 

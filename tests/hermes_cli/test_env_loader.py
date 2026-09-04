@@ -620,3 +620,39 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
 
     # The other profile's .env value stands; the process config was not applied.
     assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_routed_profile_override_does_not_bridge_terminal_config(tmp_path, monkeypatch):
+    """A routed profile load must not pin its terminal config process-wide."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    process_home = tmp_path / "process-home"
+    process_home.mkdir()
+    (process_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+
+    routed_home = tmp_path / "routed-profile"
+    routed_home.mkdir()
+    (routed_home / "config.yaml").write_text(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  docker_volumes:\n"
+        "    - routed-session:/session\n",
+        encoding="utf-8",
+    )
+
+    token = set_hermes_home_override(routed_home)
+    try:
+        load_hermes_dotenv(
+            hermes_home=routed_home,
+            load_external_secrets=False,
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert os.environ["TERMINAL_ENV"] == "local"
+    assert "TERMINAL_DOCKER_VOLUMES" not in os.environ

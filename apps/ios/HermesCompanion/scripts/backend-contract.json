@@ -1,0 +1,183 @@
+{
+  "schema": 1,
+  "evidence_class": "diagnostic-only",
+  "description": "Source-surface compatibility check, not runtime or device acceptance. Commit changes alone never fail this gate.",
+  "desktop_contracts": [
+    6
+  ],
+  "source_reference": "99c3cad8570732202907cf71f971fea9ec57df26",
+  "requirements": {
+    "hermes_cli/web_server.py": [
+      [
+        "websocket",
+        "/api/ws"
+      ],
+      [
+        "get",
+        "/api/learning/graph"
+      ],
+      [
+        "get",
+        "/api/learning/node"
+      ],
+      [
+        "get",
+        "/api/model/options"
+      ],
+      [
+        "get",
+        "/api/analytics/usage"
+      ]
+    ],
+    "tui_gateway/server.py": [
+      [
+        "rpc",
+        "ping"
+      ]
+    ],
+    "tui_gateway/methods_session.py": [
+      [
+        "rpc",
+        "session.list"
+      ],
+      [
+        "rpc",
+        "session.create"
+      ],
+      [
+        "rpc",
+        "session.resume"
+      ],
+      [
+        "rpc",
+        "session.interrupt"
+      ]
+    ],
+    "tui_gateway/methods_prompt.py": [
+      [
+        "rpc",
+        "prompt.submit"
+      ],
+      [
+        "rpc",
+        "approval.pending"
+      ],
+      [
+        "rpc",
+        "approval.respond"
+      ],
+      [
+        "rpc",
+        "clarify.respond"
+      ]
+    ],
+    "tui_gateway/methods_profiles.py": [
+      [
+        "rpc",
+        "profiles.list"
+      ],
+      [
+        "rpc",
+        "profiles.describe"
+      ]
+    ],
+    "hermes_cli/dashboard_auth/routes.py": [
+      [
+        "get",
+        "/api/auth/providers"
+      ],
+      [
+        "get",
+        "/api/auth/me"
+      ],
+      [
+        "post",
+        "/auth/password-login"
+      ],
+      [
+        "post",
+        "/api/auth/ws-ticket"
+      ]
+    ],
+    "plugins/kanban/dashboard/plugin_api.py": [
+      [
+        "get",
+        "/boards"
+      ],
+      [
+        "get",
+        "/board"
+      ],
+      [
+        "get",
+        "/tasks/{task_id}"
+      ],
+      [
+        "post",
+        "/tasks"
+      ],
+      [
+        "patch",
+        "/tasks/{task_id}"
+      ]
+    ],
+    "hermes_cli/web_routers/cron.py": [
+      [
+        "get",
+        "/api/cron/jobs"
+      ],
+      [
+        "get",
+        "/api/cron/jobs/{job_id}/runs"
+      ],
+      [
+        "post",
+        "/api/cron/jobs"
+      ],
+      [
+        "put",
+        "/api/cron/jobs/{job_id}"
+      ],
+      [
+        "post",
+        "/api/cron/jobs/{job_id}/pause"
+      ],
+      [
+        "post",
+        "/api/cron/jobs/{job_id}/resume"
+      ],
+      [
+        "post",
+        "/api/cron/jobs/{job_id}/trigger"
+      ],
+      [
+        "delete",
+        "/api/cron/jobs/{job_id}"
+      ]
+    ],
+    "hermes_cli/web_routers/skills.py": [
+      [
+        "get",
+        "/api/skills"
+      ],
+      [
+        "get",
+        "/api/skills/content"
+      ],
+      [
+        "put",
+        "/api/skills/toggle"
+      ]
+    ],
+    "hermes_cli/web_routers/tools.py": [
+      [
+        "get",
+        "/api/tools/toolsets"
+      ],
+      [
+        "put",
+        "/api/tools/toolsets/{name}"
+      ]
+    ]
+  }
+}

@@ -102,8 +102,26 @@ const INTERIM_SCRIPT: ScriptedTurn[] = [
   },
 ]
 
+// Regression for #98524. The first completion emits visible text alongside a
+// real tool call, so the backend publishes it as message.interim. The next
+// completion returns the exact same text as the authoritative final answer.
+// That gives the renderer the production ordering
+// interim -> tool.start/tool.complete -> final delta -> message.complete.
+const INTERIM_DUPLICATE_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'The duplicate-path answer is complete.',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '1', content: 'Verify', status: 'completed' }] } }],
+  },
+  {
+    text: 'The duplicate-path answer is complete.',
+  },
+]
+
 /** Per-server request counter so we can walk through the script turns. */
 let _scriptIndex = 0
+
+/** Per-server request counter for the #98524 duplicate-final script. */
+let _interimDuplicateIndex = 0
 
 /** Per-server counter for the sidebar-states script (independent from _scriptIndex). */
 let _sidebarScriptIndex = 0
@@ -129,6 +147,7 @@ const _receivedUserTexts: string[] = []
 /** Reset the script indices (called between tests via restartMockServer). */
 function resetScriptIndex(): void {
   _scriptIndex = 0
+  _interimDuplicateIndex = 0
   _sidebarScriptIndex = 0
   _sidebarCrossIndex = 0
   _queueStopIndex = 0
@@ -484,6 +503,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             _receivedUserTexts.push(userText)
           }
           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
+          const isInterimDuplicateTrigger =
+            userText.includes('E2E_INTERIM_DUPLICATE_TRIGGER') &&
+            Array.isArray(parsed.tools) &&
+            parsed.tools.length > 0
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
@@ -596,6 +619,19 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             const turn = SIDEBAR_SCRIPT[_sidebarScriptIndex] ?? SIDEBAR_SCRIPT[SIDEBAR_SCRIPT.length - 1]
             _sidebarScriptIndex++
 
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
+
+          if (isInterimDuplicateTrigger) {
+            const turn =
+              INTERIM_DUPLICATE_SCRIPT[_interimDuplicateIndex] ??
+              INTERIM_DUPLICATE_SCRIPT[INTERIM_DUPLICATE_SCRIPT.length - 1]
+            _interimDuplicateIndex++
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
@@ -954,6 +990,9 @@ export const INTERIM_TEXTS = {
   /** Text that should NOT produce an interim (empty-text tool turn). */
   silentTurnIndex: INTERIM_SCRIPT.findIndex((t) => !t.text && t.toolCalls),
 } as const
+
+/** Exact text emitted first as an interim and then as the final in #98524. */
+export const INTERIM_DUPLICATE_TEXT = INTERIM_DUPLICATE_SCRIPT[0].text
 
 /** The sidebar-states script's text constants, exported for test assertions. */
 export const SIDEBAR_TEXTS = {

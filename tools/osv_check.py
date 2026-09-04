@@ -227,11 +227,21 @@ def check_package_for_malware(
 
 
 def _infer_ecosystem(command: str) -> Optional[str]:
-    """Infer package ecosystem from the command name."""
-    base = os.path.basename(command).lower()
+    """Infer package ecosystem from the command name.
+
+    The executable basename is taken by splitting on BOTH path separators —
+    ``os.path.basename`` alone leaves ``C:\\...\\uvx.exe`` intact when this
+    runs on POSIX (e.g. a config authored on/for Windows) and would skip the
+    preflight. Matching is exact against the real Windows shim names each
+    runner actually installs (npm ships ``npx.cmd``, uv ships ``uvx.exe``,
+    pip installs ``pipx.exe``) — no broad suffix matching, so lookalikes
+    like ``npx.exe`` or ``npx.cmd.bak`` stay fail-open.
+    Port of aaif-goose/goose#11466.
+    """
+    base = re.split(r"[\\/]", command)[-1].lower()
     if base in {"npx", "npx.cmd"}:
         return "npm"
-    if base in {"uvx", "uvx.cmd", "pipx"}:
+    if base in {"uvx", "uvx.cmd", "uvx.exe", "pipx", "pipx.exe"}:
         return "PyPI"
     return None
 

@@ -13022,14 +13022,25 @@ _GOAL_COMPRESSION_RECOVERY_LIMIT = 1
 
 
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
-    """Return whether a turn produced a real response the goal judge can use."""
-    return bool(
-        status == "complete"
-        and isinstance(raw, str)
-        and raw.strip()
-        and not (isinstance(result, dict) and result.get("failed"))
-        and not (isinstance(result, dict) and result.get("completed") is False)
-    )
+    """Return whether a turn produced a real response the goal judge can use.
+
+    A non-failed ``max_iterations_reached(...)`` handoff is a resumable
+    turn boundary, not a failure: the summary must reach the goal judge
+    so an active goal can continue (#102213). Failed, interrupted, and
+    other ``completed is False`` turns still stay out (cf. #63180).
+    """
+    if status != "complete" or not isinstance(raw, str) or not raw.strip():
+        return False
+    if not isinstance(result, dict):
+        return True
+    if result.get("failed") or result.get("interrupted"):
+        return False
+    if result.get("completed") is False:
+        reason = result.get("turn_exit_reason") or ""
+        return isinstance(reason, str) and reason.startswith(
+            "max_iterations_reached"
+        )
+    return True
 
 
 def _plan_goal_compression_recovery(

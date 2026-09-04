@@ -1678,15 +1678,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         if _file_ops_uses_host_paths(_get_file_ops(task_id)):
             kind = _special_file_kind(_resolved)
             if kind is not None:
-                return json.dumps({
-                    "success": False,
-                    "note": (
-                        f"'{path}' is {kind}, not a regular file — reading "
-                        "it would block indefinitely, so no read was "
-                        "attempted. Use terminal utilities if you need to "
-                        "interact with it."
-                    ),
-                })
+                _msg = (
+                    f"'{path}' is {kind}, not a regular file — reading "
+                    "it would block indefinitely, so no read was "
+                    "attempted. Use terminal utilities if you need to "
+                    "interact with it."
+                )
+                # Carry the message under "error" as well: every other
+                # refusal in this function goes through tool_error(), and
+                # consumers detect failures by that key.
+                return json.dumps({"success": False, "error": _msg, "note": _msg})
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.

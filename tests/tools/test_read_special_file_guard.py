@@ -26,11 +26,13 @@ class TestSpecialFileKind:
     def test_missing_path(self, tmp_path):
         assert _special_file_kind(tmp_path / "nope") is None
 
+    @pytest.mark.linux_only  # os.mkfifo is POSIX-only
     def test_fifo(self, tmp_path):
         fifo = tmp_path / "p.pipe"
         os.mkfifo(fifo)
         assert "FIFO" in (_special_file_kind(fifo) or "")
 
+    @pytest.mark.linux_only  # socket.AF_UNIX is POSIX-only
     def test_socket(self, tmp_path):
         sock_path = tmp_path / "s.sock"
         s = socket.socket(socket.AF_UNIX)
@@ -40,6 +42,7 @@ class TestSpecialFileKind:
         finally:
             s.close()
 
+    @pytest.mark.linux_only  # os.mkfifo is POSIX-only
     def test_symlink_to_fifo_followed(self, tmp_path):
         fifo = tmp_path / "p.pipe"
         os.mkfifo(fifo)
@@ -54,6 +57,7 @@ class TestSpecialFileKind:
 
 
 class TestReadFileToolFifoGuard:
+    @pytest.mark.linux_only  # os.mkfifo is POSIX-only
     def test_fifo_read_returns_note_instantly(self, tmp_path, monkeypatch):
         import time
 

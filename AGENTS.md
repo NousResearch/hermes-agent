@@ -3,6 +3,7 @@
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
 **Never give up on the right solution.**
+## git 
 
 ## What Hermes Is
 

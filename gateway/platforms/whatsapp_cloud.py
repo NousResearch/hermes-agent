@@ -81,6 +81,7 @@ from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecre
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
+from tools.url_safety import async_is_safe_url, create_ssrf_safe_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -454,9 +455,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # adapters so idle CLOSE_WAIT drains promptly (#18451).
         from gateway.platforms._http_client_limits import platform_httpx_limits
 
-        self._http_client = httpx.AsyncClient(
-            timeout=30.0, limits=platform_httpx_limits()
-        )
+        limits = platform_httpx_limits()
+        if limits is None:
+            self._http_client = create_ssrf_safe_async_client(timeout=30.0)
+        else:
+            self._http_client = create_ssrf_safe_async_client(
+                timeout=30.0, limits=limits
+            )
 
         # Inbound webhook server.
         # client_max_size backstops the bounded reader in _handle_webhook —
@@ -1369,10 +1374,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not temp_url:
             return None, None
 
+        # Graph supplies this URL at runtime. Validate the destination before
+        # handing it to the shared client; the client's guarded transport then
+        # repeats the policy at connect time to close DNS-rebinding gaps.
+        if not await async_is_safe_url(str(temp_url)):
+            logger.warning(
+                "[whatsapp_cloud] refusing unsafe media URL (id=%s)", media_id
+            )
+            return None, None
+
         # Step 2 — bytes (auth required even though URL is signed; Meta
         # documents this explicitly — the URL alone is not enough).
         try:
-            blob_resp = await self._http_client.get(temp_url, headers=headers)
+            blob_resp = await self._http_client.get(
+                str(temp_url), headers=headers, follow_redirects=False
+            )
         except Exception:
             logger.exception(
                 "[whatsapp_cloud] media bytes fetch raised (id=%s)", media_id

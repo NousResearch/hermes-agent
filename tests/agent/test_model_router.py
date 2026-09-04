@@ -20,6 +20,11 @@ def test_features_detect_coding_reasoning_and_images():
     assert features.vision is True
 
 
+def test_features_detect_image_content_blocks():
+    features = extract_features([{"type": "text", "text": "inspect"}, {"type": "image_url", "image_url": {"url": "x"}}])
+    assert features.vision is True
+
+
 def test_off_preserves_current_model():
     decision = route_turn("simple question", candidates(), current_model="current", mode="off")
     assert decision.selected_model == "current"

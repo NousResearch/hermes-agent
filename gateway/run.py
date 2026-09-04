@@ -9145,6 +9145,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         for key in ("api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args", "credential_pool", "max_tokens", "capabilities")
                         if key in selected_runtime
                     })
+                    base_request_overrides = dict(selected_runtime.get("request_overrides") or {})
                     # The cache key must describe the selected model/runtime,
                     # not the pre-routing model, otherwise a routed turn can
                     # accidentally reuse an agent built for another backend.
@@ -9172,8 +9173,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             overrides = resolve_fast_mode_overrides(
                 route["model"],
-                provider=runtime["provider"],
-                base_url=runtime["base_url"],
+                provider=route["runtime"]["provider"],
+                base_url=route["runtime"]["base_url"],
             )
         except Exception:
             overrides = None

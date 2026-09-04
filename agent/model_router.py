@@ -46,13 +46,19 @@ _REASON_RE = re.compile(r"\b(why|prove|tradeoff|architecture|分析|推导|证�
 _COMPLEX_RE = re.compile(r"\b(complex|large|multi[- ]file|production|安全|复杂|多文件|生产|系统)\b", re.I)
 
 
-def extract_features(message: str, *, has_images: bool = False, context_tokens: int = 0) -> Features:
+def _contains_image(message: object) -> bool:
+    if isinstance(message, list):
+        return any(isinstance(part, dict) and part.get("type") in {"image", "image_url"} for part in message)
+    return False
+
+
+def extract_features(message: str | list[object], *, has_images: bool = False, context_tokens: int = 0) -> Features:
     """Extract stable routing signals without an LLM or network lookup."""
     text = str(message or "")
     coding = bool(_CODE_RE.search(text))
     reasoning = bool(_REASON_RE.search(text)) or bool(_COMPLEX_RE.search(text))
     complexity = min(1.0, (0.35 if reasoning else 0.0) + (0.35 if _COMPLEX_RE.search(text) else 0.0) + min(len(text) / 4000, 0.3))
-    return Features(coding=coding, reasoning=reasoning, vision=bool(has_images), context_tokens=max(0, int(context_tokens)), complexity=complexity)
+    return Features(coding=coding, reasoning=reasoning, vision=bool(has_images or _contains_image(message)), context_tokens=max(0, int(context_tokens)), complexity=complexity)
 
 
 def _eligible(candidate: Candidate, features: Features) -> tuple[bool, str]:
@@ -76,7 +82,7 @@ def _score(candidate: Candidate, features: Features) -> float:
     return score
 
 
-def route_turn(message: str, candidates: Iterable[Candidate], *, current_model: str, mode: str = "off", has_images: bool = False, context_tokens: int = 0) -> RouteDecision:
+def route_turn(message: str | list[object], candidates: Iterable[Candidate], *, current_model: str, mode: str = "off", has_images: bool = False, context_tokens: int = 0) -> RouteDecision:
     """Choose at most one model for a turn; modes are off, suggest, and auto."""
     if mode not in {"off", "suggest", "auto"}:
         mode = "off"

@@ -750,8 +750,7 @@ export function useSessionActions({
         // `options?.cwd || resolve…` is wrong for Home: null is falsy and used
         // to fall through into the last project folder while main chat was
         // occupied (openTab path for "New session in Home").
-        const capturedRoute =
-          options?.route !== undefined ? options.route : resolveNewChatOwnerRoute(options?.profile)
+        const capturedRoute = options?.route !== undefined ? options.route : resolveNewChatOwnerRoute(options?.profile)
 
         const workspaceScope = options?.workspaceScope ?? { workspaceMode: 'sessions' }
 

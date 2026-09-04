@@ -80,6 +80,13 @@ declare global {
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      // Cross-window Browser Comment Mode transport. Electron main relays
+      // payloads to the other Hermes renderer windows; renderer code keeps the
+      // destination exact and rejects anything not addressed to its window.
+      previewAnnotate?: {
+        send: (payload: unknown) => void
+        onMessage: (callback: (payload: unknown) => void) => () => void
+      }
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for

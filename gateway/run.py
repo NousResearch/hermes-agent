@@ -18704,6 +18704,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
                 reply_to_is_own_message=event.reply_to_is_own_message,
+                reply_to_author_authorized=event.reply_to_author_authorized,
                 auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt,
                 channel_context=event.channel_context,
@@ -20565,6 +20566,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             message_text = f"[{_safe_user_name}] {message_text}"
 
+        # Thread backfill: a threaded message landing in a session with no
+        # history (fresh thread, expired session, re-keyed routing) would
+        # leave the agent blind to what the thread is about. Only adapters
+        # that can reconstruct thread history expose fetch_thread_context()
+        # (platforms that backfill at receive time, like Discord, don't).
+        # Adapter-provided channel_context answers a different question
+        # (fresh channel state notes), so the backfill composes with it
+        # rather than being skipped: backfill first, state notes after.
+        if (
+            not history
+            and source is not None
+            and getattr(source, "thread_id", None)
+            and not getattr(event, "internal", False)
+        ):
+            _thread_adapter = self.adapters.get(source.platform)
+            if _thread_adapter is not None and hasattr(
+                _thread_adapter, "fetch_thread_context"
+            ):
+                try:
+                    _thread_context = await _thread_adapter.fetch_thread_context(
+                        source.chat_id,
+                        source.thread_id,
+                        exclude_event_id=getattr(event, "message_id", None),
+                    )
+                except Exception as exc:
+                    logger.debug("Thread context backfill failed: %s", exc)
+                    _thread_context = None
+                if _thread_context:
+                    _existing_context = getattr(event, "channel_context", None)
+                    event.channel_context = (
+                        f"{_thread_context}\n\n{_existing_context}"
+                        if _existing_context
+                        else _thread_context
+                    )
+
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.
@@ -20803,14 +20839,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            # The quote and the author name come from another participant, and
+            # this prefix is prepended raw to the model turn. An embedded
+            # newline would let either break out of the bracketed line and pose
+            # as a fresh markdown section (a fake "## SYSTEM" heading), so both
+            # are collapsed to a single inert line. The 500-char cap below is
+            # the intended bound, so the body is neutralized untruncated.
+            reply_snippet = neutralize_untrusted_inline_text(
+                event.reply_to_text[:500], max_chars=0
+            )
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'
                     f"{message_text}"
                 )
             else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                # Name the author when the adapter resolved one, so the agent
+                # knows *whose* message is being referenced, not just its text.
+                reply_author = (
+                    getattr(event, "reply_to_author_name", None)
+                    or getattr(event, "reply_to_author_id", None)
+                )
+                # Platforms that fetch the parent rather than receiving it
+                # inline report whether its author is on the allowlist. Off-list
+                # content is labelled so the agent treats it as background
+                # rather than as instructions.
+                trust_tag = ""
+                if getattr(event, "reply_to_author_authorized", None) is False:
+                    trust_tag = "[unverified] "
+                if reply_author:
+                    safe_author = neutralize_untrusted_inline_text(reply_author)
+                    message_text = (
+                        f'[Replying to {trust_tag}{safe_author}: "{reply_snippet}"]\n\n'
+                        f"{message_text}"
+                    )
+                else:
+                    message_text = (
+                        f'[Replying to: {trust_tag}"{reply_snippet}"]\n\n{message_text}'
+                    )
 
         if "@" in message_text:
             try:

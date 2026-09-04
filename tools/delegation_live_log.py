@@ -315,12 +315,16 @@ def create_live_transcripts(
     delegation_id: Optional[str] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    task_models: Optional[List[Optional[str]]] = None,
 ) -> tuple[Optional[str], List[Optional[LiveTranscriptWriter]], List[str]]:
     """Create one pre-headered writer per task + a manifest.json.
 
     Returns ``(delegation_id, writers, paths)``. On any top-level failure
     returns ``(None, [None]*n, [])`` so delegation proceeds untouched.
     Also opportunistically prunes stale live dirs (retention).
+
+    ``task_models`` records the EFFECTIVE model per task when a batch mixes
+    models (per-task ``model_tier``); ``model`` stays the batch-level default.
     """
     n = len(task_list)
     try:
@@ -341,7 +345,10 @@ def create_live_transcripts(
                 paths.append(str(w.path))
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider)
+        _write_manifest(
+            deleg_id, task_list, paths, model=model, provider=provider,
+            task_models=task_models,
+        )
         return deleg_id, writers, paths
     except Exception as exc:
         logger.debug("Live transcript creation failed: %s", exc)
@@ -354,8 +361,14 @@ def _manifest_path(delegation_id: str) -> Path:
 
 def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                     paths: List[str], model: Optional[str] = None,
-                    provider: Optional[str] = None) -> None:
+                    provider: Optional[str] = None,
+                    task_models: Optional[List[Optional[str]]] = None) -> None:
     try:
+        def _task_model(i: int) -> Optional[str]:
+            if task_models is not None and i < len(task_models):
+                return task_models[i]
+            return None
+
         manifest = {
             "delegation_id": delegation_id,
             "started": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -373,6 +386,14 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                     "goal": _redact(str(t.get("goal", ""))[:500]),
                     "log": paths[i] if i < len(paths) else None,
                     "status": "running",
+                    # Present only on mixed-model batches (per-task
+                    # model_tier); omitted entirely when the whole batch
+                    # shares the top-level "model" above.
+                    **(
+                        {"model": _task_model(i)}
+                        if _task_model(i) and _task_model(i) != model
+                        else {}
+                    ),
                 }
                 for i, t in enumerate(task_list)
             ],

@@ -190,7 +190,39 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+### Per-task model tiers
+
+`delegation.model` is a single global pin — every child in a batch runs on it. When a fan-out mixes mechanical work with work that needs real judgment, define **model tiers** and let the agent pick one per task:
+
+```yaml
+# ~/.hermes/config.yaml
+delegation:
+  model: "your-inexpensive-model"      # default for tasks that name no tier
+  model_tiers:
+    fast: "your-cheapest-model"        # shorthand for {model: ...}
+    deep:                              # full form: any delegation-config keys
+      provider: "anthropic"
+      model: "your-frontier-model"
+```
+
+With tiers configured, each entry in `tasks` accepts an optional `model_tier`, and the agent chooses per subtask:
+
+```
+tasks: [
+  {goal: "Extract every TODO under src/ into a list.", model_tier: "fast"},
+  {goal: "Redesign the retry policy for the ingest pipeline.", model_tier: "deep"},
+  {goal: "Reformat the changelog entries."},   # no tier -> delegation.model
+]
+```
+
+Behaviour:
+
+- **The tier name is a schema enum built from your config.** The model can only emit a tier you actually defined, so it can never route a child to a hallucinated model id. When `delegation.model_tiers` is unset the `model_tier` field is not advertised at all.
+- **A tier is a partial delegation config**, layered over the global block and resolved through the same path as the global pin — a tier that sets only `model` inherits the global `provider`/`base_url`/`api_key`.
+- **An unknown tier fails the whole call before any child spawns**, rather than silently downgrading that child to the default model. A silent clamp is the failure mode that makes per-task model selection untrustworthy.
+- **The effective model is reported back** in each child's result and in the live-transcript `manifest.json`, so a mixed batch is auditable rather than inferred.
+
+For per-task pins outside a batch, the [kanban board](kanban.md#per-task-model-override) has its own per-card model override.
 
 ## The `/review` Command
 

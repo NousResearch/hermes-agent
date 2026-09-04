@@ -4115,6 +4115,21 @@ def delegate_task(
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
 
+    # Per-task credentials: a task may name a `model_tier`, resolved against
+    # delegation.model_tiers and layered over the global delegation config.
+    # Resolved BEFORE any child is built (and before the live-transcript
+    # manifest is written, so it can record the effective per-task model) —
+    # an unknown tier fails the whole call loudly rather than silently
+    # downgrading one child to the default model.
+    task_creds: List[dict] = []
+    for i, task in enumerate(task_list):
+        tier_creds, tier_err = _resolve_tier_credentials(
+            task.get("model_tier"), cfg, parent_agent, creds
+        )
+        if tier_err:
+            return tool_error(f"Task {i}: {tier_err}")
+        task_creds.append(tier_creds)
+
     overall_start = time.monotonic()
     results = []
 
@@ -4134,7 +4149,8 @@ def delegate_task(
     )
 
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider")
+        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+        task_models=[c.get("model") for c in task_creds],
     )
     # Announce the batch tag once so the later ``[tag n/N]`` completion lines
     # (and any nested batch's lines interleaving with them) are attributable.
@@ -4177,6 +4193,7 @@ def delegate_task(
     # subagent-lifecycle API).
     children = []
     for i, t in enumerate(task_list):
+        _creds = task_creds[i]
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
@@ -4196,18 +4213,18 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=_creds["provider"],
+                override_base_url=_creds["base_url"],
+                override_api_key=_creds["api_key"],
+                override_api_mode=_creds["api_mode"],
+                override_request_overrides=_creds.get("request_overrides"),
+                override_max_tokens=_creds.get("max_output_tokens"),
+                override_acp_command=_creds.get("command"),
+                override_acp_args=_creds.get("args"),
                 role=effective_role,
             )
         except ValueError as exc:
@@ -5038,6 +5055,100 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _load_model_tiers(cfg: Optional[dict] = None) -> Dict[str, dict]:
+    """Return the user's ``delegation.model_tiers`` mapping, normalised.
+
+    Shape in config.yaml — each tier is a partial delegation config block,
+    resolved through the SAME ``_resolve_delegation_credentials`` path as the
+    global pin, so a tier can carry any subset of
+    ``{model, provider, base_url, api_key, api_mode, request_overrides}``::
+
+        delegation:
+          model: <default for untiered tasks>
+          model_tiers:
+            fast:  {provider: openrouter, model: z-ai/glm-5-air}
+            deep:  {provider: anthropic,  model: claude-opus-5}
+
+    A bare string is accepted as shorthand for ``{model: <string>}`` so the
+    common "same provider, different model" case needs no nesting.
+
+    Tier names are lowercased and must be non-empty strings; anything else is
+    dropped with a debug log rather than raising, because this runs inside
+    ``get_definitions()`` on every schema rebuild and a malformed config key
+    must never break tool listing.
+    """
+    if cfg is None:
+        cfg = _load_config()
+    raw = cfg.get("model_tiers")
+    if not isinstance(raw, dict):
+        return {}
+    tiers: Dict[str, dict] = {}
+    for name, spec in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        key = name.strip().lower()
+        if isinstance(spec, str) and spec.strip():
+            tiers[key] = {"model": spec.strip()}
+        elif isinstance(spec, dict):
+            tiers[key] = dict(spec)
+        else:
+            logger.debug(
+                "delegation.model_tiers['%s']: expected a string or mapping, "
+                "got %s — tier ignored",
+                name, type(spec).__name__,
+            )
+    return tiers
+
+
+def _resolve_tier_credentials(
+    tier: Optional[str],
+    cfg: dict,
+    parent_agent,
+    base_creds: dict,
+) -> tuple[dict, Optional[str]]:
+    """Resolve one task's credentials given its requested ``model_tier``.
+
+    Returns ``(creds, error)``. ``error`` is a user-facing string naming the
+    valid tiers when the requested tier is unknown — the spawn is refused
+    rather than silently downgraded to the default model, because a silent
+    clamp is exactly the failure mode that makes per-task model selection
+    untrustworthy (see the Claude Code subagent-model issues where an env pin
+    quietly overrode the caller's choice with no signal in the result).
+
+    An absent/empty tier returns ``base_creds`` unchanged, so every existing
+    call keeps its current behaviour byte-for-byte.
+
+    A tier's keys are layered OVER the global delegation config, so a tier
+    that sets only ``model`` inherits the global provider/base_url/api_key.
+    """
+    if not tier or not str(tier).strip():
+        return base_creds, None
+
+    key = str(tier).strip().lower()
+    tiers = _load_model_tiers(cfg)
+    if not tiers:
+        return base_creds, (
+            f"model_tier={tier!r} was requested but no delegation.model_tiers "
+            "are configured. Add them to config.yaml (delegation.model_tiers: "
+            "{fast: {...}, deep: {...}}) or omit model_tier to use the "
+            "default delegation model."
+        )
+    if key not in tiers:
+        return base_creds, (
+            f"Unknown model_tier {tier!r}. Configured tiers: "
+            f"{', '.join(sorted(tiers))}."
+        )
+
+    merged = {**cfg, **tiers[key]}
+    # model_tiers itself is not a credential key — drop it so the resolver
+    # never sees the nested mapping in a config-shaped dict.
+    merged.pop("model_tiers", None)
+    try:
+        return _resolve_delegation_credentials(merged, parent_agent), None
+    except ValueError as exc:
+        return base_creds, f"model_tier {tier!r} could not be resolved: {exc}"
+
+
 def _load_config() -> dict:
     """Load delegation config from the active Hermes config.
 
@@ -5153,7 +5264,21 @@ def _build_top_level_description() -> str:
         + restrictions_rule +
         "- Children inherit the parent model unless pinned via "
         "delegation.provider / delegation.model in config.yaml."
+        + (
+            " When delegation.model_tiers is configured, each task may name "
+            "a model_tier to run that child on a different model — see the "
+            "model_tier field."
+            if _has_model_tiers() else ""
+        )
     )
+
+
+def _has_model_tiers() -> bool:
+    """True when the user configured delegation.model_tiers (never raises)."""
+    try:
+        return bool(_load_model_tiers())
+    except Exception:
+        return False
 
 
 def _build_tasks_param_description() -> str:
@@ -5191,6 +5316,45 @@ def _build_role_param_description() -> str:
     )
 
 
+def _build_model_tier_property() -> Optional[dict]:
+    """Return the `model_tier` sub-property, or None when unconfigured.
+
+    The enum is the user's ACTUAL configured tier names, so the model can
+    only emit a value the runtime can resolve — mirroring how Claude Code's
+    Agent tool constrains its per-invocation `model` param to a fixed set of
+    aliases rather than accepting arbitrary model IDs. When no tiers are
+    configured the property is dropped from the schema entirely (see
+    _build_dynamic_schema_overrides) so the parameter never appears as a
+    dead knob.
+    """
+    try:
+        tiers = _load_model_tiers()
+    except Exception:
+        return None
+    if not tiers:
+        return None
+
+    described = []
+    for name in sorted(tiers):
+        spec = tiers[name]
+        label = str(spec.get("model") or "").strip()
+        described.append(f"{name} ({label})" if label else name)
+
+    return {
+        "type": "string",
+        "enum": sorted(tiers),
+        "description": (
+            "Which configured model tier runs THIS subagent: "
+            + ", ".join(described)
+            + ". Omit to use the default delegation model. Match the tier to "
+            "the task: cheap/fast tiers for mechanical, well-specified work "
+            "(extraction, formatting, bulk edits), stronger tiers for "
+            "open-ended reasoning, design, or debugging. Children are where "
+            "most tokens go, so tiering a fan-out is the main cost lever."
+        ),
+    }
+
+
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
 
@@ -5206,6 +5370,20 @@ def _build_dynamic_schema_overrides() -> dict:
         k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+
+    # model_tier: inject the configured enum, or drop the property so an
+    # unconfigured install never advertises a tier knob with no tiers.
+    tasks_schema = dict(overrides_params["properties"]["tasks"])
+    items_schema = dict(tasks_schema.get("items") or {})
+    item_props = dict(items_schema.get("properties") or {})
+    tier_prop = _build_model_tier_property()
+    if tier_prop is None:
+        item_props.pop("model_tier", None)
+    else:
+        item_props["model_tier"] = tier_prop
+    items_schema["properties"] = item_props
+    tasks_schema["items"] = items_schema
+    overrides_params["properties"]["tasks"] = tasks_schema
 
     return {
         "description": _build_top_level_description(),
@@ -5270,6 +5448,16 @@ DELEGATE_TASK_SCHEMA = {
                                 "failure). Keep it forgiving — require only "
                                 "fields you will read."
                             ),
+                        },
+                        # Advertised ONLY when delegation.model_tiers is
+                        # configured — _build_dynamic_schema_overrides()
+                        # injects the enum of the user's actual tier names
+                        # and removes this property entirely otherwise, so a
+                        # model on a default install never sees a knob that
+                        # cannot work.
+                        "model_tier": {
+                            "type": "string",
+                            "description": "(injected at get_definitions() time)",
                         },
                     },
                     "required": ["goal"],

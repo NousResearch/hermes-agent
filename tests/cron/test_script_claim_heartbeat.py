@@ -1084,3 +1084,54 @@ def test_terminal_write_after_slow_owned_delivery_succeeds(tmp_path, monkeypatch
     assert terminal and terminal[-1][0] is True, (
         f"terminal write never recorded success: {mark_calls!r}"
     )
+
+
+def test_none_probe_cannot_authorize_unfenced_exception_delivery(
+    tmp_path, monkeypatch
+):
+    """A contended ownership probe is unconfirmed; only the side-effect
+    fence may authorize the exception-path failure notification."""
+    import cron.scheduler as scheduler
+
+    probes = iter([True, None])
+    delivered = MagicMock(return_value=None)
+    fence = MagicMock(
+        side_effect=lambda *a, **k: contextlib.nullcontext(False)
+    )
+    monkeypatch.setattr(
+        scheduler, "heartbeat_fire_claim", lambda *a, **k: next(probes)
+    )
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 60.0)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *a, **k: {})
+    monkeypatch.setattr(
+        scheduler, "run_job", MagicMock(side_effect=RuntimeError("run failure"))
+    )
+    monkeypatch.setattr(scheduler, "_deliver_result", delivered)
+    monkeypatch.setattr(scheduler, "fire_claim_fence", fence)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler, "finish_execution", MagicMock())
+    monkeypatch.setattr(
+        scheduler, "_upsert_incident_for_failure", lambda *a, **k: (False, None)
+    )
+    monkeypatch.setattr(scheduler, "_mark_incident_alerted", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+
+    job = {
+        "id": "stale-worker",
+        "name": "stale worker",
+        "execution_id": "exec-stale",
+        "prompt": "x",
+        "schedule_display": "manual",
+        "deliver": "telegram:123",
+        "fire_claim": {"by": "old-owner"},
+    }
+
+    with patch("agent.secret_scope.set_secret_scope", return_value=None), \
+         patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+         patch("agent.secret_scope.reset_secret_scope"), \
+         patch("tools.terminal_scope.install_profile_terminal_scope", return_value=None):
+        assert scheduler.run_one_job(job) is False
+
+    fence.assert_called_once_with("stale-worker", expected_owner="old-owner")
+    delivered.assert_not_called()

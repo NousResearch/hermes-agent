@@ -865,7 +865,57 @@ def summarize_background_review_actions(
                 ops_raw if isinstance(ops_raw, list) else []
             )
             max_preview = 120
-            if is_skill:
+            # Batch payloads (``operations=[...]``) carry their action per
+            # op, not at the top level — render each op the same way the
+            # memory batch arm below does, so a skill batch never falls
+            # through to the empty-action "Skill " line (#102853).
+            if is_skill and operations:
+                rendered = 0
+                for op in operations:
+                    # Legacy codepaths may serialize an entry as a bare
+                    # string/None — skip items without actionable fields.
+                    if not isinstance(op, dict):
+                        continue
+                    op_act = op.get("action", "")
+                    op_name = op.get("name") or skill_name
+                    op_content = op.get("content") or op.get("file_content") or ""
+                    op_old = op.get("old_string") or op.get("old_text") or ""
+                    op_new = op.get("new_string") or ""
+                    if op_act == "patch" and (op_old or op_new):
+                        old_preview = op_old[:80].replace("\n", " ") + (
+                            "…" if len(op_old) > 80 else ""
+                        )
+                        new_preview = op_new[:80].replace("\n", " ") + (
+                            "…" if len(op_new) > 80 else ""
+                        )
+                        actions.append(
+                            f"📝 Skill '{op_name}' patched: "
+                            f"\"{old_preview}\" → \"{new_preview}\""
+                        )
+                        rendered += 1
+                    elif op_act == "create" and op_content:
+                        preview = op_content[:max_preview] + (
+                            "…" if len(op_content) > max_preview else ""
+                        )
+                        actions.append(f"📝 Skill '{op_name}' created: {preview}")
+                        rendered += 1
+                    elif op_act == "write_file" and op_content:
+                        preview = op_content[:max_preview] + (
+                            "…" if len(op_content) > max_preview else ""
+                        )
+                        actions.append(f"📝 Skill '{op_name}' wrote file: {preview}")
+                        rendered += 1
+                    elif op_act == "remove_file":
+                        actions.append(f"📝 Skill '{op_name}' removed a file")
+                        rendered += 1
+                if not rendered:
+                    # Batch whose ops carried no previewable fields — fall
+                    # back to the tool's own message instead of an empty
+                    # action label.
+                    actions.append(
+                        f"📝 {message}" if message else "Skill batch applied"
+                    )
+            elif is_skill:
                 # ``_change`` is a free-form dict the skill tool leaves in
                 # the response.  Older / wrapper MCP backends return it
                 # as a list, an int, or a JSON-shaped scalar — normalize

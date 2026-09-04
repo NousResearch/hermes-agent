@@ -3194,10 +3194,99 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+_MAX_ITERATION_SUMMARY_HISTORY_CHARS = 160_000
+
+
+def _bounded_max_iteration_history(messages: list) -> list:
+    """Return a bounded copy for an emergency iteration-summary retry.
+
+    The normal summary path preserves the full cached transcript.  Native
+    provider compaction can make that transcript much larger than the wire
+    context the main loop actually sends, so replaying it verbatim at the
+    iteration limit may overflow even though the preceding request succeeded.
+    Keep the original goal plus the newest history that fits; the ordinary API
+    sanitizer repairs any tool-call pairs cut by the boundary.
+    """
+    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+
+    history = [
+        msg.copy()
+        for msg in messages
+        if not (
+            msg.get("role") == "user"
+            and msg.get("content") == MAX_ITERATIONS_SUMMARY_REQUEST
+        )
+    ]
+    if not history:
+        return []
+
+    first_user = next(
+        (msg for msg in history if msg.get("role") == "user"),
+        None,
+    )
+    selected_reversed = []
+    used = 0
+    for msg in reversed(history):
+        try:
+            size = len(json.dumps(msg, default=str, ensure_ascii=False))
+        except Exception:
+            size = len(str(msg))
+        if size > _MAX_ITERATION_SUMMARY_HISTORY_CHARS:
+            # One oversized tool result should not crowd every useful recent
+            # exchange out of the emergency summary request. Its full payload
+            # is already persisted by the tool-result budget machinery.
+            continue
+        if used + size > _MAX_ITERATION_SUMMARY_HISTORY_CHARS:
+            break
+        selected_reversed.append(msg)
+        used += size
+
+    selected = list(reversed(selected_reversed))
+    if first_user is not None and first_user not in selected:
+        goal = first_user.copy()
+        goal_text = flatten_message_text(goal.get("content"))
+        if len(goal_text) > 12_000:
+            goal["content"] = goal_text[:12_000] + "\n...[original request truncated for emergency summary]"
+        selected.insert(0, goal)
+    return selected
+
+
+def _local_max_iteration_fallback(agent, messages: list) -> str:
+    """Produce a bounded, user-facing fallback without another model call."""
+    excerpts = []
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        text = flatten_message_text(msg.get("content")).strip()
+        if not text:
+            continue
+        excerpts.append(text[:800])
+        if len(excerpts) == 3:
+            break
+
+    lines = [
+        f"I reached the maximum tool-iteration limit ({agent.max_iterations}).",
+        "The session and tool results are intact, but the final model-generated summary could not be produced.",
+    ]
+    if excerpts:
+        lines.append("Most recent completed output:")
+        lines.extend(f"- {text}" for text in reversed(excerpts))
+    lines.append('Send "continue" and I will resume from the preserved session state.')
+    return "\n".join(lines)
+
+
+def handle_max_iterations(
+    agent,
+    messages: list,
+    api_call_count: int,
+    *,
+    _bounded_retry: bool = False,
+) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
-    if getattr(agent, "suppress_status_output", False):
+    if _bounded_retry:
+        pass
+    elif getattr(agent, "suppress_status_output", False):
         # Strict machine-readable mode (hermes chat -Q, oneshot, background
         # review): keep diagnostics out of stdout so wrappers receive only
         # the final assistant content (#93220 class). Note: plain quiet_mode
@@ -3544,7 +3633,46 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        context_overflow = False
+        try:
+            from agent.error_classifier import classify_api_error
+            from agent.model_metadata import estimate_messages_tokens_rough
+
+            classified = classify_api_error(
+                e,
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""),
+                approx_tokens=estimate_messages_tokens_rough(messages),
+                context_length=int(
+                    getattr(getattr(agent, "context_compressor", None), "context_length", 0)
+                    or 200_000
+                ),
+                num_messages=len(messages),
+            )
+            context_overflow = classified.reason == FailoverReason.context_overflow
+        except Exception:
+            context_overflow = "context window" in str(e).lower() or "context length" in str(e).lower()
+
+        if context_overflow and not _bounded_retry:
+            bounded = _bounded_max_iteration_history(messages)
+            logger.warning(
+                "Iteration-summary request overflowed; retrying with bounded history "
+                "(%d -> %d messages)",
+                len(messages),
+                len(bounded),
+            )
+            final_response = handle_max_iterations(
+                agent,
+                bounded,
+                api_call_count,
+                _bounded_retry=True,
+            )
+            summary_call_outcome = "success"
+            append_message(messages, {"role": "assistant", "content": final_response})
+        elif _bounded_retry:
+            final_response = _local_max_iteration_fallback(agent, messages)
+        else:
+            final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
     finally:
         from agent import relay_llm
 

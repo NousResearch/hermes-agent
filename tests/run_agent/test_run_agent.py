@@ -2770,6 +2770,53 @@ class TestHandleMaxIterations:
         combined = "\n".join(printed) + capsys.readouterr().out
         assert "Reached maximum iterations" in combined
 
+    def test_context_overflow_retries_summary_with_bounded_history(self, agent):
+        agent.client.chat.completions.create.side_effect = [
+            Exception("Your input exceeds the context window of this model"),
+            _mock_response(content="Bounded summary of completed work."),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "Implement and verify this goal: " + "g" * 300_000},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "x" * 400_000},
+        ]
+
+        result = agent._handle_max_iterations(messages, 150)
+
+        assert result == "Bounded summary of completed work."
+        assert agent.client.chat.completions.create.call_count == 2
+        first = agent.client.chat.completions.create.call_args_list[0].kwargs["messages"]
+        second = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        assert sum(len(str(m.get("content", ""))) for m in second) < 200_000
+        assert sum(len(str(m.get("content", ""))) for m in second) < sum(
+            len(str(m.get("content", ""))) for m in first
+        )
+
+    def test_bounded_summary_overflow_uses_local_fallback_without_error_text(self, agent):
+        agent.client.chat.completions.create.side_effect = [
+            Exception("Your input exceeds the context window of this model"),
+            Exception("Your input exceeds the context window of this model"),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "Finish the task."},
+            {"role": "assistant", "content": "The implementation and tests are complete."},
+            {"role": "tool", "tool_call_id": "orphan", "content": "x" * 400_000},
+        ]
+
+        result = agent._handle_max_iterations(messages, 150)
+
+        assert "session and tool results are intact" in result
+        assert "input exceeds the context window" not in result.lower()
+        assert "implementation and tests are complete" in result.lower()
+        assert agent.client.chat.completions.create.call_count == 2
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."

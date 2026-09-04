@@ -9,9 +9,11 @@ import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
-import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
+import { allPaneIds, findGroupOfPane, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import {
+  $collapsedTreeSides,
+  $hiddenTreePanes,
   $layoutTree,
   bindPaneVisibility,
   bindToolPaneCollapse,
@@ -55,6 +57,7 @@ import {
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
+  FILES_PANE_ID,
   setFileBrowserOpen,
   setSidebarOpen,
   SIDEBAR_DEFAULT_WIDTH,
@@ -611,6 +614,70 @@ bindPaneVisibility(
   () => setFileBrowserOpen(false),
   () => setFileBrowserOpen(true)
 )
+
+// Boot self-heal for the right rail. The persisted layout tree can drift out
+// of sync with the file-browser toggle (the v0.20.3 dock-enforcement
+// regressions wrote mangled trees), leaving ⌘J reading "open" over a rail
+// that renders nothing: the side collapsed, the pane chrome-hidden while a
+// workspace is active, or the pane missing from the tree entirely. When the
+// toggle says OPEN and a workspace is present, detect exactly those
+// contradictory states and route through revealTreePane — the same path a
+// layout reset takes. An explicit ⌘J collapse writes the toggle false, so
+// deliberate closes are never fought.
+const $rightRailShouldShow = computed([$hasWorkspace, $fileBrowserOpen], (ws, open) => ws && open)
+
+// Heal only during the boot / adoption window. The drift (⌘J reads open over a
+// rail that renders nothing) is a startup race, so once the app has settled we
+// must not fight a deliberate collapse — a drag on the splitter, or a workspace
+// layout that docks files away. An explicit ⌘J collapse writes the toggle
+// false and never reaches here anyway.
+const bootHealDeadline = Date.now() + 10000
+
+$rightRailShouldShow.subscribe(show => {
+  if (!show || typeof window === 'undefined') {
+    return
+  }
+
+  // Let adoption / dock enforcement settle, then judge the tree.
+  window.setTimeout(() => {
+    if (Date.now() > bootHealDeadline || !$rightRailShouldShow.get()) {
+      return
+    }
+
+    const drifted = (() => {
+      const tree = $layoutTree.get()
+      return (
+        !tree ||
+        !findGroupOfPane(tree, FILES_PANE_ID) ||
+        $collapsedTreeSides.get().has('right') ||
+        $hiddenTreePanes.get().has(FILES_PANE_ID)
+      )
+    })()
+
+    if (!drifted) {
+      return
+    }
+
+    // Re-confirm on the next tick: adoption / dock enforcement may still be
+    // flipping state, and we must not reveal against a transient.
+    window.setTimeout(() => {
+      if (Date.now() > bootHealDeadline || !$rightRailShouldShow.get()) {
+        return
+      }
+
+      const tree = $layoutTree.get()
+      const stillDrifted =
+        !tree ||
+        !findGroupOfPane(tree, FILES_PANE_ID) ||
+        $collapsedTreeSides.get().has('right') ||
+        $hiddenTreePanes.get().has(FILES_PANE_ID)
+
+      if (stillDrifted) {
+        revealTreePane(FILES_PANE_ID)
+      }
+    }, 0)
+  }, 0)
+})
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',

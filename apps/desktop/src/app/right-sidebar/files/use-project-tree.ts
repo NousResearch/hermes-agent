@@ -489,6 +489,28 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     void loadRoot(cwd, { connectionKey })
   }, [connectionKey, cwd])
 
+  // Self-heal: boot-time connection events (gatewayScope change,
+  // beforeConnectionSwitch) call resetProjectTreeState(), which can invalidate
+  // an in-flight root read mid-flight; the rejected commit leaves the tree
+  // cleared (cwd='') while the workspace is still active, and nothing
+  // schedules a retry — the pane shows its loading skeleton forever. React to
+  // the cleared state itself (not just connection changes): any wipe while a
+  // cwd is present forces exactly one reload. Deliberate clears (profile
+  // switch, Home) also clear the session cwd, so the guard stays hands-off
+  // there; a same-cwd reload across a connection switch is desirable anyway.
+  useEffect(() => {
+    // A persistent load failure sets state.rootError, which the slow re-probe
+    // below already owns with multi-second backoff — bow out there so a broken
+    // backend degrades into that retry instead of this 50ms spin.
+    if (!cwd || state.rootError || state.cwd !== '' || state.rootLoading) {
+      return
+    }
+
+    const timer = window.setTimeout(() => void loadRoot(cwd, { force: true }), 50)
+
+    return () => window.clearTimeout(timer)
+  }, [cwd, state.cwd, state.rootLoading])
+
   // Self-heal: an errored root re-probes every few seconds while the tree is
   // mounted. Each attempt bumps requestId, so a persistent error re-arms the
   // timer; a success clears rootError and stops it.

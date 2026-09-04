@@ -2730,7 +2730,7 @@ def run_doctor(args):
                     else:
                         vuln_detail = (
                             f"{critical} critical, {high} high, {moderate} moderate — "
-                            "build-tool advisory; clears via lockfile bump"
+                            "in dev tooling only, no action needed"
                         )
                     check_warn(
                         f"{label} deps",
@@ -2743,9 +2743,11 @@ def run_doctor(args):
                         # arborist crash (edgesOut / isDescendantOf) on this monorepo
                         # tree — in that case it is an npm bug, not a Hermes one.
                         check_info(
-                            "  ^ build-time tooling (not runtime); if manual npm remediation "
-                            "errors with an arborist crash it's a known npm bug — clears "
-                            "via a lockfile bump"
+                            "  ^ Only affects the build process, not the app you run "
+                            "— nothing you need to do. (If you try to fix it "
+                            "yourself, `npm audit fix` may fail here with an "
+                            "unrelated npm error; that's a known npm bug, not "
+                            "something wrong with your setup.)"
                         )
                     issues.append(
                         f"{label} has {total} npm "

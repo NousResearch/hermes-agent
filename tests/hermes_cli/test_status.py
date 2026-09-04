@@ -249,3 +249,59 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+def test_show_status_lists_live_sessions_without_a_cap(monkeypatch, capsys, tmp_path):
+    """Per-session exclusivity (#94595) made the registry authoritative for every
+    surface, capped or not — but this readout was still gated on the cap, so an
+    operator who never set ``max_concurrent_sessions`` saw nothing at all even
+    though the entries were right there. That is the awareness signal #46303
+    asks for.
+    """
+    from hermes_cli import active_sessions
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    repo = tmp_path / "checkout"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.chdir(repo)
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="20260614_105454_7afa2b", surface="desktop", config={}
+    )
+    assert lease is not None and message is None
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Live:" in output
+    assert "1 session(s)" in output
+    assert "20260614_105454_7afa2b" in output
+    assert "desktop" in output
+    # Attribution: the session was started in this checkout, so say so.
+    assert "this repo" in output
+    assert "Slots:" not in output
+
+
+def test_show_status_still_reports_slots_when_a_cap_is_set(monkeypatch, capsys, tmp_path):
+    """The uncapped listing must not displace the capped slot accounting."""
+    from hermes_cli import active_sessions
+    from hermes_cli import status as status_mod
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        status_mod, "load_config", lambda: {"max_concurrent_sessions": 2}, raising=False
+    )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="capped-1", surface="cli", config={"max_concurrent_sessions": 2}
+    )
+    assert lease is not None and message is None
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "1/2 in use" in output
+    assert "capped-1" in output
+    assert "Live:" not in output

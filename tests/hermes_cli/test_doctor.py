@@ -1737,3 +1737,48 @@ def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
+
+
+def test_run_doctor_npm_workspace_advisory_message_is_plain_language(monkeypatch, tmp_path):
+    """#102555: the workspace-scoped npm audit note used jargon ("arborist
+    crash", "clears via a lockfile bump") that a non-technical user can't act
+    on. It must instead say plainly that no user action is needed."""
+    helper = TestDoctorMemoryProviderSection()
+    project = tmp_path / "project"
+    (project / "node_modules").mkdir(parents=True, exist_ok=True)
+
+    real_which = doctor_mod.shutil.which
+
+    def fake_which(cmd):
+        # Node absent so the browser-tools section (agent-browser/npx
+        # resolution) is skipped entirely — this test only cares about the
+        # npm-audit block below, which is gated on npm alone.
+        if cmd == "node":
+            return None
+        if cmd == "npm":
+            return "/usr/bin/npm"
+        return real_which(cmd)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+
+    import json as _json
+
+    real_run = doctor_mod.subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "audit" in cmd:
+            high = 1 if "web" in cmd else 0
+            payload = {"metadata": {"vulnerabilities": {"critical": 0, "high": high, "moderate": 0}}}
+            return SimpleNamespace(stdout=_json.dumps(payload), stderr="", returncode=0)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    assert "in dev tooling only, no action needed" in out
+    assert "Only affects the build process, not the app you run" in out
+    assert "nothing you need to do" in out
+    assert "arborist" not in out
+    assert "clears via a lockfile bump" not in out
+    assert "build-tool advisory" not in out

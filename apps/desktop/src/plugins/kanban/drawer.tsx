@@ -10,6 +10,7 @@ import {
   Button,
   cn,
   Codicon,
+  CompactMarkdown,
   compactNumber,
   DropdownMenu,
   DropdownMenuContent,
@@ -355,7 +356,13 @@ function CommentComposer({
   )
 }
 
-function DescriptionSection({ body, onSave }: { body: null | string | undefined; onSave: (body: string) => void }) {
+export function DescriptionSection({
+  body,
+  onSave
+}: {
+  body: null | string | undefined
+  onSave: (body: string) => void
+}) {
   const k = useKanban()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -397,7 +404,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
+        <CompactMarkdown className="text-[0.8125rem] text-(--ui-text-secondary)" text={body} />
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}

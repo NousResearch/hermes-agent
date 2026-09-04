@@ -116,6 +116,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         className
       )}
       data-active={active}
+      data-closeable={(onClose && !vertical) || undefined}
       data-selected={selected || undefined}
       data-vertical={vertical || undefined}
       onClickCapture={event => {
@@ -218,7 +219,9 @@ interface PaneTabLabelProps extends React.ComponentProps<'button'> {
 }
 
 /** Truncating label inside a `PaneTab`. `className` merges into the text span
- *  (e.g. `normal-case tracking-normal` for filenames). */
+ *  (e.g. `normal-case tracking-normal` for filenames). On a closeable tab the
+ *  text clips instead of ellipsizing, so it runs under the hover ✕ fade rather
+ *  than stopping short of it with dots. */
 export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(function PaneTabLabel(
   { as = 'span', className, children, ...props },
   ref
@@ -231,7 +234,12 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
       ref={ref}
       {...props}
     >
-      <span className={cn('block min-w-0 truncate text-[9px] font-medium tracking-wide uppercase', className)}>
+      <span
+        className={cn(
+          'block min-w-0 truncate text-[9px] font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
+          className
+        )}
+      >
         {children}
       </span>
     </Comp>

@@ -150,6 +150,31 @@ export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessage
  * - Keeps all other part types (tool-call, image, etc.).
  * - Appends the final text as a new text part.
  */
+/**
+ * Drop prior assistant replies that Grok/xAI (and similar) re-send as a prefix
+ * of the next turn's final text. Walk oldest→newest so three stacked answers
+ * collapse to the new one instead of quadratic bloat (#99416).
+ */
+export function stripReplayedAssistantHistory(finalText: string, priorAssistantTexts: string[]): string {
+  let text = finalText.trim()
+
+  if (!text) {
+    return finalText
+  }
+
+  for (const prior of priorAssistantTexts) {
+    const prefix = prior.trim()
+
+    if (!prefix || prefix.length > 32 * 1024 || text.length <= prefix.length || !text.startsWith(prefix)) {
+      continue
+    }
+
+    text = text.slice(prefix.length).replace(/^\s+/, '')
+  }
+
+  return text || finalText
+}
+
 export function mergeFinalAssistantText(
   parts: ChatMessagePart[],
   finalText: string,

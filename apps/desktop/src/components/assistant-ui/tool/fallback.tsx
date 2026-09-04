@@ -17,6 +17,7 @@ import {
 } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { $showReasoning } from '@/store/reasoning-disclosure'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -993,6 +994,12 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   endIndex,
   startIndex
 }) => {
+  const showReasoning = useStore($showReasoning)
+
+  if (!showReasoning) {
+    return null
+  }
+
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
   // fresh array would re-render the whole group on every text delta.

@@ -105,6 +105,37 @@ describe('useMessageStream interim text sealing', () => {
     expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, 'stored-session-1', SID)
   })
 
+  it('starts a fresh bubble after an uncompleted prior stream (#99416)', async () => {
+    mountStream()
+    await start()
+    await delta('first answer')
+
+    // A transport gap can lose the terminal frame. The next backend turn
+    // must not append its deltas to this abandoned stream bubble.
+    await start()
+    await delta('second answer')
+    await complete('second answer')
+
+    expect(assistantMessages()).toEqual(['first answer', 'second answer'])
+  })
+
+  it('does not prefix the next Grok turn with prior assistant replies (#99416)', async () => {
+    mountStream()
+    await start()
+    await delta('Answer one.')
+    await complete('Answer one.')
+
+    await start()
+    await delta('Answer one.\n\nAnswer two.')
+    await complete('Answer one.\n\nAnswer two.')
+
+    await start()
+    await delta('Answer one.\n\nAnswer two.\n\nAnswer three.')
+    await complete('Answer one.\n\nAnswer two.\n\nAnswer three.')
+
+    expect(assistantMessages()).toEqual(['Answer one.', 'Answer two.', 'Answer three.'])
+  })
+
   it('marks sealed interim bubbles interim and leaves the final reply unmarked', async () => {
     mountStream()
     await start()

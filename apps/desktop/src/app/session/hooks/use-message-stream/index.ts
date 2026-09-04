@@ -15,6 +15,7 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
+  stripReplayedAssistantHistory,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -586,7 +587,18 @@ export function useMessageStream({
         }
 
         const streamId = state.streamId
-        const finalText = renderMediaTags(text).trim()
+        const rawFinalText = renderMediaTags(text).trim()
+        const priorAssistantTexts = state.messages
+          .filter(
+            message =>
+              message.role === 'assistant' &&
+              !message.hidden &&
+              !message.interim &&
+              !message.pending &&
+              message.id !== streamId
+          )
+          .map(message => chatMessageText(message))
+        const finalText = stripReplayedAssistantHistory(rawFinalText, priorAssistantTexts)
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
         const completionError = failure?.error ?? completionErrorText(finalText)

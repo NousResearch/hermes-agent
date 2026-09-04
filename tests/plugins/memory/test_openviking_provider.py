@@ -1925,3 +1925,81 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+
+def test_initialize_threads_gateway_user_identity(monkeypatch):
+    """The gateway threads user_id into initialize() so memory providers can
+    scope per-user data (#98498). OpenViking used to drop it, attributing
+    every unnamed preference to the single configured tenant user."""
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://viking.example")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            pass
+
+        def health(self):
+            return False
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1", platform="cli", user_id="alice")
+
+    assert provider._user_id == "alice"
+    # The configured tenant stays the shared data space, untouched.
+    assert provider._user != "alice"
+
+    # Without a gateway identity nothing changes (single-user instances).
+    provider2 = OpenVikingMemoryProvider()
+    provider2.initialize("session-2", platform="cli")
+    assert provider2._user_id == ""
+
+
+def test_turn_batch_payload_marks_user_message_with_runtime_identity():
+    provider = _make_provider_with_session("sid", turn_count=0)
+    provider._user_id = "alice"
+    provider._agent = "hermes"
+
+    payload = provider._turn_batch_payload("u", "a")
+
+    assert payload["messages"][0]["peer_id"] == "alice"
+    assert payload["messages"][1]["peer_id"] == "hermes"
+
+
+def test_turn_batch_payload_without_user_identity_keeps_user_message_bare():
+    provider = _make_provider_with_session("sid", turn_count=0)
+    provider._user_id = ""
+    provider._agent = "hermes"
+
+    payload = provider._turn_batch_payload("u", "a")
+
+    assert "peer_id" not in payload["messages"][0]
+    assert payload["messages"][1]["peer_id"] == "hermes"
+
+
+def test_messages_to_openviking_batch_marks_user_messages_with_runtime_identity():
+    messages = [
+        {"role": "user", "content": "remember I like tea"},
+        {"role": "assistant", "content": "noted"},
+    ]
+
+    batch = OpenVikingMemoryProvider._messages_to_openviking_batch(
+        messages, assistant_peer_id="hermes", user_peer_id="alice"
+    )
+
+    user_payloads = [m for m in batch if m["role"] == "user"]
+    assistant_payloads = [m for m in batch if m["role"] == "assistant"]
+    assert user_payloads and all(m["peer_id"] == "alice" for m in user_payloads)
+    assert assistant_payloads and all(m["peer_id"] == "hermes" for m in assistant_payloads)
+
+
+def test_messages_to_openviking_batch_without_user_identity_keeps_user_messages_bare():
+    messages = [{"role": "user", "content": "remember I like tea"}]
+
+    batch = OpenVikingMemoryProvider._messages_to_openviking_batch(
+        messages, assistant_peer_id="hermes"
+    )
+
+    assert len(batch) == 1
+    assert "peer_id" not in batch[0]

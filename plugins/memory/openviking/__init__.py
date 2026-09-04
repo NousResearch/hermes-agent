@@ -2261,6 +2261,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._account = ""
         self._user = ""
         self._agent = ""
+        # Runtime gateway user identity threaded through initialize()
+        # (#98498). Distinct from self._user, the configured OpenViking tenant:
+        # the tenant stays the shared data space (X-OpenViking-User header)
+        # while this id marks per-message ownership so the server can scope
+        # preferences to the actual speaker.
+        self._user_id = ""
         self._session_id = ""
         self._turn_count = 0
         # Server-asserted user space for explicit-uid URIs (#91995). Key the
@@ -2780,6 +2786,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
+        self._user_id = str(kwargs.get("user_id") or "").strip()
         hermes_home = str(kwargs.get("hermes_home") or "").strip()
         if not hermes_home:
             try:
@@ -3175,18 +3182,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return {"type": "text", "text": content}
 
     def _turn_batch_payload(self, user_content: str, assistant_content: str) -> Dict[str, Any]:
+        user_message: Dict[str, Any] = {
+            "role": "user",
+            "parts": [self._text_part(user_content)],
+        }
+        if self._user_id:
+            user_message["peer_id"] = self._user_id
         assistant_message: Dict[str, Any] = {
             "role": "assistant",
             "parts": [self._text_part(assistant_content)],
         }
         if self._agent:
             assistant_message["peer_id"] = self._agent
-        return {
-            "messages": [
-                {"role": "user", "parts": [self._text_part(user_content)]},
-                assistant_message,
-            ]
-        }
+        return {"messages": [user_message, assistant_message]}
 
     def _post_session_turn(
         self,
@@ -4475,9 +4483,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         messages: List[Dict[str, Any]],
         *,
         assistant_peer_id: str = "",
+        user_peer_id: str = "",
     ) -> List[Dict[str, Any]]:
         """Convert Hermes canonical messages into OpenViking batch payloads."""
         assistant_peer_id = str(assistant_peer_id or "").strip()
+        user_peer_id = str(user_peer_id or "").strip()
         tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
         completed_tool_ids: set[str] = set()
         skipped_tool_ids: set[str] = set()
@@ -4513,6 +4523,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             payload: Dict[str, Any] = {"role": role, "parts": parts}
             if role == "assistant" and assistant_peer_id:
                 payload["peer_id"] = assistant_peer_id
+            elif role == "user" and user_peer_id:
+                payload["peer_id"] = user_peer_id
             return payload
 
         def flush_tool_parts() -> None:
@@ -4618,6 +4630,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         batch_messages = self._messages_to_openviking_batch(
             turn_messages,
             assistant_peer_id=getattr(self, "_agent", _DEFAULT_AGENT),
+            user_peer_id=getattr(self, "_user_id", ""),
         )
 
         if _sync_trace_enabled():

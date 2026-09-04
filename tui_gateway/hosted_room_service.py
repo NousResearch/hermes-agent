@@ -20,12 +20,12 @@ from gateway import hosted_room_links, hosted_room_link_records
 from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
+    GatewayRoomCatalog, PROTOCOL_VERSION)
 from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
-    PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
+    PeerRunsHTTPClient, PeerRunsHTTPError)
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
 
@@ -168,9 +168,6 @@ class HostedRoomService:
         for status in statuses:
             yield from driver.list_tasks(self.db_path, room_id=room_id, status=status)
 
-    def _save_link(self, **link: Any) -> None:
-        """Persist one stored link (``make_stored_link`` keyword fields)."""
-        hosted_room_links.save_room_link(self.db_path, hosted_room_links.make_stored_link(**link))
 
     def register_peer_route(
         self,
@@ -223,12 +220,6 @@ class HostedRoomService:
             self._persisted_peer_route_keys.add(key)
         self.runtime.wakeup()
 
-    def _publish_route(self, key: tuple[str, str], route: PeerMemberRoute, client=None) -> None:
-        """Make a persisted route live as ``ready`` (and bind its client when given)."""
-        with self._policy_lock:
-            self.peer_routes[key], self._peer_route_status[key] = route, "ready"
-            if client is not None:
-                self.peer_clients[key] = client
 
     def revoke_room_routes(self, room_id: str) -> int:
         """Revoke and forget every scoped peer route for one room.

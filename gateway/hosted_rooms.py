@@ -203,6 +203,12 @@ class AuthoritySupersededError(AuthorityConflictError):
     """Raised when a successful authority claim was later superseded."""
 
 
+class RoomQuarantinedError(AuthorityConflictError):
+    """Raised when an unsafe legacy takeover must remain read-only."""
+
+    reason = "room_authority_quarantined"
+
+
 # --- validation ---------------------------------------------------------------
 _canonical_json = partial(canonical_json, error=HostedRoomError, ensure_ascii=False)
 _validate_identifier = partial(identifier, error=HostedRoomError)
@@ -609,6 +615,46 @@ def _room_grant_scope_key(claims: Mapping[str, Any]) -> str:
     return hashlib.sha256(compact_json(fields).encode("utf-8")).hexdigest()
 
 
+def _room_grant_id(claims: Mapping[str, Any]) -> str:
+    from gateway.hosted_room_peer import _identifier as grant_identifier
+
+    try:
+        return grant_identifier(claims.get("grant_id"), field="grant_id")
+    except ValueError as exc:
+        raise HostedRoomError(str(exc)) from exc
+
+
+def revoke_room_grant_id(
+    db_path: Path | str,
+    *,
+    claims: Mapping[str, Any],
+    expires_at: float,
+    now: float | None = None,
+) -> None:
+    """Revoke only one bearer grant without fencing concurrent replacements."""
+
+    timestamp = float(now if now is not None else time.time())
+    expiry = float(expires_at)
+    if expiry <= timestamp:
+        return
+    grant_id = _room_grant_id(claims)
+    scope_key = _room_grant_scope_key(claims)
+    with _transaction(db_path, immediate=True) as conn:
+        conn.execute(
+            "DELETE FROM hosted_room_revoked_grant_ids WHERE expires_at<=?",
+            (timestamp,),
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_revoked_grant_ids(
+                   scope_key, grant_id, expires_at
+               ) VALUES (?, ?, ?)
+               ON CONFLICT(scope_key, grant_id) DO UPDATE SET
+                   expires_at=MAX(hosted_room_revoked_grant_ids.expires_at,
+                                  excluded.expires_at)""",
+            (scope_key, grant_id, expiry),
+        )
+
+
 def revoke_room_grant_scope(
     db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None) -> None:
     """Revoke every grant issued at or before now for one exact room scope."""
@@ -773,6 +819,66 @@ def reserve_peer_room(
         "rows": previous_rows,
         "expected_rows": expected_rows,
     }
+
+
+def restore_peer_room_reservations(
+    db_path: Path | str,
+    *,
+    claims: Mapping[str, Any],
+    snapshot: Mapping[str, Any],
+) -> None:
+    """Restore one failed reservation attempt without clobbering a later writer."""
+
+    room_id = _validate_identifier(
+        claims.get("room_id"), label="room_id", max_chars=MAX_ROOM_ID_CHARS
+    )
+    target_profile = _validate_identifier(
+        claims.get("target_profile"),
+        label="target_profile",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    rows = snapshot.get("rows")
+    expected_rows = snapshot.get("expected_rows")
+    if not isinstance(rows, list) or not isinstance(expected_rows, list):
+        raise HostedRoomError("peer room reservation snapshot is invalid")
+    columns = (
+        "room_id",
+        "member_id",
+        "target_profile",
+        "authority_gateway_id",
+        "authority_epoch",
+        "expires_at",
+        "revoked_at",
+        "created_at",
+        "updated_at",
+        "mutation_id",
+    )
+    with _transaction(db_path, immediate=True) as conn:
+        current = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT * FROM hosted_room_peer_reservations
+                    WHERE room_id=? AND target_profile=?""",
+                (room_id, target_profile),
+            ).fetchall()
+        ]
+        if current != expected_rows:
+            raise AuthorityConflictError(
+                "peer room reservation changed during rollback"
+            )
+        conn.execute(
+            """DELETE FROM hosted_room_peer_reservations
+                WHERE room_id=? AND target_profile=?""",
+            (room_id, target_profile),
+        )
+        conn.executemany(
+            """INSERT INTO hosted_room_peer_reservations(
+                   room_id, member_id, target_profile, authority_gateway_id,
+                   authority_epoch, expires_at, revoked_at, created_at, updated_at,
+                   mutation_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [tuple(row[column] for column in columns) for row in rows],
+        )
 
 
 def _read_one(db_path: DbPath, sql: str, params: tuple[Any, ...]) -> sqlite3.Row | None:
@@ -1249,109 +1355,3 @@ from typing import NoReturn  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import time  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
-
-
-class RoomQuarantinedError(AuthorityConflictError):
-    """Raised when an unsafe legacy takeover must remain read-only."""
-
-    reason = "room_authority_quarantined"
-
-
-def restore_peer_room_reservations(
-    db_path: Path | str,
-    *,
-    claims: Mapping[str, Any],
-    snapshot: Mapping[str, Any],
-) -> None:
-    """Restore one failed reservation attempt without clobbering a later writer."""
-
-    room_id = _validate_identifier(
-        claims.get("room_id"), label="room_id", max_chars=MAX_ROOM_ID_CHARS
-    )
-    target_profile = _validate_identifier(
-        claims.get("target_profile"),
-        label="target_profile",
-        max_chars=MAX_ACTOR_ID_CHARS,
-    )
-    rows = snapshot.get("rows")
-    expected_rows = snapshot.get("expected_rows")
-    if not isinstance(rows, list) or not isinstance(expected_rows, list):
-        raise HostedRoomError("peer room reservation snapshot is invalid")
-    columns = (
-        "room_id",
-        "member_id",
-        "target_profile",
-        "authority_gateway_id",
-        "authority_epoch",
-        "expires_at",
-        "revoked_at",
-        "created_at",
-        "updated_at",
-        "mutation_id",
-    )
-    with _transaction(db_path, immediate=True) as conn:
-        current = [
-            dict(row)
-            for row in conn.execute(
-                """SELECT * FROM hosted_room_peer_reservations
-                    WHERE room_id=? AND target_profile=?""",
-                (room_id, target_profile),
-            ).fetchall()
-        ]
-        if current != expected_rows:
-            raise AuthorityConflictError(
-                "peer room reservation changed during rollback"
-            )
-        conn.execute(
-            """DELETE FROM hosted_room_peer_reservations
-                WHERE room_id=? AND target_profile=?""",
-            (room_id, target_profile),
-        )
-        conn.executemany(
-            """INSERT INTO hosted_room_peer_reservations(
-                   room_id, member_id, target_profile, authority_gateway_id,
-                   authority_epoch, expires_at, revoked_at, created_at, updated_at,
-                   mutation_id
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [tuple(row[column] for column in columns) for row in rows],
-        )
-
-
-def _room_grant_id(claims: Mapping[str, Any]) -> str:
-    from gateway.hosted_room_peer import _identifier as grant_identifier
-
-    try:
-        return grant_identifier(claims.get("grant_id"), field="grant_id")
-    except ValueError as exc:
-        raise HostedRoomError(str(exc)) from exc
-
-
-def revoke_room_grant_id(
-    db_path: Path | str,
-    *,
-    claims: Mapping[str, Any],
-    expires_at: float,
-    now: float | None = None,
-) -> None:
-    """Revoke only one bearer grant without fencing concurrent replacements."""
-
-    timestamp = float(now if now is not None else time.time())
-    expiry = float(expires_at)
-    if expiry <= timestamp:
-        return
-    grant_id = _room_grant_id(claims)
-    scope_key = _room_grant_scope_key(claims)
-    with _transaction(db_path, immediate=True) as conn:
-        conn.execute(
-            "DELETE FROM hosted_room_revoked_grant_ids WHERE expires_at<=?",
-            (timestamp,),
-        )
-        conn.execute(
-            """INSERT INTO hosted_room_revoked_grant_ids(
-                   scope_key, grant_id, expires_at
-               ) VALUES (?, ?, ?)
-               ON CONFLICT(scope_key, grant_id) DO UPDATE SET
-                   expires_at=MAX(hosted_room_revoked_grant_ids.expires_at,
-                                  excluded.expires_at)""",
-            (scope_key, grant_id, expiry),
-        )

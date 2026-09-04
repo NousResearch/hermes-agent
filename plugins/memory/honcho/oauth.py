@@ -108,17 +108,16 @@ def _mark_grant_dead(key: tuple[str, str], cred: OAuthCredential) -> None:
     _reauth_check_cache.pop(key, None)  # verdict changed without a config rewrite
 
 def _read_config(path: Path) -> dict[str, Any]:
-    """Tolerant reader for the fail-open READ paths only: an unreadable or unparseable store reads as
-    "no credential". Never feed this into a full-file write; writers go through ``_read_config_strict``."""
+    """Tolerant reader for the read paths: an unreadable store reads as no credential. Writers use
+    ``_read_config_strict``."""
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 
 def _read_config_strict(path: Path) -> dict[str, Any]:
-    """Reader for the WRITE paths. A missing file reads as ``{}``. A file that exists but cannot be read
-    or parsed raises so the caller leaves it alone: ``atomic_json_write`` replaces the whole file, and a
-    write seeded from ``{}`` would erase every other host's credentials and the root keys."""
+    """Reader for the write paths: a missing file is ``{}``, an unreadable one raises. A write seeded
+    from ``{}`` would replace every other host's credentials."""
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
@@ -310,9 +309,8 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return base
 
 def _persist_credential(path: Path, host: str, cred: OAuthCredential, raw: dict[str, Any] | None = None) -> None:
-    """Write ``cred`` into ``host``'s block (apiKey + oauth) of ``raw`` (default: a strict read of the
-    file), leaving the rest intact; marks the grant live. "Leaving the rest intact" is only true when the
-    existing store was actually read, so an unreadable file raises instead of becoming a single-host file."""
+    """Write ``cred`` into ``host``'s block of ``raw`` (default: a strict read of the file) and mark
+    the grant live."""
     from utils import atomic_json_write
 
     raw = _read_config_strict(path) if raw is None else raw
@@ -403,7 +401,7 @@ def install_grant(
     now = time.time() if now is None else now
     cred = OAuthCredential.from_token_response(grant, now=now, client_id=client_id, token_endpoint=token_endpoint)
     with _refresh_lock, _config_refresh_lock(path):
-        # Strict: a fresh login must not seed its root-merge from a store that exists but could not be read.
+        # Strict read: a login must not seed its root merge from a store it could not read.
         raw = _read_config_strict(path)
         granted_config = grant.get("config")
         if isinstance(granted_config, dict):

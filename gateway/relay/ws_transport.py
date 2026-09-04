@@ -193,6 +193,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        is_bot=src.get("is_bot") if isinstance(src.get("is_bot"), bool) else False,
         # Multiplex mode: the connector stamps the target Hermes profile; None on
         # a single-profile gateway keeps the legacy ``agent:main`` namespace.
         profile=src.get("profile"),
@@ -208,6 +209,17 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # ``platform`` (which is the UNDERLYING platform, not ``relay``).
         delivered_via_upstream_relay=True,
     )
+    verified_one_to_one = src.get("one_to_one_verified")
+    if isinstance(verified_one_to_one, bool):
+        source.is_one_to_one = verified_one_to_one
+    elif str(src.get("chat_type") or "").casefold() in {"dm", "direct", "private"} and platform_enum in {
+        Platform.DISCORD, Platform.SIGNAL, Platform.TELEGRAM, Platform.WHATSAPP, Platform.WHATSAPP_CLOUD,
+    }:
+        # Slack MPIM and Matrix m.direct are not proof of a private audience.
+        source.is_one_to_one = True
+    relay_edit = src.get("message_is_edit")
+    if isinstance(relay_edit, bool):
+        source.message_is_edit = relay_edit
     try:
         msg_type = MessageType(raw.get("message_type", "text"))
     except ValueError:
@@ -226,6 +238,10 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         text=text,
         message_type=msg_type,
         source=source,
+        metadata={
+            "relay_author_classified": isinstance(src.get("is_bot"), bool),
+            "relay_edit_classified": isinstance(relay_edit, bool),
+        },
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         reply_to_text=reply_to.get("text"),

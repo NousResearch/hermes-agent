@@ -323,3 +323,44 @@ def test_self_advertised_endpoint_is_explicit_and_validated(
         assert endpoint == {"available": False, "reason": reason}
     else:
         assert endpoint["transport_security"] == security
+
+
+def test_expired_status_grant_can_only_authenticate_idempotent_revocation():
+    from gateway.hosted_room_peer import decode_room_grant
+
+    dispatch = _dispatch()
+    token = issue_room_grant(
+        SECRET,
+        grant_id="grant-expired",
+        room_id=dispatch.room_id,
+        home_install_id=dispatch.home_install_id,
+        authority_gateway_id=dispatch.authority_gateway_id,
+        authority_epoch=dispatch.authority_epoch,
+        member_id=dispatch.member_id,
+        target_install_id=dispatch.target_install_id,
+        target_profile=dispatch.target_profile,
+        execution_policy_digest=dispatch.execution_policy_digest,
+        permissions=("status",),
+        issued_at=100,
+        ttl_seconds=10,
+        status_expires_at=120,
+    )
+
+    with pytest.raises(HostedRoomGrantError, match="expired"):
+        decode_room_grant(SECRET, token, permission="status", now=121)
+    claims = decode_room_grant(
+        SECRET,
+        token,
+        permission="status",
+        now=121,
+        allow_expired_for_revocation=True,
+    )
+    assert claims["grant_id"] == "grant-expired"
+    with pytest.raises(HostedRoomGrantError, match="only.*revocation"):
+        decode_room_grant(
+            SECRET,
+            token,
+            permission="run",
+            now=121,
+            allow_expired_for_revocation=True,
+        )

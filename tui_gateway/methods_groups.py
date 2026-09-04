@@ -19,7 +19,9 @@ _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register",
+    "groups.desktop.claim", "groups.desktop.presence", "groups.desktop.renew", "groups.desktop.complete",
+    "groups.control.invite", "groups.control.register", "groups.control.revoke")
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
@@ -36,6 +38,7 @@ def bind_server(server) -> None:
     global _bound_server
     _bound_server = server
     server._profile_execution_policy = _profile_execution_policy
+    server._revoke_peer_room_control = _revoke_peer_room_control
 
 
 def start_hosted_room_service():
@@ -242,6 +245,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         "authority_gateway_id": local_authority_gateway_id(), "room_link": room_link,
         "features": [
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
+            "desktop_compatibility_mailbox", "reciprocal_room_control",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
             "log_replication", "authority_takeover"],
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
@@ -291,6 +295,7 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
             or claims["target_install_id"] != local_authority_gateway_id()):
         raise ValueError("room grant target does not match this profile")
     revoke_room_grant_scope(db_path, claims=claims, expires_at=_expiry(claims))
+    _revoke_peer_room_control(str(claims["room_id"]), str(claims["member_id"]))
     return _ok(rid, {"revoked": True})
 
 
@@ -406,6 +411,8 @@ def _(rid, params: dict, service) -> dict:
     room_id = str(params.get("room_id") or "")
 
     def disband_with_state(state: dict | None = None) -> dict:
+        from gateway import hosted_room_controls
+
         local_gateway_id = local_authority_gateway_id()
         if state is not None and str(state["authority_gateway_id"]) != local_gateway_id:
             raise AuthorityConflictError("This Group Chat is managed by another gateway.")
@@ -413,6 +420,7 @@ def _(rid, params: dict, service) -> dict:
             service.db_path, room_id=params.get("room_id"),
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1))
+        hosted_room_controls.revoke_home_control_tokens(service.db_path, room_id=room_id)
         return _ok(rid, {"tombstone": tombstone})
     try:
         existing = room_state(
@@ -451,7 +459,8 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Retry one indeterminate room task after explicit user confirmation."""
     task = service.retry_room_task(
-        str(params.get("room_id") or ""), task_id=str(params.get("task_id") or ""))
+        str(params.get("room_id") or ""), task_id=str(params.get("task_id") or ""),
+        retry_id=str(params.get("command_id") or "") or None)
     if not isinstance(task, dict):
         task = {}
     identity = task.get("identity")
@@ -526,3 +535,246 @@ _passthrough(
 
 def register(server) -> None:
     _registry.install(server)
+
+
+def _revoke_peer_room_control(room_id: str, member_id: str) -> int:
+    from gateway.hosted_room_control_client import revoke_stored_peer_control
+    from gateway.hosted_rooms import default_db_path
+
+    return revoke_stored_peer_control(
+        default_db_path(), room_id=room_id, member_id=member_id
+    )
+
+
+@method("groups.desktop.claim")
+def _(rid, params: dict) -> dict:
+    """Advertise classic rooms and lease pending messaging commands."""
+
+    try:
+        from gateway.desktop_room_mailbox import claim_commands, default_db_path
+
+        commands = claim_commands(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            room_authorities=params.get("room_authorities", []),
+            actions=params.get("actions"),
+            limit=params.get("limit", 8),
+        )
+        return _ok(rid, {"commands": commands})
+    except Exception as exc:
+        return _err(rid, 4130, str(exc))
+
+
+@method("groups.desktop.presence")
+def _(rid, params: dict) -> dict:
+    """Renew classic-room ownership without claiming pending commands."""
+
+    try:
+        from gateway.desktop_room_mailbox import default_db_path, refresh_presence
+
+        room_ids = refresh_presence(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            room_authorities=params.get("room_authorities", []),
+        )
+        return _ok(rid, {"room_ids": room_ids})
+    except Exception as exc:
+        return _err(rid, 4137, str(exc))
+
+
+@method("groups.desktop.complete")
+def _(rid, params: dict) -> dict:
+    """Commit the outcome of one classic-room compatibility command."""
+
+    try:
+        from gateway.desktop_room_mailbox import complete_command, default_db_path
+
+        command = complete_command(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            command_id=params.get("command_id"),
+            lease_token=params.get("lease_token"),
+            success=params.get("success") is True,
+            result=params.get("result", {}),
+        )
+        return _ok(rid, {"command": command})
+    except Exception as exc:
+        return _err(rid, 4131, str(exc))
+
+
+@method("groups.desktop.renew")
+def _(rid, params: dict) -> dict:
+    """Renew one live classic-room command lease while its turn settles."""
+
+    try:
+        from gateway.desktop_room_mailbox import default_db_path, renew_command
+
+        command = renew_command(
+            default_db_path(),
+            consumer_id=params.get("consumer_id"),
+            command_id=params.get("command_id"),
+            lease_token=params.get("lease_token"),
+        )
+        return _ok(rid, {"command": command})
+    except Exception as exc:
+        return _err(rid, 4132, str(exc))
+
+
+@method("groups.control.invite")
+def _(rid, params: dict) -> dict:
+    """Issue one durable return-control credential to a room participant."""
+
+    try:
+        from gateway import hosted_room_controls
+        from gateway.hosted_room_peer import (
+            PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
+            local_catalog_mapping,
+        )
+        from gateway.hosted_rooms import local_authority_gateway_id, room_state
+
+        service = get_hosted_room_service()
+        if service is None:
+            return _err(rid, 4123, _WORKER_UNAVAILABLE)
+        room = room_state(service.db_path, room_id=params.get("room_id"))
+        member_id = str(params.get("member_id") or "")
+        caller_install_id = str(params.get("caller_install_id") or "")
+        member = next(
+            (
+                item
+                for item in room["members"]
+                if str(item.get("member_id") or "") == member_id
+            ),
+            None,
+        )
+        target = member.get("target") if isinstance(member, dict) else None
+        if (
+            not isinstance(target, dict)
+            or target.get("kind") != "peer"
+            or str(target.get("installation_id") or "") != caller_install_id
+        ):
+            raise ValueError("control participant does not match the frozen room member")
+        profile = _requested_profile(params)
+        catalog = local_catalog_mapping(
+            installation_id=local_authority_gateway_id(),
+            protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
+            link_modes=("direct",),
+            text=True,
+            attachments=False,
+            target_profile=profile,
+            execution_policy=_profile_execution_policy(profile),
+        )
+        endpoint = catalog.get("endpoint")
+        home_url = (
+            str(endpoint.get("url") or "")
+            if isinstance(endpoint, dict) and endpoint.get("available") is True
+            else ""
+        )
+        if not home_url:
+            raise ValueError("room authority has no reachable control endpoint")
+        request_id = str(params.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("room control invitation requires request_id")
+        now = time.time()
+        issued = hosted_room_controls.issue_home_control_token(
+            service.db_path,
+            room_id=room["room_id"],
+            member_id=member_id,
+            authority_gateway_id=room["authority_gateway_id"],
+            authority_epoch=int(room["authority_epoch"]),
+            expires_at=hosted_room_controls.ROOM_LIFETIME_EXPIRES_AT,
+            request_id=request_id,
+            now=now,
+        )
+        return _ok(
+            rid,
+            {
+                "room_id": issued.room_id,
+                "member_id": issued.member_id,
+                "authority_gateway_id": issued.authority_gateway_id,
+                "authority_epoch": issued.authority_epoch,
+                "room_name": str(room.get("name") or room["room_id"]),
+                "member_count": len(room["members"]),
+                "control_token": issued.control_token,
+                "home_url": home_url,
+                "expires_at": issued.expires_at,
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4150, str(exc))
+
+
+@method("groups.control.register")
+def _(rid, params: dict) -> dict:
+    """Persist one private return route on the participating gateway."""
+
+    try:
+        from gateway import hosted_room_controls
+        from gateway.hosted_room_control_client import RoomControlHTTPClient
+        from gateway.hosted_rooms import default_db_path
+
+        profile = _requested_profile(params)
+        if not hosted_room_controls.peer_reservation_matches(
+            default_db_path(),
+            room_id=params.get("room_id"),
+            member_id=params.get("member_id"),
+            target_profile=profile,
+            authority_gateway_id=params.get("authority_gateway_id"),
+            authority_epoch=int(params.get("authority_epoch") or 0),
+        ):
+            raise ValueError("room control route has no matching live reservation")
+        saved = hosted_room_controls.save_peer_control_link(
+            default_db_path(),
+            room_id=params.get("room_id"),
+            member_id=params.get("member_id"),
+            home_url=params.get("home_url"),
+            authority_gateway_id=params.get("authority_gateway_id"),
+            authority_epoch=int(params.get("authority_epoch") or 0),
+            room_name=params.get("room_name"),
+            member_count=params.get("member_count"),
+            control_token=params.get("control_token"),
+            expires_at=params.get("expires_at"),
+            allow_rotation=True,
+        )
+        try:
+            summary = RoomControlHTTPClient(saved.link).summary()
+            summary_room = summary.get("room") if isinstance(summary, dict) else None
+            if (
+                not isinstance(summary_room, dict)
+                or str(summary_room.get("room_id") or "") != saved.link.room_id
+                or str(summary_room.get("authority_gateway_id") or "")
+                != saved.link.authority_gateway_id
+                or int(summary_room.get("authority_epoch") or 0)
+                != saved.link.authority_epoch
+            ):
+                raise ValueError("room control authority returned mismatched scope")
+        except Exception:
+            hosted_room_controls.delete_peer_control_links(
+                default_db_path(),
+                room_id=saved.link.room_id,
+                member_id=saved.link.member_id,
+            )
+            raise
+        return _ok(
+            rid,
+            {
+                "registered": True,
+                "idempotent": saved.idempotent,
+                "room_id": saved.link.room_id,
+                "member_id": saved.link.member_id,
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 4151, str(exc))
+
+
+@method("groups.control.revoke")
+def _(rid, params: dict) -> dict:
+    """Revoke a participant's private return route idempotently."""
+
+    try:
+        room_id = str(params.get("room_id") or "")
+        member_id = str(params.get("member_id") or "")
+        removed = _revoke_peer_room_control(room_id, member_id)
+        return _ok(rid, {"revoked": removed})
+    except Exception as exc:
+        return _err(rid, 4152, str(exc))

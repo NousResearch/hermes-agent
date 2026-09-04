@@ -8,6 +8,9 @@
 #   4. Multiple dates: same line with several JJ/MM/AA dates
 # Exit 0 if no candidate, 1 otherwise. Output = candidates (LLM pass confirms).
 set -u
+# Force C locale: the [A-Za-zÀ-ÿ0-9] ranges break grep on UTF-8 locales
+# ("grep: Fin d'intervalle invalide" / "invalid range end") — bug report VM res-89.
+export LC_ALL=C
 HERMES_HOME="${1:-${HERMES_HOME:-$HOME/.hermes}}"
 MEM_DIR="$HERMES_HOME/memories"
 EXT_DIR="$MEM_DIR/extended"

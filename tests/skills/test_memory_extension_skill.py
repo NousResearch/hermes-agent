@@ -223,6 +223,26 @@ class TestContradictionScript:
         assert "multiple dates" in r.stdout.lower()
 
 
+class TestContradictionScriptLocaleGuard:
+    """Regression guard: the [A-Za-zÀ-ÿ0-9] ranges in the deterministic
+    script break grep on UTF-8 locales (\"grep: invalid range end\"), so the
+    script must force LC_ALL=C. Reported from a fr_FR.UTF-8 VM (res-89)."""
+
+    def test_script_forces_c_locale(self):
+        script = (SKILL_DIR / "scripts" / "check-memory-contradictions.sh").read_text(encoding="utf-8")
+        assert "export LC_ALL=C" in script, "script must force LC_ALL=C for UTF-8 locales"
+
+    def test_multibyte_ranges_used_after_locale_guard(self):
+        """The multibyte [..À-ÿ..] ranges stay in the code (they match accented
+        names), and the LC_ALL=C guard must execute before them so grep treats
+        them byte-wise on UTF-8 locales. Occurrences in the guard comment above
+        the export are harmless."""
+        script = (SKILL_DIR / "scripts" / "check-memory-contradictions.sh").read_text(encoding="utf-8")
+        guard_at = script.find("export LC_ALL=C")
+        assert guard_at != -1, "script must force LC_ALL=C for UTF-8 locales"
+        assert script.find("À-ÿ", guard_at) != -1, "no À-ÿ range found after the guard"
+
+
 class TestContradictionLLMScript:
     def test_dry_run_no_network(self, fake_home):
         """--dry-run must not call the API and must exit 0."""

@@ -13,7 +13,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401

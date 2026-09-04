@@ -2637,13 +2637,15 @@ def _run_single_child(
           ``error``) or a summary-less/invalid terminal state.
 
     ``exit_reason`` ∈ {``"completed"``, ``"max_iterations"``, ``"interrupted"``,
-    ``"error"``}:
+    ``"error"``, ``"guardrail_halt"``}:
         * ``"completed"``       — normal finish.
         * ``"max_iterations"``  — genuine per-child iteration-budget exhaustion
           (``completed=False`` with no failure fields).
         * ``"interrupted"``     — interrupted by the parent.
         * ``"error"``           — provider rejection / terminal failure; NOT
           budget exhaustion (this is the case #97655 fixed).
+        * ``"guardrail_halt"``  — hard tool-guardrail stop (block/halt); never
+          a success (#102694).
 
     ``truncated`` is derived as ``exit_reason == "max_iterations"`` only, so the
     parent-visible truncation flag stays truthful for all of the above.
@@ -3293,8 +3295,22 @@ def _run_single_child(
         # it instead of silently accepting zero-content "success".
         _empty_sentinel = summary.strip() == "(empty)"
 
+        # Hard tool-guardrail halt (e.g. loop_web_search_cap): the child was
+        # stopped by the loop guardrail and its final_response is a
+        # controlled halt message, not usable output. Must WIN over the
+        # summary-presence heuristic below (#102694). Warnings (action=warn)
+        # never halt and never land in result["guardrail"], so they fall
+        # through unaffected.
+        _guardrail = result.get("guardrail")
+        _guardrail_halt = (
+            isinstance(_guardrail, dict)
+            and _guardrail.get("action") in ("block", "halt")
+        )
+
         if interrupted:
             status = "interrupted"
+        elif _guardrail_halt:
+            status = "failed"
         elif result.get("failed") or result.get("error"):
             # A structured failure (provider rejection / terminal exception)
             # must WIN over the summary-presence heuristic below. The child's
@@ -3364,6 +3380,8 @@ def _run_single_child(
         # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
+        elif _guardrail_halt:
+            exit_reason = "guardrail_halt"
         elif result.get("failed") or result.get("error"):
             # Provider rejection / terminal failure. Do NOT report this as
             # iteration-budget exhaustion — "max_iterations" is only truthful
@@ -3382,7 +3400,8 @@ def _run_single_child(
 
         # --- result entry contract (see _run_single_child docstring) ---
         # status ∈ {completed, interrupted, failed}
-        # exit_reason ∈ {completed, max_iterations, interrupted, error}
+        # exit_reason ∈ {completed, max_iterations, interrupted, error,
+        #   guardrail_halt}
         # truncated is exactly (exit_reason == "max_iterations").
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -3438,7 +3457,17 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            if _schema_valid is False and summary and not _empty_sentinel:
+            if _guardrail_halt:
+                # Name the public guardrail code so coordinators need not
+                # parse prose. entry["guardrail"] carries the decision
+                # metadata verbatim — to_metadata() only exposes the code,
+                # counts and an args hash, never raw tool arguments.
+                _guardrail_code = _guardrail.get("code") or "unknown"
+                entry["error"] = (
+                    f"Subagent stopped by tool guardrail: {_guardrail_code}."
+                )
+                entry["guardrail"] = dict(_guardrail)
+            elif _schema_valid is False and summary and not _empty_sentinel:
                 # The child DID respond — the response just violates the
                 # declared contract. Name that instead of the generic
                 # "no response" error; schema_errors (below) hold the

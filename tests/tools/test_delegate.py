@@ -887,6 +887,96 @@ class TestDelegateFailedChildStatus(unittest.TestCase):
         self.assertFalse(entry["truncated"])
 
 
+class TestDelegateGuardrailHalt(unittest.TestCase):
+    """Hard guardrail termination must not be reported as completed (#102694).
+
+    A child stopped by a hard tool guardrail (e.g. loop_web_search_cap)
+    returns a controlled halt message as final_response with
+    result["guardrail"] set. The summary-presence heuristic must not label
+    that as status=completed. Warnings (action=warn) never halt and must
+    keep the existing classification.
+    """
+
+    def _delegate_single(self, child_result):
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = child_result
+            MockAgent.return_value = mock_child
+            result = json.loads(
+                delegate_task(goal="Test guardrail child", parent_agent=parent)
+            )
+            return result["results"][0]
+
+    def test_hard_guardrail_halt_is_failed_not_completed(self):
+        entry = self._delegate_single(
+            {
+                "final_response": "Stopped: runaway search loop. Working with results so far.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 5,
+                "messages": [],
+                "guardrail": {
+                    "action": "block",
+                    "code": "loop_web_search_cap",
+                    "message": "Blocked web_search: per-turn limit.",
+                    "tool_name": "web_search",
+                    "count": 8,
+                },
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "guardrail_halt")
+        self.assertFalse(entry["truncated"])
+        self.assertIn("loop_web_search_cap", entry["error"])
+        self.assertEqual(entry["guardrail"]["code"], "loop_web_search_cap")
+
+    def test_guardrail_metadata_carries_no_raw_tool_arguments(self):
+        entry = self._delegate_single(
+            {
+                "final_response": "Stopped by guardrail.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 5,
+                "messages": [],
+                "guardrail": {
+                    "action": "halt",
+                    "code": "identical_call_streak_halt",
+                    "message": "Halted identical calls.",
+                    "tool_name": "terminal",
+                    "count": 3,
+                    "signature": {"tool_name": "terminal", "args_hash": "abc123"},
+                },
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "guardrail_halt")
+        self.assertNotIn("rm -rf /super/secret/query", json.dumps(entry["guardrail"]))
+
+    def test_warn_action_stays_completed(self):
+        entry = self._delegate_single(
+            {
+                "final_response": "Work finished with a warning noted.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 3,
+                "messages": [],
+                "guardrail": {
+                    "action": "warn",
+                    "code": "same_tool_failure_warning",
+                    "message": "Repeated failures noticed.",
+                    "tool_name": "terminal",
+                    "count": 3,
+                },
+            }
+        )
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["exit_reason"], "completed")
+
+
 class TestSubagentCostRollup(unittest.TestCase):
     """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd
     must include subagent spend, not just the parent's own API calls."""

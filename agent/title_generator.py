@@ -227,6 +227,12 @@ def _summarize_user_message(user_message: str) -> str:
     after the user's request. Reuse the canonical scaffolding parser so the
     model sees ``/work — fix the title leak`` instead, then strip any control
     wrappers left around it.
+
+    Attachment reference tokens (``@file:...`` / ``@folder:...``) are dropped
+    too: when the first user message is just an attached file, the session
+    would otherwise be titled after the raw path (``@file:AppData/...attach…``),
+    making every attachment-only conversation render as near-identical garbage
+    in the sidebar (#92068).
     """
     if not user_message:
         return ""
@@ -238,7 +244,29 @@ def _summarize_user_message(user_message: str) -> str:
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
     text = described if described is not None else user_message
+    text = _strip_context_reference_tokens(text)
     return strip_control_wrappers(text)
+
+
+# Matches an ``@file:``/``@folder:`` context reference the way the canonical
+# ``agent.context_references.REFERENCE_PATTERN`` does: an unquoted ``\\S+``
+# value, or a backtick/double/single-quoted value. Kept local so the titler
+# doesn't import the context-reference machinery (circularity / startup cost)
+# just to drop the tokens from a title candidate.
+_CONTEXT_REFERENCE_TOKEN_RE = re.compile(
+    r"(?<![\w/])@(?:file|folder):(?P<value>(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')|\S+)",
+)
+
+
+def _strip_context_reference_tokens(text: str) -> str:
+    """Remove ``@file:``/``@folder:`` tokens so an attachment-only opener
+    titles as untitled rather than as the raw file path."""
+    if not text:
+        return ""
+    stripped = _CONTEXT_REFERENCE_TOKEN_RE.sub("", text)
+    # Collapse any whitespace left between removed tokens back to a single
+    # space so "look at  @file:x  please" reads "look at please".
+    return re.sub(r"[ \t]{2,}", " ", stripped).strip()
 
 
 def is_titleable_user_message(user_message: str) -> bool:

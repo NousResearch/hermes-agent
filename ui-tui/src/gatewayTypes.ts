@@ -109,7 +109,7 @@ export interface ConfigDisplayConfig {
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
   // Forward-compat: backend may send styles this client doesn't know yet —
-  // `normalizeIndicatorStyle` falls back to 'kaomoji' for those — but the
+  // `normalizeIndicatorStyle` falls back to the default pulse (`unicode`) for those — but the
   // wire type is documented as `string` so consumers don't get a false
   // narrowing-and-autocomplete contract on a value that requires runtime
   // validation anyway.

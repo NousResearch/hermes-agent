@@ -15,8 +15,9 @@
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
     "check": "npm run build:ink && npm run typecheck && npm run test && npm run lint",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --pool=forks --maxWorkers=1 --no-file-parallelism",
+    "test:watch": "vitest",
+    "test:acceptance": "node scripts/omp-acceptance.mjs"
   },
   "dependencies": {
     "@hermes/ink": "file:./packages/hermes-ink",

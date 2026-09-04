@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { stableComposerColumns, transcriptBodyWidth } from '../lib/inputMetrics.js'
+import { composerFrameChromeCols, stableComposerColumns, transcriptBodyWidth } from '../lib/inputMetrics.js'
 import { composerPromptText } from '../lib/prompt.js'
 
 describe('Termux composer prompt + width guards', () => {
@@ -36,5 +36,18 @@ describe('Termux composer prompt + width guards', () => {
   it('keeps legacy desktop floor outside Termux mode', () => {
     expect(transcriptBodyWidth(24, 'assistant', '>')).toBe(20)
     expect(transcriptBodyWidth(24, 'user', 'upstr >')).toBe(20)
+  })
+})
+
+describe('framed composer chrome', () => {
+  it('reserves borders only in compact density', () => {
+    expect(composerFrameChromeCols(true)).toBe(2)
+    expect(composerFrameChromeCols(false)).toBe(4)
+  })
+
+  it('shrinks wrap width by the frame chrome', () => {
+    expect(stableComposerColumns(40, 8, false)).toBe(28)
+    expect(stableComposerColumns(40, 8, false, composerFrameChromeCols(true))).toBe(26)
+    expect(stableComposerColumns(40, 8, false, composerFrameChromeCols(false))).toBe(24)
   })
 })

@@ -174,11 +174,11 @@ export HERMES_TUI_THEME=light
 
 ## Busy indicator styles
 
-The status-bar busy indicator is pluggable — the default rotates Hermes' kawaii face palette every 2.5 seconds during agent work. Pick a different style via config or the `/indicator` slash command:
+The status-bar busy indicator is pluggable — the default is a quiet unicode (braille) pulse. Kaomoji faces remain available. Pick a style via config or the `/indicator` slash command:
 
 ```yaml
 display:
-  tui_status_indicator: kaomoji   # kaomoji | emoji | unicode | ascii
+  tui_status_indicator: unicode   # unicode | ascii | emoji | kaomoji
 ```
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.

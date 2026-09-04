@@ -10910,6 +10910,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # the gateway the first attempt just started.  Poll a bounded
             # window for the resumed gateway to publish its identity instead.
             _fleet_snapshot = []
+            _pre_restart_pid_set = {
+                int(p) for p in (_pre_restart_gateway_pids or []) if isinstance(p, int)
+            }
             if _fleet_rows_expected:
                 _fleet_deadline = _time.monotonic() + 30.0
                 while True:
@@ -10927,8 +10930,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # resumed gateway has published (no "down" rows remain)
                     # or the deadline passes, so a slow second gateway can't
                     # be misread as down and re-trigger the retry loop.
-                    if _fleet_snapshot and not any(
-                        row.get("state") == "down" for row in _fleet_snapshot
+                    #
+                    # A "stale" row is the SAME settling race caught at a
+                    # different instant: on systemd-managed restarts the
+                    # about-to-die old process can still answer the control
+                    # socket for a beat after the restart was signalled,
+                    # before the new process takes over and stamps its own
+                    # identity. Only treat it as still-settling when the row's
+                    # PID is a known pre-restart PID (i.e. provably the
+                    # outgoing process, not a genuinely stuck new one) —
+                    # otherwise a real stale-code failure would poll the
+                    # full 30s and still report correctly, just later.
+                    _settling_stale = any(
+                        row.get("state") == "stale" and row.get("pid") in _pre_restart_pid_set
+                        for row in _fleet_snapshot
+                    )
+                    if (
+                        _fleet_snapshot
+                        and not _settling_stale
+                        and not any(row.get("state") == "down" for row in _fleet_snapshot)
                     ):
                         break
                     if _time.monotonic() >= _fleet_deadline:

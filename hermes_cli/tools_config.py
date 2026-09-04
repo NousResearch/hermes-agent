@@ -1649,15 +1649,29 @@ def _run_cua_driver_installer(
     is_linux = system == "Linux"
 
     if is_windows:
-        # Mirror the one-liner printed by cua_driver_install_hint().
+        # Fresh installs use the scriptblock form with -NoAutoStart so the
+        # upstream install.ps1 skips Register-CuaDriverAutostart (the only
+        # branch that self-elevates via UAC and creates the logon-triggered
+        # scheduled task).  Unattended refreshes (installer_timeout set)
+        # already use this form; now fresh interactive installs match.
+        # The plain `irm … | iex` one-liner cannot receive parameters, which
+        # is why scriptblock invocation is required.
+        # Fixes: https://github.com/NousResearch/hermes-agent/issues/95372
+        ps_scriptblock = (
+            "$sc = irm https://raw.githubusercontent.com/trycua/cua/main/"
+            "libs/cua-driver/scripts/install.ps1; "
+            "& ([scriptblock]::Create($sc)) -NoAutoStart"
+        )
+        install_cmd = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command", ps_scriptblock,
+        ]
+        # Manual hint still shows the easy one-liner for users who want to
+        # run it themselves — they can add -NoAutoStart if they prefer.
         ps_oneliner = (
             "irm https://raw.githubusercontent.com/trycua/cua/main/"
             "libs/cua-driver/scripts/install.ps1 | iex"
         )
-        install_cmd = [
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-Command", ps_oneliner,
-        ]
         manual_hint = (
             'powershell -NoProfile -ExecutionPolicy Bypass -Command '
             f'"{ps_oneliner}"'

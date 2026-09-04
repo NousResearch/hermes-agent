@@ -104,6 +104,18 @@ class MemoryProvider(ABC):
         only the LAST prefetch, never a stale prior count."""
         return None
 
+    def supports_current_query_recall_planning(self) -> bool:
+        """Whether :meth:`prefetch` retrieves against the query passed for this turn.
+
+        Legacy/background providers default to false. Providers whose ``prefetch``
+        consumes the current query must opt in before the host may rewrite it.
+        """
+        return False
+
+    def rewrites_recall_queries(self) -> bool:
+        """Whether the provider already performs its own model-based query rewrite."""
+        return False
+
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
         session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,

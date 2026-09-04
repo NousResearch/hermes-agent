@@ -100,6 +100,9 @@ class Mem0MemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "mem0"
 
+    def supports_current_query_recall_planning(self) -> bool:
+        return True
+
     def is_available(self) -> bool:
         cfg = _load_config()
         if cfg.get("mode", "platform") == "oss":

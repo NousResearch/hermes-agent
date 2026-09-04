@@ -108,7 +108,7 @@ def _patch_manager_for_resolution_test(mgr: HonchoSessionManager) -> None:
     fake_peer = MagicMock()
     mgr._get_or_create_peer = MagicMock(return_value=fake_peer)
     mgr._get_or_create_honcho_session = MagicMock(
-        return_value=(MagicMock(), [])
+        return_value=(MagicMock(), [], None)
     )
 
 

@@ -30,6 +30,9 @@ _ASYNC_SHUTDOWN = object()
 _SESSION_MESSAGE_RETENTION = 200
 _SESSION_IDLE_TTL_SECONDS = 3600
 _SESSION_SWEEP_INTERVAL_SECONDS = 300
+# Hard caps for a burst of distinct sessions inside one TTL window; both dicts evict least recently used.
+_SESSION_CACHE_MAX_SIZE = 128
+_PEERS_CACHE_MAX_SIZE = 512
 
 
 @dataclass
@@ -128,6 +131,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         while True:
             with self._cache_lock:
                 if key in cache:
+                    cache[key] = cache.pop(key)  # dict order is the LRU order the caps evict from
                     return cache[key]
                 generation = self._client_generation
             obj = fetch()
@@ -135,6 +139,15 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 if self._client_generation == generation:
                     return cache.setdefault(key, obj)
             # Client rebuilt mid-resolve: this object holds the discarded transport. Retry.
+
+    def _cached_session(self, session_key: str) -> HonchoSession | None:
+        """The locally cached session, stamped as used so recall alone keeps it out of the idle sweep."""
+        with self._cache_lock:
+            session = self._cache.get(session_key)
+            if session is not None:
+                session.updated_at = datetime.now()
+                self._cache[session_key] = self._cache.pop(session_key)
+        return session
 
     def _sdk_session(self, session_id: str) -> Any:
         """Get or create the SDK session (cached until a client rebuild clears the cache)."""
@@ -163,12 +176,14 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
     # ----- Session creation -----
 
-    def _configure_session_peers(self, session_id: str, user_peer: Any, assistant_peer: Any) -> bool:
+    def _configure_session_peers(self, session_id: str, user_peer: Any, assistant_peer: Any) -> dict[str, bool] | None:
         """add_peers with this session's observation config, then adopt the server's effective
-        config (set via the Honcho UI, it wins over local defaults) under the session's own id.
-        Returns False when auth died mid-way (already recorded by _authed_call)."""
+        config (set via the Honcho UI, it wins over local defaults). Returns the effective flags for
+        get_or_create to store next to the cache entry, or None when auth died mid-way (already
+        recorded by _authed_call)."""
         peers = (("user", user_peer), ("ai", assistant_peer))
         flags = self._observation_flags(session_id)
+        synced = dict(flags)
         try:
             from honcho.session import SessionPeerConfig
             peer_entries = [
@@ -182,13 +197,11 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                     "peer configuration read",
                     lambda: [self._sdk_session(session_id).get_peer_configuration(peer) for _, peer in peers],
                 )
-                synced = dict(flags)
                 for (kind, _), server_cfg in zip(peers, server_cfgs):
                     for field_name in ("observe_me", "observe_others"):
                         value = getattr(server_cfg, field_name)
                         if value is not None:
                             synced[f"{kind}_{field_name}"] = value
-                self._session_observation[session_id] = synced
                 logger.debug("Honcho observation synced from server for session '%s': user(me=%s,others=%s) ai(me=%s,others=%s)",
                              session_id, synced["user_observe_me"], synced["user_observe_others"],
                              synced["ai_observe_me"], synced["ai_observe_others"])
@@ -196,10 +209,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             self._guarded(_adopt_server_config, None, logging.DEBUG,
                           "Honcho get_peer_configuration failed (using local config): %s")
         except HonchoAuthError:
-            return False
+            return None
         except Exception as e:
             logger.warning("Honcho session '%s' add_peers failed (non-fatal): %s", session_id, e)
-        return True
+        return synced
 
     def _load_existing_messages(self, session_id: str) -> list:
         """Load prior messages via context() (one call for messages + metadata), oldest first."""
@@ -224,36 +237,74 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             logger.warning("Honcho session '%s' loaded (failed to fetch context: %s)", session_id, e)
         return []
 
-    def _get_or_create_honcho_session(self, session_id: str, user_peer: Any, assistant_peer: Any) -> tuple[Any, list]:
-        """(honcho_session, existing_messages) with peers configured; a cached session yields no messages."""
+    def _get_or_create_honcho_session(
+        self, session_id: str, user_peer: Any, assistant_peer: Any,
+    ) -> tuple[Any, list, dict[str, bool] | None]:
+        """(honcho_session, existing_messages, observation flags) with peers configured; a cached
+        session yields no messages and no flags."""
         with self._cache_lock:
             if session_id in self._sessions_cache:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
-                return self._sessions_cache[session_id], []
+                return self._sessions_cache[session_id], [], None
 
         self._authed_call("session setup", lambda: self._sdk_session(session_id))
-        existing_messages: list = (self._load_existing_messages(session_id)
-                                   if self._configure_session_peers(session_id, user_peer, assistant_peer) else [])
+        observation = self._configure_session_peers(session_id, user_peer, assistant_peer)
+        existing_messages: list = self._load_existing_messages(session_id) if observation is not None else []
 
         with self._cache_lock:
             honcho_session = self._sessions_cache.get(session_id)
         if honcho_session is None:
             # A mid-init client rebuild dropped the cached session; resolve a fresh one.
             honcho_session = self._authed_call("session setup", lambda: self._sdk_session(session_id))
-        return honcho_session, existing_messages
+        return honcho_session, existing_messages, observation
+
+    @staticmethod
+    def _has_unsynced(session: HonchoSession) -> bool:
+        return any(not m.get("_synced") for m in session.messages)
+
+    def _evict_session_locked(self, key: str, session: HonchoSession) -> None:
+        """Drop one session and every entry keyed to it. Caller holds _cache_lock."""
+        del self._cache[key]
+        self._sessions_cache.pop(session.honcho_session_id, None)
+        self._session_observation.pop(session.honcho_session_id, None)
+        with self._prefetch_cache_lock:
+            self._context_cache.pop(key, None)
+
+    def _enforce_cache_caps_locked(self) -> None:
+        """Evict least recently used entries above the hard caps. A session with unsynced messages
+        is never evicted: it is the only copy until the flush lands. Caller holds _cache_lock."""
+        for key, session in list(self._cache.items()):
+            if len(self._cache) <= _SESSION_CACHE_MAX_SIZE:
+                break
+            if not self._has_unsynced(session):
+                self._evict_session_locked(key, session)
+        live_ids = {s.honcho_session_id for s in self._cache.values()}
+        for session_id in list(self._sessions_cache):
+            if len(self._sessions_cache) <= _SESSION_CACHE_MAX_SIZE:
+                break
+            if session_id not in live_ids:
+                del self._sessions_cache[session_id]
+        live_peers = {p for s in self._cache.values() for p in (s.user_peer_id, s.assistant_peer_id)}
+        for peer_id in list(self._peers_cache):
+            if len(self._peers_cache) <= _PEERS_CACHE_MAX_SIZE:
+                break
+            if peer_id not in live_peers:
+                del self._peers_cache[peer_id]
+        with self._prefetch_cache_lock:
+            for key in [k for k in self._context_cache if k not in self._cache]:
+                del self._context_cache[key]
 
     def _sweep_idle_sessions_locked(self) -> int:
-        """Evict sessions idle beyond _SESSION_IDLE_TTL_SECONDS together with their SDK session and
-        prefetch entries. Caller holds _cache_lock."""
+        """Evict sessions idle beyond _SESSION_IDLE_TTL_SECONDS together with their SDK session,
+        observation flags and prefetch entries, then enforce the caps. Caller holds _cache_lock."""
         cutoff = time.time() - _SESSION_IDLE_TTL_SECONDS
         evicted = 0
         for key, session in list(self._cache.items()):
-            if session.updated_at.timestamp() >= cutoff:
+            if session.updated_at.timestamp() >= cutoff or self._has_unsynced(session):
                 continue
-            del self._cache[key]
-            self._sessions_cache.pop(session.honcho_session_id, None)
-            self._context_cache.pop(key, None)
+            self._evict_session_locked(key, session)
             evicted += 1
+        self._enforce_cache_caps_locked()
         return evicted
 
     def _maybe_sweep_idle_sessions(self) -> None:
@@ -270,10 +321,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
     def get_or_create(self, key: str) -> HonchoSession:
         """Get an existing session or create a new one for ``key`` (usually channel:chat_id)."""
         self._maybe_sweep_idle_sessions()
-        with self._cache_lock:
-            if key in self._cache:
-                logger.debug("Local session cache hit: %s", key)
-                return self._cache[key]
+        if (cached := self._cached_session(key)) is not None:
+            logger.debug("Local session cache hit: %s", key)
+            return cached
 
         # Gateway sessions normally use the platform-native runtime identity so multi-user
         # bots scope memory per user; config can alias/prefix it, or pinPeerName pins all
@@ -286,7 +336,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         honcho_session_id = self._sanitize_id(key)
         user_peer = self._get_or_create_peer(user_peer_id)
         assistant_peer = self._get_or_create_peer(assistant_peer_id)
-        _, existing_messages = self._get_or_create_honcho_session(honcho_session_id, user_peer, assistant_peer)
+        _, existing_messages, observation = self._get_or_create_honcho_session(honcho_session_id, user_peer, assistant_peer)
 
         session = HonchoSession(
             key=key, user_peer_id=user_peer_id, assistant_peer_id=assistant_peer_id, honcho_session_id=honcho_session_id,
@@ -298,6 +348,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         )
         with self._cache_lock:
             self._cache[key] = session
+            # Stored with the cache entry and dropped with it, so the dict can hold no orphan ids.
+            if observation is not None:
+                self._session_observation[honcho_session_id] = observation
+            self._enforce_cache_caps_locked()
         return session
 
     # ----- Writes -----
@@ -329,7 +383,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session is None:
-                honcho_session, _ = self._get_or_create_honcho_session(session.honcho_session_id, user_peer, assistant_peer)
+                honcho_session, _, _ = self._get_or_create_honcho_session(session.honcho_session_id, user_peer, assistant_peer)
             honcho_messages = [(user_peer if m["role"] == "user" else assistant_peer).message(m["content"]) for m in new_messages]
             honcho_session.add_messages(honcho_messages)
             return len(honcho_messages)
@@ -344,8 +398,6 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             msg["_synced"] = ok
         if ok:
             self._trim_synced_messages(session)
-        with self._cache_lock:
-            self._cache[session.key] = session
         return ok
 
     def _try_flush(self, session: HonchoSession, level: int, msg: str) -> bool:

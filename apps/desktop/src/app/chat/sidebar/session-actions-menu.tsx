@@ -31,7 +31,13 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import {
+  $projectTree,
+  moveSessionToProject,
+  projectIdForCwd,
+  projectRootCwd,
+  refreshProjectTree
+} from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -156,6 +162,30 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
+  const [refreshing, setRefreshing] = useState(true)
+
+  // `$projectTree` is also used by the grouped sidebar, but the menu is a valid
+  // consumer while the user remains in flat Sessions view. Populate the cache at
+  // the point of use so "Move to project" never depends on visiting Projects
+  // first or on the sidebar's delayed background warm-up.
+  useEffect(() => {
+    let mounted = true
+
+    void refreshProjectTree().finally(() => {
+      if (mounted) {
+        setRefreshing(false)
+      }
+    })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  if (refreshing && tree.length === 0) {
+    return <kit.Item disabled>{t.sidebar.loading}</kit.Item>
+  }
+
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
 
   if (targets.length === 0) {

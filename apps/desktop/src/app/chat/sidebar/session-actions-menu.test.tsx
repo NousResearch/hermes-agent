@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { refreshProjectTree } from '@/store/projects'
+
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
@@ -79,7 +81,8 @@ vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
-  projectRootCwd: vi.fn(() => '')
+  projectRootCwd: vi.fn(() => ''),
+  refreshProjectTree: vi.fn(async () => undefined)
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
@@ -140,6 +143,20 @@ describe('SessionActionsMenu', () => {
     expect(await screen.findByRole('menu')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /archive/i })).toBeTruthy()
+  })
+
+  it('refreshes the project tree when Move to project opens', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const move = await screen.findByRole('menuitem', { name: 'Move to project' })
+    fireEvent.keyDown(move, { key: 'ArrowRight' })
+
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledOnce())
   })
 
   it('opens the rename dialog focused on its input, not the row trigger', async () => {

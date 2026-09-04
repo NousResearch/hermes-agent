@@ -61,11 +61,13 @@ import {
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
   setSidebarCronOpen,
+  setSidebarGrouping,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
   setSidebarSessionOrderIds,
   setSidebarSessionOrderManual,
+  setSidebarShowArchived,
   setSidebarWorkspaceOrderIds,
   setSidebarWorkspaceParentOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
@@ -175,6 +177,7 @@ import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } f
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
+import { type SidebarView, SidebarViewSwitcher } from './view-switcher'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -719,6 +722,28 @@ export function ChatSidebar({
   // workspaceParentOrderIds; worktrees within a parent via workspaceOrderIds.
   const worktreeGroupingActive = agentsGrouped && !showArchived
   const gatewayReady = gatewayState === 'open'
+
+  // Projects are a first-class sidebar view, not a discovery-only grouping
+  // option. Switching views must never open or replace the active chat: it only
+  // changes the sidebar presentation and reuses the existing project-tree path.
+  const selectSidebarView = useCallback(
+    (view: SidebarView) => {
+      exitProjectScope()
+
+      if (view === 'projects') {
+        // Archived sessions have their own flat view and cannot render the
+        // project tree. Selecting Projects explicitly leaves that view.
+        if (showArchived) {
+          setSidebarShowArchived(false)
+        }
+
+        setSidebarGrouping('project')
+      } else {
+        setSidebarGrouping('date')
+      }
+    },
+    [showArchived]
+  )
 
   // The backend project tree is a structural snapshot, NOT a per-message feed.
   // Refresh it on structural edges only — entering the grouped view, a profile
@@ -1601,6 +1626,16 @@ export function ChatSidebar({
             />
           </div>
         )}
+
+        <div className="shrink-0 px-2 pb-1 pt-1">
+          <SidebarViewSwitcher
+            active={worktreeGroupingActive ? 'projects' : 'sessions'}
+            ariaLabel="Sidebar view"
+            onChange={selectSidebarView}
+            projectsLabel={s.projects.sectionLabel}
+            sessionsLabel={s.sessions}
+          />
+        </div>
 
         {showSessionSections && (
           <div

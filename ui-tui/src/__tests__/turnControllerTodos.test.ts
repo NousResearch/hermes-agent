@@ -36,3 +36,69 @@ describe('turnController.recordTodos — preserves the parent field', () => {
     expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'pending' }])
   })
 })
+
+// A revision watermark (mirroring apps/desktop/src/store/todos.ts's
+// acceptRevision) must reject an out-of-order snapshot instead of letting a
+// late-arriving stale event undo a newer one already on screen.
+describe('turnController.recordTodos — revision watermark', () => {
+  beforeEach(() => {
+    resetTurnState()
+    turnController.fullReset()
+  })
+
+  it('applies an unrevisioned update (tool.start-shaped patch) unconditionally', () => {
+    turnController.recordTodos([{ content: 'x', id: 'a', status: 'pending' }])
+
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'pending' }])
+  })
+
+  it('applies increasing revisions in order', () => {
+    turnController.recordTodos([{ content: 'x', id: 'a', status: 'pending' }], 1)
+    turnController.recordTodos([{ content: 'x', id: 'a', status: 'completed' }], 2)
+
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'completed' }])
+    expect(getTurnState().todoRevision).toBe(2)
+  })
+
+  it('rejects a stale (lower) revision instead of undoing the newer state', () => {
+    turnController.recordTodos([{ content: 'x', id: 'a', status: 'completed' }], 5)
+    turnController.recordTodos([{ content: 'x', id: 'a', status: 'pending' }], 3)
+
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'completed' }])
+    expect(getTurnState().todoRevision).toBe(5)
+  })
+})
+
+// applyTodoSnapshot() backs both the `todo.updated` gateway event and
+// session.resume/session.activate's `todo_state` restore.
+describe('turnController.applyTodoSnapshot', () => {
+  beforeEach(() => {
+    resetTurnState()
+    turnController.fullReset()
+  })
+
+  it('applies a live (running) snapshot even if the list is still active', () => {
+    turnController.applyTodoSnapshot([{ content: 'x', id: 'a', status: 'in_progress' }], 1, true)
+
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'in_progress' }])
+  })
+
+  it('restores a finished list on resume of an idle session', () => {
+    turnController.applyTodoSnapshot([{ content: 'x', id: 'a', status: 'completed' }], 1, false)
+
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'completed' }])
+  })
+
+  it('drops a still-active list on resume of an idle session instead of re-pinning a stuck panel', () => {
+    turnController.applyTodoSnapshot([{ content: 'x', id: 'a', status: 'in_progress' }], 1, false)
+
+    expect(getTurnState().todos).toEqual([])
+  })
+
+  it('ignores an unused-store snapshot (empty todos, revision 0)', () => {
+    turnController.recordTodos([{ content: 'x', id: 'a', status: 'pending' }])
+    turnController.applyTodoSnapshot([], 0, false)
+
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'pending' }])
+  })
+})

@@ -79,6 +79,12 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))
 }
 
+const isTodoRevision = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+
+const todoListActive = (todos: readonly TodoItem[]) =>
+  todos.some(t => t.status === 'pending' || t.status === 'in_progress')
+
 const textSegments = (segments: Msg[]) =>
   segments.filter(msg => msg.role === 'assistant' && msg.kind !== 'diff').map(msg => msg.text)
 
@@ -452,15 +458,79 @@ class TurnController {
     }, REASONING_PULSE_MS)
   }
 
-  recordTodos(value: unknown) {
+  /** Revision watermark for the live todo list, mirroring
+   *  apps/desktop/src/store/todos.ts's acceptRevision(): a missing revision
+   *  (e.g. an old-shaped payload) always applies; an older revision than
+   *  what's already displayed is stale and rejected. */
+  private acceptTodoRevision(revision: null | undefined | number): boolean {
+    if (!isTodoRevision(revision)) {
+      return true
+    }
+
+    const current = getTurnState().todoRevision
+
+    if (current != null && revision < current) {
+      return false
+    }
+
+    if (current !== revision) {
+      patchTurnState({ todoRevision: revision })
+    }
+
+    return true
+  }
+
+  recordTodos(value: unknown, revision?: null | number) {
     if (this.interrupted) {
       return
     }
 
     const todos = parseTodos(value)
 
-    if (todos !== null) {
-      patchTurnState({ todos })
+    if (todos === null) {
+      return
+    }
+
+    if (!this.acceptTodoRevision(revision)) {
+      return
+    }
+
+    patchTurnState({ todos })
+  }
+
+  /** Full-snapshot restore: the `todo.updated` event (always live, so
+   *  `running` is true) and session.resume/session.activate's `todo_state`
+   *  (possibly idle). Mirrors apps/desktop/src/store/todos.ts's
+   *  restoreSessionTodosFromSnapshot(): an idle session's still-active list
+   *  means the prior turn ended without a final todo update, so it's stale
+   *  and dropped instead of re-pinned. */
+  applyTodoSnapshot(value: unknown, revision: null | undefined | number, running: boolean) {
+    if (this.interrupted) {
+      return
+    }
+
+    const todos = parseTodos(value)
+
+    if (todos === null) {
+      return
+    }
+
+    // An unused store serializes as revision 0 with no items — not a real
+    // snapshot worth applying.
+    if (todos.length === 0 && (revision == null || revision === 0)) {
+      return
+    }
+
+    if (running || !todoListActive(todos)) {
+      if (this.acceptTodoRevision(revision)) {
+        patchTurnState({ todos })
+      }
+
+      return
+    }
+
+    if (this.acceptTodoRevision(revision)) {
+      patchTurnState({ todos: [] })
     }
   }
 
@@ -804,13 +874,14 @@ class TurnController {
     summary?: string,
     duration?: number,
     todos?: unknown,
-    resultText?: string
+    resultText?: string,
+    todoRevision?: null | number
   ) {
     if (this.interrupted) {
       return
     }
 
-    this.recordTodos(todos)
+    this.recordTodos(todos, todoRevision)
     const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, line]

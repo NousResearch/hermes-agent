@@ -183,6 +183,32 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual(todos)
   })
 
+  it('applies a todo.updated full-snapshot event even with no prior tool.start', () => {
+    const appended: Msg[] = []
+    const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { revision: 1, todos }, type: 'todo.updated' } as any)
+
+    expect(getTurnState().todos).toEqual(todos)
+  })
+
+  it('rejects a stale tool.complete revision after a newer todo.updated already landed', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { revision: 2, todos: [{ content: 'x', id: 'a', status: 'completed' }] },
+      type: 'todo.updated'
+    } as any)
+    onEvent({
+      payload: { name: 'todo', revision: 1, todos: [{ content: 'x', id: 'a', status: 'pending' }], tool_id: 't1' },
+      type: 'tool.complete'
+    } as any)
+
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'completed' }])
+  })
+
   it('prints compaction progress status into the transcript', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

@@ -1226,12 +1226,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.summary,
             ev.payload.duration_s,
             ev.payload.todos,
-            resultText
+            resultText,
+            ev.payload.revision
           )
         }
 
         return
       }
+
+      // Full-snapshot event: the source of truth for task state, reconciled
+      // without interpreting provider text or partial merge arguments (mirrors
+      // apps/desktop's todo.updated handling).
+      case 'todo.updated':
+        turnController.applyTodoSnapshot(ev.payload.todos, ev.payload.revision, true)
+
+        return
 
       case 'clarify.request': {
         const batch = (ev.payload.questions ?? [])

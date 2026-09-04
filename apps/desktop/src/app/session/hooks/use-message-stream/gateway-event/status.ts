@@ -13,7 +13,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { setTurnStartedAt } from '@/store/session'
-import { clearActiveSessionTodos } from '@/store/todos'
+import { clearActiveSessionTodos, finalizeSessionTodoSnapshot } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
 
@@ -176,6 +176,11 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     if (sessionId) {
       clearAllPrompts(sessionId)
       clearClarifyRequest(undefined, sessionId)
+      // A turn that errors out still produced its plan — commit it to history
+      // (same as message.complete) so the task list stays reachable and the
+      // live state matches what a later transcript rebuild reconstructs from
+      // the persisted turn. Then drop a still-unfinished live list.
+      finalizeSessionTodoSnapshot(sessionId, sessionStateByRuntimeIdRef.current.get(sessionId)?.streamId)
       clearActiveSessionTodos(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)

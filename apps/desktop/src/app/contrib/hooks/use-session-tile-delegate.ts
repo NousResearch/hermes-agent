@@ -18,6 +18,7 @@ import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } from '@/store/session-states'
+import { rebuildResumedSessionTodoHistory } from '@/store/todos'
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
@@ -225,6 +226,7 @@ export function useSessionTileDelegate({
           !refreshTranscript
         ) {
           publishSessionState(existing, cached)
+          rebuildResumedSessionTodoHistory(existing, storedSessionId, cached.messages)
 
           return existing
         }
@@ -321,7 +323,7 @@ export function useSessionTileDelegate({
 
         const info = resumed?.info
 
-        updateSessionState(
+        const effectiveState = updateSessionState(
           runtimeId,
           state => ({
             ...state,
@@ -337,6 +339,8 @@ export function useSessionTileDelegate({
           }),
           storedSessionId
         )
+
+        rebuildResumedSessionTodoHistory(runtimeId, storedSessionId, effectiveState.messages)
 
         return runtimeId
       },

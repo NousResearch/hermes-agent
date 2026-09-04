@@ -81,7 +81,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import { clearSessionTodos, rebuildSessionTodoHistory, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -407,6 +407,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             }),
             storedSessionId
           )
+          rebuildSessionTodoHistory(runtimeSessionId, messages)
 
           const restored = todosForHydration(latestSessionTodos(messages))
 

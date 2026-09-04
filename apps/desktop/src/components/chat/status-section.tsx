@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useId, useState } from 'react'
 
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 
@@ -30,11 +30,16 @@ export function StatusSection({
   label
 }: StatusSectionProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  const contentId = useId()
 
   return (
     <div>
       <div className="flex items-center gap-1 pr-1">
         <button
+          // Only reference the region while it's mounted — the body is unmounted
+          // when collapsed, so pointing aria-controls at a missing id is invalid.
+          aria-controls={collapsed ? undefined : contentId}
+          aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"
           onClick={() => setCollapsed(open => !open)}
           type="button"
@@ -46,7 +51,11 @@ export function StatusSection({
         </button>
         {accessory && <div className="flex shrink-0 items-center gap-1">{accessory}</div>}
       </div>
-      {!collapsed && <div className="px-1 pb-0.5">{children}</div>}
+      {!collapsed && (
+        <div className="px-1 pb-0.5" id={contentId}>
+          {children}
+        </div>
+      )}
     </div>
   )
 }

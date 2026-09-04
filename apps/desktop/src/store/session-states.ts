@@ -512,6 +512,22 @@ export function releaseSessionTranscript(runtimeId: string, state?: ClientSessio
   $sessionStates.set({ ...current, [runtimeId]: lightweight })
 }
 
+/** Per-session state owned by other store modules (todos) that must drop with
+ *  the session state. Registered from those modules rather than imported here:
+ *  '@/store/todos' already imports this module for its progress projection, so
+ *  a static import back would make eval order depend on which module the
+ *  bundler reaches first. */
+interface SessionStateCleanup {
+  clearAll(): void
+  drop(runtimeId: string): void
+}
+
+const sessionStateCleanups: SessionStateCleanup[] = []
+
+export function registerSessionStateCleanup(cleanup: SessionStateCleanup) {
+  sessionStateCleanups.push(cleanup)
+}
+
 export function dropSessionState(runtimeId: string) {
   // Disarm the watchdog — a dropped runtime must not fire a stale clear later.
   // Settle-grace entries are keyed by stored id and self-expire; leave them so
@@ -521,6 +537,10 @@ export function dropSessionState(runtimeId: string) {
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
+
+  for (const cleanup of sessionStateCleanups) {
+    cleanup.drop(runtimeId)
+  }
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -548,6 +568,11 @@ export function clearAllSessionStates() {
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
+
+  for (const cleanup of sessionStateCleanups) {
+    cleanup.clearAll()
+  }
+
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }

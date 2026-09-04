@@ -461,13 +461,8 @@ export function useMessageStream({
 
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
-      if (payload?.name === 'todo') {
-        const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
-
-        if (todos) {
-          setSessionTodos(sessionId, todos, parseTodoRevision(payload))
-        }
-      }
+      const todos =
+        payload?.name === 'todo' ? nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload) : null
 
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {
@@ -487,8 +482,14 @@ export function useMessageStream({
         { pending: m => phase !== 'complete' || (m.pending ?? false) },
         occurredAt
       )
+
+      // Keep visual linger separate from the authoritative turn owner. Reading
+      // after mutateStream ensures a todo-only turn has acquired its stream id.
+      if (todos) {
+        setSessionTodos(sessionId, todos, parseTodoRevision(payload), sessionStateByRuntimeIdRef.current.get(sessionId)?.streamId)
+      }
     },
-    [flushQueuedDeltas, mutateStream, sessionInterrupted]
+    [flushQueuedDeltas, mutateStream, sessionInterrupted, sessionStateByRuntimeIdRef]
   )
 
   const finalizeInterimAssistantMessage = useCallback(

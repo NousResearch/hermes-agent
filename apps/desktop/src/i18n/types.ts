@@ -2264,6 +2264,9 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    taskHistory: string
+    taskHistoryCompleted: string
+    taskHistoryUnfinished: string
     running: string
     stop: string
     dismiss: string

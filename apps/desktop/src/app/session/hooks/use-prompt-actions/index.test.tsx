@@ -27,6 +27,7 @@ import {
   setSessions
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { $todoHistoryBySession, clearAllSessionTodoState, rebuildSessionTodoHistory } from '@/store/todos'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -2676,6 +2677,75 @@ describe('usePromptActions redirectPrompt', () => {
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'reconnect nudge' })
     expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
+  })
+})
+
+describe('usePromptActions reload task-history rollback', () => {
+  beforeEach(() => {
+    clearAllSessionTodoState()
+    $messages.set([])
+    $busy.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearAllSessionTodoState()
+    $messages.set([])
+    $busy.set(false)
+    vi.restoreAllMocks()
+  })
+
+  it('restores the original transcript and task history when primary reload fails', async () => {
+    const todoAssistant = (id: string, content: string) => ({
+      id,
+      parts: [
+        {
+          args: { todos: [{ content, id, status: 'completed' as const }] },
+          toolCallId: `call-${id}`,
+          toolName: 'todo',
+          type: 'tool-call' as const
+        }
+      ],
+      role: 'assistant' as const
+    })
+
+    const messages = [
+      { id: 'u1', parts: [textPart('first prompt')], role: 'user' as const },
+      todoAssistant('a1', 'first task'),
+      { id: 'u2', parts: [textPart('second prompt')], role: 'user' as const },
+      todoAssistant('a2', 'tail task')
+    ]
+
+    $messages.set(messages)
+    rebuildSessionTodoHistory(RUNTIME_SESSION_ID, messages)
+    let lastState: Record<string, unknown> = { messages }
+    let handle: HarnessHandle | null = null
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('reload rejected')
+      }
+
+      return {} as never
+    })
+
+    await actRender(
+      <Harness
+        onReady={value => (handle = value)}
+        onSeedState={state => (lastState = state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={messages}
+      />
+    )
+
+    await handle!.reloadFromMessage('a1')
+
+    expect(lastState.messages).toEqual(messages)
+    expect($todoHistoryBySession.get()[RUNTIME_SESSION_ID]?.map(snapshot => snapshot.id)).toEqual([
+      'a2:call-a2',
+      'a1:call-a1'
+    ])
   })
 })
 

@@ -121,7 +121,12 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { restoreSessionTodosFromSnapshot } from '@/store/todos'
+import {
+  clearSessionTodoHistory,
+  rebuildResumedSessionTodoHistory,
+  rebuildSessionTodoHistory,
+  restoreSessionTodosFromSnapshot
+} from '@/store/todos'
 import {
   dropTranscriptTail,
   dropTranscriptTailEverywhere,
@@ -1126,6 +1131,7 @@ export function useSessionActions({
             cachedRuntimeId,
             suppressTranscriptForView(cachedViewState, suppressUnprovenWarmTranscript)
           )
+          rebuildResumedSessionTodoHistory(cachedRuntimeId, storedSessionId, cachedViewState.messages)
           setCurrentCwdTransient(cachedViewState.cwd)
           // The warm cache IS this conversation's own workspace truth, so the
           // switch is already re-homed here. This claim cannot wait for
@@ -1406,6 +1412,8 @@ export function useSessionActions({
                 },
                 storedSessionId
               )
+
+              rebuildResumedSessionTodoHistory(cachedRuntimeId, storedSessionId, activatedMessages)
 
               syncSessionStateToView(cachedRuntimeId, activatedState)
               // Cache backend transcript truth only. The pending/running bit and
@@ -1829,6 +1837,7 @@ export function useSessionActions({
           }),
           storedSessionId
         )
+        rebuildResumedSessionTodoHistory(resumed.session_id, storedSessionId, messagesForView)
 
         // updateSessionState stages its view sync through requestAnimationFrame.
         // Commit the final, already-reconciled transcript now so resume has one
@@ -1887,6 +1896,8 @@ export function useSessionActions({
           if (!chatMessageArraysEquivalent($messages.get(), fallbackRecovery.messages)) {
             setMessages(fallbackRecovery.messages)
           }
+
+          rebuildSessionTodoHistory(storedSessionId, fallbackRecovery.messages)
         } catch (e) {
           // Fallback also failed: nothing to paint. Leave whatever messages are
           // already shown and fall through to arm the resume-failure latch so
@@ -2481,12 +2492,16 @@ export function useSessionActions({
         // a deleted session.
         const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
+        runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
 
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
+        for (const runtimeId of new Set([closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+          sessionStateByRuntimeIdRef.current.delete(runtimeId)
+          dropSessionState(runtimeId)
         }
+
+        // REST fallback can paint history before a runtime id exists, so delete
+        // its durable-id cache in addition to every runtime-keyed cache above.
+        clearSessionTodoHistory(storedSessionId)
       } catch (err) {
         if (listed?.session) {
           restoreListedSession(listed.session, listed.slice)

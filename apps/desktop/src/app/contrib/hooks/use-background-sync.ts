@@ -21,6 +21,7 @@ import {
   setCurrentCwd
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
+import { rebuildSessionTodoHistory } from '@/store/todos'
 import {
   $sessionStates,
   $sessionTiles,
@@ -276,6 +277,7 @@ export async function reconcileActiveTranscript({
       }),
       storedSessionId
     )
+    rebuildSessionTodoHistory(runtimeSessionId, messages)
   } catch {
     // Non-fatal: the next change event or manual resume can hydrate the view.
   }

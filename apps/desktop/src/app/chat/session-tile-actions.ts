@@ -37,7 +37,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents } from '@/store/subagents'
-import { clearSessionTodos } from '@/store/todos'
+import { clearSessionTodos, rebuildSessionTodoHistory } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -506,7 +506,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       const messages = state.messages
 
-      update(current => applyReloadOptimistic(current, plan))
+      const optimistic = update(current => applyReloadOptimistic(current, plan))
+
+      if (optimistic) {
+        rebuildSessionTodoHistory(runtimeIdRef.current, optimistic.messages)
+      }
 
       try {
         // Recovery for a dead runtime id rides inside submitRewind →
@@ -534,6 +538,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           turnStartedAt: null,
           messages
         }))
+        rebuildSessionTodoHistory(runtimeIdRef.current, messages)
         notifyError(err, copy.regenerateFailed)
       }
     },
@@ -555,7 +560,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         sessionId
       })
 
-      update(state => applyRewindOptimistic(state, plan.sourceIndex))
+      const optimistic = update(state => applyRewindOptimistic(state, plan.sourceIndex))
+
+      if (optimistic) {
+        rebuildSessionTodoHistory(sessionId, optimistic.messages)
+      }
 
       try {
         applySurvivorRowIds(
@@ -578,6 +587,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           turnStartedAt: null,
           messages
         }))
+        rebuildSessionTodoHistory(sessionId, messages)
         throw err
       }
     },
@@ -604,7 +614,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         sessionId
       })
 
-      update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+      const optimistic = update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+
+      if (optimistic) {
+        rebuildSessionTodoHistory(sessionId, optimistic.messages)
+      }
 
       try {
         applySurvivorRowIds(
@@ -627,6 +641,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           turnStartedAt: null,
           messages
         }))
+        rebuildSessionTodoHistory(sessionId, messages)
         notifyError(err, copy.editFailed)
       }
     },

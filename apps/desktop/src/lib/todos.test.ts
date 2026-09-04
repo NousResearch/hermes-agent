@@ -7,6 +7,7 @@ import {
   parseTodoPatch,
   parseTodoRevision,
   parseTodos,
+  todoHistoryFromTranscript,
   todoTree
 } from './todos'
 
@@ -142,6 +143,32 @@ describe('latestSessionTodos', () => {
   it('returns null when no todo tool calls exist', () => {
     expect(latestSessionTodos([{ parts: [{ type: 'text', text: 'hi' }] }])).toBeNull()
     expect(latestSessionTodos([])).toBeNull()
+  })
+})
+
+describe('todoHistoryFromTranscript', () => {
+  it('keeps every distinct plan from one assistant turn while collapsing status-only updates', () => {
+    const first = [{ content: 'First task', id: 'same', status: 'pending' as const }]
+    const completed = [{ content: 'First task', id: 'same', status: 'completed' as const }]
+    const replacement = [{ content: 'Replacement task', id: 'same', status: 'in_progress' as const }]
+
+    expect(
+      todoHistoryFromTranscript([
+        {
+          id: 'assistant-shared',
+          role: 'assistant',
+          timestamp: 10,
+          parts: [
+            { args: { todos: first }, toolCallId: 'todo-1', toolName: 'todo', type: 'tool-call' },
+            { result: { todos: completed }, toolCallId: 'todo-1', toolName: 'todo', type: 'tool-call' },
+            { args: { todos: replacement }, toolCallId: 'todo-2', toolName: 'todo', type: 'tool-call' }
+          ]
+        }
+      ])
+    ).toEqual([
+      { id: 'assistant-shared:todo-2', state: 'unfinished', timestamp: 10, todos: replacement },
+      { id: 'assistant-shared:todo-1', state: 'completed', timestamp: 10, todos: completed }
+    ])
   })
 })
 

@@ -2,6 +2,7 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesModule from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -56,7 +57,10 @@ function renderTile(
       requestGateway: requestGateway as never,
       runtimeIdByStoredSessionIdRef: (refs?.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
       sessionStateByRuntimeIdRef: (refs?.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
-      updateSessionState: (refs?.updateSessionState ?? vi.fn()) as never
+      // Returns the updated state, like the real cache does — resume reads it
+      // back to rebuild the tile's task history.
+      updateSessionState: (refs?.updateSessionState ??
+        vi.fn((_runtimeId, updater) => updater(createClientSessionState('stored')))) as never
     })
   )
 }
@@ -267,7 +271,9 @@ describe('useSessionTileDelegate resumeTile', () => {
   it('hydrates the tile model and provider from resume info', async () => {
     setSessions([row({ id: 'stored-model', profile: 'default' })])
 
-    const updateSessionState = vi.fn()
+    // Return the updated state, like the real cache does — resume reads it
+    // back to rebuild the tile's task history.
+    const updateSessionState = vi.fn((_runtimeId, updater) => updater(createClientSessionState('stored-model')))
 
     vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
       info: { fast: true, model: 'gpt-5', provider: 'openai', reasoning_effort: 'high', running: false },

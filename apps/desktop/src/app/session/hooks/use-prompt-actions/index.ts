@@ -38,7 +38,7 @@ import {
 } from '@/store/session'
 import { $sessionStates, isSessionRemote } from '@/store/session-states'
 import { clearSessionSubagents } from '@/store/subagents'
-import { clearSessionTodos } from '@/store/todos'
+import { clearSessionTodos, finalizeSessionTodoSnapshot, rebuildSessionTodoHistory } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
 import type {
@@ -676,12 +676,15 @@ export function usePromptActions({
       return
     }
 
+    let stoppedTurnStreamId: null | string = null
+
     // Frontend busy clears immediately; gateway wind-down can lag. Mark so a
     // fast edit/resend still interrupt-first instead of racing 4009 (#83855).
     markSessionRecentlyInterrupted(sessionId)
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
+      stoppedTurnStreamId = streamId
       const messages = finalizeInterruptedMessages(state.messages, streamId)
 
       return {
@@ -698,6 +701,10 @@ export function usePromptActions({
       }
     })
 
+    // A stopped turn still produced its plan — commit it to history (same as a
+    // completed or errored turn) before dropping the live list, so it stays
+    // reachable and matches what a later transcript rebuild reconstructs.
+    finalizeSessionTodoSnapshot(sessionId, stoppedTurnStreamId)
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
@@ -891,7 +898,8 @@ export function usePromptActions({
       }
 
       clearNotifications()
-      updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
+      const optimistic = updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
+      rebuildSessionTodoHistory(sessionId, optimistic.messages)
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -918,6 +926,7 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
+        rebuildSessionTodoHistory(sessionId, messages)
         notifyError(err, copy.regenerateFailed)
       }
     },
@@ -964,7 +973,8 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      const optimistic = updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      rebuildSessionTodoHistory(sessionId, optimistic.messages)
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -995,6 +1005,7 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
+        rebuildSessionTodoHistory(sessionId, messages)
         throw err
       }
     },
@@ -1031,7 +1042,12 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+
+      const optimistic = updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage)
+      )
+
+      rebuildSessionTodoHistory(sessionId, optimistic.messages)
 
       const isStaleTargetError = (err: unknown) =>
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
@@ -1124,6 +1140,7 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
+        rebuildSessionTodoHistory(sessionId, messages)
         notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
       }
     },

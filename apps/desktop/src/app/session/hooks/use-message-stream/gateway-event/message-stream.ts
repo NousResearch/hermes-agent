@@ -15,7 +15,7 @@ import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
-import { clearActiveSessionTodos } from '@/store/todos'
+import { clearActiveSessionTodos, finalizeSessionTodoSnapshot } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
 
@@ -322,9 +322,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // prompt, and vice versa.
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
-    // Turn ended without a final `todo` update — drop a still-unfinished
-    // list so "Tasks N/M" doesn't stay pinned above the composer with the
-    // last item stuck pending/in_progress. Finished lists keep their linger.
+    // Turn ended without a final `todo` update — finalize the last live
+    // state first, then drop a still-unfinished live list. Finished lists
+    // keep their 4s linger while history remains reachable.
+    finalizeSessionTodoSnapshot(sessionId, sessionStateByRuntimeIdRef.current.get(sessionId)?.streamId)
     clearActiveSessionTodos(sessionId)
     setSessionCompacting(sessionId, false)
 

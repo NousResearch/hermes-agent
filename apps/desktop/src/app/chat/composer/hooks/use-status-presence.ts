@@ -3,15 +3,21 @@ import { useSyncExternalStore } from 'react'
 import { $composerActionsBySession } from '@/store/composer-actions'
 import { $statusItemsBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
+import { $todoHistoryBySession } from '@/store/todos'
 
-/** Structural view of the three per-session feeds — they hold different item
+/** Structural view of the per-session feeds — they hold different item
  *  types, and all this hook needs from each is "does this key have rows". */
 interface PresenceFeed {
   get(): Record<string, undefined | unknown[]>
   listen(listener: () => void): () => void
 }
 
-const FEEDS: PresenceFeed[] = [$statusItemsBySession, $composerActionsBySession, $previewStatusBySession]
+const FEEDS: PresenceFeed[] = [
+  $statusItemsBySession,
+  $composerActionsBySession,
+  $previewStatusBySession,
+  $todoHistoryBySession
+]
 
 const subscribe = (onChange: () => void) => {
   const offs = FEEDS.map(feed => feed.listen(onChange))

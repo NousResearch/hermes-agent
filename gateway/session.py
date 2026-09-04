@@ -293,6 +293,13 @@ class SessionSource:
             d["auto_thread_initial_name"] = self.auto_thread_initial_name
         if self.prospective_thread_id:
             d["prospective_thread_id"] = self.prospective_thread_id
+        # `is_bot` gates the {PLATFORM}_ALLOW_BOTS bypass in
+        # GatewayAuthorizationMixin._is_user_authorized. Omitting it here made the
+        # flag live only in memory, so a rehydrated session (gateway restart,
+        # auto-resume) fell through to the human allowlist and revoked every
+        # bot-authored session that ALLOW_BOTS had admitted.
+        if self.is_bot:
+            d["is_bot"] = True
         return d
 
     @classmethod
@@ -317,6 +324,7 @@ class SessionSource:
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
             prospective_thread_id=data.get("prospective_thread_id"),
+            is_bot=bool(data.get("is_bot", False)),
         )
     
 

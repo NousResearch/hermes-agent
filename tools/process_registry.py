@@ -228,6 +228,8 @@ def _systemd_run_user_scope_available() -> bool:
                     # Probe: create a transient scope that immediately exits.
                     # A unique unit avoids collisions; timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                    # Portable: NixOS has no /bin/true (only /run/current-system/sw/bin/true).
+                    true_binary = shutil.which("true") or "/bin/true"
                     result = subprocess.run(
                         [
                             binary, "--user", "--scope", "--quiet",
@@ -237,7 +239,7 @@ def _systemd_run_user_scope_available() -> bool:
                             "--property", f"MemoryMax={_worker_memory_max_bytes()}",
                             "--property", "OOMPolicy=kill",
                             "--",
-                            "/bin/true",
+                            true_binary,
                         ],
                         capture_output=True,
                         timeout=3,

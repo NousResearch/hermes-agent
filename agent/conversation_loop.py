@@ -5763,6 +5763,15 @@ def run_conversation(
                 
                 error_type = type(api_error).__name__
                 error_msg = str(api_error).lower()
+                # Kanban workers: a Codex/xAI idle stream is almost always a
+                # giant write_file generation. Do not sit through 3× 60–120s
+                # retries of the same payload — fail this turn so spawn can
+                # resume with a "write in chunks" prompt.
+                if os.environ.get("HERMES_KANBAN_TASK") and (
+                    "no sse events" in error_msg
+                    or "codex stream" in error_msg
+                ):
+                    retry_count = max_retries
                 _error_summary = agent._summarize_api_error(api_error)
                 logger.warning(
                     "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
@@ -7088,6 +7097,8 @@ def run_conversation(
                             "connection lost", "connection reset",
                             "connection closed", "network connection",
                             "network error", "terminated",
+                            "no sse events", "codex stream",
+                            "broken pipe",
                         ))
                     )
                     if _is_stream_drop:

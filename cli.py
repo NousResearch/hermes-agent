@@ -22414,6 +22414,27 @@ def main(
                 cli._print_exit_summary(clear_screen=False)
         finally:
             _finalize_single_query(cli)
+        # Kanban workers spawn as `chat -q` (not `-Q`). The quiet path exits
+        # 1 on provider failure; this human -q path used to always return 0.
+        # A clean 0 while the card is still `running` is a protocol
+        # violation (no kanban_complete / kanban_block) — including when
+        # grok-4.5's Codex stream dies mid-write_file. Nonzero lets the
+        # dispatcher retry and `--resume` the same session.
+        _kanban_tid = os.environ.get("HERMES_KANBAN_TASK")
+        if _kanban_tid:
+            _still_open = True
+            try:
+                from hermes_cli import kanban_db as _kb_exit
+                with _kb_exit.connect_closing() as _kconn:
+                    _ktask = _kb_exit.get_task(_kconn, _kanban_tid)
+                if _ktask is not None and _ktask.status not in (
+                    "running", "ready",
+                ):
+                    _still_open = False
+            except Exception:
+                _still_open = True
+            if _still_open:
+                sys.exit(1)
         return
     
     # Run interactive mode

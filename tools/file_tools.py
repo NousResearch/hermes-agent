@@ -2733,7 +2733,15 @@ WRITE_FILE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
-            "content": {"type": "string", "description": "Complete content to write to the file"},
+            "content": {
+                "type": "string",
+                "description": (
+                    "Complete content to write. Very large write_file payloads "
+                    "can drop the provider stream (no SSE) and hang the session. "
+                    "For long documents, write a short skeleton first, then grow "
+                    "it with patch in sections."
+                ),
+            },
             # NOTE: the handler still accepts `cross_profile` (bool) — it now
             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
             # rejection error teaches it. Unadvertised: the cross-PROFILE
@@ -2886,6 +2894,14 @@ def _handle_write_file(args, **kw):
         return tool_error(
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
+        )
+    _content = args["content"]
+    if os.environ.get("HERMES_KANBAN_TASK") and len(_content) > 6000:
+        return tool_error(
+            "write_file: content is too large "
+            f"({len(_content)} chars) for a kanban worker. Do NOT retry this "
+            "as one write_file — the provider stream will hang. Write a short "
+            "skeleton (under 4000 chars) first, then use patch to add sections."
         )
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,

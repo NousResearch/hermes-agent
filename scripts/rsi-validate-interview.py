@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rsi_interview import DETAIL_FIELDS, required_ids
+from rsi_interview import DETAIL_FIELDS, parse_model_json, required_ids
 
 STORE = Path.home() / ".hermes" / "rsi"
 AUDIT = STORE / "audit" / "latest.json"
@@ -130,7 +130,7 @@ def validate_interview(
 
 def _load_object(path: Path, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = parse_model_json(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"malformed {label} JSON: {exc}") from exc
     if not isinstance(value, dict):

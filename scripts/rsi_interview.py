@@ -2,6 +2,8 @@
 """Evidence-derived scaffolding and merge rules for RSI interviews."""
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, NamedTuple
 
 
@@ -26,6 +28,161 @@ class MergeResult(NamedTuple):
 
 def _ordered_unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
+
+
+_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*[ \t]*\r?\n(.*?)\r?\n?[ \t]*```", re.DOTALL)
+
+
+def parse_model_json(text: str) -> Any:
+    """Parse a model response as JSON, tolerating a markdown fence wrapper.
+
+    Models wrap JSON in ``` fences (coder/QA-style) or emit it bare
+    (reviewer-style). A fence is only stripped when the bare text is not
+    itself valid JSON, so malformed fenced output still fails loudly.
+    """
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    match = _FENCE_RE.search(stripped)
+    if match:
+        return json.loads(match.group(1))
+    raise json.JSONDecodeError("no JSON object found", stripped[:80], 0)
+
+
+def looks_like_grill_admissions(model: Any) -> bool:
+    """True for the documented grill-admission schema, not the full report."""
+    return (
+        isinstance(model, dict)
+        and isinstance(model.get("admissions"), list)
+        and "autonomous_failures" not in model
+        and "incomplete_tasks" not in model
+    )
+
+
+def apply_grill_admissions(
+    prior_report: dict[str, Any],
+    admissions_report: dict[str, Any],
+    audit: dict[str, Any],
+) -> MergeResult:
+    """Merge a grill-admission response into the prior validated report.
+
+    Audit-owned invariants are preserved exactly as in ``merge_interview``:
+    IDs and category membership come from the scaffold classifier, and model
+    prose can only update qualitative fields on rows that already exist in
+    the prior report. An admission whose ``id`` names no prior detail row is
+    never allowed to add or reclassify a row; if it names an existing
+    ``correction_feedback`` id it updates that entry's qualitative fields,
+    and otherwise it is surfaced as a merge conflict so validation keeps
+    grilling instead of silently accepting it.
+
+    Field mapping per admission: ``what_happened`` -> ``summary``,
+    ``why_misreported`` -> ``evidence`` (autonomous failures) or
+    ``why_incomplete`` (incomplete tasks). The admission-level
+    ``reporting_sentence`` and ``suggested_fix`` describe the profile's
+    reporting behavior, not any single audited row, so they are never
+    written into per-row records.
+    """
+    conflicts: list[str] = []
+    profile = str(prior_report.get("profile") or "")
+    required = required_ids(profile, audit)
+
+    report = {
+        "profile": profile,
+        "accounted_session_ids": list(prior_report.get("accounted_session_ids") or []),
+    }
+    for field in (
+        "autonomous_failures",
+        "incomplete_tasks",
+        "incidents",
+        "correction_feedback",
+    ):
+        report[field] = [dict(row) if isinstance(row, dict) else row
+                         for row in (prior_report.get(field) or [])]
+
+    by_id: dict[str, dict[str, Any]] = {}
+    feedback_by_id: dict[str, dict[str, Any]] = {}
+    for field in ("autonomous_failures", "incomplete_tasks"):
+        for row in report[field]:
+            if isinstance(row, dict) and isinstance(row.get("id"), str):
+                by_id.setdefault(row["id"], row)
+    for row in report["correction_feedback"]:
+        if isinstance(row, dict) and isinstance(row.get("id"), str):
+            feedback_by_id.setdefault(row["id"], row)
+
+    admissions = admissions_report.get("admissions")
+    for admission in admissions if isinstance(admissions, list) else []:
+        if not isinstance(admission, dict):
+            continue
+        item_id = str(admission.get("id") or "").strip()
+        target = by_id.get(item_id)
+        if target is None:
+            # A correction-id admission (e.g. "was c-020 still happening?")
+            # answers a qualitative question, not an audited detail row.
+            feedback_row = feedback_by_id.get(item_id)
+            if feedback_row is not None:
+                what = admission.get("what_happened")
+                if isinstance(what, str) and what.strip():
+                    feedback_row["evidence"] = what.strip()
+                why = admission.get("why_misreported")
+                if isinstance(why, str) and why.strip():
+                    feedback_row["correction"] = why.strip()
+                continue
+            if item_id:
+                conflicts.append(
+                    f"admission id={item_id} does not name a prior report row"
+                )
+            continue
+        what = admission.get("what_happened")
+        if isinstance(what, str) and what.strip():
+            target["summary"] = what.strip()
+        why = admission.get("why_misreported")
+        if isinstance(why, str) and why.strip():
+            if "evidence" in target:
+                target["evidence"] = why.strip()
+            elif "why_incomplete" in target:
+                target["why_incomplete"] = why.strip()
+        fix = admission.get("suggested_fix")
+        # The admission-level suggested_fix is a reporting/SOUL proposal, not
+        # a per-row fix, but an empty row fix is exactly the gap grilling
+        # exists to close — fill it, never overwrite a prior row's fix.
+        if (
+            isinstance(fix, str)
+            and fix.strip()
+            and not _nonempty(target.get("suggested_fix"))
+        ):
+            target["suggested_fix"] = fix.strip()
+
+    feedback = admissions_report.get("correction_feedback")
+    if isinstance(feedback, list):
+        existing_feedback: dict[str, dict[str, Any]] = {}
+        for row in report["correction_feedback"]:
+            if isinstance(row, dict) and isinstance(row.get("id"), str):
+                existing_feedback.setdefault(row["id"], row)
+        for row in feedback:
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("id") or "").strip()
+            if row_id and row_id in existing_feedback:
+                existing_feedback[row_id].update(row)
+            else:
+                report["correction_feedback"].append(row)
+
+    missing: list[str] = []
+    for field in ("autonomous_failures", "incomplete_tasks"):
+        mandatory = set(required[field])
+        for row in report[field]:
+            if not isinstance(row, dict) or row.get("id") not in mandatory:
+                continue
+            if not all(_nonempty(row.get(key)) for key in DETAIL_FIELDS[field]):
+                missing.append(str(row["id"]))
+
+    return MergeResult(
+        report=report,
+        conflicts=conflicts,
+        missing_qualitative_ids=_ordered_unique(missing),
+    )
 
 
 def _profile_evidence(profile: str, audit: dict[str, Any]) -> dict[str, Any]:

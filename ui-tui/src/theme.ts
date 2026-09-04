@@ -30,6 +30,8 @@ export interface ThemeColors {
   syntaxComment: string
 
   prompt: string
+  /** Inter-turn rule above non-first user messages. Defaults to `border`. */
+  userRule: string
   sessionLabel: string
   sessionBorder: string
 
@@ -349,6 +351,9 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     syntaxComment: muted,
 
     prompt: seeds.prompt ?? seeds.text,
+    // The turn rule is a border by default — same key, same look as before
+    // it had one of its own.
+    userRule: seeds.border ?? tones.border,
     // sessionLabel/sessionBorder track the muted tone — "same role, same
     // colour" by design (#11300).
     sessionLabel: muted,
@@ -485,7 +490,8 @@ const DISPLAY_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'muted',
   'sessionLabel',
   'sessionBorder',
-  'shellDollar'
+  'shellDollar',
+  'userRule'
 ]
 
 const SEMANTIC_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
@@ -908,6 +914,15 @@ export function fromSkin(
     completionCurrentBg: activeRow,
     completionMetaBg: c('completion_menu_meta_bg') ?? surface,
     completionMetaCurrentBg: c('completion_menu_meta_current_bg') ?? activeRow,
+    // The transcript's inter-turn rule. `ui_border` also draws every overlay
+    // box, the banner frame, and the assistant gutter, so quieting the rule
+    // used to mean washing out all of them; `user_rule` separates the two.
+    // It deliberately does NOT chain through the composer's `input_rule`:
+    // the built-ins author the two independently (daylight #6E94BE vs
+    // banner_border #2563EB; sisyphus #656565 vs #B7B7B7; mono #606060 vs
+    // #5E5E5E), so borrowing it would silently repaint those skins rather
+    // than leave every existing look untouched.
+    userRule: c('user_rule') ?? derived.userRule,
     sessionLabel: c('session_label') ?? c('banner_dim') ?? derived.sessionLabel,
     sessionBorder: c('session_border') ?? c('banner_dim') ?? derived.sessionBorder,
     statusBg: c('status_bar_bg') ?? surface,
@@ -942,12 +957,12 @@ export function fromSkin(
   return normalizeThemeForAnsiLightTerminal(
     {
       // The element tokens theme-sdk introduced (ui_primary, ui_text,
-      // ui_border, ui_ok/warn/error, ui_tool, ui_thinking, shell_dollar,
-      // status_bar_*, diff_*) are read into `seeds`/`assembled` above and
-      // flow through buildPalette → adaptColorsToBackground, so `adapted`
-      // already honors them AND applies #20379's contrast/polarity machinery.
-      // Emitting a hand-mapped color block here would bypass that adaptation
-      // and regress theme quality.
+      // ui_border, ui_ok/warn/error, ui_tool, ui_thinking, user_rule,
+      // shell_dollar, status_bar_*, diff_*) are read into `seeds`/`assembled`
+      // above and flow through buildPalette → adaptColorsToBackground, so
+      // `adapted` already honors them AND applies #20379's contrast/polarity
+      // machinery. Emitting a hand-mapped color block here would bypass that
+      // adaptation and regress theme quality.
       color: adapted,
 
       brand: {

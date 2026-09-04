@@ -172,7 +172,8 @@ const TranscriptPane = memo(function TranscriptPane({
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
   // turn. -1 when no user message has been sent yet → no separator ever
-  // renders.
+  // renders. Colored by the `user_rule` skin key (falls back to the border
+  // tone, so the stock look is unchanged) — see theme.ts::fromSkin.
   const firstUserIdx = useMemo(
     () => transcript.historyItems.findIndex(m => m.role === 'user'),
     [transcript.historyItems]
@@ -199,7 +200,7 @@ const TranscriptPane = memo(function TranscriptPane({
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
+                  <Text color={ui.theme.color.userRule}>───</Text>
                 </Box>
               )}
 

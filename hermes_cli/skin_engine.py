@@ -48,6 +48,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       syntax_comment: "#CC9B1F"          # Code comments; falls back to banner_dim
       prompt: "#FFF8DC"                  # Prompt text color
       input_rule: "#CD7F32"              # Input area horizontal rule
+      user_rule: "#CD7F32"               # Transcript inter-turn rule (TUI); falls back to ui_border
       response_border: "#FFD700"         # Response box border (ANSI)
       status_bar_bg: "#1a1a2e"           # Status bar background
       status_bar_text: "#C0C0C0"         # Status bar default text

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -2115,6 +2116,33 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
+        # A supervised gateway must keep foreground executors out of its own
+        # memory cgroup, just as ProcessRegistry does for background commands.
+        # Import lazily: process_registry imports LocalEnvironment at module
+        # load time, so a top-level import here would create a cycle.
+        systemd_unit = None
+        if not _IS_WINDOWS:
+            try:
+                from tools.process_registry import (
+                    _build_systemd_scope_argv,
+                    _is_supervised_gateway_process,
+                    _systemd_run_user_scope_available,
+                )
+
+                if (
+                    _is_supervised_gateway_process()
+                    and _systemd_run_user_scope_available()
+                ):
+                    suffix = f"foreground-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                    scoped_args = _build_systemd_scope_argv(
+                        args, unit_suffix=suffix
+                    )
+                    if scoped_args is not args:
+                        args = scoped_args
+                        systemd_unit = f"hermes-worker-{suffix}.scope"
+            except Exception as exc:
+                logger.debug("Foreground systemd scope setup failed: %s", exc)
+
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir
         # (issue #17558).  Popen would otherwise raise FileNotFoundError on
@@ -2162,6 +2190,8 @@ class LocalEnvironment(BaseEnvironment):
                 proc._hermes_pgid = os.getpgid(proc.pid)
             except ProcessLookupError:
                 pass
+            if systemd_unit:
+                setattr(proc, "_hermes_systemd_unit", systemd_unit)
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -2217,6 +2247,24 @@ class LocalEnvironment(BaseEnvironment):
                 except (subprocess.TimeoutExpired, OSError):
                     pass
             else:
+                systemd_unit = getattr(proc, "_hermes_systemd_unit", None)
+                if systemd_unit:
+                    try:
+                        from tools.process_registry import _stop_systemd_unit
+
+                        if _stop_systemd_unit(systemd_unit):
+                            try:
+                                proc.wait(timeout=0.2)
+                            except (subprocess.TimeoutExpired, OSError):
+                                pass
+                            return
+                    except Exception as exc:
+                        logger.debug(
+                            "Foreground systemd scope cleanup failed for %s: %s",
+                            systemd_unit,
+                            exc,
+                        )
+
                 try:
                     pgid = os.getpgid(proc.pid)
                 except ProcessLookupError:

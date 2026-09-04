@@ -2129,6 +2129,62 @@ class TestSystemdCgroupIsolation:
 
         assert session.systemd_unit == ""
 
+    def test_pipe_scope_builder_fallback_does_not_record_unit(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """A vanished systemd-run must leave pipe cleanup on the PID group."""
+        fake_popen, captured = self._fake_popen_capture()
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "tools.process_registry._build_systemd_scope_argv",
+            lambda argv, *, unit_suffix: argv,
+        )
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"] == [
+            "/bin/bash", "-lic", "set +m; echo hello",
+        ]
+        assert session.systemd_unit == ""
+
+    def test_pty_scope_builder_fallback_does_not_record_unit(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """A vanished systemd-run must leave PTY cleanup on the PID group."""
+        from ptyprocess import PtyProcess
+
+        fake_pty = MagicMock(pid=4321)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "tools.process_registry._build_systemd_scope_argv",
+            lambda argv, *, unit_suffix: argv,
+        )
+
+        with (
+            patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        assert pty_spawn.call_args.args[0] == [
+            "/bin/bash", "-lic", "set +m; codex",
+        ]
+        assert session.systemd_unit == ""
+
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
         self, registry, monkeypatch, _gateway_identity
     ):

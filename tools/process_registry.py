@@ -1138,12 +1138,14 @@ class ProcessRegistry:
                 )
 
                 if pty_use_systemd_scope:
-                    pty_argv = _build_systemd_scope_argv(
+                    scoped_pty_argv = _build_systemd_scope_argv(
                         pty_argv,
                         unit_suffix=session.id,
                     )
-                    session.systemd_unit = f"hermes-worker-{session.id}.scope"
-                    pty_scope_attempted = True
+                    if scoped_pty_argv is not pty_argv:
+                        pty_argv = scoped_pty_argv
+                        session.systemd_unit = f"hermes-worker-{session.id}.scope"
+                        pty_scope_attempted = True
                 elif pty_in_supervised_gateway:
                     logger.debug(
                         "PTY background executor not isolated in a "
@@ -1218,11 +1220,15 @@ class ProcessRegistry:
             unit_suffix = (
                 f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
             )
-            spawn_argv = _build_systemd_scope_argv(
+            scoped_spawn_argv = _build_systemd_scope_argv(
                 shell_argv,
                 unit_suffix=unit_suffix,
             )
-            session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
+            if scoped_spawn_argv is not shell_argv:
+                spawn_argv = scoped_spawn_argv
+                session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
+            else:
+                spawn_argv = shell_argv
             # CRITICAL (#70716 regression): systemd-run --scope does NOT give
             # the worker a new session — the invoked process keeps the
             # parent's session and inherits its controlling terminal.  From an

@@ -170,6 +170,26 @@ def _bot_relay_outbox_sig():
     return _bot_relay_outbox_seen or None
 
 
+_group_relay_outbox_seen = 0
+
+
+def _group_relay_outbox_sig():
+    """Newest mtime across pending group-relay envelopes (monotone).
+
+    Sibling of ``_bot_relay_outbox_sig`` for ``hermes group send`` envelopes aimed at
+    Desktop-coordinated Group Chats (``tools/group_relay.py``); the Desktop reacts to
+    ``group_relay.outbox.pending`` with a debounced drain.
+    """
+    global _group_relay_outbox_seen
+    home = _watcher_home()
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    with contextlib.suppress(OSError):
+        for entry in (root / "group_relay" / "outbox").iterdir():
+            if entry.name.endswith(".json"):
+                _group_relay_outbox_seen = max(_group_relay_outbox_seen, _watcher_mtime_ns(entry) or 0)
+    return _group_relay_outbox_seen or None
+
+
 # event → (check interval, signature fn, payload fn). Signatures are stat-cheap; the interval
 # keeps pricier probes (pet resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
 # moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
@@ -181,7 +201,8 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
     "pairing.changed": (2.0, _pairing_sig, lambda: {}),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
-    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {})}
+    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {}),
+    "group_relay.outbox.pending": (1.0, _group_relay_outbox_sig, lambda: {})}
 
 # state.db moves on every append of a streaming turn and gateway_state.json on
 # in-flight bookkeeping; the floor coalesces bursts to one broadcast per window,

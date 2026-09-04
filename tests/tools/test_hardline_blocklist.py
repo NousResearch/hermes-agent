@@ -97,6 +97,17 @@ _HARDLINE_BLOCK = [
     # System-wide kill
     "kill -9 -1",
     "kill -1",
+    # -s/--signal with a separate signal operand (#102389)
+    "kill -s KILL -1",
+    "kill -s 9 -1",
+    "kill --signal KILL -1",
+    "kill --signal=9 -1",
+    "sudo kill -s TERM -1",
+    # separated signal operands in carrier positions (#102389)
+    "kill -9 -s TERM -1",
+    "ls; kill --signal KILL -1",
+    "$(kill -s KILL -1)",
+    'bash -c "kill -s KILL -1"',
     # Shutdown / reboot / halt
     "shutdown -h now",
     "shutdown -r now",
@@ -176,6 +187,10 @@ _HARDLINE_ALLOW = [
     # Redirect to regular files / non-block devices
     "echo done > /tmp/flag",
     "echo test > /dev/null",
+    # Targeted (non -1) kills stay clean (#102389)
+    "kill -s KILL 1234",
+    "kill -l",
+    "kill 1234",
     # Reading devices is fine
     "ls /dev/sda",
     "cat /dev/urandom | head -c 10",

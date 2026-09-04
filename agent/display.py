@@ -1332,6 +1332,31 @@ def _trim_error(msg: str) -> str:
     return msg
 
 
+_ERROR_KEY_RE = re.compile(r'"(?:error|failed)"\s*:')
+_ERROR_AS_VALUE_RE = re.compile(r':\s*"(?:error|failed)"')
+# JSON literals that mean "no error here". Anchored at the value position.
+_FALSY_VALUE_RE = re.compile(r'\s*(?:null|false|0|""|\[\]|\{\})\s*(?:[,}\]]|$)')
+
+
+def _has_error_signal(window: str, full: str) -> bool:
+    """Return True when *window* carries a genuine error marker.
+
+    *window* is the lowercased prefix actually scanned; *full* is the whole
+    lowercased result, used only to read a key's value when it straddles the
+    window boundary.
+
+    A plain ``'"error"' in text`` test is not enough: tools that report per
+    item — ``web_extract`` is the common one — emit ``"error": null`` on
+    *every successful* entry, so the substring is present exactly when
+    nothing went wrong. Only an error key with a non-falsy value, or the
+    literal string used as a value (``{"status": "error"}``), is a failure.
+    """
+    for match in _ERROR_KEY_RE.finditer(window):
+        if not _FALSY_VALUE_RE.match(full, match.end()):
+            return True
+    return bool(_ERROR_AS_VALUE_RE.search(window))
+
+
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Inspect a tool result string for signs of failure.
 
@@ -1376,7 +1401,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if not isinstance(result, str):
         return False, ""
     lower = result[:500].lower()
-    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
+    if _has_error_signal(lower, result.lower()) or result.startswith("Error"):
         return True, " [error]"
 
     return False, ""

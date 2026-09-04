@@ -290,6 +290,7 @@ import {
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
+import { resolvePreUpdateBackupPolicy } from './pre-update-backup-policy'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -357,10 +358,10 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
-import { createVerifiedSqliteBackup } from './sqlite-backup'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
+import { runStateDbUpdatePreflight } from './state-db-update-preflight'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
@@ -384,7 +385,7 @@ import {
   resolveCommitLogSelection,
   shouldCountCommits
 } from './update-count'
-import { waitForUpdateClearance } from './update-gate'
+import { ExclusiveUpdateFlight, runPreflightThenHandoff, waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
@@ -2236,9 +2237,11 @@ const UPDATE_WAIT_POLL_MS = 1000
 // updater's own progress window appears. (#50419)
 const UPDATE_HANDOFF_DWELL_MS = 2500
 
+const updateFlight = new ExclusiveUpdateFlight()
+
 // Gate deps shared by the primary-window boot path and the pool-backend
 // spawn path. Consulting BOTH the on-disk marker and the in-process
-// updateInFlight flag is load-bearing (#73822): applyUpdates kills its own
+// update-flight lease is load-bearing (#73822): applyUpdates kills its own
 // backend BEFORE the Windows venv-blocker scan but only writes the marker
 // AFTER it, so a marker-only gate lets the renderer's ~1s reconnect respawn
 // a backend inside the update's own critical section — which the scan then
@@ -2246,7 +2249,7 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 function updateGateDeps() {
   return {
     hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
-    isUpdateInFlight: () => updateInFlight
+    isUpdateInFlight: () => updateFlight.active
   }
 }
 
@@ -2571,13 +2574,7 @@ function isHermesSourceRoot(root) {
   return directoryExists(root) && fileExists(path.join(root, 'hermes_cli', 'main.py'))
 }
 
-function findPythonForRoot(root) {
-  const override = process.env.HERMES_DESKTOP_PYTHON
-
-  if (override && fileExists(override)) {
-    return override
-  }
-
+function findManagedPythonForRoot(root) {
   const relativePaths = IS_WINDOWS
     ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
     : [path.join('.venv', 'bin', 'python'), path.join('venv', 'bin', 'python')]
@@ -2585,12 +2582,18 @@ function findPythonForRoot(root) {
   for (const relativePath of relativePaths) {
     const candidate = path.join(root, relativePath)
 
-    if (fileExists(candidate)) {
-      return candidate
-    }
+    if (fileExists(candidate)) {return candidate}
   }
 
-  return findSystemPython()
+  return null
+}
+
+function findPythonForRoot(root) {
+  const override = process.env.HERMES_DESKTOP_PYTHON
+
+  if (override && fileExists(override)) {return override}
+
+  return findManagedPythonForRoot(root) ?? findSystemPython()
 }
 
 function findSystemPython() {
@@ -3287,8 +3290,6 @@ async function readCommitLog(cwd, branch, isShallow) {
     })
 }
 
-let updateInFlight = false
-
 // Set to true when the desktop is about to quit so a detached swap/install/
 // uninstall script can take over. On macOS, app.quit() closes windows but
 // window-all-closed deliberately keeps the process alive (standard Electron
@@ -3871,13 +3872,13 @@ async function releaseBackendLock(updateRoot, tag) {
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
-  if (updateInFlight) {
-    throw new Error('An update is already in progress.')
+  if (updateFlight.active) {
+    emitUpdateProgress({ stage: 'already-running', message: 'An update is already in progress.', percent: null })
+
+    return { ok: false, error: 'already-running' }
   }
 
-  updateInFlight = true
-
-  try {
+  return updateFlight.run(async () => {
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
@@ -3970,16 +3971,14 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
     const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
 
-    // ── Pre-flight state.db integrity guard (#68474) ─────────────────
-    // Emergency backup and header verification before the update touches
-    // anything.  Runs while the backend is still alive.
-    await preflightStateDb(HERMES_HOME, rememberLog)
-
-    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
-    // spawn the updater. Without this the updater races a still-locked
-    // hermes.exe (held by the backend child / its grandchildren) and the update
-    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    const lock = await releaseBackendLockForUpdate(updateRoot)
+    // Stop our own backend(s) and wait for the venv shim to unlock only after
+    // the policy-aware state.db preflight has settled. Without this the updater
+    // races a still-locked hermes.exe (held by the backend child / its
+    // grandchildren) and the update bricks.
+    const lock = await runPreflightThenHandoff(
+      () => preflightStateDb(HERMES_HOME, updateRoot, rememberLog),
+      () => releaseBackendLockForUpdate(updateRoot)
+    )
 
     if (!lock.unlocked) {
       // Something OUTSIDE this app holds the venv (a second window, a user
@@ -4209,9 +4208,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     )
 
     return { ok: true, handedOff: true, updater }
-  } finally {
-    updateInFlight = false
-  }
+  })
 }
 
 async function handOffWindowsBootstrapRecovery(reason) {
@@ -4341,90 +4338,33 @@ function runningAppBundle() {
 }
 
 // ── Pre-flight state.db integrity guard (#68474) ─────────────────────
-// Take an emergency snapshot of state.db and verify the live copy is
-// intact before any update process mutates the install.  Runs in the
+// Validate the live database and, when the canonical Python policy enables it,
+// publish one WAL-consistent recovery point before any backend is stopped. Runs in the
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
-async function preflightStateDb(hermesHome, rememberLog) {
-  const stateDbPath = path.join(hermesHome, 'state.db')
-
-  if (!fileExists(stateDbPath)) {
-    rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
-
-    return
-  }
-
+async function preflightStateDb(hermesHome, updateRoot, rememberLog) {
   try {
-    const stat = fs.statSync(stateDbPath)
+    await runStateDbUpdatePreflight({
+      hermesHome,
+      policy: async () => {
+        const pythonPath = findManagedPythonForRoot(updateRoot)
 
-    if (stat.size <= 100) {
-      throw new Error(`state.db is too small (${stat.size} bytes) to snapshot safely`)
-    }
+        if (!pythonPath) {
+          throw new Error('could not resolve the update root venv Python for the backup policy')
+        }
 
-    const fd = fs.openSync(stateDbPath, 'r')
-    const header = Buffer.alloc(16)
-
-    try {
-      fs.readSync(fd, header, 0, 16, 0)
-    } finally {
-      fs.closeSync(fd)
-    }
-
-    const expectedHeader = Buffer.from('SQLite format 3\0')
-    const headerOk = header.equals(expectedHeader)
-
-    rememberLog(
-      `[updates] state.db pre-flight: size=${stat.size}, ` +
-        `headerOk=${headerOk}, headerHex=${header.toString('hex')}`
-    )
-
-    if (!headerOk) {
-      throw new Error('state.db has an invalid SQLite header before update')
-    }
-
-    const homeDir = fs.readdirSync(hermesHome)
-
-    for (const stalePartial of homeDir.filter(
-      f => f.startsWith('state.db.pre-update-emergency-') && f.endsWith('.bak.partial')
-    )) {
-      try {
-        fs.rmSync(path.join(hermesHome, stalePartial), { force: true })
-      } catch (error) {
-        rememberLog(`[updates] could not remove stale emergency backup partial ${stalePartial}: ${error.message}`)
-      }
-    }
-
-    // Emergency timestamped backup, separate from the Python-level snapshot.
-    const ts = new Date().toISOString().replace(/[:.]/g, '-')
-    const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
-    const backupResult = await createVerifiedSqliteBackup(stateDbPath, emergencyPath)
-
-    rememberLog(
-      `[updates] emergency state.db backup: ${emergencyPath} (${backupResult.size} bytes, ` +
-        `${backupResult.verification}, ${backupResult.durationMs}ms)`
-    )
-
-    // Prune to the 2 most recent emergency backups.
-    const backups = homeDir
-      .filter(
-        f =>
-          f.startsWith('state.db.pre-update-emergency-') &&
-          f.endsWith('.bak') &&
-          f !== path.basename(emergencyPath)
-      )
-      .sort()
-      .reverse()
-
-    for (const old of backups.slice(1)) {
-      try {
-        fs.unlinkSync(path.join(hermesHome, old))
-      } catch {
-        void 0
-      }
-    }
+        return resolvePreUpdateBackupPolicy({
+          hermesHome,
+          pythonPath,
+          updateRoot
+        })
+      },
+      rememberLog
+    })
   } catch (error) {
-    const message = `Update aborted: could not create a verified emergency state.db backup: ${error.message}`
+    const detail = error instanceof Error ? error.message : String(error)
+    const message = `Update aborted: state.db pre-flight failed before backend shutdown: ${detail}`
 
     rememberLog(`[updates] ${message}`)
     emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -4458,9 +4398,6 @@ async function applyUpdatesPosixHandoff(opts: any) {
 
     return { ok: false, error: 'update-already-running', message: handoffConflict.message }
   }
-
-  // ── Pre-flight state.db integrity guard (#68474) ──
-  await preflightStateDb(HERMES_HOME, rememberLog)
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).
@@ -4506,17 +4443,23 @@ async function applyUpdatesPosixHandoff(opts: any) {
     }
   }
 
-  const child = spawnUpdaterProcess(handoff.command, args, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-      PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
-    },
-    detached: true,
-    stdio: 'ignore'
-  })
+  // The detached script cannot start until the policy-aware database preflight
+  // has settled; a rejection leaves the Desktop and backend running.
+  const child = await runPreflightThenHandoff(
+    () => preflightStateDb(HERMES_HOME, updateRoot, rememberLog),
+    async () =>
+      spawnUpdaterProcess(handoff.command, args, {
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
+          PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
+  )
 
   // Bridge marker (same contract as the Windows hand-off): cover the gap
   // until the script claims the marker with its own pid as step 0. If the

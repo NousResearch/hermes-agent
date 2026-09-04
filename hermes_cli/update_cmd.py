@@ -37,6 +37,13 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.update_backup_policy import (
+    PRE_UPDATE_SNAPSHOT_KEEP as _PRE_UPDATE_SNAPSHOT_KEEP,
+    PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE as _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    normalize_pre_update_backup_keep as _canonical_pre_update_backup_keep,
+    normalize_pre_update_backup_mode as _canonical_pre_update_backup_mode,
+    resolve_pre_update_backup_policy_strict as _strict_pre_update_backup_policy,
+)
 from hermes_constants import get_default_hermes_root, venv_python_path
 
 logger = logging.getLogger(__name__)
@@ -4918,19 +4925,37 @@ def _ensure_acp_launcher() -> None:
             continue
         print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
-_PRE_UPDATE_SNAPSHOT_KEEP = 1
 # Sibling-profile snapshot ids from the current run's pre-update backup
 # ({profile: snapshot_id}) — consumed by the post-update per-profile
 # cron-jobs safety net (#66140). Module-level because the snapshot and the
 # restore run in the same process but far apart in _cmd_update_impl.
 _LAST_SIBLING_SNAPSHOTS: dict = {}
 
-# Per-file size cap for the pre-update quick snapshot. Anything larger is
-# skipped with a warning: the snapshot exists to protect small, hard-to-
-# regenerate state (pairing JSONs, cron jobs, config, auth) — not to copy a
-# multi-GB state.db on every update (observed: a 24 GB state.db added ~60s
-# of wall time and silently ate 24 GB of disk per update).
-_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
+def _normalize_pre_update_backup_mode(raw, *, strict: bool = False) -> str:
+    """Preserve the CLI's legacy unknown-value fallback around the strict core."""
+    if raw is None and not strict:
+        return "off"
+
+    try:
+        return _canonical_pre_update_backup_mode(raw)
+    except ValueError:
+        if strict:
+            raise
+        logging.getLogger(__name__).warning(
+            "Unknown updates.pre_update_backup value %r — using 'quick'", raw
+        )
+        return "quick"
+
+
+def _normalize_pre_update_backup_keep(raw) -> int:
+    """Return the retention count accepted by the backup implementation."""
+    return _canonical_pre_update_backup_keep(raw)
+
+
+def resolve_pre_update_backup_policy_strict() -> dict:
+    """Compatibility export for the side-effect-free strict policy resolver."""
+    return _strict_pre_update_backup_policy()
+
 
 def _resolve_pre_update_backup_mode(args) -> str:
     """Resolve the pre-update backup mode: ``"off"``, ``"quick"``, or ``"full"``.
@@ -4960,21 +4985,7 @@ def _resolve_pre_update_backup_mode(args) -> str:
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
     raw = updates_cfg.get("pre_update_backup", "quick")
 
-    if raw is True:
-        return "full"
-    if raw is False:
-        return "off"
-    mode = str(raw).strip().lower()
-    if mode in ("off", "false", "none", "disabled"):
-        return "off"
-    if mode in ("full", "zip", "true"):
-        return "full"
-    if mode == "quick":
-        return "quick"
-    logging.getLogger(__name__).warning(
-        "Unknown updates.pre_update_backup value %r — using 'quick'", raw
-    )
-    return "quick"
+    return _normalize_pre_update_backup_mode(raw)
 
 def _run_pre_update_backup(args) -> Optional[str]:
     """Run the pre-update safety backup and return the quick-snapshot id.
@@ -5135,7 +5146,9 @@ def _run_pre_update_backup(args) -> Optional[str]:
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
     try:
-        out_path = create_pre_update_backup(keep=int(_keep))
+        out_path = create_pre_update_backup(
+            keep=_normalize_pre_update_backup_keep(_keep)
+        )
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")

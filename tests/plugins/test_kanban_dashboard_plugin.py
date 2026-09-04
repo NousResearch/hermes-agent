@@ -332,6 +332,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
             conn,
             child_id,
             summary="ready",
+            reviewer="approver",
             expected_run_id=implementation.current_run_id,
         )
         active_review = kb.claim_review_task(conn, child_id)

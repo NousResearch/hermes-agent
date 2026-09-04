@@ -149,6 +149,49 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
+def test_complete_task_rejects_self_review_approval(conn) -> None:
+    """#98283: a profile that implemented a card must not also be the one
+    whose run records the review approval. Omitting ``reviewer`` on the
+    first review leaves ``assignee`` pointed at the implementer, so the
+    same profile ends up claiming the review lane and approving its own
+    work — the exact self-approval shape the issue's board audit found.
+    """
+    task_id = kb.create_task(conn, title="self-approve me", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="ready for review",
+        expected_run_id=implementation.current_run_id,
+    )
+    awaiting_review = kb.get_task(conn, task_id)
+    assert awaiting_review is not None
+    assert awaiting_review.assignee == "builder"
+
+    review = kb.claim_review_task(conn, task_id, claimer="builder:2")
+    assert review is not None
+    review_run = kb.latest_run(conn, task_id)
+    assert review_run is not None
+    assert review_run.profile == "builder"
+
+    with pytest.raises(kb.SelfReviewApprovalError):
+        kb.complete_task(
+            conn,
+            task_id,
+            summary="approved by myself",
+            expected_run_id=review.current_run_id,
+        )
+
+    # The rejected approval must not have mutated the card: still under
+    # the same active review claim, not flipped to done.
+    still_reviewing = kb.get_task(conn, task_id)
+    assert still_reviewing is not None
+    assert still_reviewing.status == "running"
+    assert still_reviewing.current_run_id == review.current_run_id
+
+
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,

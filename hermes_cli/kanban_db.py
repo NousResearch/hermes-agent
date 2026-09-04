@@ -5360,6 +5360,71 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class SelfReviewApprovalError(ValueError):
+    """Raised by ``complete_task`` when the profile recording a review
+    approval already has a non-review run on the same card (#98283).
+
+    Four-eyes review is meaningless if the approving profile is the same
+    one that did (or attempted) the implementation work being approved.
+    ``conflicting_run_ids`` carries the offending prior run ids for the
+    caller to surface in a diagnostic.
+    """
+
+    def __init__(self, task_id: str, profile: str, conflicting_run_ids: list[int]):
+        self.task_id = task_id
+        self.profile = profile
+        self.conflicting_run_ids = list(conflicting_run_ids)
+        super().__init__(
+            f"review approval blocked: profile {profile!r} already has "
+            f"non-review run(s) {conflicting_run_ids} on {task_id}; a "
+            f"distinct profile must record the approval"
+        )
+
+
+def _claimed_from_review(conn: sqlite3.Connection, task_id: str, run_id: int) -> bool:
+    """True if ``run_id`` was claimed via :func:`claim_review_task`.
+
+    Determined from the run's own ``claimed`` event payload, the same
+    provenance :func:`request_changes` already relies on to confirm a
+    rejection came from an active review claim.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, int(run_id)),
+    ).fetchone()
+    try:
+        payload = json.loads(row["payload"]) if row and row["payload"] else {}
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    return isinstance(payload, dict) and payload.get("source_status") == "review"
+
+
+def _non_review_runs_for_profile(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: str,
+    *,
+    exclude_run_id: int,
+) -> list[int]:
+    """Prior run ids on ``task_id`` by ``profile`` that were NOT claimed
+    from review — i.e. implementation work, not review work.
+
+    Used to enforce that the profile approving a review is distinct from
+    any profile that already touched the card as an implementer.
+    """
+    rows = conn.execute(
+        "SELECT id FROM task_runs WHERE task_id = ? AND profile = ? AND id != ?",
+        (task_id, profile, int(exclude_run_id)),
+    ).fetchall()
+    return [
+        int(row["id"])
+        for row in rows
+        if not _claimed_from_review(conn, task_id, row["id"])
+    ]
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5450,6 +5515,34 @@ def complete_task(
             (task_id,),
         ).fetchone()
         prior_status = prior["status"] if prior else None
+        # Four-eyes guard (#98283): a review approval recorded by the same
+        # profile that already did non-review (implementation) work on this
+        # card is not an independent review. A review claim transitions
+        # review -> running (claim_review_task), same as a plain
+        # implementation claim, so ``prior_status`` alone can't tell the two
+        # apart here — the run's own ``claimed`` event provenance can. Only
+        # checkable when the caller proves which run is approving
+        # (expected_run_id); a human closing a card with no active run
+        # (expected_run_id=None) is an explicit override and stays out of
+        # scope, same as request_review's force=.
+        if (
+            expected_run_id is not None
+            and _claimed_from_review(conn, task_id, int(expected_run_id))
+        ):
+            approver_row = conn.execute(
+                "SELECT profile FROM task_runs WHERE id = ?",
+                (int(expected_run_id),),
+            ).fetchone()
+            approver_profile = approver_row["profile"] if approver_row else None
+            if approver_profile:
+                conflicts = _non_review_runs_for_profile(
+                    conn, task_id, approver_profile,
+                    exclude_run_id=int(expected_run_id),
+                )
+                if conflicts:
+                    raise SelfReviewApprovalError(
+                        task_id, approver_profile, conflicts,
+                    )
         if expected_run_id is None:
             cur = conn.execute(
                 """

@@ -813,6 +813,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.SelfReviewApprovalError as self_review_err:
+                return tool_error(
+                    f"kanban_complete blocked: {self_review_err}. Review "
+                    f"approval must come from a profile that did not already "
+                    f"work on this card. Route the card to a distinct "
+                    f"reviewer instead of approving it yourself."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"

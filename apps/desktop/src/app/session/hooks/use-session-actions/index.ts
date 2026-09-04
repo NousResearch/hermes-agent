@@ -2097,23 +2097,57 @@ export function useSessionActions({
 
         // No title: the backend auto-names the branch from its parent's lineage.
         if (!createFlight) {
+          const branchParams = {
+            session_id: sourceSessionId,
+            omit_messages: true,
+            ...(branchCount !== undefined ? { count: branchCount } : {})
+          }
+
+          const createParams = {
+            cols: 96,
+            copy_parent_history: true,
+            omit_messages: true,
+            source: 'desktop',
+            ...(cwd && { cwd }),
+            ...(profile ? { profile } : {}),
+            ...(parentStoredId && { parent_session_id: parentStoredId })
+          }
+
           createFlight = (
             sourceSessionId
-              ? requestBranchGateway<SessionCreateResponse>('session.branch', {
-                  session_id: sourceSessionId,
-                  omit_messages: true,
-                  ...(branchCount !== undefined ? { count: branchCount } : {})
+              ? requestBranchGateway<SessionCreateResponse>(
+                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
+                  branchParams
+                ).catch(err => {
+                  if (!isMissingRpcMethod(err)) {
+                    throw err
+                  }
+
+                  return requestBranchGateway<SessionCreateResponse>('session.branch', branchParams)
                 })
-              : requestBranchGateway<SessionCreateResponse>('session.create', {
-                  cols: 96,
-                  source: 'desktop',
-                  ...(cwd && { cwd }),
-                  ...(profile ? { profile } : {}),
-                  ...(branchMessages.length
-                    ? { messages: branchMessages.map(({ content, role }) => ({ content, role })) }
-                    : { copy_parent_history: true, omit_messages: true }),
-                  ...(parentStoredId && { parent_session_id: parentStoredId })
-                })
+              : branchMessages.length
+                ? requestBranchGateway<SessionCreateResponse>('session.create', {
+                    ...createParams,
+                    messages: branchMessages.map(({ content, role }) => ({ content, role }))
+                  })
+                : requestBranchGateway<SessionCreateResponse>('session.branch_stored', createParams).catch(
+                    async err => {
+                      if (!isMissingRpcMethod(err)) {
+                        throw err
+                      }
+
+                      const { messages } = await getAllSessionMessages(parentStoredId ?? '', ownerRoute ?? profile)
+
+                      if (!messages.length) {
+                        throw new Error('nothing to branch — send a message first')
+                      }
+
+                      return requestBranchGateway<SessionCreateResponse>('session.create', {
+                        ...createParams,
+                        messages: messages.map(({ content, role }) => ({ content, role }))
+                      })
+                    }
+                  )
           ).catch(err => {
             // Drop the flight so a genuine retry re-issues the create; a
             // resolved flight is cleared once the child is fully published.

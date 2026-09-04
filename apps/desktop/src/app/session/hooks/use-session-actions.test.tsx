@@ -196,7 +196,7 @@ describe('desktop branch creation idempotency', () => {
     const createReady = deferred<{ session_id: string; stored_session_id: string }>()
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
+      if (method === 'session.branch_stored') {
         return createReady.promise as never
       }
 
@@ -226,7 +226,7 @@ describe('desktop branch creation idempotency', () => {
     })
 
     await waitFor(() =>
-      expect(requestGateway.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
+      expect(requestGateway.mock.calls.filter(([method]) => method === 'session.branch_stored')).toHaveLength(1)
     )
 
     await act(async () => {
@@ -234,9 +234,9 @@ describe('desktop branch creation idempotency', () => {
       await expect(Promise.all([first, second])).resolves.toEqual([true, true])
     })
 
-    expect(requestGateway.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'session.branch_stored')).toHaveLength(1)
     expect(requestGateway).toHaveBeenCalledWith(
-      'session.create',
+      'session.branch_stored',
       expect.objectContaining({
         copy_parent_history: true,
         omit_messages: true,
@@ -260,7 +260,7 @@ describe('desktop branch creation idempotency', () => {
     const otherCreate = deferred<{ session_id: string; stored_session_id: string }>()
 
     routedCreate.mockImplementation((async (connectionId: string, _profile: string, method: string) => {
-      if (method !== 'session.create') {
+      if (method !== 'session.branch_stored') {
         return {} as never
       }
 
@@ -294,7 +294,7 @@ describe('desktop branch creation idempotency', () => {
     await act(async () => {
       second = actions!.branchStoredSession('parent')
       await waitFor(() =>
-        expect(routedCreate.mock.calls.filter(([, , method]) => method === 'session.create')).toHaveLength(2)
+        expect(routedCreate.mock.calls.filter(([, , method]) => method === 'session.branch_stored')).toHaveLength(2)
       )
     })
 
@@ -304,7 +304,7 @@ describe('desktop branch creation idempotency', () => {
       await expect(Promise.all([first, second])).resolves.toEqual([true, true])
     })
 
-    const creates = routedCreate.mock.calls.filter(([, , method]) => method === 'session.create')
+    const creates = routedCreate.mock.calls.filter(([, , method]) => method === 'session.branch_stored')
 
     expect(creates.map(([connectionId]) => connectionId)).toEqual(['pandora', 'other-box'])
     // Two distinct children, not one child claimed twice.
@@ -649,7 +649,7 @@ async function createWith(
   let createParams: Record<string, unknown> | undefined
 
   const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-    if (method === 'session.create') {
+    if (method === 'session.create' || method === 'session.branch_stored') {
       createParams = params
 
       return { session_id: RUNTIME_SESSION_ID, stored_session_id: null } as never
@@ -1851,7 +1851,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
   it('opens the branch as the primary session in the main workspace (#93444)', async () => {
     const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
       }
 
@@ -1904,7 +1904,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
   it('keeps the current view when branching a different session from the sidebar (does not reintroduce #69750)', async () => {
     const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
       }
 
@@ -1957,7 +1957,7 @@ describe('branchStoredSession desktop source tagging', () => {
     let createParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         createParams = params
 
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
@@ -1998,7 +1998,7 @@ describe('branchStoredSession desktop source tagging', () => {
       _profile: string,
       method: string
     ) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
       }
 
@@ -2020,10 +2020,10 @@ describe('branchStoredSession desktop source tagging', () => {
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
     // The create must ride the parent's own (connection, profile) socket...
-    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+    expect(requestGatewayForAgent).toHaveBeenLastCalledWith(
       'pandora',
       'default',
-      'session.create',
+      'session.branch_stored',
       expect.objectContaining({ parent_session_id: 'stored-parent', source: 'desktop' })
     )
     // ...and never the ambient socket, which may serve a different machine.
@@ -2038,7 +2038,7 @@ describe('branchStoredSession desktop source tagging', () => {
       _profile: string,
       method: string
     ) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
       }
 
@@ -2054,10 +2054,10 @@ describe('branchStoredSession desktop source tagging', () => {
 
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
-    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+    expect(requestGatewayForAgent).toHaveBeenLastCalledWith(
       'pandora',
       'default',
-      'session.create',
+      'session.branch_stored',
       expect.objectContaining({
         copy_parent_history: true,
         omit_messages: true,
@@ -2079,7 +2079,7 @@ describe('branchStoredSession desktop source tagging', () => {
       _profile: string,
       method: string
     ) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
       }
 
@@ -2112,7 +2112,7 @@ describe('branchStoredSession desktop source tagging', () => {
     let createParams: Record<string, unknown> | undefined
 
     const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         createParams = params
 
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
@@ -2193,7 +2193,7 @@ describe('branchStoredSession desktop source tagging', () => {
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.branch') {
+      if (method === 'session.branch_whole') {
         branchParams = params
 
         return {
@@ -2284,7 +2284,7 @@ describe('branchStoredSession desktop source tagging', () => {
     let createParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         createParams = params
 
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
@@ -2321,7 +2321,7 @@ describe('branchStoredSession desktop source tagging', () => {
     let createParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         createParams = params
 
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
@@ -2350,7 +2350,7 @@ describe('branchStoredSession desktop source tagging', () => {
     let createParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         createParams = params
 
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
@@ -2367,6 +2367,39 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(createParams).toBeDefined()
     expect(createParams).not.toHaveProperty('profile')
+  })
+
+  it('falls back without creating an empty branch against an older backend', async () => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.branch_stored') {
+        throw new Error('unknown method: session.branch_stored')
+      }
+
+      if (method === 'session.create') {
+        expect(params?.messages).toEqual([{ content: 'persisted context', role: 'user' }])
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'persisted context', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.create',
+      expect.objectContaining({
+        parent_session_id: 'stored-parent'
+      })
+    )
   })
 })
 

@@ -59,6 +59,7 @@ class _RouteStatusPeerClient:
         on_unavailable,
         on_refreshed,
         grant=None,
+        before_admission=None,
     ) -> None:
         self._client = client
         self._on_ready = on_ready
@@ -67,6 +68,7 @@ class _RouteStatusPeerClient:
         self._on_refreshed = on_refreshed
         self._initial_grant = grant
         self._current_grant = grant
+        self._before_admission = before_admission
 
     def _notify(self, callback, grant):
         if self._initial_grant is None:
@@ -102,6 +104,8 @@ class _RouteStatusPeerClient:
                     )
 
                     grant = kwargs["grant"]
+                    if self._before_admission is not None:
+                        self._before_admission(grant)
                     if room_grant_needs_dispatch_refresh(grant):
                         checked = HostedMemberDispatch.from_mapping(kwargs["dispatch"])
                         capability_digest = checked.capability_digest
@@ -192,6 +196,8 @@ class _RouteStatusPeerClient:
                                     raise
                                 kwargs = {**kwargs, "grant": replacement}
                                 observed_grant = replacement
+                    if self._before_admission is not None:
+                        self._before_admission(kwargs["grant"])
             try:
                 result = value(*args, **kwargs)
             except Exception as exc:

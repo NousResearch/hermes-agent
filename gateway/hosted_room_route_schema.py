@@ -35,6 +35,14 @@ def initialize_route_schema(conn: sqlite3.Connection) -> None:
     peer_reservation_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(hosted_room_peer_reservations)")
     }
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS hosted_room_revoked_grant_tokens (
+            scope_key TEXT NOT NULL,
+            token_sha256 TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            PRIMARY KEY (scope_key, token_sha256)
+        )"""
+    )
     if "mutation_id" not in peer_reservation_columns:
         conn.execute(
             "ALTER TABLE hosted_room_peer_reservations "
@@ -107,6 +115,7 @@ def route_schema_is_current(conn: sqlite3.Connection) -> bool:
     tables = {
         "hosted_room_disband_fences": {"room_id", "authority_gateway_id", "authority_epoch", "started_at", "revocation_complete_at"},
         "hosted_room_revoked_grant_ids": {"scope_key", "grant_id", "expires_at"},
+        "hosted_room_revoked_grant_tokens": {"scope_key", "token_sha256", "expires_at"},
         "hosted_room_peer_reservations": {"mutation_id"},
     }
     triggers = {

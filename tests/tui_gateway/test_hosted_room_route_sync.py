@@ -77,6 +77,9 @@ class _FakePeerClient:
         self.revoked.append(kwargs["grant"])
         return {"revoked": True}
 
+    def revoke_grant_exact(self, **kwargs):
+        return {"revoked": True}
+
 
 class _RefreshingPeerClient(_FakePeerClient):
     def __init__(self, replacement: str) -> None:

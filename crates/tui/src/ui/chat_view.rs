@@ -468,8 +468,9 @@ fn emit_span(
 
 fn push_user(lines: &mut Vec<Line<'static>>, text: &str, time: &str, col_width: usize) {
     let bg = Style::default().bg(Theme::bg_surface());
-    let time_w = time.width() + 2;
-    let inner = col_width.saturating_sub(2 + time_w).max(8);
+    let inner = col_width
+        .saturating_sub(super::rhythm::GUTTER + 1 + time.width() + super::rhythm::GUTTER)
+        .max(8);
     let chunks = wrap_all(text, inner);
     for (n, chunk) in chunks.iter().enumerate() {
         let left = vec![
@@ -549,7 +550,7 @@ fn push_reasoning(
     if !expanded && !msg.is_streaming {
         if let Some(last) = beats.last() {
             let room = col_width
-                .saturating_sub(header.width() + time.width() + 4)
+                .saturating_sub(header.width() + 1 + time.width() + super::rhythm::GUTTER)
                 .max(8);
             header.push_str("   ");
             header.push_str(&crate::tips::ellipsize(last, room));
@@ -881,12 +882,14 @@ fn tool_row(
 fn timed_line(mut left: Vec<Span<'static>>, time: &str, width: usize) -> Line<'static> {
     let left_w: usize = left.iter().map(|s| s.content.width()).sum();
     let time_w = time.width();
-    let pad = width.saturating_sub(left_w + time_w).max(1);
+    let right = super::rhythm::GUTTER;
+    let pad = width.saturating_sub(left_w + time_w + right).max(1);
     left.push(Span::raw(" ".repeat(pad)));
     left.push(Span::styled(
         time.to_string(),
         Style::default().fg(Theme::text_dim()),
     ));
+    left.push(Span::raw(super::rhythm::GUTTER_STR));
     Line::from(left)
 }
 
@@ -1039,6 +1042,20 @@ mod tests {
         assert!(blob.contains("cargo test --offline"));
         assert!(blob.contains("108 passed"));
         assert!(blob.contains('▾'));
+    }
+
+    #[test]
+    fn timed_line_right_gutter_matches_left() {
+        let line = timed_line(vec![Span::raw("  hello")], "9:41 AM", 40);
+        let widths: Vec<usize> = line.spans.iter().map(|s| s.content.width()).collect();
+        let total: usize = widths.iter().sum();
+        assert_eq!(total, 40);
+        assert_eq!(line.spans[0].content.as_ref(), "  hello");
+        assert_eq!(
+            line.spans.last().map(|s| s.content.as_ref()),
+            Some(crate::ui::rhythm::GUTTER_STR)
+        );
+        assert!(line.spans.iter().any(|s| s.content.as_ref() == "9:41 AM"));
     }
 
     #[test]

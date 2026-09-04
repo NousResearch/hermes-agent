@@ -8474,6 +8474,26 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
         return False
     if not _dispatch_via_service_manager_if_s6("start"):
         return False
+    # The supervised child owns the gateway from here; this process will
+    # never reach a GatewayRunner, so the startup-liveness watchdog armed
+    # by hermes_cli.main's argv fast-path (argv IS ``gateway run``) has
+    # no downstream disarm site. On the ``os.execvp("sleep", ...)`` path
+    # that is academic — the image swap takes the watchdog thread with
+    # it — but the #36208 fallback parks in ``_block_until_terminated``
+    # on ``signal.pause()`` with ~zero CPU and no progress lease, which
+    # is precisely the parked-deadlock signature the watchdog exists to
+    # kill: it fires on schedule and ``os._exit(75)`` s the container's
+    # CMD process while the supervised gateway underneath is perfectly
+    # healthy (issue #102000 sibling class). Disarm at the handoff,
+    # before either heartbeat, so neither path can trip a false-positive
+    # startup-wedge kill. Never raises: watchdog helpers are best-effort
+    # here and the redirect must not be blocked by a stand-down glitch.
+    try:
+        from hermes_startup_watchdog import disarm_startup_watchdog
+
+        disarm_startup_watchdog()
+    except Exception:
+        logger.debug("Startup watchdog disarm at s6 handoff failed", exc_info=True)
     # Loud breadcrumb: explain the upgrade and how to opt out. Print to
     # stderr so it doesn't pollute stdout-parsing scripts. The
     # supervised gateway's own logs are routed by s6-log to both

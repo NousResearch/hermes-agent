@@ -154,3 +154,125 @@ def test_redirect_falls_back_when_sleep_missing(
 
 
 
+
+
+# =============================================================================
+# Startup-watchdog stand-down at the s6 handoff (issue #102000 sibling class).
+#
+# The argv fast-path in ``hermes_cli.main`` arms the OOF-298 startup-liveness
+# watchdog whenever argv carries the adjacent tokens ``gateway run`` — which
+# is precisely the invocation ``_maybe_redirect_run_to_s6_supervision``
+# intercepts. Once the redirect fires, this process never reaches a
+# ``GatewayRunner``, so the disarm site inside ``GatewayRunner.start()`` is
+# unreachable for the CMD process. Left armed, the #36208 fallback parks in
+# ``_block_until_terminated`` on ``signal.pause()`` with ~zero CPU and no
+# progress lease — the exact wedged-startup signature — and the watchdog
+# ``os._exit(75)``s the container's main process on schedule while the
+# supervised gateway underneath is perfectly healthy.
+# =============================================================================
+
+
+def _arm_for_redirect(monkeypatch: pytest.MonkeyPatch):
+    """Arm the real startup watchdog the way the argv fast-path does.
+
+    A long timeout keeps the deadline out of the test's way: what is
+    under test is the handle's state at handoff, not the timer.
+    """
+    import hermes_startup_watchdog as sw
+
+    monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG, raising=False)
+    monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG_TIMEOUT_S, raising=False)
+    sw._reset_for_tests()
+    handle = sw.arm_startup_watchdog(timeout_s=3600)
+    assert handle is not None and handle.is_alive()
+    return sw, handle
+
+
+def test_redirect_disarms_startup_watchdog_before_parking(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#102000 sibling class: the #36208 in-process heartbeat must not
+    park under an armed startup watchdog.
+
+    Reproduces the false-positive kill by arming the real watchdog with
+    the fast-path shape, then driving the redirect down the fallback
+    path and asserting the handle is disarmed *before* the parked
+    heartbeat runs. On the unfixed code the watchdog would still be
+    armed at parking time and would ``os._exit(75)`` the container.
+    """
+    from hermes_cli import gateway as gw
+
+    sw, handle = _arm_for_redirect(monkeypatch)
+    try:
+        _stub_s6(monkeypatch, on_s6=True)
+        monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+        def missing_sleep(file: str, args: list[str]) -> None:
+            raise FileNotFoundError(2, "No such file or directory", file)
+
+        monkeypatch.setattr("hermes_cli.gateway.os.execvp", missing_sleep)
+        disarmed_at_park: list[bool] = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway._block_until_terminated",
+            lambda: disarmed_at_park.append(handle.disarmed),
+        )
+
+        assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is True
+
+        assert disarmed_at_park == [True], (
+            "the CMD process parked forever with the startup watchdog "
+            "still armed — it would be hard-exited with code 75 (#102000 "
+            "sibling class)"
+        )
+        # Singleton is cleared, so a later arm site cannot revive this
+        # handle's deadline.
+        assert sw._handle is None
+        # Timer thread actually stands down rather than lingering.
+        handle.join(timeout=5)
+        assert not handle.is_alive()
+    finally:
+        sw._reset_for_tests()
+    capsys.readouterr()
+
+
+def test_redirect_disarms_startup_watchdog_before_exec(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same handoff on the normal ``sleep infinity`` exec path.
+
+    The exec replaces the process image (watchdog thread included), so
+    this arm is not a live hazard — but the disarm belongs to the
+    handoff, not to one of its two heartbeats. Pinning it here keeps a
+    future third heartbeat from silently inheriting the parked-process
+    bug.
+    """
+    from hermes_cli import gateway as gw
+
+    sw, handle = _arm_for_redirect(monkeypatch)
+    try:
+        _stub_s6(monkeypatch, on_s6=True)
+        monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+        disarmed_at_exec: list[bool] = []
+
+        def fake_execvp(file: str, args: list[str]) -> None:
+            disarmed_at_exec.append(handle.disarmed)
+            # Simulate the exec succeeding (would replace the process
+            # image on a real host); we can't actually exec inside a test.
+
+        monkeypatch.setattr("hermes_cli.gateway.os.execvp", fake_execvp)
+
+        assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is True
+        assert disarmed_at_exec == [True], (
+            "watchdog was still armed when execvp fired — a future "
+            "heartbeat that doesn't replace the process image would "
+            "inherit the #102000 sibling deadlock"
+        )
+        assert sw._handle is None
+    finally:
+        sw._reset_for_tests()
+    capsys.readouterr()

@@ -25,12 +25,21 @@ Pieces:
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 _log = logging.getLogger("hermes_cli.web_server")
+
+# One-shot fallback synthesis always decodes to this rate (matches the built-in
+# streamers' 24 kHz so the wire format — and the `ready` frame's output.sample_rate —
+# is identical whichever path serves a turn).
+_FALLBACK_SAMPLE_RATE = 24000
+# Split fallback PCM into ~32 KiB frames so a long sentence doesn't land as one
+# giant WS frame (matches the chunk-sized cadence of the streaming path).
+_FALLBACK_PCM_CHUNK_BYTES = 32 * 1024
 
 # ── DSP constants — mirror tools.voice_mode.full_duplex_listen exactly ──
 # Inbound audio is PCM16 mono @16 kHz (Whisper-native, matches voice_mode.SAMPLE_RATE);
@@ -309,3 +318,110 @@ def split_text_for_tts_stream(text: str, cap: int) -> list:
     if buf:
         pieces.append(buf)
     return pieces
+
+
+# ── converse synthesizer: one uniform "text -> int16 PCM" seam for both paths ──
+#
+# The converse loop needs a synthesizer that ALWAYS works, mirroring Hermes
+# Desktop: when the configured TTS provider has a chunked/streaming API we use it
+# (low latency, playback starts on sentence one); when it doesn't (edge, the
+# default), we fall back to one-shot synthesis of the whole sentence and transcode
+# the resulting audio file to raw int16 PCM server-side. Both expose the same
+# ``.sample_rate: int`` + ``.synth(text) -> Iterator[bytes]`` contract, so the
+# handler code is identical whichever path serves a turn.
+
+
+def _decode_audio_file_to_pcm16(path: str, target_rate: int = _FALLBACK_SAMPLE_RATE) -> bytes:
+    """Decode an audio file to raw little-endian int16 mono PCM at *target_rate*.
+
+    Uses PyAV to open/decode any container the one-shot providers emit (mp3, wav,
+    opus/ogg, …) and resample to s16/mono/*target_rate*. On any failure logs and
+    returns ``b""`` so a bad file degrades to "no audio", never an exception into
+    the synthesis thread.
+    """
+    try:
+        import av
+
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=target_rate)
+        out = bytearray()
+
+        def _emit(frame) -> None:
+            # PyAV 18: resample() returns a LIST of frames (may be empty).
+            for rs in resampler.resample(frame):
+                out.extend(bytes(rs.planes[0]))
+
+        with av.open(path) as container:
+            for frame in container.decode(audio=0):
+                _emit(frame)
+        _emit(None)  # flush the resampler's internal buffer
+        return bytes(out)
+    except Exception:  # noqa: BLE001 - a decode failure is "no audio", not a crash
+        _log.warning("converse fallback: failed to decode %s", path, exc_info=True)
+        return b""
+
+
+class _StreamingConverseSynth:
+    """Adapter over a streaming TTS provider (the low-latency path)."""
+
+    def __init__(self, streamer: Any) -> None:
+        self._streamer = streamer
+        self.sample_rate: int = streamer.sample_rate
+
+    def synth(self, text: str) -> Iterator[bytes]:
+        return self._streamer.stream(text)
+
+
+class _OneShotConverseSynth:
+    """One-shot fallback: synth to a temp file, transcode to int16 PCM, yield it.
+
+    Works with ANY provider (including edge, which has no chunked API): call the
+    sync ``text_to_speech_tool``, read the file it wrote, decode it to raw PCM at
+    the fixed converse rate, then unlink. A provider that reports failure or writes
+    no readable file yields nothing (the loop treats that as a silent turn).
+    """
+
+    sample_rate: int = _FALLBACK_SAMPLE_RATE
+
+    def synth(self, text: str) -> Iterator[bytes]:
+        from tools import tts_tool, voice_mode
+
+        result_json = tts_tool.text_to_speech_tool(text)
+        try:
+            result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        except Exception:  # noqa: BLE001
+            _log.debug("converse fallback: TTS envelope was not valid JSON")
+            return
+        if not isinstance(result, dict) or not result.get("success"):
+            _log.debug("converse fallback: TTS reported no audio (%s)",
+                       (result or {}).get("error") if isinstance(result, dict) else result)
+            return
+        file_path = result.get("file_path")
+        if not file_path:
+            _log.debug("converse fallback: TTS envelope had no file_path")
+            return
+        try:
+            pcm = _decode_audio_file_to_pcm16(file_path, self.sample_rate)
+        finally:
+            voice_mode._unlink_quietly(file_path)
+        for start in range(0, len(pcm), _FALLBACK_PCM_CHUNK_BYTES):
+            yield pcm[start:start + _FALLBACK_PCM_CHUNK_BYTES]
+
+
+def resolve_converse_synthesizer(tts_config: Dict) -> Any:
+    """Return a synthesizer for the converse loop — NEVER ``None``.
+
+    Prefers the configured streaming provider (low latency); falls back to one-shot
+    synthesis + server-side transcode when the provider has no chunked API. The
+    returned object always exposes ``.sample_rate: int`` and
+    ``.synth(text) -> Iterator[bytes]`` yielding int16 mono PCM.
+
+    The streaming provider is resolved via the MODULE attribute
+    (``tts_streaming.resolve_streaming_provider``) so a test's monkeypatch applies.
+    """
+    from tools import tts_streaming
+
+    streamer = tts_streaming.resolve_streaming_provider(tts_config)
+    if streamer is not None:
+        return _StreamingConverseSynth(streamer)
+    return _OneShotConverseSynth()

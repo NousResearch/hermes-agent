@@ -17,6 +17,7 @@ with 401; a bad/absent first-message auth closes 4401).
 """
 
 import json
+import wave
 
 import numpy as np
 import pytest
@@ -145,6 +146,78 @@ async def test_subprotocol_key_accept_full_turn(monkeypatch):
             # The accepted socket selects ONLY the base protocol — the key is not echoed.
             assert ws.protocol == VOICE_PROTOCOL
             await _drive_full_turn(ws, streamer)
+        finally:
+            await ws.send_str(json.dumps({"stop": True}))
+            await ws.close()
+
+
+def _write_tone_wav(path, *, rate=24000, ms=40, freq=440.0):
+    """Write a tiny mono s16 WAV — stands in for a one-shot TTS output file."""
+    n = int(rate * ms / 1000)
+    t = np.arange(n, dtype=np.float64) / rate
+    samples = (np.sin(2 * np.pi * freq * t) * 12000).astype(np.int16)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(samples.tobytes())
+
+
+@pytest.mark.asyncio
+async def test_no_streaming_provider_uses_one_shot_fallback(monkeypatch, tmp_path):
+    # No chunked API (edge): the converse loop falls back to one-shot synthesis +
+    # server-side transcode instead of erroring. The client still gets ready + PCM.
+    adapter = _adapter()
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: None)
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {})
+    monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")
+    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
+
+    src = tmp_path / "reply.wav"
+    _write_tone_wav(src)
+    call = {"n": 0}
+
+    def _fake_tts(text, *a, **k):
+        call["n"] += 1
+        dst = tmp_path / f"reply-{call['n']}.wav"
+        dst.write_bytes(src.read_bytes())
+        return json.dumps({"success": True, "file_path": str(dst)})
+
+    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", _fake_tts)
+
+    seen = {"n": 0}
+
+    def _fake_transcribe(wav_path, model=None):
+        seen["n"] += 1
+        return {"success": True, "transcript": "hello there" if seen["n"] == 1 else ""}
+
+    monkeypatch.setattr("tools.voice_mode.transcribe_recording", _fake_transcribe)
+    _patch_run_agent(adapter, monkeypatch, deltas=("Sure ", "thing.",))
+
+    async with TestClient(TestServer(_app(adapter))) as client:
+        ws = await client.ws_connect(
+            "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            ready = await ws.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["output"] == {"sample_rate": 24000, "format": "pcm16"}
+
+            for frame in _speech_then_silence_pcm():
+                await ws.send_bytes(frame)
+
+            pcm: list[bytes] = []
+            while True:
+                msg = await ws.receive()
+                if msg.type == web.WSMsgType.BINARY:
+                    pcm.append(msg.data)
+                    continue
+                if msg.type == web.WSMsgType.TEXT:
+                    if json.loads(msg.data)["type"] == "turn_done":
+                        break
+                    continue
+                if msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED, web.WSMsgType.ERROR):
+                    break
+            assert pcm and b"".join(pcm)  # fallback produced transcoded PCM
         finally:
             await ws.send_str(json.dumps({"stop": True}))
             await ws.close()

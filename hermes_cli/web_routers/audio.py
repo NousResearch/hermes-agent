@@ -540,37 +540,34 @@ async def converse_ws(ws: "WebSocket") -> None:
 
     def _resolve():
         import numpy as np
-        from tools.tts_streaming import resolve_streaming_provider
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
+        from tools.voice_converse_loop import resolve_converse_synthesizer
         from hermes_cli.web_routers._converse_loop import ConverseSession, create_voice_session
 
         stt_model = _converse_stt_model(profile)
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
-            streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-        if streamer is None:
-            return None, 0, None, None
+            # Always resolves a synthesizer (streaming when available, else the
+            # one-shot fallback) — works with any provider, incl. edge.
+            synth = resolve_converse_synthesizer(cfg)
+            cap = _resolve_max_text_length(_get_provider(cfg), cfg)
         session = ConverseSession(np, stt_model=stt_model)
         sid = create_voice_session()
-        return streamer, cap, session, sid
+        return synth, cap, session, sid
 
     try:
-        streamer, cap, session, sid = await loop.run_in_executor(None, _resolve)
+        synth, cap, session, sid = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("converse setup failed")
-        streamer, cap, session, sid = None, 0, None, None
-
-    if streamer is None or session is None:
         with contextlib.suppress(Exception):
-            await ws.send_json({"type": "error", "error": "no streaming TTS provider"})
+            await ws.send_json({"type": "error", "error": "converse setup failed"})
             await ws.close()
         return
 
     await ws.send_json({
         "type": "ready",
         "input": {"sample_rate": 16000, "format": "pcm16", "block_ms": 30},
-        "output": {"sample_rate": streamer.sample_rate, "format": "pcm16"},
+        "output": {"sample_rate": synth.sample_rate, "format": "pcm16"},
     })
 
     session.start()
@@ -668,7 +665,7 @@ async def converse_ws(ws: "WebSocket") -> None:
                         if not cleaned:
                             continue
                         for piece in _split_text_for_speak_stream(cleaned, cap):
-                            for chunk in streamer.stream(piece):
+                            for chunk in synth.synth(piece):
                                 if tts_stop.is_set() or session.stopped:
                                     return
                                 loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)

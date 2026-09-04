@@ -125,25 +125,24 @@ def _converse_stt_model(self, profile: Optional[str]) -> Optional[str]:
 
 
 def _resolve_converse_session(self, profile: Optional[str]):
-    """Resolve ``(streamer, cap, session)`` under the profile scope, or ``(None, 0, None)``.
+    """Resolve ``(synth, cap, session)`` under the profile scope.
 
-    Blocking config/provider resolution — runs off the event loop. ``streamer`` is
-    the streaming TTS provider, ``cap`` its per-request max text length, ``session``
-    a fresh :class:`~tools.voice_converse_loop.ConverseSession`.
+    Blocking config/provider resolution — runs off the event loop. ``synth`` is a
+    converse synthesizer (streaming when the provider has a chunked API, else the
+    one-shot fallback — NEVER ``None``, so any provider incl. edge works), ``cap``
+    its per-request max text length, ``session`` a fresh
+    :class:`~tools.voice_converse_loop.ConverseSession`.
     """
     import numpy as np
-    from tools.tts_streaming import resolve_streaming_provider
     from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
-    from tools.voice_converse_loop import ConverseSession
+    from tools.voice_converse_loop import ConverseSession, resolve_converse_synthesizer
 
     stt_model = _converse_stt_model(self, profile)
     with self._profile_scope(profile):
         cfg = _load_tts_config()
-        streamer = resolve_streaming_provider(cfg)
-        cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-    if streamer is None:
-        return None, 0, None
-    return streamer, cap, ConverseSession(np, stt_model=stt_model)
+        synth = resolve_converse_synthesizer(cfg)
+        cap = _resolve_max_text_length(_get_provider(cfg), cfg)
+    return synth, cap, ConverseSession(np, stt_model=stt_model)
 
 
 async def _await_first_message_auth(ws: "web.WebSocketResponse", expected_key: str) -> bool:
@@ -210,22 +209,19 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
 
     loop = asyncio.get_running_loop()
     try:
-        streamer, cap, session = await loop.run_in_executor(
+        synth, cap, session = await loop.run_in_executor(
             None, lambda: _resolve_converse_session(self, profile))
     except Exception:
         logger.exception("converse setup failed")
-        streamer, cap, session = None, 0, None
-
-    if streamer is None or session is None:
         with contextlib.suppress(Exception):
-            await ws.send_json({"type": "error", "error": "no streaming TTS provider"})
+            await ws.send_json({"type": "error", "error": "converse setup failed"})
             await ws.close()
         return ws
 
     await ws.send_json({
         "type": "ready",
         "input": {"sample_rate": 16000, "format": "pcm16", "block_ms": 30},
-        "output": {"sample_rate": streamer.sample_rate, "format": "pcm16"},
+        "output": {"sample_rate": synth.sample_rate, "format": "pcm16"},
     })
 
     session.start()
@@ -338,7 +334,7 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
                         if not cleaned:
                             continue
                         for piece in split_text_for_tts_stream(cleaned, cap):
-                            for chunk in streamer.stream(piece):
+                            for chunk in synth.synth(piece):
                                 if tts_stop.is_set() or session.stopped:
                                     return
                                 loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)

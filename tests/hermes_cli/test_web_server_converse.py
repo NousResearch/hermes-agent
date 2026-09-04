@@ -7,6 +7,7 @@ the streaming TTS provider are all monkeypatched.
 from __future__ import annotations
 
 import json
+import wave
 from urllib.parse import urlencode
 
 import numpy as np
@@ -101,15 +102,77 @@ def test_unauthorized_connect_closes_4401(converse_client, monkeypatch):
             conn.receive_json()
 
 
-def test_no_streaming_provider_errors_and_closes(converse_client, monkeypatch):
+def _write_tone_wav(path, *, rate=24000, ms=40, freq=440.0):
+    """Write a tiny mono s16 WAV (a short tone) — stands in for a one-shot TTS file."""
+    n = int(rate * ms / 1000)
+    t = np.arange(n, dtype=np.float64) / rate
+    samples = (np.sin(2 * np.pi * freq * t) * 12000).astype(np.int16)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(samples.tobytes())
+
+
+def test_no_streaming_provider_uses_one_shot_fallback(converse_client, monkeypatch, tmp_path):
+    # No chunked API (e.g. edge): the converse loop must fall back to one-shot
+    # synthesis + server-side transcode, NOT error out. The client still gets a
+    # `ready` frame, PCM bytes, and turn_done.
     monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: None)
     monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {})
     monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")
-    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 0)
+    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
+
+    wav = tmp_path / "reply.wav"
+    _write_tone_wav(wav)
+    # A fresh copy per call so the fallback's unlink can't starve a later sentence.
+    call = {"n": 0}
+
+    def _fake_tts(text, *a, **k):
+        call["n"] += 1
+        dst = tmp_path / f"reply-{call['n']}.wav"
+        dst.write_bytes(wav.read_bytes())
+        return json.dumps({"success": True, "file_path": str(dst)})
+
+    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", _fake_tts)
+
+    import hermes_cli.web_routers._converse_loop as cl
+
+    seen = {"n": 0}
+
+    def _fake_transcribe(wav_path, model=None):
+        seen["n"] += 1
+        return {"success": True, "transcript": "hello there" if seen["n"] == 1 else ""}
+
+    monkeypatch.setattr("tools.voice_mode.transcribe_recording", _fake_transcribe)
+    monkeypatch.setattr(cl, "create_voice_session", lambda model=None: "voice-sid")
+
+    def _fake_run_turn(session_id, text, on_delta, *, interrupted=False, timeout=300.0):
+        on_delta("Sure thing.")
+        return None
+
+    monkeypatch.setattr(cl, "run_voice_turn", _fake_run_turn)
 
     with converse_client.websocket_connect(_url()) as conn:
-        msg = conn.receive_json()
-    assert msg == {"type": "error", "error": "no streaming TTS provider"}
+        ready = conn.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["output"] == {"sample_rate": 24000, "format": "pcm16"}
+
+        for frame in _speech_then_silence_pcm():
+            conn.send_bytes(frame)
+
+        pcm = []
+        while True:
+            msg = conn.receive()
+            if msg.get("bytes") is not None:
+                pcm.append(msg["bytes"])
+                continue
+            if json.loads(msg["text"])["type"] == "turn_done":
+                break
+        conn.send_text(json.dumps({"stop": True}))
+
+    assert pcm  # the fallback produced transcoded PCM
+    assert b"".join(pcm)  # non-empty audio
 
 
 def test_full_turn_transcript_and_pcm(converse_client, monkeypatch):

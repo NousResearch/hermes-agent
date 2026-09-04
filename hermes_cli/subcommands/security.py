@@ -41,7 +41,11 @@ def build_security_parser(subparsers, *, cmd_security: Callable) -> None:
         "--fail-on",
         default="critical",
         choices=["low", "moderate", "high", "critical"],
-        help="Exit non-zero when any finding meets this severity (default: critical)",
+        help=(
+            "Exit non-zero when any finding on an importable component meets "
+            "this severity (default: critical). Shadowed durable lazy-target "
+            "copies are reported but do not trip the threshold."
+        ),
     )
     audit_parser.add_argument(
         "--skip-venv",

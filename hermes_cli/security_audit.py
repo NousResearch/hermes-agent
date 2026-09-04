@@ -4,6 +4,10 @@ Scans three surfaces a Hermes user actually controls and we can map to
 upstream advisories without auth or extra binaries:
 
 1. The Hermes venv (every PyPI dist via ``importlib.metadata``).
+   Durable lazy-install copies (``HERMES_LAZY_INSTALL_TARGET``) are
+   classified separately: the importable copy is the effective
+   component; a shadowed lazy copy is ``lazy-shadowed`` and does not
+   trip ``--fail-on``.
 2. Python deps declared by user-installed plugins under ``~/.hermes/plugins``
    (``requirements.txt`` + ``pyproject.toml`` best-effort pin extraction).
 3. MCP servers wired in ``config.yaml`` whose ``command/args`` look like
@@ -22,13 +26,14 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import re
 import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 from hermes_constants import get_hermes_home
 
@@ -61,7 +66,7 @@ class Component:
     name: str
     version: str
     ecosystem: str  # "PyPI" | "npm" — exactly as OSV expects
-    source: str    # human-readable origin, e.g. "venv", "plugin:foo", "mcp:bar"
+    source: str    # "venv" | "lazy" | "lazy-shadowed" | "plugin:foo" | "mcp:bar"
 
 
 @dataclass
@@ -81,13 +86,108 @@ class Finding:
 # ─── Component discovery ──────────────────────────────────────────────────────
 
 
-def _discover_venv() -> list[Component]:
-    """Every dist installed in the running Python's import path."""
-    from importlib.metadata import distributions
+# Source labels for installed PyPI dists. ``venv`` is the sealed/core
+# environment (anything not under the durable lazy target). ``lazy`` is a
+# dist that lives in HERMES_LAZY_INSTALL_TARGET *and* would actually be
+# imported (no earlier sys.path collision). ``lazy-shadowed`` is a stale
+# copy in that target that cannot win imports because the target is
+# append-only on sys.path — reported for cleanup, ignored by --fail-on.
+SOURCE_VENV = "venv"
+SOURCE_LAZY = "lazy"
+SOURCE_LAZY_SHADOWED = "lazy-shadowed"
 
-    out: list[Component] = []
-    seen: set[tuple[str, str]] = set()
-    for dist in distributions():
+# Matches tools.lazy_deps._LAZY_TARGET_ENV. Read here directly so the
+# audit module does not import the lazy-install machinery.
+_LAZY_TARGET_ENV = "HERMES_LAZY_INSTALL_TARGET"
+
+
+def _lazy_install_target_path() -> Optional[Path]:
+    raw = os.environ.get(_LAZY_TARGET_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).resolve()
+    except OSError:
+        return Path(raw)
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    """True if ``path`` is ``root`` or a descendant, after resolving."""
+    try:
+        resolved_path = path.resolve()
+        resolved_root = root.resolve()
+    except OSError:
+        resolved_path, resolved_root = path, root
+    if resolved_path == resolved_root:
+        return True
+    try:
+        return resolved_path.is_relative_to(resolved_root)
+    except (ValueError, TypeError):
+        return False
+
+
+def _dist_install_root(dist) -> Optional[Path]:
+    """sys.path entry that owns this distribution (parent of dist-info)."""
+    try:
+        located = dist.locate_file("")
+        if located is not None:
+            return Path(str(located)).resolve()
+    except Exception:
+        pass
+    path_attr = getattr(dist, "_path", None)
+    if path_attr is None:
+        return None
+    try:
+        p = Path(path_attr)
+        name = p.name
+        if name.endswith(".dist-info") or name.endswith(".egg-info"):
+            p = p.parent
+        return p.resolve()
+    except Exception:
+        return None
+
+
+def _path_rank(install_root: Optional[Path], search_path: Sequence[str]) -> int:
+    """Lower rank = earlier on sys.path = wins imports. Missing → last."""
+    if install_root is None:
+        return len(search_path)
+    try:
+        resolved = install_root.resolve()
+    except OSError:
+        resolved = install_root
+    for i, entry in enumerate(search_path):
+        if not entry:
+            continue
+        try:
+            entry_path = Path(entry).resolve()
+        except OSError:
+            continue
+        if resolved == entry_path or _is_under(resolved, entry_path):
+            return i
+    return len(search_path)
+
+
+def _fail_on_applies(source: str) -> bool:
+    """Shadowed durable-target copies cannot be imported; they don't fail the audit."""
+    return source != SOURCE_LAZY_SHADOWED
+
+
+def _classify_installed_distributions(
+    dists: Iterable,
+    *,
+    search_path: Sequence[str],
+    lazy_target: Optional[Path],
+) -> list[Component]:
+    """Turn raw distributions into Components using path + import precedence.
+
+    For each normalized package name the copy whose install root appears
+    earliest on ``search_path`` is the effective/runtime version. A later
+    copy under ``lazy_target`` is kept as ``lazy-shadowed`` (different
+    version only — same-version dupes are dropped). Other non-winning
+    copies are skipped so they cannot be mislabeled as active ``venv``.
+    """
+    candidates: list[tuple[int, str, Component]] = []
+    for dist in dists:
         try:
             name = (dist.metadata["Name"] or "").strip()
         except Exception:
@@ -95,12 +195,71 @@ def _discover_venv() -> list[Component]:
         version = (dist.version or "").strip()
         if not name or not version:
             continue
-        key = (name.lower(), version)
-        if key in seen:
+        root = _dist_install_root(dist)
+        if lazy_target is not None and root is not None and _is_under(root, lazy_target):
+            source = SOURCE_LAZY
+        else:
+            source = SOURCE_VENV
+        rank = _path_rank(root, search_path)
+        candidates.append((rank, name.lower(), Component(
+            name=name, version=version, ecosystem="PyPI", source=source,
+        )))
+
+    best_rank: dict[str, int] = {}
+    for rank, nkey, _comp in candidates:
+        prev = best_rank.get(nkey)
+        if prev is None or rank < prev:
+            best_rank[nkey] = rank
+
+    # Process earlier-on-sys.path first so the effective copy of a given
+    # (name, version) is recorded before a shadowed duplicate is considered.
+    candidates.sort(key=lambda item: item[0])
+
+    out: list[Component] = []
+    seen_effective: set[tuple[str, str]] = set()
+    seen_shadowed: set[tuple[str, str]] = set()
+    for rank, nkey, comp in candidates:
+        source = comp.source
+        if source == SOURCE_LAZY and rank > best_rank[nkey]:
+            source = SOURCE_LAZY_SHADOWED
+        elif source == SOURCE_VENV and rank > best_rank[nkey]:
+            # A non-lazy copy that loses import precedence is not the
+            # running package; don't label it ``venv``.
             continue
-        seen.add(key)
-        out.append(Component(name=name, version=version, ecosystem="PyPI", source="venv"))
+        nv = (nkey, comp.version)
+        if source == SOURCE_LAZY_SHADOWED:
+            if nv in seen_effective or nv in seen_shadowed:
+                continue
+            seen_shadowed.add(nv)
+        else:
+            if nv in seen_effective:
+                continue
+            seen_effective.add(nv)
+        if source != comp.source:
+            comp = Component(
+                name=comp.name,
+                version=comp.version,
+                ecosystem=comp.ecosystem,
+                source=source,
+            )
+        out.append(comp)
     return out
+
+
+def _discover_venv() -> list[Component]:
+    """Every dist on the running Python's import path, classified by origin.
+
+    The durable lazy-install target is appended at the end of ``sys.path``,
+    so a stale copy there cannot shadow the sealed venv. That copy is
+    reported as ``lazy-shadowed`` rather than ``venv``.
+    """
+    from importlib.metadata import distributions
+
+    return _classify_installed_distributions(
+        distributions(),
+        search_path=sys.path,
+        lazy_target=_lazy_install_target_path(),
+    )
 
 
 # requirements.txt line: drop comments, environment markers, options, extras
@@ -581,9 +740,14 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
     else:
         print(_render_human(findings, total))
 
-    # Exit code: 1 iff any finding meets or exceeds the --fail-on threshold.
+    # Exit code: 1 iff any *importable* finding meets or exceeds --fail-on.
+    # Shadowed lazy-target copies are reported in the output but cannot be
+    # imported (append-only sys.path), so they must not keep the audit red
+    # after the sealed venv is already patched.
     threshold = SEVERITY_ORDER[fail_on]
     for f in findings:
+        if not _fail_on_applies(f.component.source):
+            continue
         if SEVERITY_ORDER.get(f.vuln.severity, 0) >= threshold:
             return 1
     return 0

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from importlib.metadata import PathDistribution
 
 from hermes_cli import security_audit as sa
 
@@ -214,3 +215,275 @@ class TestExitCodes:
         assert data["finding_count"] == 1
         assert data["findings"][0]["severity"] == "HIGH"
         assert data["findings"][0]["fixed_versions"] == ["1.1"]
+
+    def test_fail_on_high_ignores_shadowed_lazy_finding(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Stale lazy-target aiohttp must not keep --fail-on high red.
+
+        Regression for #92549: the sealed venv is already patched (3.14.3)
+        while HERMES_LAZY_INSTALL_TARGET still holds 3.14.1. The shadowed
+        copy is reported, but the exit code follows the importable version.
+        """
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        venv_comp = sa.Component(
+            name="aiohttp", version="3.14.3", ecosystem="PyPI", source=sa.SOURCE_VENV
+        )
+        shadowed = sa.Component(
+            name="aiohttp",
+            version="3.14.1",
+            ecosystem="PyPI",
+            source=sa.SOURCE_LAZY_SHADOWED,
+        )
+        monkeypatch.setattr(sa, "_discover_venv", lambda: [venv_comp, shadowed])
+
+        def fake_batch(comps):
+            out = {}
+            for c in comps:
+                if c.version == "3.14.1":
+                    out[c] = ["GHSA-cq5v-8q36-5273"]
+            return out
+
+        monkeypatch.setattr(sa, "_osv_query_batch", fake_batch)
+        monkeypatch.setattr(
+            sa,
+            "_osv_fetch_details",
+            lambda ids: {
+                "GHSA-cq5v-8q36-5273": sa.Vulnerability(
+                    osv_id="GHSA-cq5v-8q36-5273",
+                    severity="HIGH",
+                    summary="stale lazy copy",
+                    fixed_versions=["3.14.3"],
+                )
+            },
+        )
+        code = sa.cmd_security_audit(
+            self._build_args(skip_venv=False, json=True, fail_on="high")
+        )
+        payload = capsys.readouterr().out
+        lines = payload.splitlines()
+        json_start = next(i for i, l in enumerate(lines) if l.startswith("{"))
+        data = json.loads("\n".join(lines[json_start:]))
+        assert code == 0
+        assert data["finding_count"] == 1
+        assert data["findings"][0]["source"] == sa.SOURCE_LAZY_SHADOWED
+        assert data["findings"][0]["version"] == "3.14.1"
+
+    def test_fail_on_high_still_trips_on_effective_venv(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """A vuln in the imported venv copy must still fail the audit."""
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        venv_comp = sa.Component(
+            name="aiohttp", version="3.14.1", ecosystem="PyPI", source=sa.SOURCE_VENV
+        )
+        shadowed = sa.Component(
+            name="aiohttp",
+            version="3.14.3",
+            ecosystem="PyPI",
+            source=sa.SOURCE_LAZY_SHADOWED,
+        )
+        monkeypatch.setattr(sa, "_discover_venv", lambda: [venv_comp, shadowed])
+
+        def fake_batch(comps):
+            out = {}
+            for c in comps:
+                if c.version == "3.14.1":
+                    out[c] = ["GHSA-cq5v-8q36-5273"]
+            return out
+
+        monkeypatch.setattr(sa, "_osv_query_batch", fake_batch)
+        monkeypatch.setattr(
+            sa,
+            "_osv_fetch_details",
+            lambda ids: {
+                "GHSA-cq5v-8q36-5273": sa.Vulnerability(
+                    osv_id="GHSA-cq5v-8q36-5273",
+                    severity="HIGH",
+                    summary="imported copy is vulnerable",
+                    fixed_versions=["3.14.3"],
+                )
+            },
+        )
+        code = sa.cmd_security_audit(
+            self._build_args(skip_venv=False, json=True, fail_on="high")
+        )
+        payload = capsys.readouterr().out
+        lines = payload.splitlines()
+        json_start = next(i for i, l in enumerate(lines) if l.startswith("{"))
+        data = json.loads("\n".join(lines[json_start:]))
+        assert code == 1
+        assert data["findings"][0]["source"] == sa.SOURCE_VENV
+        assert data["findings"][0]["version"] == "3.14.1"
+
+    def test_fail_on_high_trips_on_effective_lazy_only_package(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """A package imported only from the lazy target is still fail-on surface."""
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        lazy_comp = sa.Component(
+            name="honcho-ai", version="0.1.0", ecosystem="PyPI", source=sa.SOURCE_LAZY
+        )
+        monkeypatch.setattr(sa, "_discover_venv", lambda: [lazy_comp])
+        monkeypatch.setattr(
+            sa, "_osv_query_batch", lambda comps: {lazy_comp: ["GHSA-lazy-1"]}
+        )
+        monkeypatch.setattr(
+            sa,
+            "_osv_fetch_details",
+            lambda ids: {
+                "GHSA-lazy-1": sa.Vulnerability(
+                    osv_id="GHSA-lazy-1",
+                    severity="HIGH",
+                    summary="imported from lazy target",
+                    fixed_versions=["0.2.0"],
+                )
+            },
+        )
+        code = sa.cmd_security_audit(
+            self._build_args(skip_venv=False, json=True, fail_on="high")
+        )
+        capsys.readouterr()
+        assert code == 1
+
+
+# ─── Venv vs durable lazy-target classification ───────────────────────────────
+
+
+def _write_distinfo(site_dir: Path, name: str, version: str) -> PathDistribution:
+    """Create a minimal dist-info tree and return a real PathDistribution."""
+    info = site_dir / f"{name}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+    return PathDistribution(info)
+
+
+class TestVenvLazyClassification:
+    def test_shadowed_lazy_aiohttp_is_not_labeled_venv(self, tmp_path: Path):
+        """Sealed venv 3.14.3 wins; stale lazy 3.14.1 is lazy-shadowed.
+
+        Mirrors the Docker durable-target layout from #92549:
+        HERMES_LAZY_INSTALL_TARGET is appended on sys.path, so the venv
+        copy is the one ``import aiohttp`` would load.
+        """
+        venv_site = tmp_path / "venv" / "lib" / "python3.13" / "site-packages"
+        lazy = tmp_path / "lazy-packages"
+        venv_dist = _write_distinfo(venv_site, "aiohttp", "3.14.3")
+        lazy_dist = _write_distinfo(lazy, "aiohttp", "3.14.1")
+        # venv first, lazy last — the durable-target contract.
+        search_path = [str(venv_site), str(lazy)]
+
+        components = sa._classify_installed_distributions(
+            [venv_dist, lazy_dist],
+            search_path=search_path,
+            lazy_target=lazy,
+        )
+        by_source = {(c.source, c.version): c for c in components if c.name.lower() == "aiohttp"}
+        assert (sa.SOURCE_VENV, "3.14.3") in by_source
+        assert (sa.SOURCE_LAZY_SHADOWED, "3.14.1") in by_source
+        assert all(c.source != sa.SOURCE_VENV or c.version != "3.14.1" for c in components)
+
+    def test_lazy_only_package_is_effective_lazy(self, tmp_path: Path):
+        """A package that exists only in the lazy target *is* imported."""
+        venv_site = tmp_path / "venv" / "site-packages"
+        lazy = tmp_path / "lazy-packages"
+        venv_site.mkdir(parents=True)
+        lazy_dist = _write_distinfo(lazy, "honcho-ai", "1.2.0")
+        components = sa._classify_installed_distributions(
+            [lazy_dist],
+            search_path=[str(venv_site), str(lazy)],
+            lazy_target=lazy,
+        )
+        assert len(components) == 1
+        assert components[0].name == "honcho-ai"
+        assert components[0].version == "1.2.0"
+        assert components[0].source == sa.SOURCE_LAZY
+
+    def test_without_lazy_target_env_everything_stays_venv(self, tmp_path: Path):
+        venv_site = tmp_path / "venv" / "site-packages"
+        other = tmp_path / "other"
+        venv_dist = _write_distinfo(venv_site, "aiohttp", "3.14.3")
+        other_dist = _write_distinfo(other, "aiohttp", "3.14.1")
+        components = sa._classify_installed_distributions(
+            [venv_dist, other_dist],
+            search_path=[str(venv_site), str(other)],
+            lazy_target=None,
+        )
+        # Import-path precedence still drops the losing copy so it cannot
+        # be labeled as an extra active venv version.
+        aio = [c for c in components if c.name.lower() == "aiohttp"]
+        assert len(aio) == 1
+        assert aio[0].version == "3.14.3"
+        assert aio[0].source == sa.SOURCE_VENV
+
+    def test_same_version_in_lazy_is_not_duplicated(self, tmp_path: Path):
+        venv_site = tmp_path / "venv" / "site-packages"
+        lazy = tmp_path / "lazy-packages"
+        venv_dist = _write_distinfo(venv_site, "aiohttp", "3.14.3")
+        lazy_dist = _write_distinfo(lazy, "aiohttp", "3.14.3")
+        components = sa._classify_installed_distributions(
+            [venv_dist, lazy_dist],
+            search_path=[str(venv_site), str(lazy)],
+            lazy_target=lazy,
+        )
+        aio = [c for c in components if c.name.lower() == "aiohttp"]
+        assert len(aio) == 1
+        assert aio[0].source == sa.SOURCE_VENV
+        assert aio[0].version == "3.14.3"
+
+    def test_inverted_path_reports_imported_lazy_copy(self, tmp_path: Path):
+        """If lazy precedes venv on sys.path, that copy is the imported one."""
+        venv_site = tmp_path / "venv" / "site-packages"
+        lazy = tmp_path / "lazy-packages"
+        venv_dist = _write_distinfo(venv_site, "aiohttp", "3.14.3")
+        lazy_dist = _write_distinfo(lazy, "aiohttp", "3.14.1")
+        components = sa._classify_installed_distributions(
+            [venv_dist, lazy_dist],
+            search_path=[str(lazy), str(venv_site)],
+            lazy_target=lazy,
+        )
+        aio = [c for c in components if c.name.lower() == "aiohttp"]
+        assert len(aio) == 1
+        assert aio[0].source == sa.SOURCE_LAZY
+        assert aio[0].version == "3.14.1"
+
+    def test_discover_venv_honors_lazy_target_env(self, tmp_path: Path, monkeypatch):
+        """Wire-up: env var + distributions() + classification."""
+        venv_site = tmp_path / "venv" / "site-packages"
+        lazy = tmp_path / "lazy-packages"
+        venv_dist = _write_distinfo(venv_site, "aiohttp", "3.14.3")
+        lazy_dist = _write_distinfo(lazy, "aiohttp", "3.14.1")
+        monkeypatch.setenv("HERMES_LAZY_INSTALL_TARGET", str(lazy))
+        import importlib.metadata as md
+
+        monkeypatch.setattr(md, "distributions", lambda: [venv_dist, lazy_dist])
+        captured: dict = {}
+        real_classify = sa._classify_installed_distributions
+
+        def fake_classify(dists, *, search_path, lazy_target):
+            captured["lazy_target"] = lazy_target
+            captured["n_dists"] = sum(1 for _ in dists)
+            # Hermetic search_path so this test does not mutate process sys.path.
+            return real_classify(
+                [venv_dist, lazy_dist],
+                search_path=[str(venv_site), str(lazy)],
+                lazy_target=lazy_target,
+            )
+
+        monkeypatch.setattr(sa, "_classify_installed_distributions", fake_classify)
+        components = sa._discover_venv()
+        assert captured["lazy_target"] == lazy.resolve()
+        assert captured["n_dists"] == 2
+        sources = {(c.source, c.version) for c in components if c.name.lower() == "aiohttp"}
+        assert (sa.SOURCE_VENV, "3.14.3") in sources
+        assert (sa.SOURCE_LAZY_SHADOWED, "3.14.1") in sources
+
+    def test_fail_on_applies_to_importable_sources_only(self):
+        assert sa._fail_on_applies(sa.SOURCE_VENV)
+        assert sa._fail_on_applies(sa.SOURCE_LAZY)
+        assert sa._fail_on_applies("plugin:foo")
+        assert sa._fail_on_applies("mcp:bar")
+        assert not sa._fail_on_applies(sa.SOURCE_LAZY_SHADOWED)

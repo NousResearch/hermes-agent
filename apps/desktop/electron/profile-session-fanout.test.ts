@@ -14,8 +14,17 @@ import { fetchRegistrySessionRows, fetchRemoteProfileSessions } from './profile-
 
 test('remote registry fanout preserves valid rows when a sibling gateway times out', async () => {
   const calls: Array<{ descriptor: unknown; path: string }> = []
+  let markTimeoutStarted!: () => void
+  let releaseTimeout!: () => void
+  const timeoutStarted = new Promise<void>(resolve => {
+    markTimeoutStarted = resolve
+  })
+  const timeoutRelease = new Promise<void>(resolve => {
+    releaseTimeout = resolve
+  })
+  let liveStarted = false
 
-  const rows = await fetchRegistrySessionRows(
+  const rowsPromise = fetchRegistrySessionRows(
     [
       { connectionId: 'gw-timeout', kind: 'ssh', backends: [{ descriptor: 'timeout', profileLabel: 'slow' }] },
       { connectionId: 'gw-live', kind: 'ssh', backends: [{ descriptor: 'live', profileLabel: 'fast' }] }
@@ -25,13 +34,20 @@ test('remote registry fanout preserves valid rows when a sibling gateway times o
       calls.push({ descriptor, path })
 
       if (descriptor === 'timeout') {
-        await new Promise(resolve => setTimeout(resolve, 5))
+        markTimeoutStarted()
+        await timeoutRelease
         throw new Error('ETIMEDOUT')
       }
 
+      liveStarted = true
       return { sessions: [{ id: 'live-session' }], total: 1 }
     }
   )
+
+  await timeoutStarted
+  const fanoutOverlapped = liveStarted
+  releaseTimeout()
+  const rows = await rowsPromise
 
   assert.deepEqual(
     rows.map(row => ({
@@ -41,6 +57,7 @@ test('remote registry fanout preserves valid rows when a sibling gateway times o
     })),
     [{ id: 'live-session', connection_id: 'gw-live', profile: 'fast' }]
   )
+  assert.equal(fanoutOverlapped, true, 'live sibling must start before the timeout is released')
   assert.deepEqual(
     calls.map(call => call.descriptor),
     ['timeout', 'live']

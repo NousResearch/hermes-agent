@@ -372,6 +372,31 @@ async function driveAction(
 
     input.focus()
     await clickAt(input)
+
+    // Verify that DOM focus actually landed on an editable — if the click only
+    // mounted the editor (Jira ProseMirror, React async), DOM focus stays on
+    // body and every character becomes a page shortcut.
+    const probe = await runJson(
+      run,
+      `(function() {
+        var ae = document.activeElement;
+        var tag = ae ? ae.tagName : '';
+        var ok = tag === 'INPUT' || tag === 'TEXTAREA' || (ae && ae.isContentEditable === true);
+        return JSON.stringify({ focused: ok, tag: tag });
+      })()`
+    )
+
+    if (probe.kind === 'answered') {
+      const check = probe.result as { focused?: boolean; tag?: string }
+
+      if (!check.focused) {
+        return {
+          error: `The target is not focused (activeElement is ${check.tag || '?'}), so typing would be delivered as page shortcuts instead of text. Click the target again to ensure the editor is mounted, or locate a different element.`,
+          success: false
+        }
+      }
+    }
+
     // Select-all inside the now-focused field, so typing replaces what is there
     // the way it would for a person. NOT a triple-click: that is a pointer
     // gesture and selects the paragraph under the cursor whenever the target

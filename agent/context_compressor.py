@@ -1790,6 +1790,18 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
     def tail_token_budget(self, value: int) -> None:
         self._tail_token_budget = value
 
+    def recalibrate_tail_budget(self) -> None:
+        """Drop the cached tail budget so the mode-aware property re-derives it.
+
+        Runtime recalibration paths that change the threshold (e.g. the aux
+        compression-model threshold sync) must call this instead of writing
+        ``threshold_tokens * summary_target_ratio`` themselves: that legacy
+        formula is only one branch of the ``tail_token_budget`` property, and
+        caching it unconditionally overwrites the lean clamp while
+        ``tail_mode`` still claims "lean".
+        """
+        self._tail_token_budget = None
+
     @property
     def max_summary_tokens(self) -> int:
         if self._max_summary_tokens is None:

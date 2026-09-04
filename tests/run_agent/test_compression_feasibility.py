@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import ContextCompressor, LEAN_TAIL_CAP_TOKENS
 
 
 @pytest.fixture(autouse=True)
@@ -31,8 +31,16 @@ def _make_agent(
     compression_enabled: bool = True,
     threshold_percent: float = 0.50,
     main_context: int = 200_000,
+    tail_mode: str = "legacy",
+    real_compressor: bool = False,
 ) -> AIAgent:
-    """Build a minimal AIAgent with a compressor, skipping __init__."""
+    """Build a minimal AIAgent with a compressor, skipping __init__.
+
+    The default MagicMock compressor is enough for warning/message tests.
+    ``real_compressor=True`` builds a REAL ContextCompressor so the
+    mode-aware tail policy is exercised end to end — a mock would silently
+    accept any budget the aux-context sync writes.
+    """
     agent = AIAgent.__new__(AIAgent)
     agent.model = "test-main-model"
     agent.provider = "openrouter"
@@ -61,6 +69,22 @@ def _make_agent(
     compressor.tail_token_budget = int(
         compressor.threshold_tokens * compressor.summary_target_ratio
     )
+    # Mimic the real legacy policy: recalibration re-derives the tail
+    # from the CURRENT threshold at the configured ratio (the real
+    # method invalidates a cache the mode-aware property re-fills).
+    compressor.recalibrate_tail_budget.side_effect = lambda: setattr(
+        compressor, "tail_token_budget",
+        int(compressor.threshold_tokens * compressor.summary_target_ratio),
+    )
+    if real_compressor:
+        compressor = ContextCompressor(
+            model="test-main-model",
+            threshold_percent=threshold_percent,
+            summary_target_ratio=0.20,
+            config_context_length=main_context,
+            tail_mode=tail_mode,
+            quiet_mode=True,
+        )
     agent.context_compressor = compressor
 
     return agent
@@ -108,8 +132,74 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     # Every threshold-derived budget must move with it. Keeping the original
     # 20K tail here would protect 25% of the lowered threshold instead of the
     # configured 20%, and larger real-world mismatches can make the tail's 1.5x
-    # soft ceiling wider than the entire compression trigger.
+    # soft ceiling wider than the entire compression trigger. The sync goes
+    # through the canonical mode-aware hook; the mock's side_effect re-derives
+    # the legacy budget from the lowered threshold.
+    agent.context_compressor.recalibrate_tail_budget.assert_called_once()
     assert agent.context_compressor.tail_token_budget == 16_000
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_aux_sync_keeps_lean_tail_policy(mock_get_client, mock_ctx_len):
+    """Regression: the aux-context threshold sync must not cache a legacy
+    threshold*ratio tail when tail_mode is lean.
+
+    Real compressor, 1M main window (lean tail = 25K cap), aux context 80K
+    lowers the live threshold to 80K. The legacy formula would write
+    80K * 0.20 = 16K into the tail budget; lean must stay at its canonical
+    clamp (25K on a 1M window) and keep tail_mode == "lean".
+    """
+    agent = _make_agent(
+        main_context=1_000_000,
+        threshold_percent=0.65,
+        tail_mode="lean",
+        real_compressor=True,
+    )
+    comp = agent.context_compressor
+    assert comp.tail_token_budget == LEAN_TAIL_CAP_TOKENS  # 25K on 1M
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+    agent._emit_status = lambda message: None
+
+    agent._check_compression_model_feasibility()
+
+    # The threshold was lowered to the aux context...
+    assert comp.threshold_tokens == 80_000
+    # ...but the lean tail policy survived the sync.
+    assert comp.tail_mode == "lean"
+    assert comp.tail_token_budget == LEAN_TAIL_CAP_TOKENS
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_aux_sync_legacy_tail_follows_lowered_threshold(mock_get_client, mock_ctx_len):
+    """Legacy behavior on the same sync path is unchanged: the tail budget
+    follows the lowered threshold at the configured ratio (80K * 0.20)."""
+    agent = _make_agent(
+        main_context=1_000_000,
+        threshold_percent=0.65,
+        tail_mode="legacy",
+        real_compressor=True,
+    )
+    comp = agent.context_compressor
+    before = comp.tail_token_budget
+    assert before == int(comp.threshold_tokens * comp.summary_target_ratio)
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+    agent._emit_status = lambda message: None
+
+    agent._check_compression_model_feasibility()
+
+    assert comp.threshold_tokens == 80_000
+    assert comp.tail_mode == "legacy"
+    assert comp.tail_token_budget == int(80_000 * comp.summary_target_ratio)
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)

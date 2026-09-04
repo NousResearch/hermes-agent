@@ -1701,9 +1701,10 @@ def _lower_threshold_to_aux_context(
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
-    summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
-    if isinstance(summary_target_ratio, (int, float)):
-        compressor.tail_token_budget = int(new_threshold * summary_target_ratio)
+    # Re-derive the tail through the mode-aware property (legacy recomputes
+    # threshold*ratio; lean keeps its clamped window-based budget) — writing
+    # the legacy formula here directly would overwrite the lean clamp.
+    compressor.recalibrate_tail_budget()
     main_ctx = compressor.context_length
     if main_ctx:
         compressor.threshold_percent = new_threshold / main_ctx

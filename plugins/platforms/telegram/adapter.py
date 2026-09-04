@@ -13,6 +13,7 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from weakref import WeakValueDictionary
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -523,6 +524,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # bubbles owned by this adapter so subsequent calls with the same key edit the same message instead
         # of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        self._STATUS_MESSAGE_IDS_MAX = 2000
+        # Locks live only while an update is active or waiting for the same key.
+        self._status_locks: WeakValueDictionary[tuple, asyncio.Lock] = WeakValueDictionary()
         # Last truncated mid-stream preview per (chat_id, message_id): past the 4096 cap every edit
         # truncates to the SAME text, and resending burns flood budget. Dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
@@ -3393,18 +3397,27 @@ class TelegramAdapter(BasePlatformAdapter):
         remembered; subsequent calls with the same (chat_id, status_key) edit that same message in place.
         """
         key = (str(chat_id), str(status_key))
-        cached_id = self._status_message_ids.get(key)
-        if cached_id is not None:
-            result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)
-            if result.success:
-                if result.message_id:
-                    self._status_message_ids[key] = str(result.message_id)
-                return result
-            self._status_message_ids.pop(key, None)
-        result = await self.send(chat_id, content, metadata=metadata)
-        if result.success and result.message_id:
-            self._status_message_ids[key] = str(result.message_id)
-        return result
+        lock = self._status_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._status_locks[key] = lock
+        async with lock:
+            cached_id = self._status_message_ids.get(key)
+            if cached_id is not None:
+                result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)
+                if result.success:
+                    if result.message_id:
+                        self._status_message_ids[key] = str(result.message_id)
+                    return result
+                self._status_message_ids.pop(key, None)
+            result = await self.send(chat_id, content, metadata=metadata)
+            if result.success and result.message_id:
+                # Per-turn keys accumulate in a long-running gateway.
+                if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
+                    for stale in list(self._status_message_ids)[:self._STATUS_MESSAGE_IDS_MAX // 2]:
+                        self._status_message_ids.pop(stale, None)
+                self._status_message_ids[key] = str(result.message_id)
+            return result
 
     async def _edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> None:
         """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text."""

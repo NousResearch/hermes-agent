@@ -9,6 +9,7 @@ The status-update path must:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from types import SimpleNamespace
@@ -16,8 +17,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
+from gateway.run_turn_runner import TurnRunner
+from gateway.turn_context import TurnContext
 
 
 def _install_fake_telegram(monkeypatch):
@@ -106,3 +109,61 @@ async def test_distinct_status_keys_do_not_collide(adapter):
     assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
 
 
+@pytest.mark.asyncio
+async def test_gateway_statuses_edit_only_within_their_turn(adapter, monkeypatch):
+    pending = []
+    monkeypatch.setattr(
+        "gateway.run.safe_schedule_threadsafe",
+        lambda coro, *args, **kwargs: pending.append(coro),
+    )
+    # Exercise gateway routing and the real adapter send/edit path; only the
+    # Telegram network transport is replaced.
+    del adapter.send
+    del adapter.edit_message
+    adapter._bot.send_message = AsyncMock(side_effect=[SimpleNamespace(message_id=i) for i in range(3)])
+    adapter._bot.edit_message_text = AsyncMock()
+    for session, generation in [("topic-a", 1), ("topic-a", 2), ("topic-b", 1)]:
+        ctx = TurnContext(
+            source=SimpleNamespace(platform=Platform.TELEGRAM),
+            session_key=session, run_generation=generation,
+            _status_adapter=adapter, _status_chat_id="123",
+            _run_still_current=lambda: True,
+        )
+        turn = TurnRunner(MagicMock(), ctx)
+        turn._status_callback_sync("lifecycle", "Starting")
+        turn._status_callback_sync("lifecycle", "Continuing")
+        for coro in pending:
+            await coro
+        pending.clear()
+
+    assert adapter._bot.send_message.await_count == 3
+    assert [call.kwargs["message_id"] for call in adapter._bot.edit_message_text.await_args_list] == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_overlapping_statuses_send_once_and_old_turn_cache_is_bounded(adapter):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_send(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return SendResult(success=True, message_id="first")
+
+    adapter.send.side_effect = delayed_send
+    adapter.edit_message.return_value = SendResult(success=True)
+    first = asyncio.create_task(adapter.send_or_update_status("chat-1", "turn-1", "Starting"))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    second = asyncio.create_task(adapter.send_or_update_status("chat-1", "turn-1", "Continuing"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+    assert adapter.send.await_count == 1
+    adapter.edit_message.assert_awaited_once()
+
+    adapter._STATUS_MESSAGE_IDS_MAX = 4
+    adapter.send.side_effect = None
+    adapter.send.return_value = SendResult(success=True, message_id="next")
+    for i in range(10):
+        await adapter.send_or_update_status("chat-1", f"later-{i}", "Starting")
+    assert len(adapter._status_message_ids) <= adapter._STATUS_MESSAGE_IDS_MAX
+    assert adapter._status_message_ids[("chat-1", "later-9")] == "next"

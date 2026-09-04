@@ -2373,6 +2373,23 @@ class DiscordAdapter(BasePlatformAdapter):
         self._write_command_sync_state(state)
 
     @staticmethod
+    def _format_retry_after_hint(retry_after: float) -> str:
+        """Human-friendly wait hint for a Discord ``retry_after`` in seconds.
+
+        Rounds up so the hint never undersells the wait (telling a user to
+        retry in "2 minutes" when the bucket resets in 2m40s guarantees a
+        second failure).
+        """
+        try:
+            seconds = max(1, math.ceil(float(retry_after)))
+        except (TypeError, ValueError):
+            return "a few minutes"
+        if seconds < 60:
+            return f"~{seconds}s"
+        minutes = math.ceil(seconds / 60)
+        return f"~{minutes} minute{'s' if minutes != 1 else ''}"
+
+    @staticmethod
     def _extract_discord_retry_after(exc: BaseException) -> Optional[float]:
         value = getattr(exc, "retry_after", None)
         if value is not None:
@@ -7354,10 +7371,21 @@ class DiscordAdapter(BasePlatformAdapter):
         retried once after a short backoff so transient connect errors
         (e.g. ``Cannot connect to host discord.com:443``) don't immediately
         burn through to the caller's failure path (#20243).
+
+        When Discord rate-limits thread creation (HTTP 429), the fallback and
+        retry are skipped: the seed-message fallback hits the same
+        create-thread rate-limit bucket, so it is guaranteed to fail while
+        potentially leaving an orphan seed message in the channel, and an
+        immediate retry cannot succeed before the bucket resets. The parsed
+        ``retry_after`` is stored on ``self._auto_thread_retry_after`` so the
+        caller can surface an actionable wait hint to the user.
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
+
+        # Reset per attempt; read by _handle_message's failure branch.
+        self._auto_thread_retry_after: Optional[float] = None
 
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
@@ -7372,6 +7400,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
+                if self._is_discord_rate_limit(direct_error):
+                    # Create-thread bucket is saturated. The seed-message
+                    # fallback and the backoff retry share that bucket, so
+                    # both are guaranteed to 429 until it resets — fail fast
+                    # and record how long the caller should tell the user
+                    # to wait.
+                    self._auto_thread_retry_after = self._extract_discord_retry_after(direct_error)
+                    logger.warning(
+                        "[%s] Auto-thread creation rate-limited by Discord (retry_after=%ss); "
+                        "skipping seed-message fallback (same rate-limit bucket).",
+                        self.name,
+                        self._auto_thread_retry_after,
+                    )
+                    return None
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
@@ -7388,6 +7430,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
+                    if self._is_discord_rate_limit(fallback_error):
+                        self._auto_thread_retry_after = self._extract_discord_retry_after(fallback_error)
+                        logger.warning(
+                            "[%s] Auto-thread creation rate-limited by Discord on seed-message "
+                            "fallback (retry_after=%ss); skipping retry.",
+                            self.name,
+                            self._auto_thread_retry_after,
+                        )
+                        return None
                     if attempt == 0:
                         # Brief backoff before the second attempt — most failures
                         # in this path are transient connect errors that recover
@@ -8320,11 +8371,28 @@ class DiscordAdapter(BasePlatformAdapter):
                     # a shared channel. Surface a short visible error so the
                     # user can retry once Discord recovers, and skip agent
                     # invocation for this message.
-                    try:
-                        await message.channel.send(
+                    #
+                    # When the failure was a Discord 429 on the create-thread
+                    # bucket, "please retry" is guaranteed-to-fail advice until
+                    # the bucket resets — include the parsed retry_after so the
+                    # user knows how long to wait, and point at the working
+                    # alternative (existing threads are unaffected).
+                    retry_after = getattr(self, "_auto_thread_retry_after", None)
+                    if retry_after is not None:
+                        wait_hint = self._format_retry_after_hint(retry_after)
+                        error_text = (
+                            "⚠️ Discord is rate-limiting thread creation right now, "
+                            f"so this request was not processed. Retry in {wait_hint}, "
+                            "or send your message inside an existing thread (those "
+                            "still work)."
+                        )
+                    else:
+                        error_text = (
                             "⚠️ Hermes could not create a Discord thread for "
                             "this message, so the request was not processed. Please retry."
                         )
+                    try:
+                        await message.channel.send(error_text)
                     except Exception as notify_error:
                         logger.warning(
                             "[%s] Failed to notify user of auto-thread failure: %s",

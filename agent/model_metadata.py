@@ -3089,7 +3089,7 @@ def get_model_context_length(
     model: str,
     base_url: str = "",
     api_key: str = "",
-    config_context_length: int | None = None,
+    config_context_length: int | str | float | None = None,
     provider: str = "",
     custom_providers: list | None = None,
 ) -> int:
@@ -3622,7 +3622,7 @@ async def get_model_context_length_async(
     model: str,
     base_url: str = "",
     api_key: str = "",
-    config_context_length: int | None = None,
+    config_context_length: int | str | float | None = None,
     provider: str = "",
     custom_providers: list | None = None,
 ) -> int:

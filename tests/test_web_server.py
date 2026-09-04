@@ -6,10 +6,12 @@ Config + Server + asyncio.run to capture kwargs without starting an event loop.
 
 import asyncio
 import contextlib
+import os
 import sys
 
 import pytest
 import uvicorn
+import yaml
 
 from hermes_cli import web_server
 
@@ -338,3 +340,74 @@ def test_start_server_treats_windows_fallback_keyboardinterrupt_as_clean_shutdow
             "start_server must treat serve-time KeyboardInterrupt as a clean "
             "shutdown on the Windows pre-0.36 fallback, not propagate it"
         )
+
+
+
+
+
+
+
+@pytest.fixture()
+def _isolated_config_home():
+    """Per-test HERMES_HOME as a Path, with the raw-config cache cleared
+    around the test (the autouse ``_hermetic_environment`` conftest fixture
+    already redirected HERMES_HOME to a per-test tempdir)."""
+    from pathlib import Path
+
+    import hermes_cli.config as config_mod
+
+    home = Path(os.environ["HERMES_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    config_mod._RAW_CONFIG_CACHE.clear()
+    yield home
+    config_mod._RAW_CONFIG_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_put_config_preserves_env_var_placeholder_on_disk(
+    _isolated_config_home, monkeypatch
+):
+    """
+    Regression test for #94918:
+
+    Disk config.yaml holds an unexpanded ``${ENV_VAR}`` reference for
+    ``model.api_key``. A PUT that only touches an unrelated field must
+    leave that reference untouched on disk -- not materialize the
+    resolved secret.
+
+    This drives the real ``update_config()`` against a real config.yaml
+    on disk (no mocking of ``read_raw_config``/``save_config``/
+    ``load_config``), so a regression where ``update_config`` goes back
+    to resolving with ``load_config()`` before saving would fail this
+    test, unlike a test that only inspects the GET response.
+    """
+    from hermes_cli.web_server import ConfigUpdate, update_config
+
+    monkeypatch.setenv("TEST_OPENAI_SECRET", "super-secret-runtime-token-123")
+
+    cfg_path = _isolated_config_home / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "openai",
+                    "default": "gpt-4",
+                    "api_key": "${TEST_OPENAI_SECRET}",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # An unrelated change: touches a different top-level key and never
+    # mentions "model" at all -- the shape a real dashboard autosave of
+    # e.g. a display setting would send.
+    body = ConfigUpdate(config={"display": {"ephemeral_system_ttl": 5}})
+    result = await update_config(body)
+    assert result == {"ok": True}
+
+    on_disk_text = cfg_path.read_text(encoding="utf-8")
+    on_disk = yaml.safe_load(on_disk_text)
+
+    assert on_disk["model"]["api_key"] == "${TEST_OPENAI_SECRET}"
+    assert "super-secret-runtime-token-123" not in on_disk_text

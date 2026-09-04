@@ -1781,7 +1781,7 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
     are shallow-copied onto a copied mapping.
     """
     try:
-        cfg = load_config()
+        cfg = read_raw_config()
     except Exception:  # pragma: no cover - schema must survive config errors
         return CONFIG_SCHEMA
 
@@ -2500,7 +2500,7 @@ def _fs_find_git_root(start: Path) -> str | None:
 
 
 def _fs_default_cwd() -> str:
-    cfg_terminal = load_config().get("terminal") or {}
+    cfg_terminal = read_raw_config().get("terminal") or {}
     raw = str(cfg_terminal.get("cwd") or os.environ.get("TERMINAL_CWD") or "").strip()
     if raw and raw not in {".", "auto", "cwd"}:
         try:
@@ -4488,7 +4488,7 @@ def _safe_call(mod, fn_name: str, default):
 
 @app.get("/api/portal")
 async def get_portal_status():
-    # load_config() + auth/subscription snapshots are disk reads — this is a
+    # read_raw_config() + auth/subscription snapshots are disk reads — this is a
     # polled endpoint, so keep them off the event loop.
     def _run():
         return _get_portal_status_sync()
@@ -4497,7 +4497,7 @@ async def get_portal_status():
 
 
 def _get_portal_status_sync():
-    cfg = load_config() or {}
+    cfg = read_raw_config() or {}
     auth: Dict[str, Any] = {}
     try:
         from hermes_cli.auth import get_nous_auth_status_local
@@ -6428,7 +6428,7 @@ def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[
     else:
         _write_provider_flat(provider, values)
 
-    config = load_config()
+    config = read_raw_config()
     memory_config = config.get("memory")
     if not isinstance(memory_config, dict):
         memory_config = {}
@@ -6927,7 +6927,7 @@ def _read_memory_provider_existing_values(name: str) -> Dict[str, Any]:
         values.update(_read_json_file(path))
 
     try:
-        cfg = load_config()
+        cfg = read_raw_config()
     except Exception:
         cfg = {}
 
@@ -7112,7 +7112,7 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[s
             provider.save_config(values, str(get_hermes_home()))
             return
 
-    cfg = load_config()
+    cfg = read_raw_config()
     memory_cfg = cfg.get("memory")
     if not isinstance(memory_cfg, dict):
         memory_cfg = {}
@@ -7153,7 +7153,7 @@ def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
     except Exception:
         _log.exception("discover_memory_providers failed")
 
-    cfg = load_config()
+    cfg = read_raw_config()
     active = ""
     mem = cfg.get("memory")
     if isinstance(mem, dict):
@@ -7332,7 +7332,7 @@ async def update_memory_provider_config(
                 raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
             _write_memory_provider_config_values(name, provider, values)
             _require_memory_provider_ready(name)
-            config = load_config()
+            config = read_raw_config()
             memory_config = config.get("memory")
             if not isinstance(memory_config, dict):
                 memory_config = {}
@@ -7356,13 +7356,15 @@ async def update_memory_provider_config(
 @app.get("/api/config")
 async def get_config(profile: Optional[str] = None):
     # _profile_scope blocks on the process-wide _SKILLS_PROFILE_LOCK and
-    # load_config() reads from disk; on the event loop a slow lock-holder
+    # read_raw_config() reads from disk; on the event loop a slow lock-holder
     # froze the whole gateway for >1s (observed via the loop watchdog).
     # asyncio.to_thread copies the contextvar context, so the profile
     # override stays scoped to the worker thread.
     def _run():
         with _profile_scope(profile):
-            return _normalize_config_for_web(load_config())
+            resolved = load_config()
+            raw = read_raw_config()
+            return _normalize_config_for_web(_deep_merge(resolved, raw))
 
     config = await asyncio.to_thread(_run)
     # Strip internal keys that the frontend shouldn't see or send back
@@ -7723,7 +7725,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
     """
     try:
         with _profile_scope(profile):
-            cfg = load_config()
+            cfg = read_raw_config()
         aux_cfg = cfg.get("auxiliary", {})
         if not isinstance(aux_cfg, dict):
             aux_cfg = {}
@@ -7762,7 +7764,7 @@ def get_moa_models(profile: Optional[str] = None):
         from hermes_cli.moa_config import normalize_moa_config
 
         with _profile_scope(profile):
-            cfg = load_config()
+            cfg = read_raw_config()
             return normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
     except HTTPException:
         raise
@@ -7915,7 +7917,7 @@ def _apply_model_assignment_sync(
     load_config/save_config lands in the requested profile.  Raises
     HTTPException for validation errors — the async wrapper re-raises them.
     """
-    cfg = load_config()
+    cfg = read_raw_config()
 
     if scope == "main":
         if not provider or not model:
@@ -8219,7 +8221,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     if (isinstance(model_val, str) and model_val) or ctx_sent:
         # Read the current disk config to recover model subkeys
         try:
-            disk_config = load_config()
+            disk_config = read_raw_config()
             disk_model = disk_config.get("model")
             if isinstance(disk_model, dict):
                 if isinstance(model_val, str) and model_val:
@@ -8845,7 +8847,7 @@ def list_custom_endpoints(profile: Optional[str] = None):
     """
     try:
         with _config_profile_scope(profile):
-            return _custom_endpoint_response(load_config())
+            return _custom_endpoint_response(read_raw_config())
     except HTTPException:
         raise
     except Exception:
@@ -8858,7 +8860,7 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     try:
         with _config_profile_scope(profile):
-            cfg = load_config()
+            cfg = read_raw_config()
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
@@ -8877,7 +8879,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
     try:
         with _config_profile_scope(profile):
-            cfg = load_config()
+            cfg = read_raw_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             _stored, entry = find_provider_entry(cfg.get("providers"), provider_key)
             if entry is None:
@@ -8928,7 +8930,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Remove a configured custom endpoint from ``providers``."""
     try:
         with _config_profile_scope(profile):
-            cfg = load_config()
+            cfg = read_raw_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")
             stored_key, entry = find_provider_entry(providers, provider_key)
@@ -9797,7 +9799,7 @@ def _messaging_platform_payload(
         # env-override layer reads os.environ and would leak the root
         # install's tokens into the profile's reported state.
         try:
-            cfg = load_config()
+            cfg = read_raw_config()
             platforms_cfg = cfg.get("platforms") or {}
             plat_cfg = platforms_cfg.get(platform_id)
             if not isinstance(plat_cfg, dict):
@@ -14550,10 +14552,10 @@ async def remove_credential_pool_entry(provider: str, index: int):
 
 @app.get("/api/memory")
 async def get_memory_status():
-    # load_config(), file stats and provider discovery are disk reads — keep
+    # read_raw_config(), file stats and provider discovery are disk reads — keep
     # them off the event loop.
     def _run():
-        cfg = load_config()
+        cfg = read_raw_config()
         active = ""
         mem = cfg.get("memory")
         if isinstance(mem, dict):
@@ -14583,7 +14585,7 @@ async def set_memory_provider(body: MemoryProviderSelect):
         _require_memory_provider_ready(provider)
 
         with _CONFIG_MUTATION_LOCK:
-            cfg = load_config()
+            cfg = read_raw_config()
             if not isinstance(cfg.get("memory"), dict):
                 cfg["memory"] = {}
             cfg["memory"]["provider"] = provider
@@ -14825,7 +14827,7 @@ async def list_hooks():
     form can offer them.
     """
     def _run():
-        from hermes_cli.config import load_config as _load_config
+        from hermes_cli.config import read_raw_config as _read_raw_config
         from agent import shell_hooks
 
         try:
@@ -14836,7 +14838,7 @@ async def list_hooks():
 
         specs = []
         try:
-            specs = shell_hooks.iter_configured_hooks(_load_config())
+            specs = shell_hooks.iter_configured_hooks(_read_raw_config())
         except Exception:
             _log.exception("iter_configured_hooks failed")
 
@@ -14897,7 +14899,7 @@ async def create_hook(body: HookCreate):
 
     def _run():
         with _CONFIG_MUTATION_LOCK:
-            cfg = load_config()
+            cfg = read_raw_config()
             hooks_cfg = cfg.get("hooks")
             if not isinstance(hooks_cfg, dict):
                 hooks_cfg = {}
@@ -14941,7 +14943,7 @@ async def delete_hook(body: HookDelete):
     def _run():
         removed = False
         with _CONFIG_MUTATION_LOCK:
-            cfg = load_config()
+            cfg = read_raw_config()
             hooks_cfg = cfg.get("hooks")
             if isinstance(hooks_cfg, dict) and isinstance(hooks_cfg.get(event), list):
                 before = len(hooks_cfg[event])
@@ -15271,7 +15273,7 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
     token = set_hermes_home_override(str(profile_dir))
     try:
         provider, model = _normalize_main_model_assignment(provider, model)
-        cfg = load_config()
+        cfg = read_raw_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
         save_config(cfg)
     finally:
@@ -15296,7 +15298,7 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
     written = 0
     token = set_hermes_home_override(str(profile_dir))
     try:
-        cfg = load_config()
+        cfg = read_raw_config()
         mcp = cfg.setdefault("mcp_servers", {})
         for server in servers:
             try:
@@ -15348,7 +15350,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
         if skills_root.is_dir():
             for md in skills_root.rglob("SKILL.md"):
                 installed.append(md.parent.name)
-        cfg = load_config()
+        cfg = read_raw_config()
         disabled = get_disabled_skills(cfg)
         for name in installed:
             if name not in keep_set and name not in disabled:
@@ -18527,7 +18529,7 @@ async def get_dashboard_themes():
     them without a stub.
     """
     def _run():
-        config = load_config()
+        config = read_raw_config()
         active = cfg_get(config, "dashboard", "theme", default="default")
         user_themes = _discover_user_themes()
         seen = set()
@@ -18555,7 +18557,7 @@ async def set_dashboard_theme(body: ThemeSetBody):
     """Set the active dashboard theme (persists to config.yaml)."""
     def _run():
         with _CONFIG_MUTATION_LOCK:
-            config = load_config()
+            config = read_raw_config()
             if "dashboard" not in config:
                 config["dashboard"] = {}
             config["dashboard"]["theme"] = body.name
@@ -18583,7 +18585,7 @@ _FONT_CHOICES = frozenset({
 async def get_dashboard_font():
     """Return the active font override (``"theme"`` = use the theme's font)."""
     def _run():
-        config = load_config()
+        config = read_raw_config()
         font = cfg_get(config, "dashboard", "font", default=_FONT_DEFAULT_ID)
         if font not in _FONT_CHOICES:
             font = _FONT_DEFAULT_ID
@@ -18605,7 +18607,7 @@ async def set_dashboard_font(body: FontSetBody):
 
     def _run():
         with _CONFIG_MUTATION_LOCK:
-            config = load_config()
+            config = read_raw_config()
             if "dashboard" not in config:
                 config["dashboard"] = {}
             config["dashboard"]["font"] = font
@@ -18803,7 +18805,7 @@ async def get_dashboard_plugins():
     def _run():
         plugins = _get_dashboard_plugins()
         # Read user's hidden plugins list from config.
-        config = load_config()
+        config = read_raw_config()
         hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
         # Gate: only serve user plugins that are in plugins.enabled and not
         # in plugins.disabled.  This prevents the frontend from loading JS/CSS
@@ -18938,7 +18940,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     enabled_set = _get_enabled_set()
 
     # Read user-hidden plugins from config for the user_hidden field.
-    config = load_config()
+    config = read_raw_config()
     hidden_plugins: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
 
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
@@ -19185,7 +19187,7 @@ async def post_plugin_visibility(request: Request, name: str, body: _PluginVisib
 
     def _run():
         with _CONFIG_MUTATION_LOCK:
-            config = load_config()
+            config = read_raw_config()
             if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
                 config["dashboard"] = {}
             hidden_list: list = config["dashboard"].get("hidden_plugins") or []

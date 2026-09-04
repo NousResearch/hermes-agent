@@ -10,6 +10,7 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
 import type { ChatBarProps } from '../types'
@@ -58,6 +59,7 @@ describe('useComposerQueue park integration', () => {
     window.localStorage.clear()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(false)
   })
 
   afterEach(() => {
@@ -65,6 +67,7 @@ describe('useComposerQueue park integration', () => {
     vi.restoreAllMocks()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(true)
   })
 
   it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {

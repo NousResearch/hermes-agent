@@ -10,7 +10,7 @@ import {
   getQueuedPrompts,
   parkQueuedPrompts
 } from '@/store/composer-queue'
-import { $sessions, setSessions } from '@/store/session'
+import { $sessions, setSessions, setSessionsLoading } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -62,6 +62,9 @@ describe('useBackgroundQueueDrain', () => {
   beforeEach(() => {
     vi.useRealTimers()
     clearAllSessionStates()
+    // Production drain waits for the sidebar list. Tests that assert drain
+    // behavior are post-load unless they opt into the loading gate.
+    setSessionsLoading(false)
   })
 
   afterEach(() => {
@@ -71,6 +74,7 @@ describe('useBackgroundQueueDrain', () => {
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
     $sessions.set([])
+    setSessionsLoading(true)
     clearAllSessionStates()
   })
 

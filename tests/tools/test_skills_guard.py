@@ -200,6 +200,26 @@ class TestScanFile:
         # Same pattern on same line should appear only once
         assert len(root_rm) == 1
 
+    def test_setuid_pattern_ignores_camel_case_setters(self, tmp_path):
+        f = tmp_path / "publication.md"
+        f.write_text("event.setUid(uid);\n")
+
+        findings = scan_file(f, "publication.md")
+
+        assert not any(fi.pattern_id == "setuid_setgid" for fi in findings)
+
+    @pytest.mark.parametrize(
+        "source",
+        ["os.setuid(1000)\n", "setgid 1000\n", "cap_setuid+ep\n"],
+    )
+    def test_setuid_pattern_still_detects_real_mechanisms(self, tmp_path, source):
+        f = tmp_path / "privilege.md"
+        f.write_text(source)
+
+        findings = scan_file(f, "privilege.md")
+
+        assert any(fi.pattern_id == "setuid_setgid" for fi in findings)
+
 
 # ---------------------------------------------------------------------------
 # scan_skill — directory scanning

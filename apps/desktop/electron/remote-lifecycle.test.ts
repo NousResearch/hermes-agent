@@ -1486,6 +1486,20 @@ test('buildSpawnCommand payload variables keep $HOME expandable (no double quoti
     assert.match(cmd, new RegExp(`${name}="\\$HOME"`), `${name}= must start with an expandable "$HOME"`)
     assert.doesNotMatch(cmd, new RegExp(`${name}='`), `${name}= must not be re-quoted`)
   }
+
+  // updateMutex passed to withRemoteUpdateMutex must also remain expandable
+  // without being re-quoted by shq(), which would cause python3 to receive
+  // literal leading quotes and create a malformed relative directory "'".
+  assert.match(
+    cmd,
+    /python3 -c '[\s\S]*?' "\$HOME"'?\/\.hermes\/\.hermes-update-in-progress\.mutex'/,
+    'updateMutex argument must start with expandable "$HOME"'
+  )
+  assert.doesNotMatch(
+    cmd,
+    /python3 -c '[\s\S]*?' '"\$HOME"/,
+    'updateMutex argument must not be double-quoted'
+  )
 })
 
 test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)', () => {

@@ -3521,18 +3521,26 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
+def _codex_auth_file_path() -> Path:
+    """Return the canonical root auth store for Codex OAuth state."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "auth.json"
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
     Raises AuthError if no Codex tokens are stored.
     """
+    auth_path = _codex_auth_file_path()
     if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
+        with _auth_store_lock(target_path=auth_path):
+            auth_store = _load_auth_store(auth_path)
     else:
-        auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "openai-codex")
+        auth_store = _load_auth_store(auth_path)
+    providers = auth_store.get("providers")
+    state = providers.get("openai-codex") if isinstance(providers, dict) else None
     if not state:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
@@ -3675,9 +3683,12 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "openai-codex") or {}
+    auth_path = _codex_auth_file_path()
+    with _auth_store_lock(target_path=auth_path):
+        auth_store = _load_auth_store(auth_path)
+        providers = auth_store.setdefault("providers", {})
+        raw_state = providers.get("openai-codex") if isinstance(providers, dict) else None
+        state = dict(raw_state) if isinstance(raw_state, dict) else {}
         # Capture the previous singleton tokens BEFORE overwriting them.  The
         # pool-sync step uses this to distinguish legacy singleton-aliases
         # (which should be refreshed) from independent accounts that
@@ -3696,7 +3707,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             last_refresh,
             previous_singleton_tokens=previous_singleton_tokens,
         )
-        _save_auth_store(auth_store)
+        _save_auth_store(auth_store, target_path=auth_path)
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
@@ -4043,7 +4054,10 @@ def resolve_codex_runtime_credentials(
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
         # Re-read under lock to avoid racing with other Hermes processes
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        with _auth_store_lock(
+            timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0),
+            target_path=_codex_auth_file_path(),
+        ):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()

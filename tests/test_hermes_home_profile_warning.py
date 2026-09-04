@@ -26,10 +26,22 @@ def fresh_constants(monkeypatch, tmp_path):
     importlib.reload(hermes_constants)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_ROOT", raising=False)
     return hermes_constants
 
 
 class TestGetHermesHomeProfileWarning:
+    def test_explicit_hermes_root_wins_over_profile_home(self, tmp_path, monkeypatch):
+        """Temporary/profile homes must not redefine the shared root."""
+        import hermes_constants
+
+        root = tmp_path / "canonical"
+        profile_home = tmp_path / "bridge" / "profiles" / "vector"
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_ROOT", str(root))
+
+        assert hermes_constants.get_default_hermes_root() == root
+
     def test_classic_mode_no_active_profile_no_warning(
         self, fresh_constants, tmp_path, capsys
     ):

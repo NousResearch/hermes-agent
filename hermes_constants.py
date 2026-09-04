@@ -175,6 +175,16 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
+    # A process may deliberately use a temporary/profile-scoped HERMES_HOME
+    # while still needing the canonical installation root for shared assets
+    # (auth.json, credential pools, and the Kanban board).  Launchers such as
+    # Mission Control set this explicitly; never infer it from a temporary
+    # bridge directory.  This also keeps custom-root and test isolation intact
+    # because the override is opt-in and process-local.
+    explicit_root = os.environ.get("HERMES_ROOT", "").strip()
+    if explicit_root:
+        return Path(explicit_root).expanduser()
+
     native_home = _get_platform_default_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:

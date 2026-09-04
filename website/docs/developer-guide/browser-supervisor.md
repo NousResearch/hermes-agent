@@ -39,6 +39,11 @@ they touch the network — the dialog becomes a `Fetch.requestPaused` event the
 supervisor captures, and `respond_to_dialog` fulfills via
 `Fetch.fulfillRequest` with a JSON body the injected script decodes.
 
+If that XHR can't be intercepted — no `Fetch.requestPaused` arrives for it —
+each override calls the native dialog it replaced, so the dialog still reaches
+the supervisor through `Page.javascriptDialogOpening`. The overrides only
+suppress the native dialog while the bridge can actually answer it.
+
 From the page's perspective, `prompt()` still returns the agent-supplied
 string. From the agent's perspective, it's the same `browser_dialog(action=...)`
 API either way.
@@ -133,8 +138,8 @@ is attached:
 ```
 
 - **`pending_dialogs`** — dialogs currently blocking the page's JS thread.
-  The agent must call `browser_dialog(action=...)` to respond. Empty on
-  Browserbase because their CDP proxy auto-dismisses within ~10ms.
+  The agent must call `browser_dialog(action=...)` to respond. Bridge-captured
+  and native dialogs both land here; the agent responds to them the same way.
 
 - **`recent_dialogs`** — ring buffer of up to 20 recently-closed dialogs with
   a `closed_by` tag: `"agent"` (we responded), `"auto_policy"` (local

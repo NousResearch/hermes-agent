@@ -25,6 +25,8 @@
 
 **Browserbase 响应的工作原理。** Browserbase 的 CDP 代理在内部使用 Playwright，并在约 10ms 内自动关闭原生对话框，因此 `Page.handleJavaScriptDialog` 无法跟上。为解决此问题，supervisor 通过 `Page.addScriptToEvaluateOnNewDocument` 注入一个 bridge 脚本，将 `window.alert`/`confirm`/`prompt` 覆盖为向魔法主机（`hermes-dialog-bridge.invalid`）发起的同步 XHR。`Fetch.enable` 在这些 XHR 触达网络之前将其拦截——对话框变成 supervisor 捕获的 `Fetch.requestPaused` 事件，`respond_to_dialog` 通过 `Fetch.fulfillRequest` 以 JSON 响应体完成请求，注入的脚本对其进行解码。
 
+如果该 XHR 无法被拦截（没有为它到达的 `Fetch.requestPaused`），每个覆盖函数都会调用它所替换的原生对话框，因此对话框仍会通过 `Page.javascriptDialogOpening` 到达 supervisor。只有在 bridge 确实能够作出响应时，这些覆盖函数才会抑制原生对话框。
+
 最终效果：从页面角度看，`prompt()` 仍然返回 agent 提供的字符串。从 agent 角度看，无论哪种方式，都是同一套 `browser_dialog(action=...)` API。已针对真实 Browserbase 会话进行端到端测试——4/4（alert/prompt/confirm-accept/confirm-dismiss）全部通过，包括值回传到页面 JS 的验证。
 
 Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上游 issue，请求添加对话框轮询端点。
@@ -101,7 +103,7 @@ browser_dialog(action, prompt_text=None, dialog_id=None)
 }
 ```
 
-- **`pending_dialogs`**：当前阻塞页面 JS 线程的对话框。Agent 必须调用 `browser_dialog(action=...)` 进行响应。在 Browserbase 上为空，因为其 CDP 代理会在约 10ms 内自动关闭对话框。
+- **`pending_dialogs`**：当前阻塞页面 JS 线程的对话框。Agent 必须调用 `browser_dialog(action=...)` 进行响应。由 bridge 捕获的对话框与原生对话框都会出现在这里，agent 的响应方式完全相同。
 
 - **`recent_dialogs`**：最近关闭的最多 20 个对话框的环形缓冲区，带有 `closed_by` 标签——`"agent"`（我们响应了）、`"auto_policy"`（本地 auto_dismiss/auto_accept）、`"watchdog"`（must_respond 超时触发）或 `"remote"`（浏览器/后端主动关闭，例如 Browserbase）。这是 Browserbase 上的 agent 仍能了解发生了什么的方式。
 

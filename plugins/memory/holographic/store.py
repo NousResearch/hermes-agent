@@ -47,23 +47,20 @@ CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
-
+    USING fts5(content, tags, tokenize='trigram');
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
+        VALUES (new.fact_id, COALESCE(new.content,''), COALESCE(new.tags,''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
+    DELETE FROM facts_fts WHERE rowid = old.fact_id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
+    DELETE FROM facts_fts WHERE rowid = old.fact_id;
     INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
+        VALUES (new.fact_id, COALESCE(new.content,''), COALESCE(new.tags,''));
 END;
 
 CREATE TABLE IF NOT EXISTS memory_banks (
@@ -90,6 +87,12 @@ _RE_AKA          = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
 )
+# CJK runs (Unified Ideographs + Ext-A), later filtered to 2-8 chars
+_RE_CJK_RUN      = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]+')
+# CamelCase tech tokens with an internal case boundary: MiniMax/OpenClaw/DuckDB
+_RE_CAMEL_TOKEN  = re.compile(r'\b[A-Za-z][a-z]+[A-Z][A-Za-z]+\b')
+# Ticker-style codes: 688507 / 2513.HK / 002222.SZ / sh600895
+_RE_TICKER       = re.compile(r'\b(?:\d{6}|[A-Za-z]{2}\d{6}|\d{3,5}\.(?:HK|SZ|SH))\b')
 
 
 def _clamp_trust(value: float) -> float:
@@ -180,6 +183,31 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: legacy facts_fts used external-content mode (content=facts)
+        # with the default unicode61 tokenizer — CJK text was unindexed and
+        # the external-content table can silently return 0 rows under
+        # trigram. Detect the legacy shape and rebuild as a standalone
+        # trigram table repopulated from facts.
+        fts_sql_row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'facts_fts'"
+        ).fetchone()
+        if fts_sql_row and "trigram" not in (fts_sql_row[0] or ""):
+            self._conn.executescript(
+                """
+                DROP TRIGGER IF EXISTS facts_ai;
+                DROP TRIGGER IF EXISTS facts_ad;
+                DROP TRIGGER IF EXISTS facts_au;
+                DROP TABLE IF EXISTS facts_fts;
+                """
+            )
+            self._conn.executescript(_SCHEMA)
+            self._conn.execute(
+                """
+                INSERT INTO facts_fts(rowid, content, tags)
+                SELECT fact_id, COALESCE(content, ''), COALESCE(tags, '')
+                FROM facts
+                """
+            )
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -453,6 +481,8 @@ class MemoryStore:
         2. Double-quoted terms             e.g. "Python"
         3. Single-quoted terms             e.g. 'pytest'
         4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        5. CJK runs (2-8 chars)            e.g. "智谱茂莱光学" -> candidate spans
+        6. Ticker patterns                 e.g. 688507 / 2513.HK / 002222.SZ
 
         Returns a deduplicated list preserving first-seen order.
         """
@@ -477,6 +507,25 @@ class MemoryStore:
         for m in _RE_AKA.finditer(text):
             _add(m.group(1))
             _add(m.group(2))
+
+        # CJK entity runs: a punctuation/latin-delimited run of 2-8 CJK
+        # characters is a plausible entity span (company names, people,
+        # domain terms). Whole-run capture keeps 智谱/茂莱光学 queryable;
+        # prose sentences are filtered by the length cap.
+        for m in _RE_CJK_RUN.finditer(text):
+            run = m.group(0)
+            if 2 <= len(run) <= 8:
+                _add(run)
+
+        # CamelCase tokens (MiniMax, DuckDB, OpenClaw): single capitalized
+        # words are skipped by rule 1 (which needs two words), yet these
+        # are exactly the product/company names worth probing.
+        for m in _RE_CAMEL_TOKEN.finditer(text):
+            _add(m.group(0))
+
+        # Ticker-style codes: bare 6-digit (688507), suffixed (.HK/.SZ/.SH)
+        for m in _RE_TICKER.finditer(text):
+            _add(m.group(0))
 
         return candidates
 

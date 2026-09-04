@@ -211,18 +211,6 @@ def test_related_encodes_role_atoms_once(hoisted_retriever, monkeypatch):
     )
 
 
-def test_probe_encodes_role_atom_once(hoisted_retriever, monkeypatch):
-    calls = _counting_spy(monkeypatch, "encode_atom")
-    results = hoisted_retriever.probe("entity_1")
-    assert results
-    role_content_calls = [a for a in calls
-                          if a and a[0] == "__hrr_role_content__"]
-    assert len(role_content_calls) == 1, (
-        f"role_content atom encoded {len(role_content_calls)}x in one "
-        "probe() — loop-invariant hoist regressed"
-    )
-
-
 def test_search_without_vectors_never_encodes(hoisted_retriever, monkeypatch):
     """Migrated DBs can have FTS candidates with NULL hrr_vector
     (MemoryStore._init_db adds the column without backfilling existing

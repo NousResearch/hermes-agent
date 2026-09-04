@@ -184,11 +184,12 @@ const OVERFLOW_TIP_DELAY_MS = 600
 
 /**
  * A `Tip` that only opens when the trigger's content is actually truncated
- * (its `scrollWidth` exceeds its `clientWidth` at pointerenter). A tooltip that
- * repeats a fully visible label is noise, and Radix's uncontrolled hover-open
- * can't see overflow — so this owns `open` and arms its own timer after
- * measuring. Pointer-only by design: keyboard focus keeps the child's existing
- * a11y affordances (the full text is already in the accessible name).
+ * (its `scrollWidth` exceeds its `clientWidth`, or its `scrollHeight` exceeds
+ * its `clientHeight`, at pointerenter). A tooltip that repeats a fully visible
+ * label is noise, and Radix's uncontrolled hover-open can't see overflow — so
+ * this owns `open` and arms its own timer after measuring. Pointer-only by
+ * design: keyboard focus keeps the child's existing a11y affordances (the full
+ * text is already in the accessible name).
  *
  * Measurement happens on the CHILD element (`asChild` puts the trigger props on
  * it), so wrap the element that carries the truncation/overflow styling.
@@ -233,7 +234,7 @@ function OverflowTip({ label, children, delayDuration = OVERFLOW_TIP_DELAY_MS, .
 
           // Same 2px slack the sidebar marquee uses: sub-pixel rounding can
           // report a 1px "overflow" on a title that fully fits.
-          if (el.scrollWidth - el.clientWidth > 2) {
+          if (el.scrollWidth - el.clientWidth > 2 || el.scrollHeight > el.clientHeight) {
             timer.current = window.setTimeout(() => setOpen(true), delayDuration)
           }
         }}

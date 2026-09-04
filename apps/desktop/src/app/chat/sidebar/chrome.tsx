@@ -148,7 +148,7 @@ export function SidebarRowLink({
 }: React.ComponentProps<'button'> & { labelClassName?: string }) {
   return (
     <RowButton className={cn('min-w-0 shrink bg-transparent p-0 text-left', className)} {...props}>
-      <span className={cn(SIDEBAR_ROW_LABEL, labelClassName)}>{children}</span>
+      <span className={cn(SIDEBAR_ROW_LABEL, 'truncate leading-none', labelClassName)}>{children}</span>
     </RowButton>
   )
 }

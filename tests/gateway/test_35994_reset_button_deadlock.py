@@ -198,3 +198,28 @@ async def test_reset_completes_when_cleanup_times_out(caplog):
     ), "expected the timeout warning to be logged"
     runner.session_store.reset_session.assert_called_once()
     assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_the_outgoing_loop(tmp_path, monkeypatch):
+    """A user /new ends the old conversation's persistent /loop state."""
+    from hermes_cli import goals, loops
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+    try:
+        runner = _make_runner_with_cached_agent(lambda: None)
+        loops.LoopManager(session_id="sess-old").set(
+            "check the deployment", interval_seconds=60
+        )
+
+        result = await runner._handle_reset_command(_make_event("/new"))
+
+        state = loops.load_loop("sess-old")
+        assert result is not None
+        assert state is not None
+        assert state.status == "cleared"
+    finally:
+        goals._DB_CACHE.clear()

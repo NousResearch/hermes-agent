@@ -27,6 +27,9 @@ def stream_diag_init() -> Dict[str, Any]:
     return {
         "started_at": time.time(), "first_chunk_at": None, "chunks": 0, "bytes": 0,
         "headers": {}, "http_status": None, "serving_provider": None,
+        # True once a terminal finish_reason is seen on this attempt: tells a mid-flight
+        # transport failure (False) from an error raised after completion (#102766).
+        "finish_reason_seen": False,
     }
 
 
@@ -74,11 +77,12 @@ def flatten_exception_chain(error: BaseException) -> str:
 
 
 def _diag_fields(diag: Optional[Dict[str, Any]]) -> tuple:
-    """(http_status, bytes, chunks, elapsed, ttfb, serving_provider, upstream) for the retry log line;
-    ``-`` when unknown."""
+    """(http_status, bytes, chunks, elapsed, ttfb, serving_provider, finish_reason_seen, upstream)
+    for the retry log line; ``-`` when unknown."""
     _bytes = _chunks = 0
     _elapsed = 0.0
     _ttfb = _headers_repr = _http_status = _serving_provider = "-"
+    _finish_reason_seen = False
     if isinstance(diag, dict):
         try:
             _now = time.time()
@@ -96,9 +100,10 @@ def _diag_fields(diag: Optional[Dict[str, Any]]) -> tuple:
                 _http_status = str(diag.get("http_status"))
             if diag.get("serving_provider"):
                 _serving_provider = str(diag["serving_provider"])
+            _finish_reason_seen = bool(diag.get("finish_reason_seen"))
         except Exception:
             pass
-    return _http_status, _bytes, _chunks, _elapsed, _ttfb, _serving_provider, _headers_repr
+    return _http_status, _bytes, _chunks, _elapsed, _ttfb, _serving_provider, _finish_reason_seen, _headers_repr
 
 
 def log_stream_retry(
@@ -127,7 +132,7 @@ def log_stream_retry(
         logger.warning(
             "Stream %s on attempt %s/%s — retrying. subagent_id=%s depth=%s provider=%s base_url=%s "
             "error_type=%s error=%s chain=%s http_status=%s bytes=%d chunks=%d elapsed=%.2fs ttfb=%s "
-            "serving_provider=%s upstream=[%s]",
+            "serving_provider=%s finish_reason_seen=%s upstream=[%s]",
             kind, attempt, max_attempts,
             getattr(agent, "_subagent_id", None) or "-", getattr(agent, "_delegate_depth", 0),
             agent.provider or "-", agent.base_url or "-",

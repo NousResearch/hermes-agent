@@ -2373,7 +2373,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None, overflow_terminal=False, api_mode=None):
+    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
@@ -2389,6 +2389,12 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     and the loop continues instead of entering the invalid-response retry ladder
     (#45908). Empty content keeps one empty text block: validate_response rejects
     an empty list for ``max_tokens``.
+
+    ``clean_eof``: the stream ended with no transport exception and no
+    ``finish_reason`` (server/intermediary closed cleanly). Only the two
+    clean-EOF sites in ``_finish_chat_stream`` pass True; the stub built after a
+    real transport exception keeps False so the loop can word the two failure
+    modes differently (#102766).
     """
     if api_mode == "anthropic_messages":
         return SimpleNamespace(
@@ -2402,6 +2408,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
             usage=usage_obj,
             _dropped_tool_names=dropped_tool_names or None,
             _overflow_terminal=overflow_terminal,
+            _clean_eof=clean_eof,
         )
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
@@ -2415,6 +2422,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         usage=usage_obj,
         _dropped_tool_names=dropped_tool_names or None,
         _overflow_terminal=overflow_terminal,
+        _clean_eof=clean_eof,
     )
 
 
@@ -3128,6 +3136,8 @@ class _StreamingCall(StreamingWaitMonitor):
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
+                if finish_reason and isinstance(self.clients.diag, dict):
+                    self.clients.diag["finish_reason_seen"] = True  # #102766
                 continue
 
             choice = chunk.choices[0]
@@ -3135,6 +3145,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
             finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
+            if finish_reason and isinstance(self.clients.diag, dict):
+                self.clients.diag["finish_reason_seen"] = True  # #102766
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
@@ -3292,19 +3304,22 @@ class _StreamingCall(StreamingWaitMonitor):
             # upstream dropped mid tool-call, and stamping "length" burns 3 useless retries.
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
             logger.warning(
-                "Stream ended with no finish_reason while a tool call's arguments were still incomplete "
-                "(tools=%s); treating as a mid-tool-call stream drop, not an output-length truncation.",
+                "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a tool "
+                "call's arguments were still incomplete (tools=%s). Not a network drop and not an "
+                "output-length truncation.",
                 _dropped_names)
             return _build_partial_stream_stub(
-                role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)
+                role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
+                clean_eof=True)
         if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
             # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
             # and the next step is lost — for reasoning-only, the clean-stop promotion in
             # finish_text_response would then surface a truncated thought as the answer.
             # A usage object proves the provider finished (include_usage's final chunk).
             logger.warning(
-                "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
-            return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
+                "Clean EOF, no finish_reason: server ended the stream (no transport exception) after delivering "
+                "text with no tool calls. Not a network drop.")
+            return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, clean_eof=True)
         effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
         provider_stream_error = _provider_stream_error_from_text(
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))

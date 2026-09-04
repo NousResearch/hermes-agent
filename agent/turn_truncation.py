@@ -452,6 +452,9 @@ def recover_from_truncation(
     )
     st.window_filled = _prompt_filled_window(agent, response)
     agent._vprint(
+        f"{agent.log_prefix}⚠️  Response truncated — server ended the stream without ever sending "
+        f"finish_reason (not a network drop)"
+        if st.is_stub and getattr(response, "_clean_eof", False) else
         f"{agent.log_prefix}⚠️  Response truncated — stream ended before completion"
         if st.is_stub else
         f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - the prompt filled the "

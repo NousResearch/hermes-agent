@@ -1150,6 +1150,31 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay go_dormant failed", exc_info=True)
             return False
 
+    def hold_redial(self) -> bool:
+        """Park the transport's reconnect supervisor. False if it did not take.
+
+        The caller suspends on the strength of this, so a swallowed failure here
+        would report protection that was never installed.
+        """
+        return self._toggle_transport_redial("hold_redial")
+
+    def release_redial(self) -> bool:
+        """Undo hold_redial() when the suspend did not land."""
+        return self._toggle_transport_redial("release_redial")
+
+    def _toggle_transport_redial(self, method_name: str) -> bool:
+        # Still never raises into the idle path, but a stub transport or a
+        # throwing toggle now reports False instead of passing for success.
+        method = getattr(self._transport, method_name, None)
+        if not callable(method):
+            return False
+        try:
+            method()
+        except Exception:  # noqa: BLE001 - never blocks the idle path
+            logger.debug("relay %s failed", method_name, exc_info=True)
+            return False
+        return True
+
     async def send_for_platform(
         self,
         logical_platform: Any,

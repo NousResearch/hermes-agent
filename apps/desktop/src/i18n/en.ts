@@ -586,6 +586,8 @@ export const en: Translations = {
       },
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
+      userBubbleTitle: 'Message Bubble',
+      userBubbleDesc: 'How see-through your own messages are. Solid at 0; only the outline remains at 100.',
       introSplashTitle: 'Intro Splash',
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
       reactionsTitle: 'Message Reactions',

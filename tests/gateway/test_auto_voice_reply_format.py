@@ -93,6 +93,28 @@ class TestAutoVoiceReplyFormat:
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
 
+    def test_should_send_voice_reply_a2a_ignores_global_auto_tts(self):
+        """A2A text tasks must stay text even when voice.auto_tts is on.
+
+        Desktop Read-replies-aloud writes the global default. The runner used
+        that default for every adapter with no /voice mode, including A2A,
+        which cannot deliver native audio (#90103).
+        """
+        runner = _make_runner()
+        a2a = Platform("a2a")
+        adapter = _make_adapter(a2a)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[a2a] = adapter
+        event = _make_event(a2a, chat_id="ctx-peer")
+
+        assert runner._should_send_voice_reply(event, "audit findings", []) is False
+
+        telegram = _make_event(Platform.TELEGRAM, chat_id="999")
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        telegram_adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = telegram_adapter
+        assert runner._should_send_voice_reply(telegram, "hello", []) is True
+
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)

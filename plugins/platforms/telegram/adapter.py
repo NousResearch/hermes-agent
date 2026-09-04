@@ -145,7 +145,10 @@ from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len)
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ids import (
+    normalize_telegram_chat_id,
+    telegram_chat_id_key,
+)
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -540,12 +543,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _forget_status_message_id(self, chat_id: str, message_id: str) -> None:
         """Drop status-cache rows that point at a deleted/missing Telegram message."""
-        chat = str(chat_id)
+        chat = telegram_chat_id_key(chat_id)
         mid = str(message_id)
         stale = [
             key
             for key, cached in self._status_message_ids.items()
-            if key[0] == chat and str(cached) == mid
+            if telegram_chat_id_key(key[0]) == chat and str(cached) == mid
         ]
         for key in stale:
             self._status_message_ids.pop(key, None)
@@ -3415,7 +3418,7 @@ class TelegramAdapter(BasePlatformAdapter):
         append a fresh bubble on every call. With this method, the first call sends and the message id is
         remembered; subsequent calls with the same (chat_id, status_key) edit that same message in place.
         """
-        key = (str(chat_id), str(status_key))
+        key = (telegram_chat_id_key(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
             result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)

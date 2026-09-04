@@ -515,9 +515,22 @@ def _rich_normalize_linebreaks(text: str) -> str:
     Paragraph breaks (``\\n\\n``), fenced code blocks, and GFM pipe-table
     blocks are left untouched: tables render natively in the rich path and a
     hard break injected into a row separator would corrupt the table.
+
+    A pipe table additionally needs a *blank line* on each side. A table is a
+    block-level structure that cannot be opened from inside an open paragraph,
+    so prose written directly above a table (no blank line — a very common
+    model output) used to leave the paragraph open and Telegram swallowed the
+    whole table into it as literal ``| a | b |`` text. Symmetrically, prose
+    written directly below a table would be absorbed as one more table row.
+    The single boundary newline is therefore promoted to a paragraph break
+    instead of a hard break. Fenced code blocks need no such promotion: a fence
+    can interrupt a paragraph, so their boundaries are left alone.
     """
     if not text or '\n' not in text:
         return text
+
+    def _hard_breaks(prose: str) -> str:
+        return re.sub(r'(?<!\n)\n(?!\n)', '  \n', prose)
 
     out: list[str] = []
     # Split off protected regions (fenced code OR table blocks) and only inject
@@ -525,12 +538,23 @@ def _rich_normalize_linebreaks(text: str) -> str:
     # the original single-\n regex, which sees each prose run as a whole string.
     pos = 0
     for m in _RICH_PROTECTED_REGION_RE.finditer(text):
+        region = m.group(0)
+        is_table = not region.startswith('```')
         prose = text[pos:m.start()]
-        out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', prose))
-        out.append(m.group(0))  # protected region kept verbatim
+        if is_table and prose.endswith('\n') and not prose.endswith('\n\n'):
+            # Close the paragraph above the table instead of hard-breaking it.
+            out.append(_hard_breaks(prose[:-1]))
+            out.append('\n\n')
+        else:
+            out.append(_hard_breaks(prose))
+        out.append(region)  # protected region kept verbatim
         pos = m.end()
+        if is_table and text.startswith('\n', pos) and not text.startswith('\n\n', pos):
+            # Same on the far side: keep the next prose line out of the table.
+            out.append('\n\n')
+            pos += 1
     tail = text[pos:]
-    out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', tail))
+    out.append(_hard_breaks(tail))
     return ''.join(out)
 
 

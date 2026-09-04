@@ -1002,7 +1002,9 @@ def _run_claimed_job(
     the tool response can report "paused"/"already firing" immediately — and
     hand the actual run to a daemon worker.
 
-    Returns {"claimed": True, "success": bool, "error": str|None}.
+    Returns {"claimed": True, "success": bool, "error": str|None,
+    "delivery_outcome": str|None}. A missing outcome is intentionally
+    fail-closed by the async completion renderer.
     """
     job_id = job["id"]
     _registered = False
@@ -1111,11 +1113,12 @@ def _run_claimed_job(
         adapters = getattr(runner, "adapters", None) if runner is not None else None
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
 
+        delivery_result: Dict[str, Any] = {}
         try:
             try:
                 processed = run_one_job(
                     job, adapters=adapters, loop=gateway_loop,
-                    extra_prompt=extra_prompt,
+                    extra_prompt=extra_prompt, delivery_result=delivery_result,
                 )
             finally:
                 _heartbeat_stop.set()
@@ -1152,6 +1155,7 @@ def _run_claimed_job(
             "claimed": True,
             "success": bool(processed and ok),
             "error": run_error,
+            "delivery_outcome": delivery_result.get("delivery_outcome"),
         }
 
     except Exception as e:
@@ -1205,6 +1209,32 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
         return text
     except Exception:
         return None
+
+
+def _manual_run_delivery_line(deliver: Any, outcome: Any) -> str:
+    """Render one truthful, bounded manual-run delivery status line."""
+    raw_target = str(deliver or "local")
+    target_lines = raw_target.splitlines()
+    first_line = target_lines[0] if target_lines else "local"
+    target = " ".join(first_line.split()) or "local"
+    if len(target) > 80:
+        target = target[:79] + "…"
+    prefix = f"Delivery target: {target}"
+    if target == "local":
+        return prefix + " (output saved locally only)"
+    suffixes = {
+        "delivered": "delivery confirmed by the scheduler",
+        "suppressed": "scheduler recorded delivery as suppressed",
+        "suppressed_acked": (
+            "operator acknowledged the incident; failure alert was suppressed"
+        ),
+        "failed": "delivery failed; output was not confirmed delivered",
+        "not_configured": "no destination was resolved; output was not delivered",
+    }
+    suffix = suffixes.get(str(outcome or ""))
+    if suffix is None:
+        suffix = "delivery outcome was not reported; output was not confirmed delivered"
+    return f"{prefix} ({suffix})"
 
 
 def _try_dispatch_background_run(
@@ -1398,8 +1428,7 @@ def _try_dispatch_background_run(
             f"Cron job '{job_name}' ({job_id}) finished its manual run.",
             f"Result: {'ok' if res.get('success') else 'FAILED'}"
             + (f" — {res.get('error')}" if res.get("error") else ""),
-            f"Delivery target: {deliver}"
-            + _manual_run_delivery_note(deliver, refreshed),
+            _manual_run_delivery_line(deliver, res.get("delivery_outcome")),
         ]
         if refreshed.get("next_run_at"):
             lines.append(f"Next scheduled run: {refreshed['next_run_at']}")

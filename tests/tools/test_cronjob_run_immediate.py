@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from tools.cronjob_tools import cronjob, _execute_job_now
 from tools.environments.base import set_activity_callback
@@ -40,7 +40,10 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
         m_claim.assert_called_once_with("job-run-1", return_job=True)
-        m_run.assert_called_once_with(claimed, adapters=None, loop=None, extra_prompt=None)
+        m_run.assert_called_once_with(
+            claimed, adapters=None, loop=None, extra_prompt=None,
+            delivery_result=ANY,
+        )
 
     def test_run_reconciles_external_provider_after_claimed_execution(self):
         """A direct run must re-arm Chronos after it advances next_run_at.
@@ -142,6 +145,7 @@ class TestCronjobRunExecutesImmediately:
             adapters=adapters,
             loop=gateway_loop,
             extra_prompt=None,
+            delivery_result=ANY,
         )
 
     def test_execute_job_now_remains_standalone_without_gateway(self):
@@ -160,6 +164,7 @@ class TestCronjobRunExecutesImmediately:
             adapters=None,
             loop=None,
             extra_prompt=None,
+            delivery_result=ANY,
         )
 
     def test_execute_job_now_marks_failure_on_exception(self):

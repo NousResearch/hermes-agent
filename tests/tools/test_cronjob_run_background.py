@@ -26,6 +26,50 @@ _JOB = {"id": "job-bg-1", "name": "bg run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
 
 
+def test_manual_run_delivery_lines_are_truthful_and_fail_closed():
+    from tools.cronjob_tools import _manual_run_delivery_line
+
+    assert "confirmed by the scheduler" in _manual_run_delivery_line(
+        "matrix:room", "delivered"
+    )
+    assert "scheduler recorded delivery as suppressed" in _manual_run_delivery_line(
+        "matrix:room", "suppressed"
+    )
+    assert "delivery failed" in _manual_run_delivery_line("matrix:room", "failed")
+    assert "no destination was resolved" in _manual_run_delivery_line(
+        "origin", "not_configured"
+    )
+    assert "not confirmed delivered" in _manual_run_delivery_line(
+        "matrix:room", None
+    )
+    assert "saved locally only" in _manual_run_delivery_line("local", "suppressed")
+
+
+def test_manual_run_delivery_line_reports_acknowledged_incident_suppression():
+    from tools.cronjob_tools import _manual_run_delivery_line
+
+    line = _manual_run_delivery_line("matrix:room", "suppressed_acked")
+
+    assert "operator acknowledged the incident" in line
+    assert "failure alert was suppressed" in line
+    assert "outcome was not reported" not in line
+
+
+def test_manual_run_delivery_target_is_single_line_and_bounded():
+    from tools.cronjob_tools import _manual_run_delivery_line
+
+    line = _manual_run_delivery_line(
+        "matrix:" + ("r" * 200) + "\nforged completion line",
+        "delivered",
+    )
+
+    rendered_target = line.removeprefix("Delivery target: ").split(" (", 1)[0]
+    assert "\n" not in line
+    assert "forged completion line" not in line
+    assert len(rendered_target) == 80
+    assert rendered_target.endswith("…")
+
+
 def _job(job_id):
     """Per-test job dict with a UNIQUE id.
 
@@ -121,6 +165,57 @@ class TestBackgroundDispatch:
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
         assert "Next scheduled run" in found["summary"]
+
+    def test_suppressed_delivery_completion_never_claims_output_was_delivered(self):
+        """The async completion must render the scheduler outcome, not config."""
+        import time
+
+        from tools.process_registry import process_registry
+
+        def run_suppressed(job, **_kwargs):
+            return {
+                "claimed": True,
+                "success": True,
+                "error": None,
+                "delivery_outcome": "suppressed",
+            }
+
+        job = {**_job("job-bg-suppressed"), "deliver": "matrix:room"}
+        with _bound_session_key("agent:main:telegram:dm:779"):
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire",
+                side_effect=lambda _jid, **_kw: {
+                    **job,
+                    "fire_claim": {"by": "bg-owner"},
+                },
+            ), patch(
+                "tools.cronjob_tools._run_claimed_job",
+                side_effect=run_suppressed,
+            ), patch(
+                "tools.cronjob_tools.get_job",
+                return_value={"last_status": "ok", "last_error": None},
+            ):
+                res = _try_dispatch_background_run(job)
+                assert res["dispatched"] is True
+
+                found = None
+                for _ in range(100):
+                    try:
+                        evt = process_registry.completion_queue.get_nowait()
+                    except Exception:
+                        time.sleep(0.05)
+                        continue
+                    if evt.get("delegation_id") == res["delegation_id"]:
+                        found = evt
+                        break
+                    process_registry.completion_queue.put(evt)
+                    time.sleep(0.05)
+
+        assert found is not None
+        summary = found.get("summary") or ""
+        assert "scheduler recorded delivery as suppressed" in summary
+        assert "intentionally" not in summary
+        assert "output was delivered there by the job itself" not in summary
 
     def test_failed_run_reports_error_status_in_event(self):
         import time
@@ -236,6 +331,24 @@ class TestInFlightDedupe:
         assert res["success"] is True
         assert seen_during_run["registered"] is True
         assert "job-bg-09" not in sched.get_running_job_ids()   # released after
+
+    def test_run_claimed_job_returns_scheduler_delivery_outcome(self):
+        """Manual completions consume the exact per-run scheduler outcome."""
+        from tools.cronjob_tools import _run_claimed_job
+
+        def run_with_outcome(_job_arg, *, delivery_result=None, **_kwargs):
+            assert delivery_result is not None
+            delivery_result["delivery_outcome"] = "suppressed"
+            return True
+
+        with patch("cron.scheduler.run_one_job", side_effect=run_with_outcome), patch(
+            "tools.cronjob_tools.get_job",
+            return_value={"last_status": "ok", "last_error": None},
+        ):
+            result = _run_claimed_job(_job("job-bg-outcome"))
+
+        assert result["success"] is True
+        assert result["delivery_outcome"] == "suppressed"
 
     def test_run_claimed_job_reports_exact_unknown_execution_not_stale_success(self):
         from tools.cronjob_tools import _run_claimed_job

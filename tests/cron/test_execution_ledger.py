@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 
 def _point_ledger(monkeypatch, tmp_path):
@@ -355,11 +356,58 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
     monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
 
-    assert scheduler.run_one_job({"id": "job-3", "execution_id": "exec-3"}) is True
+    delivery_result = {}
+    assert scheduler.run_one_job(
+        {"id": "job-3", "execution_id": "exec-3"},
+        delivery_result=delivery_result,
+    ) is True
     assert run_execution_ids == ["exec-3"]
     assert events[0] == ("running", "exec-3")
     assert events[-1][0:2] == ("finish", "exec-3")
     assert events[-1][2]["success"] is True
+    assert events[-1][2]["delivery_outcome"] == "suppressed"
+    assert delivery_result == {"delivery_outcome": "suppressed"}
+
+
+def test_run_one_job_reports_silent_delivery_suppression(monkeypatch):
+    import cron.scheduler as scheduler
+
+    finished = []
+    deliver = MagicMock()
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
+    monkeypatch.setattr(
+        scheduler,
+        "finish_execution",
+        lambda _execution_id, **kwargs: finished.append(kwargs),
+    )
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda _job, *, defer_agent_teardown=None, **_kw: (
+            True,
+            "output",
+            "[SILENT]",
+            None,
+        ),
+    )
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_deliver_result", deliver)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
+
+    delivery_result = {}
+    assert scheduler.run_one_job(
+        {
+            "id": "job-silent",
+            "execution_id": "exec-silent",
+            "deliver": "matrix:room",
+        },
+        delivery_result=delivery_result,
+    ) is True
+
+    deliver.assert_not_called()
+    assert finished[-1]["delivery_outcome"] == "suppressed"
+    assert delivery_result == {"delivery_outcome": "suppressed"}
 
 
 def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):

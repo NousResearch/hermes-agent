@@ -182,11 +182,16 @@ class TestDeliveryNote:
 
 
 class TestRunnerSummaryWiring:
-    """The completion event the calling agent actually sees must follow the
-    refreshed job record — both directions of issue #83993."""
+    """The completion event must use the exact scheduler delivery outcome
+    together with the refreshed run error record."""
 
     def test_delivery_failure_surfaces_in_completion_summary(self):
         from tools.cronjob_tools import _try_dispatch_background_run
+
+        def run_failed(_job, *, delivery_result=None, **_kwargs):
+            assert delivery_result is not None
+            delivery_result["delivery_outcome"] = "failed"
+            return True
 
         job = _job("job-dn-01", "telegram")
         with _bound_session_key("agent:main:telegram:dm:83993"):
@@ -195,7 +200,7 @@ class TestRunnerSummaryWiring:
                     "tools.cronjob_tools.claim_job_for_fire",
                     return_value=job,  # claimed snapshot (return_job=True API)
                 ),
-                patch("cron.scheduler.run_one_job", return_value=True),
+                patch("cron.scheduler.run_one_job", side_effect=run_failed),
                 patch(
                     "tools.cronjob_tools.get_job",
                     return_value={
@@ -213,7 +218,7 @@ class TestRunnerSummaryWiring:
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
         assert "Delivery target: telegram" in summary
-        assert "delivery FAILED" in summary
+        assert "delivery failed; output was not confirmed delivered" in summary
         assert "telegram send failed: 400" in summary
         assert "delivered there by the job itself" not in summary
         # The headline must not read "Result: ok" over an undelivered run.
@@ -247,8 +252,13 @@ class TestRunnerSummaryWiring:
         assert "Delivery target: local (output saved locally only)" in summary
         assert "delivered there by the job itself" not in summary
 
-    def test_delivery_success_wording_unchanged_in_completion_summary(self):
+    def test_delivery_success_reports_scheduler_confirmation(self):
         from tools.cronjob_tools import _try_dispatch_background_run
+
+        def run_delivered(_job, *, delivery_result=None, **_kwargs):
+            assert delivery_result is not None
+            delivery_result["delivery_outcome"] = "delivered"
+            return True
 
         job = _job("job-dn-02", "telegram")
         with _bound_session_key("agent:main:telegram:dm:83994"):
@@ -257,7 +267,7 @@ class TestRunnerSummaryWiring:
                     "tools.cronjob_tools.claim_job_for_fire",
                     return_value=job,  # claimed snapshot (return_job=True API)
                 ),
-                patch("cron.scheduler.run_one_job", return_value=True),
+                patch("cron.scheduler.run_one_job", side_effect=run_delivered),
                 patch(
                     "tools.cronjob_tools.get_job",
                     return_value={"last_status": "ok", "last_error": None},
@@ -269,6 +279,6 @@ class TestRunnerSummaryWiring:
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
         assert (
-            "Delivery target: telegram (output was delivered there by the job itself)"
+            "Delivery target: telegram (delivery confirmed by the scheduler)"
         ) in summary
         assert "delivery FAILED" not in summary

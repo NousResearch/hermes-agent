@@ -7406,6 +7406,7 @@ def run_one_job(
     verbose: bool = False,
     extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    delivery_result: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -7425,6 +7426,10 @@ def run_one_job(
     fire-claim heartbeat's lost-ownership event, so either trigger stops the
     run cooperatively — agent interruption AND script process-tree kill —
     through the single fenced completion path.
+
+    ``delivery_result``: optional per-call collector for the scheduler's typed
+    delivery outcome. Manual background runs use it to report delivery truth;
+    normal ticker/provider callers may omit it.
     """
     # Every gateway path (built-in scheduler, external providers, and direct
     # API fires) crosses this seam.  Ensure the detached worker has a durable
@@ -7487,6 +7492,7 @@ def run_one_job(
                     else lost_ownership
                 ),
                 execution_token=execution_token,
+                delivery_result=delivery_result,
             ),
         )
     finally:
@@ -7507,6 +7513,7 @@ def _run_one_job_body(
     extra_prompt: Optional[str] = None,
     fire_claim_lost: Optional[_CancelEventLike] = None,
     execution_token: Optional[object] = None,
+    delivery_result: Optional[dict[str, Any]] = None,
 ) -> bool:
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
@@ -7938,6 +7945,8 @@ def _run_one_job_body(
             # configured target) — record it on the incident so the CLI
             # distinguishes "failure seen" from "operator was pinged".
             _mark_incident_alerted(failure_incident_id)
+        if delivery_result is not None:
+            delivery_result["delivery_outcome"] = delivery_outcome
         finish_execution(
             execution_id,
             success=success,
@@ -8021,6 +8030,8 @@ def _run_one_job_body(
                     delivery_outcome = "delivered"
                 if delivery_outcome in ("delivered", "not_configured"):
                     _mark_incident_alerted(failure_incident_id)
+        if delivery_result is not None:
+            delivery_result["delivery_outcome"] = delivery_outcome
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
                 mark_kwargs = {}

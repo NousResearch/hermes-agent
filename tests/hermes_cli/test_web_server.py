@@ -5110,6 +5110,29 @@ class TestHeadlessServeTokenPage:
         assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
 
+    def test_root_serves_token_applied_after_mount(self, monkeypatch):
+        """The page must embed the token the API validates *now*, not a copy
+        captured when the routes were mounted. ``hermes serve
+        --ssh-session-token-file`` rebinds ``web_server._SESSION_TOKEN`` via
+        ``_apply_ssh_session_token()`` after mount; serving the stale copy made
+        Desktop adopt a token every non-public ``/api`` route then 401'd.
+        """
+        import json as _json
+        import re
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        applied = "a" * 64
+        assert ws._SESSION_TOKEN != applied
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", applied)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+        assert match, resp.text
+        assert _json.loads(match.group(1)) == applied
+
     def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=True)
         resp = client.get("/")

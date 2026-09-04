@@ -961,7 +961,7 @@ Useful when you want to share one skill without asking the user to subscribe to 
 
 #### Trust levels for taps
 
-New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_hub.py` (requires a Hermes core PR).
+New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_guard.py` (requires a Hermes core PR).
 
 #### Tap management
 

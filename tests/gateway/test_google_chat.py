@@ -135,9 +135,9 @@ from plugins.platforms.google_chat.adapter import (  # noqa: E402
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
-    card_spec_to_cards_v2,
     check_google_chat_requirements,
 )
+from plugins.platforms.google_chat.cards import card_spec_to_cards_v2  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1735,7 +1735,7 @@ class TestCronSchedulerRegistry:
 
     def test_google_chat_is_known_delivery_platform(self):
         self._ensure_registered()
-        from cron.scheduler import _is_known_delivery_platform
+        from cron.scheduler_delivery import _is_known_delivery_platform
 
         assert _is_known_delivery_platform("google_chat") is True
 

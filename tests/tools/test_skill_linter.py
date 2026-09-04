@@ -7,8 +7,6 @@ import pytest
 from tools.skill_linter import (
     ERROR,
     WARNING,
-    format_findings,
-    has_errors,
     lint_content,
     lint_skill,
 )
@@ -105,7 +103,7 @@ def test_bad_name_format_is_error():
     content = CLEAN.replace("name: my-skill", "name: My_Skill!")
     findings = lint_content(content)
     assert "name-format" in _rules(findings)
-    assert has_errors(findings)
+    assert any(f.severity == ERROR for f in findings)
 
 
 def test_name_dir_mismatch_is_error(tmp_path):
@@ -113,7 +111,7 @@ def test_name_dir_mismatch_is_error(tmp_path):
     skill_dir.mkdir()
     findings = lint_content(CLEAN, skill_dir=skill_dir)  # name is my-skill
     assert "name-dir-mismatch" in _rules(findings)
-    assert has_errors(findings)
+    assert any(f.severity == ERROR for f in findings)
 
 
 def test_dangling_reference_link_flagged(tmp_path):
@@ -183,7 +181,6 @@ def test_author_caps_warned():
     assert "author-caps" in _rules(findings)
 
 
-def test_format_findings_renders():
+def test_findings_carry_rule_and_severity():
     findings = lint_content(CLEAN.replace("name: my-skill", "name: BAD"))
-    out = format_findings(findings)
-    assert "name-format" in out
+    assert any(f.rule == "name-format" and f.severity == ERROR for f in findings)

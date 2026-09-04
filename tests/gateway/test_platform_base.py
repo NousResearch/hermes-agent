@@ -1336,7 +1336,8 @@ class TestDockerProfileSandboxMediaTranslation:
 
     @staticmethod
     def _sandbox_dir(task_id: str = "default"):
-        from tools.environments.base import get_sandbox_dir, sanitize_task_id_for_path
+        from tools.environments.base import get_sandbox_dir
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         name = task_id if task_id == "default" else sanitize_task_id_for_path(task_id)
         return get_sandbox_dir() / "docker" / name

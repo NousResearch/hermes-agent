@@ -21,11 +21,12 @@ from unittest.mock import patch as mock_patch
 import pytest
 
 from hermes_cli import models as models_mod
+from hermes_cli import models_validate
 
 
 def _validate(requested: str, base_url: str, live: list[str], provider: str = "openai-api"):
     with mock_patch.object(models_mod, "fetch_api_models", return_value=live):
-        return models_mod.validate_requested_model(
+        return models_validate.validate_requested_model(
             requested,
             provider=provider,
             api_key="sk-test",

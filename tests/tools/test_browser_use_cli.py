@@ -19,6 +19,9 @@ import time
 import pytest
 
 import tools.browser_use_cli as bu_cli
+from tools import browser_tool_install as bt_install
+from tools import browser_tool_cloud as bt_cloud
+from tools import browser_tool_session as bt_session
 
 
 @pytest.fixture(autouse=True)
@@ -183,8 +186,8 @@ class TestToolSurfaceSwap:
         import tools.browser_tool as browser_tool
 
         monkeypatch.setattr(browser_tool, "_is_browser_use_cli_mode", lambda: True)
-        assert browser_tool.check_browser_requirements() is False
-        assert browser_tool.check_browser_vision_requirements() is False
+        assert bt_install.check_browser_requirements() is False
+        assert bt_install.check_browser_vision_requirements() is False
 
     def test_browser_exec_registered_with_mode_check(self):
         from tools.registry import registry
@@ -391,17 +394,15 @@ class TestBackendCdpResolution:
         assert env["BU_CDP_WS"] == "ws://operator-override:9222"
 
     def test_cdp_override_exported(self, monkeypatch):
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "http://127.0.0.1:9222")
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "http://127.0.0.1:9222")
         env = self._env()
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
 
     def test_ws_override_uses_bu_cdp_ws(self, monkeypatch):
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "wss://connect.example/x")
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "wss://connect.example/x")
         env = self._env()
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://connect.example/x"
@@ -409,10 +410,10 @@ class TestBackendCdpResolution:
     def test_cloud_provider_session_exported(self, monkeypatch):
         import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(
-            bt, "_get_session_info",
+            bt_session, "_get_session_info",
             lambda task_id: {"cdp_url": "wss://browser.example/cdp/abc"},
         )
         env = self._env()
@@ -420,32 +421,29 @@ class TestBackendCdpResolution:
         assert env["BU_CDP_WS"] == "wss://browser.example/cdp/abc"
 
     def test_no_provider_leaves_env_untouched(self, monkeypatch):
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         env = self._env()
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
     def test_provider_failure_returns_error(self, monkeypatch):
-        import tools.browser_tool as bt
 
         def boom(task_id):
             raise RuntimeError("api down")
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(bt, "_get_session_info", boom)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt_session, "_get_session_info", boom)
         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
         assert err and "api down" in err
 
     def test_provider_without_cdp_returns_error(self, monkeypatch):
-        import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(bt, "_get_session_info", lambda task_id: {"cdp_url": None})
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt_session, "_get_session_info", lambda task_id: {"cdp_url": None})
         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
         assert err and "no" in err.lower() and "CDP" in err
 
@@ -453,7 +451,6 @@ class TestBackendCdpResolution:
         """session=<name> composes with a configured provider backend: the
         name keys its OWN provider browser (bu-named-<name>), so concurrent
         named sessions never share one browser (#86894)."""
-        import tools.browser_tool as bt
 
         seen = []
 
@@ -461,9 +458,9 @@ class TestBackendCdpResolution:
             seen.append(key)
             return {"cdp_url": "wss://browser.example/cdp/" + key}
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(bt, "_get_session_info", fake_session_info)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt_session, "_get_session_info", fake_session_info)
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME ws:$BU_CDP_WS"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
@@ -479,10 +476,10 @@ class TestBackendCdpResolution:
         import tools.browser_tool as bt
 
         seen = []
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(
-            bt, "_get_session_info",
+            bt_session, "_get_session_info",
             lambda key: seen.append(key) or {"cdp_url": "wss://x/cdp/a"},
         )
         env1, env2 = {}, {}
@@ -501,10 +498,10 @@ class TestBackendCdpResolution:
         class _BUProvider:
             name = "browser-use"
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _BUProvider())
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
         monkeypatch.setattr(
-            bt, "_get_session_info",
+            bt_session, "_get_session_info",
             lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
         )
         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
@@ -520,15 +517,15 @@ class TestOwnTabPreamble:
     def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False):
         import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
         if provider:
-            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+            monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
             monkeypatch.setattr(
-                bt, "_get_session_info",
+                bt_session, "_get_session_info",
                 lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
             )
         else:
-            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+            monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         # fake CLI echoes stdin back so we can inspect what code was sent
         cli = _fake_cli(tmp_path, "cat\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -555,10 +552,10 @@ class TestOwnTabPreamble:
     def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
         import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(
-            bt, "_get_session_info",
+            bt_session, "_get_session_info",
             lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
         )
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "sentinel:${_HERMES_BU_PRIVATE_BROWSER:-unset}"\n')
@@ -1101,7 +1098,6 @@ class TestLightpandaBackendResolution:
     (BU_CDP_* env, a CDP override, a cloud provider) claimed the session."""
 
     def _setup(self, monkeypatch, *, engine=True, info=None, boom=None):
-        import tools.browser_tool as bt
 
         seen = []
 
@@ -1111,10 +1107,10 @@ class TestLightpandaBackendResolution:
                 raise boom
             return info if info is not None else {"cdp_url": "http://127.0.0.1:43111"}
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
-        monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: engine)
-        monkeypatch.setattr(bt, "_get_session_info", fake_session_info)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: engine)
+        monkeypatch.setattr(bt_session, "_get_session_info", fake_session_info)
         return seen
 
     def test_exports_bu_cdp_url_and_private_sentinel(self, monkeypatch):
@@ -1161,20 +1157,18 @@ class TestLightpandaBackendResolution:
         assert seen == []
 
     def test_cdp_override_wins(self, monkeypatch):
-        import tools.browser_tool as bt
 
         seen = self._setup(monkeypatch)
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "http://127.0.0.1:9222")
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "http://127.0.0.1:9222")
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
         assert seen == []
 
     def test_cloud_provider_wins(self, monkeypatch):
-        import tools.browser_tool as bt
 
         seen = self._setup(monkeypatch, info={"cdp_url": "wss://cloud.example/x"})
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://cloud.example/x"
@@ -1188,11 +1182,11 @@ class TestLightpandaPreamble:
         (lightpanda-io/browser#1962)."""
         import tools.browser_tool as bt
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
-        monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
         monkeypatch.setattr(
-            bt, "_get_session_info", lambda key: {"cdp_url": "http://127.0.0.1:43111"}
+            bt_session, "_get_session_info", lambda key: {"cdp_url": "http://127.0.0.1:43111"}
         )
         cli = _fake_cli(tmp_path, "cat\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -1208,7 +1202,7 @@ class TestLightpandaHeader:
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
         )
         monkeypatch.setattr(
-            "tools.browser_tool.lightpanda_engine_status", lambda: (True, "used")
+            "tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (True, "used")
         )
         header = bu_cli._description_header()
         assert header.startswith(bu_cli._HEADER_BASE)
@@ -1224,7 +1218,7 @@ class TestLightpandaHeader:
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
         )
         monkeypatch.setattr(
-            "tools.browser_tool.lightpanda_engine_status", lambda: (False, "cloud")
+            "tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (False, "cloud")
         )
         assert bu_cli._description_header() == bu_cli._HEADER_BASE + bu_cli._HEADER_VISION
 
@@ -1282,12 +1276,11 @@ class TestLightpandaStatusLine:
         import contextlib
         import io
 
-        import tools.browser_tool as bt
         from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
         monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: True)
-        monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
-        monkeypatch.setattr(bt, "lightpanda_engine_status", lambda: (used, reason))
+        monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
+        monkeypatch.setattr("tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (used, reason))
         monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: binary)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

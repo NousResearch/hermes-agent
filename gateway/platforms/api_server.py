@@ -7606,9 +7606,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     # /v1/runs has its own branch in its executor.
                     logger.warning("Provider authentication failed for session=%s: %s",
                                    session_id or "", exc)
+                    from agent.notice_collapse import provider_auth_error_reply
                     return (
                         {
-                            "final_response": f"⚠️ Provider authentication failed: {exc}",
+                            "final_response": provider_auth_error_reply(
+                                exc, session_key=session_id,
+                            ),
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],

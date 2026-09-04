@@ -963,7 +963,8 @@ async def _handle_runs(
             # failure, instead of falling through to the generic
             # except-Exception branch below.
             logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
-            error_msg = f"⚠️ Provider authentication failed: {exc}"
+            from agent.notice_collapse import provider_auth_error_reply
+            error_msg = provider_auth_error_reply(exc, session_key=run_id)
             self._set_run_status(
                 run_id,
                 "failed",

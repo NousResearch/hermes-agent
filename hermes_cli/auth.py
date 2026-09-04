@@ -249,7 +249,14 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     # No static inference_base_url: Vertex's endpoint is computed per request from project_id +
     # region (agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
     ("vertex", "Google Vertex AI", "", (), "", "vertex"),
-    ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"))
+    ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"),
+    ("mistral", "Mistral AI", "https://api.mistral.ai/v1", ("MISTRAL_API_KEY",), "MISTRAL_BASE_URL"),
+    ("cohere", "Cohere", "https://api.cohere.ai/v1",
+     ("COHERE_API_KEY", "COHERE_KEY"), "COHERE_BASE_URL"),
+    ("siliconflow", "SiliconFlow", "https://api.siliconflow.cn/v1",
+     ("SILICONFLOW_API_KEY",), "SILICONFLOW_BASE_URL"),
+    ("deepinfra", "DeepInfra", "https://api.deepinfra.com/v1/openai",
+     ("DEEPINFRA_API_KEY",), "DEEPINFRA_BASE_URL"))
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
 }

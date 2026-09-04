@@ -53,6 +53,7 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from agent.tool_result_validator import validate_tool_result, get_result_preview
 
 logger = logging.getLogger(__name__)
 
@@ -1195,30 +1196,39 @@ class _ConcurrentBatch:
         except Exception as tool_error:
             result = f"Error executing tool '{ref.name}': {tool_error}"
             logger.error("_invoke_tool raised for %s: %s", ref.name, tool_error, exc_info=True)
+            tool_error_occurred = True
+        else:
+            tool_error_occurred = False
         duration = time.time() - start
         if not blocked and not dispatched:
             ref.emit_post(agent, result, duration_ms=int(duration * 1000))
-        # Post-execution tool result validation — catches malformed results before
-        # they reach the LLM, logs a warning, and records the issue in middleware_trace.
-        # Does not block execution: the original result is always passed through.
-        try:
-            from agent.tool_result_validator import validate_tool_result
-            is_valid, validation_error = validate_tool_result(ref.name, result)
-            if not is_valid:
-                logger.warning(
-                    "tool %s returned unexpected result shape: %s",
-                    ref.name,
-                    validation_error,
-                )
-                ref.trace.append({
-                    "type": "tool_result_validation_error",
-                    "error": validation_error,
-                    "preview": repr(result)[:200],
-                })
-        except Exception as _val_err:
-            # Validation is best-effort — never block the tool result.
-            # Log at WARNING so a bug in the validator itself is visible.
-            logger.warning("tool result validator raised for %s: %s", ref.name, _val_err)
+        # Post-execution tool result validation — observes output shape and
+        # logs a WARNING when a result does not match the expected shape for
+        # that tool.  Three guards keep this safe:
+        #   1. Skipped when the tool itself raised — the result is a synthetic
+        #      error string the executor built, not a tool response.
+        #   2. Skipped when the call was blocked or dispatched by middleware —
+        #      the result did not come from the real tool.
+        #   3. A bug in the validator itself cannot crash execution (try/except).
+        # The original result is always passed through unchanged.
+        if not tool_error_occurred and not blocked and not dispatched:
+            try:
+                is_valid, validation_error = validate_tool_result(ref.name, result)
+                if not is_valid:
+                    logger.warning(
+                        "tool %s returned unexpected result shape: %s",
+                        ref.name,
+                        validation_error,
+                    )
+                    ref.trace.append({
+                        "type": "tool_result_validation_error",
+                        "error": validation_error,
+                        "preview": get_result_preview(result),
+                    })
+            except Exception as _val_err:
+                # Validation is best-effort — never block the tool result.
+                # Log at WARNING so a bug in the validator itself is visible.
+                logger.warning("tool result validator raised for %s: %s", ref.name, _val_err)
         is_error, _ = _detect_tool_failure(ref.name, result)
         if is_error:
             logger.info("tool %s failed (%.2fs): %s", ref.name, duration, result[:200])
@@ -1440,6 +1450,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+
 
 
 

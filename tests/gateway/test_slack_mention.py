@@ -55,6 +55,7 @@ from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 # ---------------------------------------------------------------------------
 
 BOT_USER_ID = "U_BOT_123"
+BOT_ID = "B_BOT_123"
 CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
@@ -77,7 +78,9 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
     adapter.platform = Platform.SLACK
     adapter.config = PlatformConfig(enabled=True, extra=extra)
     adapter._bot_user_id = BOT_USER_ID
+    adapter._bot_id = BOT_ID
     adapter._team_bot_user_ids = {}
+    adapter._team_bot_ids = {}
     return adapter
 
 
@@ -278,6 +281,56 @@ def test_reaction_guard_pinned_to_production_expression():
 def test_mentioned_message_always_processed():
     adapter = _make_adapter(require_mention=True)
     assert _would_process(adapter, mentioned=True, text="what's up") is True
+
+
+def test_bot_id_mention_matches_this_slack_app():
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._slack_message_mentions_self(
+        f"<@{BOT_ID}> hello", adapter._slack_self_ids("T1")
+    ) is True
+
+
+def test_other_app_bot_id_does_not_match_this_slack_app():
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._slack_message_mentions_self(
+        "<@B_OTHER_APP> hello", adapter._slack_self_ids("T1")
+    ) is False
+
+
+def test_bot_id_mentions_are_scoped_per_workspace():
+    adapter = _make_adapter(require_mention=True)
+    adapter._team_bot_user_ids = {"T1": "U_BOT_T1", "T2": "U_BOT_T2"}
+    adapter._team_bot_ids = {"T1": "B_BOT_T1", "T2": "B_BOT_T2"}
+
+    assert adapter._slack_message_mentions_self(
+        "<@B_BOT_T2> hello", adapter._slack_self_ids("T2")
+    ) is True
+    assert adapter._slack_message_mentions_self(
+        "<@B_BOT_T2> hello", adapter._slack_self_ids("T1")
+    ) is False
+
+
+def test_workspace_without_bot_id_does_not_fall_back_to_primary_bot_id():
+    adapter = _make_adapter(require_mention=True)
+    adapter._team_bot_user_ids = {"T1": "U_BOT_T1"}
+    adapter._team_bot_ids = {"T1": ""}
+
+    assert adapter._slack_message_mentions_self(
+        f"<@{BOT_ID}> hello", adapter._slack_self_ids("T1")
+    ) is False
+
+
+def test_block_kit_bot_id_mention_matches_this_slack_app():
+    adapter = _make_adapter(require_mention=True)
+    routing_text = _slack_mention_detection_text(
+        _blockkit_mention_event(bot_user_id=BOT_ID)
+    )
+
+    assert adapter._slack_message_mentions_self(
+        routing_text, adapter._slack_self_ids("T1")
+    ) is True
 
 
 def test_thread_reply_with_active_session_processed():

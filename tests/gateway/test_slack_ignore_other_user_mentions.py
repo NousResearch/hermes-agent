@@ -58,6 +58,7 @@ from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 BOT_USER_ID = "U_BOT_123"
+BOT_ID = "B_BOT_123"
 OTHER_USER_ID = "U_OTHER_456"
 CHANNEL_ID = "C0AQWDLHY9M"
 
@@ -131,6 +132,7 @@ def adapter():
     a._app = MagicMock()
     a._app.client = AsyncMock()
     a._bot_user_id = BOT_USER_ID
+    a._bot_id = BOT_ID
     a._running = True
     a.handle_message = AsyncMock()
     return a
@@ -184,6 +186,20 @@ async def test_free_response_replies_when_bot_also_mentioned(adapter):
     )
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_channel_replies_when_own_bot_id_is_mentioned(adapter):
+    await _run(adapter, _event(f"<@{BOT_ID}> hello", ts="1700000000.000020"))
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_channel_ignores_other_app_bot_id(adapter):
+    await _run(adapter, _event("<@B_OTHER_APP> hello", ts="1700000000.000021"))
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

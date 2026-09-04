@@ -668,6 +668,7 @@ class TestSlackSocketWatchdog:
         mock_web_client.auth_test = AsyncMock(
             return_value={
                 "user_id": "U_BOT",
+                "bot_id": "B_BOT",
                 "user": "testbot",
                 "team_id": "T_FAKE",
                 "team": "FakeTeam",
@@ -791,8 +792,10 @@ class TestSlackSocketWatchdog:
 
         # Pre-seed stale multi-workspace state as if a prior connect had run.
         adapter._bot_user_id = "U_OLD_BOT"
+        adapter._bot_id = "B_OLD_BOT"
         adapter._team_clients = {"T_OLD": MagicMock(name="old-client")}
         adapter._team_bot_user_ids = {"T_OLD": "U_OLD_BOT"}
+        adapter._team_bot_ids = {"T_OLD": "B_OLD_BOT"}
 
         with contextlib.ExitStack() as stack:
             for p in self._patch_stack(factory):
@@ -803,10 +806,13 @@ class TestSlackSocketWatchdog:
 
                 # State must reflect the fresh auth, not the stale seed.
                 assert adapter._bot_user_id == "U_BOT"
+                assert adapter._bot_id == "B_BOT"
                 assert "T_OLD" not in adapter._team_clients
                 assert "T_OLD" not in adapter._team_bot_user_ids
+                assert "T_OLD" not in adapter._team_bot_ids
                 assert "T_FAKE" in adapter._team_clients
                 assert adapter._team_bot_user_ids["T_FAKE"] == "U_BOT"
+                assert adapter._team_bot_ids["T_FAKE"] == "B_BOT"
             finally:
                 await adapter.disconnect()
 
@@ -2246,6 +2252,23 @@ class TestMessageRouting:
         await adapter._handle_slack_message(event)
 
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allow_bots_mentions_accepts_own_bot_id_mention(self, adapter):
+        adapter.config.extra["allow_bots"] = "mentions"
+        adapter._bot_id = "B_BOT"
+        event = {
+            "subtype": "bot_message",
+            "text": "<@B_BOT> hello",
+            "user": "U_PEER_BOT",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "123.457",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_awaited_once()
 
 
     @pytest.mark.asyncio

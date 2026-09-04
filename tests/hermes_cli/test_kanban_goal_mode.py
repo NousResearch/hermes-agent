@@ -128,6 +128,68 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+def test_judge_api_error_retries_only_root_judge_and_preserves_task_id(
+    monkeypatch, kanban_home,
+):
+    attempts = []
+    sleeps = []
+    turns = []
+    conn = kb.connect()
+    child_id = kb.create_task(conn, title="completed dependency", assignee="worker")
+    assert kb.complete_task(conn, child_id)
+    root_id = kb.create_task(
+        conn,
+        title="existing root",
+        assignee="worker",
+        parents=[child_id],
+        goal_mode=True,
+    )
+    claimed = kb.claim_task(conn, root_id)
+    assert claimed is not None
+    run_id = claimed.current_run_id
+    initial_ids = {
+        row["id"] for row in conn.execute("SELECT id FROM tasks").fetchall()
+    }
+
+    def failing_judge(goal, response, **_kw):
+        attempts.append((goal, response))
+        return "continue", "judge error: APIConnectionError", False, None, True
+
+    monkeypatch.setattr(goals, "judge_goal", failing_judge)
+    result = goals.run_kanban_goal_loop(
+        task_id=root_id,
+        goal_text="finish existing graph",
+        first_response="all children already completed",
+        task_status_fn=lambda: kb.goal_run_status(conn, root_id, run_id),
+        run_turn=lambda prompt: turns.append(prompt) or "unexpected",
+        block_fn=lambda reason: pytest.fail("must use infrastructure blocker"),
+        infrastructure_block_fn=lambda reason: kb.block_task(
+            conn,
+            root_id,
+            reason=reason,
+            kind="infrastructure",
+            expected_run_id=run_id,
+        ),
+        judge_max_retries=3,
+        sleep_fn=sleeps.append,
+    )
+
+    assert result["outcome"] == "infrastructure_blocked"
+    assert result["task_id"] == root_id
+    assert result["turns_used"] == 1
+    assert result["judge_attempts"] == 3
+    assert len(attempts) == 3
+    assert turns == []
+    assert sleeps == [1.0, 2.0]
+    assert kb.get_task(conn, root_id).status == "blocked"
+    assert kb.get_task(conn, root_id).block_kind == "infrastructure"
+    assert kb.get_task(conn, child_id).status == "done"
+    final_ids = {row["id"] for row in conn.execute("SELECT id FROM tasks").fetchall()}
+    assert final_ids == initial_ids
+    assert kb.latest_run(conn, root_id).id == run_id
+    conn.close()
+
+
 
 
 

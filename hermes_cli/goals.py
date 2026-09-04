@@ -2212,6 +2212,9 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
+    infrastructure_block_fn=None,
+    judge_max_retries: int = DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES,
+    sleep_fn=time.sleep,
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
@@ -2257,6 +2260,7 @@ def run_kanban_goal_loop(
     # The first turn already consumed one unit of budget.
     turns_used = 1
     nudged_to_finalize = False
+    judge_transport_failures = 0
 
     while True:
         # Did the worker terminate the task itself this turn?
@@ -2290,7 +2294,40 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, transport_failed = judge_goal(
+            goal_text, last_response
+        )
+        if transport_failed:
+            judge_transport_failures += 1
+            if judge_transport_failures >= max(1, int(judge_max_retries)):
+                block = infrastructure_block_fn or block_fn
+                detail = (
+                    "Goal-completion judge infrastructure remained unavailable "
+                    f"after {judge_transport_failures} attempts: {reason}"
+                )
+                _log(f"kanban goal loop: {detail}; blocking root task {task_id}")
+                try:
+                    block(detail)
+                except Exception as exc:
+                    _log(f"kanban goal loop: infrastructure block failed ({exc})")
+                return {
+                    "outcome": "infrastructure_blocked",
+                    "task_id": task_id,
+                    "turns_used": turns_used,
+                    "reason": detail,
+                    "judge_attempts": judge_transport_failures,
+                }
+            # Retry only the judge for this same task/run/response. Do not run
+            # another agent turn, recreate the graph, or consume turn budget.
+            delay = min(30.0, float(2 ** (judge_transport_failures - 1)))
+            _log(
+                "kanban goal loop: judge infrastructure failure "
+                f"{judge_transport_failures}/{judge_max_retries}; retrying "
+                f"same root judge in {delay:g}s"
+            )
+            sleep_fn(delay)
+            continue
+        judge_transport_failures = 0
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")

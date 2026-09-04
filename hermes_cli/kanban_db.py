@@ -122,7 +122,10 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {
+    "dependency", "needs_input", "capability", "transient", "infrastructure",
+    "protocol_violation",
+}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -7032,14 +7035,20 @@ def invalidate_descendants_for_parent_reopen(
     task_id: str,
     *,
     author: str,
+    reopen_completed: bool = False,
+    reopen_reason: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Retract every dispatchable/completed descendant of a reopened ancestor.
+    """Retract non-terminal descendants of a reopened ancestor.
 
-    THE single domain implementation of done-reopen descendant invalidation.
-    When a ``done`` (or ``archived``) ancestor is reopened, every descendant
-    whose state assumed the ancestor's result — ``ready``, ``review``,
-    ``running`` or ``done`` — is building on a retracted premise, so it is
-    demoted to ``todo`` and re-gated on the graph. The CLI deliberately has
+    ``done`` is protected. Ordinary ancestor/root resume never reopens a
+    completed descendant. A caller that intentionally invalidates completed
+    work must set ``reopen_completed=True`` and supply ``reopen_reason``;
+    that reason is persisted in the descendant audit trail.
+
+    This is the single domain implementation of ancestor-reopen descendant
+    invalidation. Dispatchable descendants are re-gated, while completed
+    descendants remain done unless explicit invalidation intent is supplied.
+    The CLI deliberately has
     NO done-reopen verb on this branch (``reopen-review`` only handles the
     review-phase transition via :func:`reopen_review_task`), so every surface
     that reopens a done task (dashboard drag-drop / PATCH — single and bulk —
@@ -7088,6 +7097,9 @@ def invalidate_descendants_for_parent_reopen(
     invalidated entry is ``{id, prior_status, new_status, resume_status}``
     and each termination is a ``(worker_pid, claim_lock)`` tuple.
     """
+    if reopen_completed and not (reopen_reason or "").strip():
+        raise ValueError("reopen_reason is required when reopening done descendants")
+
     caller_owns_txn = bool(getattr(conn, "in_transaction", False))
     now = int(time.time())
     invalidated: list[dict[str, Any]] = []
@@ -7111,6 +7123,8 @@ def invalidate_descendants_for_parent_reopen(
         ).fetchall()
         for row in rows:
             previous_status = row["status"]
+            if previous_status == "done" and not reopen_completed:
+                continue
             if previous_status not in {"ready", "review", "running", "done"}:
                 continue
             resume_status = "ready"
@@ -7146,6 +7160,7 @@ def invalidate_descendants_for_parent_reopen(
                     "prior_status": previous_status,
                     "new_status": "todo",
                     "resume_status": resume_status,
+                    "reopen_reason": reopen_reason,
                 },
                 run_id=run_id,
             )
@@ -7161,6 +7176,7 @@ def invalidate_descendants_for_parent_reopen(
                     "parent": task_id,
                     "previous_status": previous_status,
                     "resume_status": resume_status,
+                    "reopen_reason": reopen_reason,
                 },
                 run_id=run_id,
             )
@@ -7173,7 +7189,8 @@ def invalidate_descendants_for_parent_reopen(
                     row["id"],
                     author,
                     (
-                        f"Invalidated: ancestor {task_id} was reopened; "
+                        f"Invalidated: ancestor {task_id} was reopened"
+                        f"{f' ({reopen_reason})' if reopen_reason else ''}; "
                         f"retracted from '{previous_status}' to 'todo' "
                         f"(will resume via '{resume_status}')."
                     ),
@@ -8789,77 +8806,6 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-# Empirically ~96% of "clean exit without a terminal tool call" tasks complete
-# on a later run (a goal-mode finalize nudge, or the model simply emitting the
-# tool call next time), so a protocol violation is NOT deterministic — give it a
-# bounded retry before the breaker trips instead of blocking on the first hit.
-#
-# The budget is a violation-only STREAK, not a share of the unified
-# ``consecutive_failures`` counter: it counts consecutive clean-exit protocol
-# violations (derived from run history by ``_protocol_violation_streak``), so
-# earlier timeouts / nonzero exits neither consume nor extend it, and a
-# below-budget violation does not tick the unified counter either. A per-task
-# ``max_retries`` overrides this bound — the same "task override wins"
-# precedence ``_record_task_failure`` documents for every other failure kind.
-_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
-
-# How far back to walk a task's closed runs when counting the violation
-# streak. The streak trips at a handful of violations, so anything beyond a
-# few dozen rows (violations interleaved with neutral rate-limited requeues)
-# can only mean "way past the bound" anyway.
-_PROTOCOL_VIOLATION_SCAN_LIMIT = 50
-
-
-def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
-    """Count the task's trailing run of clean-exit protocol violations.
-
-    Walks the task's closed runs newest-first — including the violation run
-    ``detect_crashed_workers`` just closed — and counts how many in a row were
-    clean-exit protocol violations:
-
-    * ``rate_limited`` runs are neutral and skipped: a quota wall says nothing
-      about the task, exactly as it is neutral for the unified
-      ``consecutive_failures`` counter.
-    * Any other closed run (completed, plain crash, timeout, spawn failure,
-      reclaim, …) breaks the streak, so the bounded retry budget counts ONLY
-      protocol violations — mixed failure kinds can neither consume nor
-      extend it.
-
-    Violation runs are recognized by the ``protocol_violation`` marker that
-    ``detect_crashed_workers`` stamps into the run metadata; the violation
-    error text is matched as a fallback for runs recorded before the marker
-    existed.
-    """
-    streak = 0
-    rows = conn.execute(
-        "SELECT outcome, error, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY id DESC LIMIT ?",
-        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
-    ).fetchall()
-    for row in rows:
-        outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
-            continue
-        if outcome == "crashed":
-            is_violation = False
-            raw_meta = row["metadata"]
-            if raw_meta:
-                try:
-                    is_violation = bool(
-                        json.loads(raw_meta).get("protocol_violation")
-                    )
-                except (ValueError, TypeError):
-                    is_violation = False
-            if not is_violation:
-                is_violation = "protocol violation" in (row["error"] or "")
-            if is_violation:
-                streak += 1
-                continue
-        break
-    return streak
-
-
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
@@ -8893,11 +8839,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
-    # clean-exit-but-still-running case, which is accounted against its
-    # own bounded violation streak instead of the unified failure
-    # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    # clean-exit-but-still-running case, which trips the breaker immediately
+    # in the post-transaction accounting loop below.
+    crash_details: list[tuple[str, int, str, bool, str, Optional[int]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, run_id)
     # Worker-exit observer payloads (RFC #58548), collected inside the main
     # txn and fired only after every reclaim/accounting txn has committed.
     exited_hook_payloads: list[dict] = []
@@ -9050,76 +8995,54 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text, run_id)
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the retried task transitions to blocked with a ``gave_up`` event
     # on top of the event we already emitted).
     #
-    # Protocol-violation crashes (clean exit, no terminal tool call) get a
-    # BOUNDED retry, not an immediate trip: empirically ~96% of these tasks
-    # complete on a later run (a goal-mode finalize nudge, or the model simply
-    # emitting kanban_complete/kanban_block next time), so blocking on the first
-    # occurrence just churned them through the respawn cycle. The retry budget
-    # is a violation-only streak (``_protocol_violation_streak``): earlier
-    # timeouts / nonzero exits neither consume nor extend it, and a
-    # below-budget violation does not tick the unified
-    # ``consecutive_failures`` counter, so the two budgets stay independent.
-    # A per-task ``max_retries`` overrides the violation bound with the same
-    # top precedence it has for every other failure kind. Systemic same-error
-    # crashes still trip immediately.
+    # A clean exit without a terminal lifecycle call is not a retryable worker
+    # failure. It is a protocol violation, so block on the first occurrence
+    # and require an explicit operator decision. Identical failures therefore
+    # cannot form an unbounded respawn loop.
     auto_blocked: list[str] = []
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for (
+            tid,
+            pid,
+            claimer,
+            protocol_violation,
+            error_text,
+            closed_run_id,
+        ) in crash_details:
             if protocol_violation:
-                streak = _protocol_violation_streak(conn, tid)
-                trow = conn.execute(
-                    "SELECT max_retries FROM tasks WHERE id = ?", (tid,),
-                ).fetchone()
-                if trow is None:
-                    continue  # task deleted mid-loop
-                task_override = (
-                    trow["max_retries"] if "max_retries" in trow.keys() else None
-                )
-                violation_limit = (
-                    int(task_override)
-                    if task_override is not None
-                    else _PROTOCOL_VIOLATION_FAILURE_LIMIT
-                )
-                if streak < violation_limit:
-                    # Below budget: the task is already back at ``ready``
-                    # (respawn allowed) with ``last_failure_error`` stamped.
-                    # Deliberately no ``_record_task_failure`` call — a
-                    # below-budget violation must not consume the unified
-                    # failure budget, just as other failure kinds don't
-                    # consume this one.
-                    continue
-                # Streak reached the bound: trip the breaker. ``force_trip``
-                # skips the threshold resolution inside
-                # ``_record_task_failure`` because the decision — including
-                # the per-task ``max_retries`` override — was already made
-                # against the violation streak above.
                 tripped = _record_task_failure(
                     conn, tid,
                     error=error_text,
-                    outcome="crashed",
-                    failure_limit=violation_limit,
+                    outcome="protocol_violation",
                     force_trip=True,
                     release_claim=False,
                     end_run=False,
                     event_payload_extra={
                         "pid": pid,
                         "claimer": claimer,
-                        "protocol_violations": streak,
-                        "protocol_violation_limit": violation_limit,
+                        "exit_code": 0,
+                        "protocol_violation": True,
+                        "run_id": closed_run_id,
                     },
                 )
                 if tripped:
+                    with write_txn(conn):
+                        conn.execute(
+                            "UPDATE tasks SET block_kind = 'protocol_violation' "
+                            "WHERE id = ? AND status = 'blocked'",
+                            (tid,),
+                        )
                     auto_blocked.append(tid)
                 continue
             fp = _error_fingerprint(error_text)
@@ -9290,8 +9213,11 @@ def _record_task_failure(
             }
             if event_payload_extra:
                 payload.update(event_payload_extra)
+            related_run_id = run_id
+            if related_run_id is None and event_payload_extra:
+                related_run_id = event_payload_extra.get("run_id")
             _append_event(
-                conn, task_id, "gave_up", payload, run_id=run_id,
+                conn, task_id, "gave_up", payload, run_id=related_run_id,
             )
             blocked = True
         else:

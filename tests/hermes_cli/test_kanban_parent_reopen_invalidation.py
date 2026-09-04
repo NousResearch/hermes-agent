@@ -52,7 +52,7 @@ def _reopen_parent_directly(conn, parent_id: str) -> None:
         )
 
 
-def test_reopen_demotes_done_descendants_with_events_and_comments(conn):
+def test_parent_resume_preserves_done_descendants(conn):
     parent_id, child_id = _done_parent_with_done_child(conn)
     grandchild_id = kb.create_task(
         conn, title="grandchild", assignee="writer", parents=[child_id],
@@ -64,27 +64,11 @@ def test_reopen_demotes_done_descendants_with_events_and_comments(conn):
         conn, parent_id, author="operator",
     )
 
-    demoted = {entry["id"]: entry for entry in result["invalidated"]}
-    assert set(demoted) == {child_id, grandchild_id}
+    assert result["invalidated"] == []
     for tid in (child_id, grandchild_id):
-        assert demoted[tid]["prior_status"] == "done"
-        assert demoted[tid]["new_status"] == "todo"
         task = kb.get_task(conn, tid)
-        assert task is not None and task.status == "todo"
-        assert task.completed_at is None
-
-        events = kb.list_events(conn, tid)
-        inval = [e for e in events if e.kind == "descendant_invalidated"]
-        assert len(inval) == 1
-        payload = inval[0].payload
-        assert payload["ancestor"] == parent_id
-        assert payload["prior_status"] == "done"
-        assert payload["new_status"] == "todo"
-
-        comments = kb.list_comments(conn, tid)
-        assert any(
-            parent_id in c.body and c.author == "operator" for c in comments
-        ), f"no invalidation comment naming {parent_id} on {tid}"
+        assert task is not None and task.status == "done"
+        assert task.completed_at is not None
 
     assert result["terminations"] == []
 
@@ -141,7 +125,10 @@ def test_counter_reset_on_invalidated_descendants(conn):
         )
 
     _reopen_parent_directly(conn, parent_id)
-    kb.invalidate_descendants_for_parent_reopen(conn, parent_id, author="op")
+    kb.invalidate_descendants_for_parent_reopen(
+        conn, parent_id, author="op", reopen_completed=True,
+        reopen_reason="acceptance criteria changed",
+    )
 
     child = kb.get_task(conn, child_id)
     assert child is not None
@@ -223,8 +210,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
 
         assert snapshot(dash_child) == snapshot(db_child)
         status, completed_at, _run, failures, kinds, n_comments = snapshot(db_child)
-        assert status == "todo"
-        assert completed_at is None
+        assert status == "done"
+        assert completed_at is not None
         assert failures == 0
-        assert "descendant_invalidated" in kinds
-        assert n_comments >= 1
+        assert "descendant_invalidated" not in kinds

@@ -1320,50 +1320,33 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
-def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
-    """Mixed failure kinds must not consume the violation retry budget.
-
-    Regression for the #61233 review finding: expressed as a plain
-    ``failure_limit`` over the unified ``consecutive_failures`` counter, the
-    violation budget was consumed by earlier timeouts / nonzero exits. As a
-    violation-only streak, a prior real crash must not eat violation
-    retries, and below-budget violations must leave the unified counter
-    untouched (so the two budgets stay independent).
-    """
-    import hermes_cli.kanban_db as _kb
+def test_clean_exit_without_terminal_call_blocks_protocol_violation(kanban_home):
+    """rc=0 is not success while the owned task is still running."""
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="mixed", assignee="worker")
-
-        # One real crash: unified counter ticks to 1 (below
-        # DEFAULT_FAILURE_LIMIT=2 — task stays ready).
-        _drive_nonzero_crash(conn, tid, 991000)
-        task = kb.get_task(conn, tid)
-        assert task.status == "ready"
-        assert task.consecutive_failures == 1
-
-        # Two violations after it: streak 1 and 2 — both retry, unified
-        # counter untouched. (Pre-fix: the crash consumed the budget and the
-        # violations blocked well before three of them happened.)
-        for i, pid in enumerate((991001, 991002)):
-            _drive_protocol_violation(conn, tid, pid)
-            task = kb.get_task(conn, tid)
-            assert task.status == "ready", (
-                f"violation {i + 1} after a crash must still retry, "
-                f"got {task.status}"
-            )
-            assert task.consecutive_failures == 1, (
-                "below-budget violations must not tick the unified counter"
-            )
-
-        # Third consecutive violation: streak hits the bound — blocked.
+        tid = kb.create_task(conn, title="clean exit", assignee="worker")
         _drive_protocol_violation(conn, tid, 991003)
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
+        assert task.block_kind == "protocol_violation"
+        assert task.current_run_id is None
         gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
         assert len(gave_up) == 1
-        assert (gave_up[0].payload or {}).get("protocol_violations") == \
-            _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
+        payload = gave_up[0].payload or {}
+        assert payload["protocol_violation"] is True
+        assert payload["pid"] == 991003
+        assert payload["exit_code"] == 0
+        run = kb.latest_run(conn, tid)
+        assert run is not None and run.id == gave_up[0].run_id
+        assert "protocol violation" in (run.error or "")
+        spawned = []
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *args, **kwargs: spawned.append((args, kwargs)),
+            reconcile_orphans=False,
+        )
+        assert result.spawned == []
+        assert spawned == []
     finally:
         conn.close()
 
@@ -1406,5 +1389,3 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-

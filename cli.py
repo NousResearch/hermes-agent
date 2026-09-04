@@ -21755,12 +21755,29 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             except Exception:
                 pass
 
+    def _infrastructure_block(reason: str) -> None:
+        c = _kb.connect()
+        try:
+            _kb.block_task(
+                c,
+                task_id,
+                reason=reason,
+                kind="infrastructure",
+                expected_run_id=worker_run_id,
+            )
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+
     _run_loop(
         task_id=task_id,
         goal_text=goal_text,
         run_turn=_run_turn,
         task_status_fn=_task_status,
         block_fn=_block,
+        infrastructure_block_fn=_infrastructure_block,
         max_turns=max_turns,
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),

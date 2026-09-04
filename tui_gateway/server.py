@@ -13743,6 +13743,16 @@ def _run_prompt_submit(
                 )
 
                 raw = result.get("final_response", "")
+                if isinstance(raw, str) and "MEDIA:" in raw:
+                    try:
+                        from gateway.media_repair import finalize_chat_media_paths
+
+                        raw = finalize_chat_media_paths(
+                            raw,
+                            result.get("messages", []) if isinstance(result, dict) else [],
+                        )
+                    except Exception:
+                        pass
                 status = (
                     "interrupted"
                     if result.get("interrupted")

@@ -2096,6 +2096,7 @@ _TOOL_MEDIA_RE = re.compile(
 # Canonical names live in gateway.media_repair (same retirement of private
 # aliases as the agent.replay_cleanup import above).
 from gateway.media_repair import (  # noqa: E402
+    finalize_chat_media_paths,
     repair_explicit_computer_use_media_paths,
     tool_name_by_call_id as _tool_name_by_call_id,
 )
@@ -7144,7 +7145,7 @@ class TurnRunner:
         if isinstance(result, dict):
             _result_final = result.get("final_response")
             if isinstance(_result_final, str):
-                result["final_response"] = repair_explicit_computer_use_media_paths(
+                result["final_response"] = finalize_chat_media_paths(
                     _result_final,
                     result.get("messages", []),
                     history_offset=len(agent_history),
@@ -25608,7 +25609,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # so history_offset=0: every message in the run belongs to this
             # turn. Mirrors the repair on the main turn path.
             if response:
-                response = repair_explicit_computer_use_media_paths(
+                response = finalize_chat_media_paths(
                     response,
                     result.get("messages", []),
                 )

@@ -5,10 +5,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import compute_host, server
+from tui_gateway import compute_host, host_supervisor, server
 from tui_gateway.compute_host import ComputeHost, _default_workers
 from tui_gateway.host_supervisor import (
     MUTATOR_ROUTE_TABLE,
@@ -46,6 +47,37 @@ def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
     # Dead-RC tombstone: malformed env falls back to 8, not the old except-branch 4.
     monkeypatch.setenv("HERMES_TUI_RPC_POOL_WORKERS", "not-an-int")
     assert _default_workers() == 8
+
+
+def test_compute_host_rss_uses_process_api_without_invoking_ps(monkeypatch):
+    process = SimpleNamespace(memory_info=lambda: SimpleNamespace(rss=3 * 1024 * 1024))
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=lambda pid: process))
+    monkeypatch.setattr(
+        compute_host.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: pytest.fail("RSS lookup must not invoke bare ps"),
+    )
+
+    assert compute_host._rss_mb(4242) == 3.0
+
+
+def test_supervisor_process_probes_use_process_api_without_invoking_ps(monkeypatch):
+    process = SimpleNamespace(cmdline=lambda: [sys.executable, "-m", "tui_gateway.compute_host"])
+    fake_psutil = SimpleNamespace(pid_exists=lambda pid: pid == 4242, Process=lambda pid: process)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        host_supervisor.os,
+        "kill",
+        lambda *_args: pytest.fail("liveness lookup must not call os.kill when psutil is available"),
+    )
+    monkeypatch.setattr(
+        host_supervisor.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: pytest.fail("command lookup must not invoke bare ps"),
+    )
+
+    assert host_supervisor._pid_alive(4242) is True
+    assert host_supervisor._pid_command(4242).endswith("-m tui_gateway.compute_host")
 
 
 def test_compute_host_routes_clarify_response_to_child_pending_registry(monkeypatch):

@@ -1665,10 +1665,11 @@ def _read_persisted_nonce() -> Optional[str]:
 def _pid_alive(pid: int) -> bool:
     """Return True iff ``pid`` is alive AND is an iron-proxy process.
 
-    Defends against PID reuse via three signals (in priority order):
+    Defends against PID reuse via these signals (in priority order):
     1. ``/proc/<pid>/environ`` contains our nonce  (most reliable, Linux)
     2. ``/proc/<pid>/cmdline`` basename matches the managed binary
-    3. ``ps -p <pid>`` command line contains the binary path
+    3. ``psutil`` reports the managed binary name
+    4. macOS ``ps -p <pid>`` reports the managed binary name
 
     The legacy ``"iron-proxy" in cmdline`` match was loose enough to match
     ``tail iron-proxy.log`` or an editor with that file open.  We tighten
@@ -1739,17 +1740,32 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         pass
 
-    # macOS / non-Linux fallback: ``ps`` command basename.
     try:
-        res = subprocess.run(  # noqa: S603
-            ["ps", "-p", str(pid), "-o", "comm="],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
-        )
-        if res.returncode == 0:
-            comm = (res.stdout or "").strip()
-            return os.path.basename(comm).startswith("iron-proxy")
-    except (OSError, subprocess.TimeoutExpired):
+        import psutil  # type: ignore
+
+        process = psutil.Process(pid)
+        executable = process.exe() or process.name()
+        if executable:
+            return os.path.basename(executable).startswith("iron-proxy")
+    except Exception:
         pass
+
+    # ``ps`` is a POSIX utility. Never resolve its bare name on Windows,
+    # where an unrelated ps.exe may be found on PATH.
+    if platform.system() == "Darwin":
+        try:
+            res = subprocess.run(  # noqa: S603
+                ["ps", "-p", str(pid), "-o", "comm="],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
+            )
+            if res.returncode == 0:
+                comm = (res.stdout or "").strip()
+                return os.path.basename(comm).startswith("iron-proxy")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    if platform.system() == "Windows":
+        return False
 
     # Exotic platforms: be conservative — if the OS says alive we believe
     # it.  This restores the previous behaviour for non-Linux/non-macOS.

@@ -42,8 +42,10 @@ def _captured_context_cwd(agent):
     def fake_context_files(
         cwd=None, skip_soul=False, context_length=None,
         allow_install_tree_fallback=False, home_override=None,
+        allow_cross_profile_context=False,
     ):
         captured["cwd"] = cwd
+        captured["allow_cross_profile_context"] = allow_cross_profile_context
         return ""
 
     with (
@@ -763,3 +765,31 @@ class TestConversationStartedTwoLine:
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
 
+
+
+def _captured_cross_profile_context_flag(agent):
+    captured = {}
+
+    def fake_context_files(
+        cwd=None, skip_soul=False, context_length=None,
+        allow_install_tree_fallback=False, home_override=None,
+        allow_cross_profile_context=False,
+    ):
+        captured["allow_cross_profile_context"] = allow_cross_profile_context
+        return ""
+
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", side_effect=fake_context_files),
+    ):
+        build_system_prompt_parts(agent)
+    return captured.get("allow_cross_profile_context", False)
+
+
+class TestCrossProfileContextOptIn:
+    def test_cross_profile_context_opt_in_is_cli_only(self):
+        assert _captured_cross_profile_context_flag(_make_agent(platform="cli")) is True
+        assert _captured_cross_profile_context_flag(_make_agent(platform="tui")) is True
+        assert _captured_cross_profile_context_flag(_make_agent(platform="desktop")) is False
+        assert _captured_cross_profile_context_flag(_make_agent(platform="telegram")) is False

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
@@ -578,6 +579,27 @@ class TestBuildContextFilesPrompt:
 # .hermes.md helper functions
 # =========================================================================
 
+
+
+    def test_skips_agents_md_from_another_profile(self, monkeypatch, tmp_path):
+        root = tmp_path / "hermes-home"
+        foreign_workspace = root / "profiles" / "other-profile" / "workspace"
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "active-profile"))
+        foreign_workspace.mkdir(parents=True)
+        (foreign_workspace / "AGENTS.md").write_text("# other profile agents\nDo not load me.\n")
+        result = build_context_files_prompt(cwd=str(foreign_workspace), skip_soul=True)
+        assert "Do not load me" not in result
+
+    def test_allows_foreign_profile_when_opted_in(self, monkeypatch, tmp_path):
+        root = tmp_path / "hermes-home"
+        foreign_workspace = root / "profiles" / "other-profile" / "workspace"
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "active-profile"))
+        foreign_workspace.mkdir(parents=True)
+        (foreign_workspace / "AGENTS.md").write_text("# other profile agents\nLoad me when opted in.\n")
+        result = build_context_files_prompt(
+            cwd=str(foreign_workspace), skip_soul=True, allow_cross_profile_context=True,
+        )
+        assert "Load me when opted in" in result
 
 class TestFindHermesMd:
     def test_finds_in_cwd(self, tmp_path):

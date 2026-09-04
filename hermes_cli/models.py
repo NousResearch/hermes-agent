@@ -4384,6 +4384,9 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     Returns models.dev entries first (in models.dev order), then any
     curated-only entries appended. Preserves case for curated fallbacks
     (e.g. ``MiniMax-M2.7``) while trusting models.dev for newer variants.
+    Retired aliases (``_PROVIDER_RETIRED_ALIASES``, e.g. DeepSeek's
+    ``deepseek-chat`` / ``deepseek-reasoner``) are dropped from BOTH sources
+    so they can never resurface through the merge.
 
     If models.dev is unreachable or returns nothing, the curated list is
     returned unchanged — this is the offline/CI fallback path.
@@ -4397,18 +4400,21 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     if not mdev:
         return list(curated)
 
+    # Retired aliases must never resurface via models.dev merges.
+    retired = {str(m).lower() for m in _PROVIDER_RETIRED_ALIASES.get(provider, ())}
+
     # Case-insensitive dedup while preserving order and curated casing.
     seen_lower: set[str] = set()
     merged: list[str] = []
     for mid in mdev:
         key = str(mid).lower()
-        if key in seen_lower:
+        if key in seen_lower or key in retired:
             continue
         seen_lower.add(key)
         merged.append(mid)
     for mid in curated:
         key = str(mid).lower()
-        if key in seen_lower:
+        if key in seen_lower or key in retired:
             continue
         seen_lower.add(key)
         merged.append(mid)

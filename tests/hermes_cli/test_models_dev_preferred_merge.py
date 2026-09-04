@@ -45,6 +45,27 @@ class TestMergeHelper:
         # models.dev casing wins since it came first
         assert out == ["MiniMax-M2.7", "minimax-m2.5"]
 
+    def test_merge_filters_retired_aliases_from_models_dev(self):
+        """DeepSeek's retired aliases must not resurface via the models.dev merge.
+
+        models.dev still lists ``deepseek-chat`` / ``deepseek-reasoner``
+        (tool_call=true); the merge must drop them from the mdev stream so
+        the picker shows exactly the two first-class models.
+        """
+        mdev = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"]
+        curated = ["deepseek-v4-pro", "deepseek-v4-flash"]
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+            out = _merge_with_models_dev("deepseek", curated)
+        assert out == ["deepseek-v4-flash", "deepseek-v4-pro"]
+
+    def test_merge_filters_retired_aliases_from_curated(self):
+        """Curated entries that are retired aliases are dropped as well."""
+        mdev = ["deepseek-v4-flash"]
+        curated = ["deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"]
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+            out = _merge_with_models_dev("deepseek", curated)
+        assert out == ["deepseek-v4-flash", "deepseek-v4-pro"]
+
 
 class TestProviderModelIdsPreferred:
 

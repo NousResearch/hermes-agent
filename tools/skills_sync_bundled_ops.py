@@ -4,7 +4,7 @@ Profile-scoped paths and patchable helpers resolve through ``_ss()`` at call tim
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from tools.skill_usage import read_suppressed_names, remove_suppressed_name
+from tools.skill_usage import _toggle_suppressed_name, read_suppressed_names
 from tools.skills_sync_optional import _skill_file_list, _ss
 
 
@@ -59,7 +59,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     # re-seed entirely — restore means "bring it back", so the entry must go before syncing (#103115).
     cleared_suppression = restore and name in read_suppressed_names()
     if cleared_suppression:
-        remove_suppressed_name(name)
+        _toggle_suppressed_name(name, add=False)
     synced = ss.sync_skills(quiet=True)
     if not restore:
         action, message = "manifest_cleared", (f"Cleared manifest entry for '{name}'. Future `hermes update` runs "

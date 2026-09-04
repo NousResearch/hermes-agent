@@ -19815,6 +19815,16 @@ def start_server(
 
     apply_nofile_soft_limit()
 
+    # serve/dashboard turns run agent turns over JSON-RPC, but this process
+    # never routes through _prepare_agent_startup()'s _AGENT_COMMANDS gate,
+    # so plugin discovery would otherwise never run here: every
+    # ctx.register_hook(...) plugin (pre_llm_call, observability, ...) was
+    # silently inert on web-chat and desktop-backend turns while the same
+    # plugin worked in the CLI (#102592). discover_plugins() is idempotent.
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins()
+
     import uvicorn
 
     try:

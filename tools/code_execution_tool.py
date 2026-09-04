@@ -315,7 +315,11 @@ def _call(tool_name, args):
                 if _attempt + 1 >= _attempts:
                     raise
     raw = buf.decode().strip()
-    result = json.loads(raw)
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"WARNING: json.loads failed on IPC response: {e}", flush=True)
+        return {"error": f"Malformed IPC response: {e}", "raw": raw[:500]}
     if isinstance(result, str):
         try:
             return json.loads(result)
@@ -381,7 +385,11 @@ def _call(tool_name, args):
     except OSError:
         pass
 
-    result = json.loads(raw)
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"WARNING: json.loads failed on IPC response: {e}", flush=True)
+        return {"error": f"Malformed IPC response: {e}", "raw": raw[:500]}
     if isinstance(result, str):
         try:
             return json.loads(result)

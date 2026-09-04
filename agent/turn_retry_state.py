@@ -50,6 +50,10 @@ class TurnRetryState:
     # A user correction cancelled the in-flight request: append a role-safe checkpoint +
     # user message, rebuild the payload, and retry the same logical iteration.
     restart_with_redirected_messages: bool = False
+    # A truncation early-exit took the kanban stop nudge (worker ended a partial
+    # turn without kanban_complete/kanban_block); re-enter the turn loop for a
+    # fresh API call against the nudged history.
+    restart_with_kanban_stop_nudge: bool = False
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

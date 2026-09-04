@@ -41,6 +41,20 @@ class TestGetToolset:
         assert "xurl" in description
         assert "authenticated" in description
 
+    def test_skills_read_toolset_has_no_manage_tool(self):
+        ts = get_toolset("skills-read")
+        assert ts is not None
+        assert set(ts["tools"]) == {"skills_list", "skill_view"}
+        assert "skill_manage" not in ts["tools"]
+
+    def test_skills_read_resolves_without_pulling_in_skills_toolset(self):
+        assert set(resolve_toolset("skills-read")) == {"skills_list", "skill_view"}
+
+    def test_existing_skills_toolset_unchanged(self):
+        ts = get_toolset("skills")
+        assert ts is not None
+        assert set(ts["tools"]) == {"skills_list", "skill_view", "skill_manage"}
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

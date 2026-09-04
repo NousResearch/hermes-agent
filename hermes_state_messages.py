@@ -21,8 +21,8 @@ logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module
 _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata, interrupted_tool_tail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -247,7 +247,8 @@ class SessionMessagesMixin:
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
-            self._encode_display_metadata(msg.get("display_metadata")))
+            self._encode_display_metadata(msg.get("display_metadata")),
+            1 if (msg.get("_interrupted_tool_tail") or msg.get("interrupted_tool_tail")) else 0)
 
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
@@ -289,6 +290,30 @@ class SessionMessagesMixin:
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def mark_tool_tail_interrupted(
+        self,
+        session_id: str,
+        tool_call_id: str,
+    ) -> bool:
+        """Persist interruption provenance on an already-written tool result."""
+        if not session_id or not tool_call_id:
+            return False
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE messages SET interrupted_tool_tail = 1
+                   WHERE id = (
+                       SELECT id FROM messages
+                       WHERE session_id = ? AND active = 1
+                         AND role = 'tool' AND tool_call_id = ?
+                       ORDER BY id DESC LIMIT 1
+                   )""",
+                (session_id, tool_call_id),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
 
     def append_messages_batch(
         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,
@@ -802,6 +827,8 @@ class SessionMessagesMixin:
                 msg["_compressed_summary"] = True
             msg.update(
                 (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition") if row[col])
+            if row["interrupted_tool_tail"]:
+                msg["_interrupted_tool_tail"] = True
             if row["tool_calls"]:
                 msg["tool_calls"] = _json_or(
                     row["tool_calls"], [], "Failed to deserialize tool_calls in conversation replay, falling back to []")

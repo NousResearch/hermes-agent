@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
-from agent.message_sanitization import close_interrupted_tool_sequence
+from agent.message_sanitization import mark_interrupted_tool_tail
 from agent.repetition_guard import is_repetition_dominated
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_retry_state import TurnRetryState
@@ -295,7 +295,9 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         _final_response = _TRUNCATED_FINAL
     agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
-    close_interrupted_tool_sequence(st.messages, _final_response)
+    # Stamp interruption provenance — the API-copy sanitizer closes ``tool → user``
+    # provider-side so the durable transcript keeps real rows only (#63292).
+    mark_interrupted_tool_tail(st.messages)
     return st.end_turn(_final_response, cleanup=False)
 
 

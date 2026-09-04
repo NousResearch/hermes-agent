@@ -4979,6 +4979,23 @@ class AIAgent:
             return
         try:
             sync_kwargs = {"session_id": self.session_id or ""}
+            # Thread the session title into memory providers that store it
+            # (Hindsight banks otherwise surface every session as its raw id —
+            # #86824). Guarded: the title read must never block or break sync.
+            session_title = ""
+            try:
+                if self.session_id and self._session_db is not None:
+                    row = self._session_db.get_session(self.session_id)
+                    session_title = (row.get("title") or "").strip() if row else ""
+            except Exception:
+                # Silent for sync safety, but diagnosable: a DB-lock or schema
+                # issue here would otherwise drop titles with no trace
+                # (Enough1122 review on #86870).
+                logger.debug(
+                    "session-title lookup for memory sync failed", exc_info=True
+                )
+            if session_title:
+                sync_kwargs["session_title"] = session_title
             if messages is not None:
                 sync_kwargs["messages"] = messages
             self._memory_manager.sync_all(

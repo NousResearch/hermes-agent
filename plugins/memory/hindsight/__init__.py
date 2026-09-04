@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import contextvars
 import importlib
 import json
@@ -69,6 +70,82 @@ class _RecallResult:
 
     text: str
     count: int
+@contextlib.contextmanager
+def _preserved_process_env(what: str):
+    """Restore ``os.environ`` after importing a third-party module.
+
+    ``hindsight_api.config`` calls
+    ``load_dotenv(find_dotenv(usecwd=True), override=True)`` at module scope,
+    and ``from hindsight import HindsightEmbedded`` imports it transitively.
+    ``find_dotenv`` walks up from the process cwd, so in a Hermes gateway it
+    resolves to the *default* profile's ``~/.hermes/.env`` regardless of which
+    profile is running -- and ``override=True`` then replaces variables this
+    process already loaded from its own ``$HERMES_HOME/.env``.
+
+    The damage is not limited to Hindsight's own settings: the file is a full
+    profile env, so ``DISCORD_BOT_TOKEN``, ``DISCORD_ALLOWED_CHANNELS``,
+    ``DISCORD_FREE_RESPONSE_CHANNELS``, ``DISCORD_HOME_CHANNEL``,
+    ``MATRIX_USER_ID`` and ``MATRIX_ACCESS_TOKEN`` all flip to the default
+    profile's values. Memory initializes lazily on the first turn that uses
+    it, so the symptom is a non-default profile that answers one message and
+    then goes permanently silent mid-conversation: every later message is
+    dropped by the channel allow-list, which now belongs to another bot.
+
+    Hindsight reads what it needs while the module body runs; snapshotting and
+    restoring around the import leaves Hindsight configured and leaves Hermes'
+    env exactly as Hermes built it.
+    """
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        clobbered = sorted(
+            k for k in set(snapshot) | set(os.environ)
+            if snapshot.get(k) != os.environ.get(k)
+        )
+        if clobbered:
+            os.environ.clear()
+            os.environ.update(snapshot)
+            # INFO, not WARNING: this is expected with current Hindsight
+            # releases and fires at most once per process, but the key list
+            # is worth having in the log if a profile ever misbehaves again.
+            logger.info(
+                "Importing %s rewrote %d process env var(s) from a foreign "
+                ".env; restored Hermes' own values (%s)",
+                what, len(clobbered), ", ".join(clobbered),
+            )
+
+def _import_guarded(module_name: str):
+    """``importlib.import_module`` with the process env protected.
+
+    EVERY hindsight import in this module must go through here. The env damage
+    happens on the *first* import of ``hindsight_api.config`` anywhere in the
+    process, so guarding only the obvious call site is not enough: whichever
+    path imports it first wins, and the later guarded import sees the module
+    already in ``sys.modules`` and has nothing left to restore.
+    """
+    with _preserved_process_env(module_name):
+        return importlib.import_module(module_name)
+
+
+def _import_hindsight_embedded():
+    """Import ``HindsightEmbedded`` without inheriting its env side effects.
+
+    Kept as its own function so the isolation seam is directly testable and so
+    every future caller gets the guard by construction rather than by
+    remembering to wrap the import.
+
+    Uses a plain ``import`` rather than ``importlib.import_module`` so tests
+    (and any other caller) can substitute the module via ``sys.modules`` /
+    ``builtins.__import__`` interception. ``import_module`` bypasses both,
+    which silently defeats those seams.
+    """
+    with _preserved_process_env("hindsight"):
+        from hindsight import HindsightEmbedded
+
+        return HindsightEmbedded
+
+
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
@@ -169,9 +246,11 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     status) reports the real ImportError.
     """
     try:
-        importlib.import_module("hindsight")
-        importlib.import_module("hindsight_embed.daemon_embed_manager")
-        importlib.import_module("sentence_transformers")
+        # Guarded: this probe is what imports hindsight_api.config first in a
+        # live gateway, so it is where the env would otherwise be rewritten.
+        _import_guarded("hindsight")
+        _import_guarded("hindsight_embed.daemon_embed_manager")
+        _import_guarded("sentence_transformers")
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -1248,7 +1327,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     pass
                 except Exception as _e:
                     raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
+                # Guarded: this import runs load_dotenv(override=True)
+                # against whatever .env sits above the cwd, which is the
+                # default profile's, not ours. See _preserved_process_env.
+                HindsightEmbedded = _import_hindsight_embedded()
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
@@ -1274,7 +1356,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = HindsightEmbedded(**kwargs)
             else:
                 _ensure_cloud_client_dependency()
-                from hindsight_client import Hindsight
+                # Plain `import` (not importlib) so the module resolution
+                # stays interceptable via builtins.__import__ — the lazy-dep
+                # ordering tests guard this seam, and importlib bypasses it.
+                # The env guard is what actually matters here and it wraps
+                # either form.
+                with _preserved_process_env("hindsight_client"):
+                    from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
                 if self._api_key:
@@ -1815,7 +1903,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     # Redirect the daemon manager's Rich console to our log file
                     # instead of stderr. This avoids global fd redirects that
                     # would capture output from other threads.
-                    import hindsight_embed.daemon_embed_manager as dem
+                    dem = _import_guarded("hindsight_embed.daemon_embed_manager")
                     from rich.console import Console
                     dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 

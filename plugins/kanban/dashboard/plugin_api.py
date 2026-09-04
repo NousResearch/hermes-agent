@@ -1241,13 +1241,14 @@ class CommentBody(BaseModel):
 def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
+    author = "dashboard"
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
         if kanban_db.get_task(conn, task_id) is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         kanban_db.add_comment(
-            conn, task_id, author=payload.author or "dashboard", body=payload.body,
+            conn, task_id, author=author, body=payload.body,
         )
         return {"ok": True}
     finally:

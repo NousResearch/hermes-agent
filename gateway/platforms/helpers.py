@@ -2,11 +2,14 @@
 stripping, thread participation tracking, GFM table → bullets, mention-pattern
 compilation, and fence-aware markdown chunking."""
 
+from __future__ import annotations
+
 import json
 import logging
 import re
 import time
 from pathlib import Path
+from typing import Any, Protocol
 
 from utils import atomic_json_write
 
@@ -522,6 +525,14 @@ from typing import TYPE_CHECKING  # noqa: F401,E402
 import asyncio  # noqa: F401,E402
 import asyncio  # noqa: F401,E402
 
+class BatchableEvent(Protocol):
+    """What TextBatchAggregator needs from an inbound event. gateway.platforms.base.MessageEvent
+    satisfies it; base imports this module at import time, so the concrete class cannot be named here."""
+
+    text: str
+    source: Any
+
+
 class TextBatchAggregator:
     """Aggregates rapid-fire text events into single messages.
 
@@ -554,14 +565,14 @@ class TextBatchAggregator:
         self._batch_delay = batch_delay
         self._split_delay = split_delay
         self._split_threshold = split_threshold
-        self._pending: Dict[str, "MessageEvent"] = {}
+        self._pending: Dict[str, BatchableEvent] = {}
         self._pending_tasks: Dict[str, asyncio.Task] = {}
 
     def is_enabled(self) -> bool:
         """Return True if batching is active (delay > 0)."""
         return self._batch_delay > 0
 
-    def enqueue(self, event: "MessageEvent", key: str) -> None:
+    def enqueue(self, event: BatchableEvent, key: str) -> None:
         """Add *event* to the pending batch for *key*."""
         chunk_len = len(event.text or "")
         existing = self._pending.get(key)

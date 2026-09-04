@@ -1,11 +1,14 @@
 """MCP client-side handlers for server-initiated requests: sampling
 (sampling/createMessage, text and tool-use results) and elicitation."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import time
-from typing import Callable, List, Optional
+from contextvars import Context
+from typing import Callable, List, Optional, Protocol
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
@@ -239,6 +242,13 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     return "\n".join(lines)
 
 
+class ElicitationOwner(Protocol):
+    """The server task an ElicitationHandler belongs to (tools.mcp_tool.MCPServerTask, which imports this
+    module, so it cannot be named here). Only the captured agent contextvars are read."""
+
+    _pending_call_context: Optional[Context]
+
+
 class ElicitationHandler:
     """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
     (CLI, TUI, Telegram, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
@@ -250,7 +260,7 @@ class ElicitationHandler:
     # consent answer -> (ElicitResult action, metric); anything else declines.
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
-    def __init__(self, server_name: str, config: dict, owner: Optional["MCPServerTask"] = None):
+    def __init__(self, server_name: str, config: dict, owner: Optional[ElicitationOwner] = None):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)

@@ -80,6 +80,19 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_orchestrator_show_accepts_explicit_task_id_without_worker_binding(
+    monkeypatch, worker_env
+):
+    """Removing implicit worker guidance must not remove explicit inspection."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_show({"task_id": worker_env}))
+    assert d["task"]["id"] == worker_env
+    assert "worker_context" in d
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

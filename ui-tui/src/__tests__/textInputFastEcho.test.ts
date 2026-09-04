@@ -14,16 +14,12 @@ import {
 // for the common case of typing plain English at the end of the line. These
 // tests pin the shape preconditions that make that bypass safe.
 //
-// Regression intent: any non-ASCII text — Vietnamese precomposed letters
-// (one grapheme, `text.length === 1`, `stringWidth === 1`, but produced
-// via IME composition across multiple keystrokes), combining marks
-// (zero width), CJK (double width), emoji (variable width), or anything
-// that could be produced by an in-flight IME composition — must NOT
-// take the bypass. Closes:
-//   - "TUI is experiencing font errors when using Unicode to type Vietnamese"
-//   - #5221  TUI input box renders incorrectly for CJK / East-Asian wide
-//   - #7443  CLI TUI renders and deletes Chinese characters incorrectly
-//   - #17602 / #17603  Chinese text scattering / ghosting
+// Regression intent (closes #84349): any PRINTABLE text — ASCII, CJK,
+// Vietnamese precomposed letters, combining marks, emoji, NBSP, Latin-1 —
+// takes the bypass, with widths from `stringWidth` (2 cells for CJK/emoji,
+// 0 for combining marks). Only control chars / ANSI / newlines take the
+// slow Ink render path. Backspace keeps its own ASCII-only guard ("\b \b"
+// erases exactly one cell).
 
 describe('canFastAppendShape', () => {
   const COLS = 40
@@ -51,51 +47,52 @@ describe('canFastAppendShape', () => {
     expect(canFastAppendShape('hello', 5, 'x', 6, 5)).toBe(false)
   })
 
-  // -- Regression coverage: Vietnamese / combining marks / IME --
+  // -- Printable Unicode takes the bypass (#84349) --
 
-  it('rejects Vietnamese precomposed letter ề (U+1EC1) — IME composition path', () => {
-    // 'ề' is one grapheme, length 1, width 1, but Vietnamese Telex/IME
-    // produces it via a multi-key composition. Fast-echo would commit the
-    // intermediate state to stdout and desync once the final commit
-    // arrives.
-    expect(canFastAppendShape('hello', 5, 'ề', COLS, 5)).toBe(false)
+  it('accepts Vietnamese precomposed letter ề (U+1EC1), width 1', () => {
+    expect(canFastAppendShape('hello', 5, 'ề', COLS, 5)).toBe(true)
   })
 
-  it('rejects Vietnamese tone marks ă, ơ, ư (Latin-Extended-A/B)', () => {
+  it('accepts Vietnamese tone marks ă, ơ, ư (Latin-Extended-A/B)', () => {
     for (const ch of ['ă', 'ắ', 'ơ', 'ờ', 'ư', 'ự']) {
-      expect(canFastAppendShape('hello', 5, ch, COLS, 5)).toBe(false)
+      expect(canFastAppendShape('hello', 5, ch, COLS, 5)).toBe(true)
     }
   })
 
-  it('rejects NFD combining marks (U+0300 grave, U+0301 acute, U+0302 circumflex)', () => {
+  it('accepts NFD combining marks (U+0300 grave, U+0301 acute, U+0302 circumflex) with zero advance', () => {
     // Decomposed Vietnamese: 'e' + combining circumflex + combining grave
-    // = 'ề'. Each combining mark is zero-width but length 1; without the
-    // ASCII guard the second/third keypress would be fast-echoed and
-    // desync the cell column.
-    expect(canFastAppendShape('hello', 5, '\u0300', COLS, 5)).toBe(false)
-    expect(canFastAppendShape('hello', 5, '\u0301', COLS, 5)).toBe(false)
-    expect(canFastAppendShape('hello', 5, '\u0302', COLS, 5)).toBe(false)
+    // = 'ề'. Each combining mark is zero-width; the bypass writes the exact
+    // bytes and advances by stringWidth (0), so the cell column stays synced.
+    expect(canFastAppendShape('hello', 5, '\u0300', COLS, 5)).toBe(true)
+    expect(canFastAppendShape('hello', 5, '\u0301', COLS, 5)).toBe(true)
+    expect(canFastAppendShape('hello', 5, '\u0302', COLS, 5)).toBe(true)
   })
 
-  it('rejects CJK (East-Asian wide) characters', () => {
-    expect(canFastAppendShape('hello', 5, '你', COLS, 5)).toBe(false)
-    expect(canFastAppendShape('hello', 5, '日本', COLS, 5)).toBe(false)
+  it('accepts CJK (East-Asian wide) characters', () => {
+    expect(canFastAppendShape('hello', 5, '你', COLS, 5)).toBe(true)
+    expect(canFastAppendShape('hello', 5, '日本', COLS, 5)).toBe(true)
   })
 
-  it('rejects emoji', () => {
-    expect(canFastAppendShape('hello', 5, '🙂', COLS, 5)).toBe(false)
+  it('counts CJK width (2 cells) against the wrap column', () => {
+    // 5 + stringWidth('你')=2 → 7 !< 7, would wrap: slow path.
+    expect(canFastAppendShape('hello', 5, '你', 7, 5)).toBe(false)
+    expect(canFastAppendShape('hello', 5, '你', 8, 5)).toBe(true)
+  })
+
+  it('accepts emoji', () => {
+    expect(canFastAppendShape('hello', 5, '🙂', COLS, 5)).toBe(true)
+  })
+
+  it('accepts NBSP and Latin-1 letters (width 1, printable)', () => {
+    expect(canFastAppendShape('hello', 5, '\u00a0', COLS, 5)).toBe(true)
+    expect(canFastAppendShape('hello', 5, 'é', COLS, 5)).toBe(true)
+    expect(canFastAppendShape('hello', 5, 'ñ', COLS, 5)).toBe(true)
   })
 
   it('rejects ANSI-bearing or control text', () => {
     expect(canFastAppendShape('hello', 5, '\x1b[31m', COLS, 5)).toBe(false)
     expect(canFastAppendShape('hello', 5, '\t', COLS, 5)).toBe(false)
     expect(canFastAppendShape('hello', 5, '\x7f', COLS, 5)).toBe(false)
-  })
-
-  it('rejects NBSP and Latin-1 letters that would change the line shape', () => {
-    expect(canFastAppendShape('hello', 5, '\u00a0', COLS, 5)).toBe(false)
-    expect(canFastAppendShape('hello', 5, 'é', COLS, 5)).toBe(false)
-    expect(canFastAppendShape('hello', 5, 'ñ', COLS, 5)).toBe(false)
   })
 })
 

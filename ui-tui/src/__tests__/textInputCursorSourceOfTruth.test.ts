@@ -97,4 +97,15 @@ describe('fastAppendEffect', () => {
     expect(effect.advanceDelta).toBe(3)
     expect(effect.write).toBe('abc')
   })
+
+  it('advance delta is the cell width, not the UTF-16 length, for CJK (#84349)', () => {
+    const effect = fastAppendEffect('hello', 5, '你')
+
+    expect(effect.newValue).toBe('hello你')
+    // String index still advances by UTF-16 length …
+    expect(effect.newCursor).toBe(6)
+    // … but the terminal cursor advances by cells (2 for CJK).
+    expect(effect.advanceDelta).toBe(2)
+    expect(effect.write).toBe('你')
+  })
 })

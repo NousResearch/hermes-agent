@@ -411,23 +411,15 @@ const ASCII_PRINTABLE_RE = /^[\x20-\x7e]+$/
  *
  * The fast-echo path bypasses Ink's renderer and writes text directly to
  * stdout, so the stored value, the rendered terminal cells, and the cursor
- * column must all stay in sync without any layout work. We only allow it
- * when the inserted text is pure printable ASCII so that:
+ * column must all stay in sync without any layout work. We allow any
+ * printable text (`PRINTABLE`, same gate as the insert path) and account
+ * widths with `stringWidth` — CJK/emoji advance 2 cells, combining marks
+ * 0 — so the bypass writes the exact bytes and advances by the exact
+ * cell count Ink would (closes #84349).
  *
- *   - `text.length` matches the number of grapheme clusters (no combining
- *     marks, no surrogate pairs, no precomposed CJK / Latin-Extended
- *     letters that an IME might still be holding open as a composition),
- *   - terminal width is exactly 1 cell per character (no East-Asian wide,
- *     no zero-width, no ambiguous-width fonts),
- *   - input methods (Vietnamese Telex, IME, dead-keys) cannot leak
- *     intermediate composition bytes through the bypass before the final
- *     commit arrives — those always go through the normal Ink render path
- *     and stay layout-accurate (closes #5221, #7443, #17602/#17603).
- *
- * We deliberately do NOT just check `stringWidth(text) === text.length`:
- * Vietnamese precomposed letters like "ề" (U+1EC1) report width 1 and
- * length 1 but are still produced by IME compositions and must not be
- * fast-echoed.
+ * Control chars, ANSI escapes, and newlines still take the normal Ink
+ * render path. Backspace keeps its own ASCII-only guard: "\b \b" erases
+ * exactly one cell, so wide/composed graphemes must re-render.
  */
 /**
  * Resolves which cursor position `cursorLayout` should be computed from.
@@ -544,7 +536,7 @@ export function fastAppendEffect(
   text: string
 ): { advanceDelta: number; newCursor: number; newValue: string; write: string } {
   return {
-    advanceDelta: text.length,
+    advanceDelta: stringWidth(text),
     newCursor: cursor + text.length,
     newValue: current.slice(0, cursor) + text + current.slice(cursor),
     write: text
@@ -570,11 +562,11 @@ export function canFastAppendShape(
     return false
   }
 
-  if (!ASCII_PRINTABLE_RE.test(text)) {
+  if (!PRINTABLE.test(text)) {
     return false
   }
 
-  return currentLineWidth + text.length < Math.max(1, columns)
+  return currentLineWidth + stringWidth(text) < Math.max(1, columns)
 }
 
 /**
@@ -1659,13 +1651,12 @@ export function TextInput({
                 inkRepaintResetTimer.current = null
               }
 
-              // ASCII-printable text advances the physical cursor by exactly
-              // text.length cells (canFastAppendShape rejects non-ASCII,
-              // wide chars, newlines). Notify Ink so the cached displayCursor
-              // / log-update relative-move basis advances with it; otherwise
-              // any unrelated re-render that happens before the 16ms
-              // setCur/setParent flush parks the cursor text.length cells
-              // too far right (#cursor-drift).
+              // The bypass writes the exact bytes and advances by stringWidth
+              // (1 cell for ASCII, 2 for CJK/emoji, 0 for combining marks).
+              // Notify Ink so the cached displayCursor / log-update
+              // relative-move basis advances with it; otherwise any unrelated re-render that happens before the 16ms
+              // setCur/setParent flush parks the cursor off by the echo width
+              // (#cursor-drift).
               noteCursorAdvance(effect.advanceDelta)
               commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
 

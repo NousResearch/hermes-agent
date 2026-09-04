@@ -234,6 +234,10 @@ from gateway.platforms.base import (
     _TEXT_INJECT_EXTENSIONS,
     utf16_len,
 )
+from plugins.platforms.telegram.rich_buttons import (
+    RichMessageValidationError,
+    validate_input_rich_message,
+)
 from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )
@@ -2295,22 +2299,36 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        *,
+        rich_message: Optional[Dict[str, Any]] = None,
+        allow_fallback: bool = True,
     ) -> Optional[SendResult]:
         """Attempt a single ``sendRichMessage`` send.
 
-        Returns a :class:`SendResult` (success, or a transient failure that the
-        caller must NOT legacy-resend), or ``None`` to signal "fall back to the
-        legacy MarkdownV2 path" (permanent/capability error or DM-topic skip).
+        The automatic markdown path leaves ``rich_message`` unset and uses
+        ``allow_fallback=True``. Public plugin calls pass a validated
+        ``InputRichMessage`` and disable legacy fallback because structured
+        blocks have no lossless MarkdownV2 equivalent.
         """
         thread_id = self._metadata_thread_id(metadata)
         routing = self._compute_single_send_routing(chat_id, reply_to, metadata, thread_id)
         if routing is None:
-            return None
+            if allow_fallback:
+                return None
+            return SendResult(
+                success=False,
+                error=self._dm_topic_missing_anchor_error(),
+                retryable=False,
+            )
         reply_to_id, thread_kwargs = routing
 
         payload: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id),
-            "rich_message": self._rich_message_payload(content),
+            "rich_message": (
+                rich_message
+                if rich_message is not None
+                else self._rich_message_payload(content)
+            ),
         }
         # Only forward non-None routing keys: when direct_messages_topic_id is
         # present _thread_kwargs_for_send pairs it with message_thread_id=None,
@@ -2340,9 +2358,23 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Endpoint missing (old PTB/server) — latch rich off so
                     # every later send doesn't pay a doomed extra roundtrip.
                     self._rich_send_disabled = True
+                safe_error = _redact_telegram_error_text(exc)
+                if not allow_fallback:
+                    error_kind = classify_send_error(exc)
+                    logger.debug(
+                        "[%s] explicit sendRichMessage rejected (%s)",
+                        self.name,
+                        error_kind,
+                    )
+                    return SendResult(
+                        success=False,
+                        error="rich_message_rejected",
+                        retryable=False,
+                        error_kind=error_kind,
+                    )
                 logger.debug(
                     "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
-                    self.name, _redact_telegram_error_text(exc),
+                    self.name, safe_error,
                 )
                 return None
             # Transient / network / unknown: the request may have reached
@@ -2365,6 +2397,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 if _m:
                     _retry_after = float(_m.group(1))
             safe_error = _redact_telegram_error_text(exc)
+            if not allow_fallback:
+                error_kind = classify_send_error(exc)
+                logger.warning(
+                    "[%s] explicit sendRichMessage transport failure "
+                    "(%s; no legacy resend)",
+                    self.name,
+                    exc.__class__.__name__,
+                )
+                return SendResult(
+                    success=False,
+                    error="rich_message_transport_failure",
+                    retryable=(is_connect_timeout or not is_timeout),
+                    retry_after=_retry_after,
+                    error_kind=error_kind,
+                )
             logger.warning(
                 "[%s] sendRichMessage transient failure (no legacy resend): %s",
                 self.name, safe_error,
@@ -2383,9 +2430,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id = (msg.get("result") or {}).get("message_id")
         else:
             message_id = getattr(msg, "message_id", None)
-        if message_id is not None:
+        if message_id is not None and content:
             # Telegram won't echo rich content in reply_to_message, so remember
-            # what we sent — replies to this message resolve via this index.
+            # only the explicit plain-text context supplied by the caller.
             try:
                 from gateway import rich_sent_store
                 rich_sent_store.record(str(chat_id), str(message_id), content)
@@ -2402,24 +2449,24 @@ class TelegramAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        rich_message: Optional[Dict[str, Any]] = None,
+        allow_fallback: bool = True,
     ) -> Optional[SendResult]:
-        """Edit an existing message in place as a rich message (Bot API 10.1).
+        """Edit an existing message in place as a rich message.
 
-        Uses ``editMessageText`` with the ``rich_message`` parameter so a
-        streamed preview can finalize as rich (tables/task lists/details/math)
-        WITHOUT a fresh send + delete — no duplicate preview.  Mirrors
-        :meth:`_try_send_rich`'s error contract:
-
-        - success → ``SendResult(success=True, message_id=...)``
-        - permanent / capability error → ``None`` (caller falls back to the
-          legacy MarkdownV2 edit; capability errors latch rich off)
-        - transient / unknown → ``SendResult(success=False)`` with retry
-          semantics (the message may already be edited; do NOT legacy-resend)
+        Automatic finalization keeps the legacy-fallback contract. Public
+        plugin calls pass a validated ``InputRichMessage`` and disable fallback
+        so a structured card is never silently flattened.
         """
         payload: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id),
             "message_id": int(message_id),
-            "rich_message": self._rich_message_payload(content),
+            "rich_message": (
+                rich_message
+                if rich_message is not None
+                else self._rich_message_payload(content)
+            ),
         }
         # Edits target an existing message by chat_id + message_id. Topic
         # routing belongs only on send endpoints; forwarding message_thread_id
@@ -2437,13 +2484,26 @@ class TelegramAdapter(BasePlatformAdapter):
                 if self._is_rich_capability_error(exc):
                     self._rich_send_disabled = True
                 # "Message is not modified" — content identical to the current
-                # rich message; treat as a successful no-op so the caller does
-                # not fall through to a redundant legacy edit.
+                # rich message; treat as a successful no-op.
                 if "not modified" in str(exc).lower():
                     return SendResult(success=True, message_id=message_id)
+                safe_error = _redact_telegram_error_text(exc)
+                if not allow_fallback:
+                    error_kind = classify_send_error(exc)
+                    logger.debug(
+                        "[%s] explicit rich edit rejected (%s)",
+                        self.name,
+                        error_kind,
+                    )
+                    return SendResult(
+                        success=False,
+                        error="rich_message_rejected",
+                        retryable=False,
+                        error_kind=error_kind,
+                    )
                 logger.debug(
                     "[%s] rich editMessageText rejected (%s) — falling back to MarkdownV2 edit",
-                    self.name, _redact_telegram_error_text(exc),
+                    self.name, safe_error,
                 )
                 return None
             if "not modified" in str(exc).lower():
@@ -2456,6 +2516,20 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
             safe_error = _redact_telegram_error_text(exc)
+            if not allow_fallback:
+                error_kind = classify_send_error(exc)
+                logger.warning(
+                    "[%s] explicit rich edit transport failure "
+                    "(%s; no legacy resend)",
+                    self.name,
+                    exc.__class__.__name__,
+                )
+                return SendResult(
+                    success=False,
+                    error="rich_message_transport_failure",
+                    retryable=(is_connect_timeout or not is_timeout),
+                    error_kind=error_kind,
+                )
             logger.warning(
                 "[%s] rich editMessageText transient failure (no legacy resend): %s",
                 self.name, safe_error,
@@ -2465,15 +2539,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 error=safe_error,
                 retryable=(is_connect_timeout or not is_timeout),
             )
-        # Telegram won't echo rich content for messages that predate the bot's
-        # first rich send, so mirror the fresh-send index here too: a streamed
-        # final finalized via editMessageText is otherwise never recorded, and
-        # replies to it would have no native echo to recover from.
-        try:
-            from gateway import rich_sent_store
-            rich_sent_store.record(str(chat_id), str(message_id), content)
-        except Exception:
-            pass
+        if content:
+            # Keep only caller-provided plain-text reply context, never the
+            # serialized structured payload.
+            try:
+                from gateway import rich_sent_store
+                rich_sent_store.record(str(chat_id), str(message_id), content)
+            except Exception:
+                pass
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -5457,6 +5530,198 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         else:  # "first" (default)
             return chunk_index == 0
+
+    async def send_rich_message(
+        self,
+        chat_id: str,
+        rich_message: Dict[str, Any],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        context_text: Optional[str] = None,
+    ) -> SendResult:
+        """Send a JSON-compatible Telegram ``InputRichMessage``.
+
+        This is the plugin-facing path for Bot API rich blocks, including 10.3
+        buttons. Callback handling remains on ``register_platform_handler``;
+        this method owns only delivery, routing, and safe failure semantics.
+        ``context_text`` is optional plain text stored locally for replies to a
+        rich message, whose content Telegram does not echo back to bots.
+        """
+        try:
+            validated = validate_input_rich_message(rich_message)
+            if context_text is not None and not isinstance(context_text, str):
+                raise RichMessageValidationError(
+                    "context_text must be a string when provided"
+                )
+            if metadata is not None and not isinstance(metadata, dict):
+                raise RichMessageValidationError(
+                    "metadata must be an object when provided"
+                )
+            if reply_to is not None:
+                int(reply_to)
+        except (RichMessageValidationError, TypeError, ValueError) as exc:
+            if isinstance(exc, RichMessageValidationError):
+                detail = str(exc)
+            else:
+                detail = "reply_to must be an integer"
+            return SendResult(
+                success=False,
+                error=f"invalid_rich_message: {detail}",
+                retryable=False,
+                error_kind="bad_format",
+            )
+
+        if not self._bot:
+            live = self._replacement_telegram_adapter()
+            if live is not None:
+                return await live.send_rich_message(
+                    chat_id,
+                    validated,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                    context_text=context_text,
+                )
+            if self._is_permanent_fatal() or not await self._wait_for_reconnection():
+                return SendResult(
+                    success=False,
+                    error="Not connected",
+                    retryable=not self._is_permanent_fatal(),
+                )
+            live = self._replacement_telegram_adapter()
+            if not self._bot and live is not None:
+                return await live.send_rich_message(
+                    chat_id,
+                    validated,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                    context_text=context_text,
+                )
+            if not self._bot:
+                return SendResult(success=False, error="Not connected", retryable=True)
+
+        if getattr(self, "_send_path_degraded", False):
+            return SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            )
+        if not self._rich_delivery_enabled():
+            return SendResult(
+                success=False,
+                error="rich_messages_disabled",
+                retryable=False,
+            )
+        if getattr(self, "_rich_send_disabled", False) or not self._bot_supports_rich():
+            return SendResult(
+                success=False,
+                error="rich_messages_unavailable",
+                retryable=False,
+            )
+
+        result = await self._try_send_rich(
+            chat_id,
+            context_text or "",
+            reply_to,
+            metadata,
+            rich_message=validated,
+            allow_fallback=False,
+        )
+        if result is None:  # Defensive: explicit sends never request fallback.
+            return SendResult(
+                success=False,
+                error="rich_message_rejected",
+                retryable=False,
+            )
+        return result
+
+    async def edit_rich_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        rich_message: Dict[str, Any],
+        *,
+        context_text: Optional[str] = None,
+    ) -> SendResult:
+        """Edit an existing Telegram message with an ``InputRichMessage``."""
+        try:
+            validated = validate_input_rich_message(rich_message)
+            if context_text is not None and not isinstance(context_text, str):
+                raise RichMessageValidationError(
+                    "context_text must be a string when provided"
+                )
+            int(message_id)
+        except (RichMessageValidationError, TypeError, ValueError) as exc:
+            if isinstance(exc, RichMessageValidationError):
+                detail = str(exc)
+            else:
+                detail = "message_id must be an integer"
+            return SendResult(
+                success=False,
+                error=f"invalid_rich_message: {detail}",
+                retryable=False,
+                error_kind="bad_format",
+            )
+
+        if not self._bot:
+            live = self._replacement_telegram_adapter()
+            if live is not None:
+                return await live.edit_rich_message(
+                    chat_id,
+                    message_id,
+                    validated,
+                    context_text=context_text,
+                )
+            if self._is_permanent_fatal() or not await self._wait_for_reconnection():
+                return SendResult(
+                    success=False,
+                    error="Not connected",
+                    retryable=not self._is_permanent_fatal(),
+                )
+            live = self._replacement_telegram_adapter()
+            if not self._bot and live is not None:
+                return await live.edit_rich_message(
+                    chat_id,
+                    message_id,
+                    validated,
+                    context_text=context_text,
+                )
+            if not self._bot:
+                return SendResult(success=False, error="Not connected", retryable=True)
+
+        if getattr(self, "_send_path_degraded", False):
+            return SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            )
+        if not self._rich_delivery_enabled():
+            return SendResult(
+                success=False,
+                error="rich_messages_disabled",
+                retryable=False,
+            )
+        if getattr(self, "_rich_send_disabled", False) or not self._bot_supports_rich():
+            return SendResult(
+                success=False,
+                error="rich_messages_unavailable",
+                retryable=False,
+            )
+
+        result = await self._try_edit_rich(
+            chat_id,
+            message_id,
+            context_text or "",
+            rich_message=validated,
+            allow_fallback=False,
+        )
+        if result is None:  # Defensive: explicit edits never request fallback.
+            return SendResult(
+                success=False,
+                error="rich_message_rejected",
+                retryable=False,
+            )
+        return result
 
     async def send(
         self,

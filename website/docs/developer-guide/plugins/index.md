@@ -1346,6 +1346,148 @@ def register(ctx):
     ctx.register_platform_handler("telegram", _wire)
 ```
 
+### Telegram rich buttons (Bot API 10.3)
+
+Telegram plugins can combine that same pattern-scoped handler with the public
+`TelegramAdapter.send_rich_message()` and `edit_rich_message()` methods. The
+adapter keeps Hermes' topic/reply routing, notification mode, link-preview
+policy, capability latch, redacted failures, and no-duplicate retry semantics;
+plugins don't need to call `Bot.do_api_request()` themselves.
+
+Enable `gateway.platforms.telegram.extra.rich_messages: true`, then pass a
+JSON-compatible [`InputRichMessage`](https://core.telegram.org/bots/api#inputrichmessage).
+This complete example binds each one-time callback nonce to the user who opened
+the card before changing state:
+
+```python
+import secrets
+
+
+def register(ctx):
+    def _wire(application, adapter):
+        from telegram.ext import CallbackQueryHandler, CommandHandler
+
+        # Demo-only in-memory state. Persist + expire this binding for workflows
+        # that must survive a gateway restart.
+        owners = {}  # (chat_id, message_id) -> (user_id, nonce)
+
+        async def _show_card(update, context):
+            nonce = secrets.token_urlsafe(8)
+            prefix = f"myplugin:{nonce}:"
+            card = {
+                "blocks": [
+                    {
+                        "type": "paragraph",
+                        "text": [{"type": "plain", "text": "Deploy release?"}],
+                    },
+                    {
+                        "type": "buttons",
+                        "align": "center",
+                        "buttons": [
+                            {
+                                "text": "Deploy",
+                                "style": "success",
+                                "callback_data": prefix + "yes",
+                            },
+                            {
+                                "text": "Cancel",
+                                "style": "danger",
+                                "callback_data": prefix + "no",
+                            },
+                        ],
+                    },
+                ]
+            }
+            result = await adapter.send_rich_message(
+                str(update.effective_chat.id),
+                card,
+                reply_to=str(update.effective_message.message_id),
+                context_text="Deploy release approval",
+            )
+            if result.success and result.message_id:
+                owners[(str(update.effective_chat.id), result.message_id)] = (
+                    update.effective_user.id,
+                    nonce,
+                )
+
+        async def _on_button(update, context):
+            query = update.callback_query
+            message = query.message
+            if message is None or query.from_user is None:
+                return
+
+            key = (str(message.chat.id), str(message.message_id))
+            owner = owners.get(key)
+            data = query.data or ""
+            if (
+                owner is None
+                or owner[0] != query.from_user.id
+                or data not in {f"myplugin:{owner[1]}:yes", f"myplugin:{owner[1]}:no"}
+            ):
+                await query.answer("This action isn't yours or has expired.", show_alert=True)
+                return
+
+            owners.pop(key, None)  # consume before the state-changing action
+            choice = "Deploying" if data.endswith(":yes") else "Cancelled"
+            await query.answer(choice)
+            await adapter.edit_rich_message(
+                str(message.chat.id),
+                str(message.message_id),
+                {
+                    "blocks": [
+                        {
+                            "type": "paragraph",
+                            "text": [{"type": "plain", "text": choice}],
+                        }
+                    ]
+                },
+                context_text=choice,
+            )
+
+        application.add_handler(CommandHandler("rich_demo", _show_card))
+        application.add_handler(
+            CallbackQueryHandler(
+                _on_button,
+                pattern=r"^myplugin:[A-Za-z0-9_-]{11}:(?:yes|no)$",
+            )
+        )
+
+    ctx.register_platform_handler("telegram", _wire)
+```
+
+`RichMessageButton` requires non-empty button text (plain text, custom emoji,
+or date-time RichText only) and exactly one of these mutually exclusive actions:
+
+| Action | Value |
+|---|---|
+| `url` | URL string |
+| `callback_data` | 1–64 UTF-8 bytes |
+| `web_app` | `WebAppInfo` object |
+| `login_url` | `LoginUrl` object |
+| `switch_inline_query` | Query string |
+| `switch_inline_query_current_chat` | Query string |
+| `switch_inline_query_chosen_chat` | `SwitchInlineQueryChosenChat` object |
+| `copy_text` | `CopyTextButton` object (`text`: 1–256 characters) |
+| `disabled` | Empty `DisabledButton` object |
+
+Styles are `primary`, `success`, `danger`, and `link`; `link` is valid only
+with `callback_data`. A `type: "buttons"` row contains 1–8 buttons and can use
+`align: "left" | "center" | "right"`. Buttons can also appear inline as a
+`type: "button"` rich-text node.
+
+:::warning
+Native platform handlers are privileged. Always use a narrow callback pattern
+and bind every state-changing callback to an authorized user plus an expiring,
+one-time nonce. Web Apps work only in private user↔bot chats; Login URLs must
+use HTTPS and aren't supported in ephemeral messages; inline-query actions
+require the bot's inline mode. Old Telegram clients show an update placeholder
+instead of silently mis-rendering rich buttons.
+:::
+
+The adapter accepts JSON-compatible input only; direct multipart file uploads
+aren't supported by this helper. Validation/rejection returns a failed
+`SendResult` and never silently flattens a structured card into MarkdownV2.
+
 Example — Discord, reaction events:
 
 ```python

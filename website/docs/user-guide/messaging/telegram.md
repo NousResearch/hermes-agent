@@ -984,6 +984,8 @@ gateway:
 
 The rich path is skipped automatically when content exceeds the 32,768-character rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
 
+**Buttons inside Rich Messages (Bot API 10.3).** Telegram plugins can use the public `TelegramAdapter.send_rich_message()` and `edit_rich_message()` methods with JSON-compatible `InputRichMessage` blocks, including inline `RichTextButton` nodes and 1–8-button `InputRichBlockButtons` rows. Clicks are handled through the existing pattern-scoped `register_platform_handler("telegram", ...)` surface, so a plugin can answer the callback and update the same message in place. Structured plugin payloads are explicit: Hermes validates the Bot API 10.3 button contract locally and returns a failed `SendResult` instead of silently flattening a rejected card to MarkdownV2. See [Telegram rich buttons in the plugin guide](/developer-guide/plugins#telegram-rich-buttons-bot-api-103) for all actions, limits, and an authorization-safe callback → edit example.
+
 **MarkdownV2 fallback.** When the rich path is unavailable for a message, Hermes converts markdown to MarkdownV2. Since MarkdownV2 has no native table syntax, pipe tables are normalized:
 
 - **Small tables** are flattened into **row-group bullets** — each row becomes a readable bulleted list under the column headings. Good for 2–4 columns and short cells.

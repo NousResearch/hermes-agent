@@ -173,9 +173,11 @@ class _StubChild:
 
     def run_conversation(self, user_message, task_id=None, **_kwargs):
         self.calls.append(user_message)
-        text = self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, dict):
+            return response
         return {
-            "final_response": text,
+            "final_response": response,
             "completed": True,
             "api_calls": 1,
             "messages": [],
@@ -300,6 +302,44 @@ class TestRunSingleChildSchemaValidation:
         entry = _run(child)
         assert entry["schema_valid"] is False
         assert entry["status"] == "failed"
+
+    def test_retry_side_guardrail_halt_is_terminal_failure(self):
+        """A schema retry that hits a hard guardrail must not inherit success
+        fields from the first turn or trigger another retry."""
+        child = _StubChild(
+            [
+                "not json at all",
+                {
+                    "final_response": (
+                        "I stopped retrying web_search because it hit the "
+                        "tool-call guardrail (loop_web_search_cap)."
+                    ),
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 2,
+                    "messages": [],
+                    "guardrail": {
+                        "action": "block",
+                        "code": "loop_web_search_cap",
+                        "message": "Blocked runaway search loop.",
+                        "tool_name": "web_search",
+                        "count": 10,
+                    },
+                },
+            ]
+        )
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        entry = _run(child)
+
+        assert len(child.calls) == 2
+        assert entry["schema_retries"] == 1
+        assert entry["schema_valid"] is False
+        assert entry["status"] == "failed"
+        assert entry["exit_reason"] == "guardrail_halt"
+        assert entry["failure_reason"] == "guardrail_halt"
+        assert entry["guardrail"]["code"] == "loop_web_search_cap"
+        assert "message" not in entry["guardrail"]
 
     def test_schema_valid_entry_still_completed(self):
         """Guard: schema_valid=True keeps status="completed" untouched."""

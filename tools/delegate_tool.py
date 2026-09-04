@@ -3197,19 +3197,10 @@ def _run_single_child(
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
 
-        _guardrail = result.get("guardrail")
-        _hard_guardrail = (
-            isinstance(_guardrail, dict)
-            and _guardrail.get("action") in {"block", "halt"}
-        )
-        _public_guardrail = (
-            {
-                key: _guardrail[key]
-                for key in ("action", "code", "tool_name", "count", "signature")
-                if key in _guardrail
-            }
-            if isinstance(_guardrail, dict)
-            else None
+        _initial_guardrail = result.get("guardrail")
+        _initial_hard_guardrail = (
+            isinstance(_initial_guardrail, dict)
+            and _initial_guardrail.get("action") in {"block", "halt"}
         )
 
         # T1-24: structured-output contract validation + ONE bounded retry.
@@ -3236,7 +3227,7 @@ def _run_single_child(
                 not _schema_valid
                 and _first_text.strip()
                 and not result.get("interrupted", False)
-                and not _hard_guardrail
+                and not _initial_hard_guardrail
             ):
                 # Exactly one retry turn, carrying the validation errors
                 # verbatim (no schema re-paste — the child already holds
@@ -3259,6 +3250,20 @@ def _run_single_child(
                     _retry_text = _retry_result.get("final_response") or ""
                     if _retry_text.strip():
                         result["final_response"] = _retry_text
+                    # The retry is the terminal child turn. Carry all fields
+                    # that drive honest completion classification; otherwise a
+                    # retry-side guardrail/error/interruption is mislabeled
+                    # from the stale first-turn state.
+                    for _terminal_key in (
+                        "completed",
+                        "interrupted",
+                        "failed",
+                        "error",
+                        "failure_reason",
+                        "guardrail",
+                    ):
+                        if _terminal_key in _retry_result:
+                            result[_terminal_key] = _retry_result[_terminal_key]
                     try:
                         result["api_calls"] = int(
                             result.get("api_calls", 0) or 0
@@ -3273,6 +3278,23 @@ def _run_single_child(
                     _schema_valid, _schema_errors = validate_output(
                         _retry_text, _output_schema
                     )
+
+        # Recompute from the terminal turn: a schema retry may itself hit a
+        # guardrail, fail, or be interrupted.
+        _guardrail = result.get("guardrail")
+        _hard_guardrail = (
+            isinstance(_guardrail, dict)
+            and _guardrail.get("action") in {"block", "halt"}
+        )
+        _public_guardrail = (
+            {
+                key: _guardrail[key]
+                for key in ("action", "code", "tool_name", "count", "signature")
+                if key in _guardrail
+            }
+            if isinstance(_guardrail, dict)
+            else None
+        )
 
         # Linearization boundary for registry steering. From this point on the
         # child cannot consume another steer. Closing under the registry lock

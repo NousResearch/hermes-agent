@@ -2034,11 +2034,29 @@ def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
 
 def write_platform_config_field(
     platform_key: str, field_key: str, value: Any, *, raw: bool = False) -> None:
-    """Persist one scalar field under ``platforms.<platform_key>``.
+    """Persist one scalar field under ``gateway.platforms.<platform_key>``.
     ``raw=True`` (CLI setup flows) edits only the user's raw file; dashboard routes use the
-    default loaded-config path to keep their profile-scoped ``load_config`` behavior."""
+    default loaded-config path to keep their profile-scoped ``load_config`` behavior.
+    Hermes reads platform blocks only nested under ``gateway.platforms`` — a root-level
+    ``platforms`` key (what older setup flows wrote) is silently ignored, so the write
+    creates ``gateway`` when absent and preserves every other key in the config."""
     config = read_raw_config() if raw else load_config()
-    platforms = _ensure_dict(config, "platforms")
+    # Older buggy setup flows wrote the platform's block at the ROOT (``platforms.<key>``),
+    # where Hermes never reads it; fold that stray block under ``gateway.platforms`` before
+    # writing so the canonical block is the only one left and re-running setup converges.
+    stray = config.get("platforms")
+    if isinstance(stray, dict) and platform_key in stray:
+        gateway = _ensure_dict(config, "gateway")
+        platforms = _ensure_dict(gateway, "platforms")
+        block = stray[platform_key]
+        if isinstance(block, dict):
+            existing = platforms.get(platform_key)
+            platforms[platform_key] = {**(existing if isinstance(existing, dict) else {}), **block}
+        del stray[platform_key]
+        if not stray:
+            config.pop("platforms", None)
+    gateway = _ensure_dict(config, "gateway")
+    platforms = _ensure_dict(gateway, "platforms")
     _ensure_dict(platforms, platform_key)[field_key] = value
     save_config(config)
 

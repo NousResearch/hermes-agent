@@ -1594,6 +1594,94 @@ feishu:
         assert raw["feishu"]["require_mention"] is True
 
 
+class TestWritePlatformConfigField:
+    """Regression for #103050: platform setup writes must land under ``gateway.platforms``,
+    never at the config root (``platforms.<key>``), or the gateway silently ignores them."""
+
+    def test_writes_under_existing_gateway_platforms(self, tmp_path):
+        body = """_config_version: 30
+gateway:
+  platforms:
+    line:
+      enabled: true
+    a2a:
+      enabled: true
+web:
+  backend: tavily
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            write_platform_config_field("photon", "enabled", True, raw=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        # Canonical location has the new platform…
+        assert raw["gateway"]["platforms"]["photon"]["enabled"] is True
+        # …existing platforms and sibling sections are preserved…
+        assert raw["gateway"]["platforms"]["line"]["enabled"] is True
+        assert raw["gateway"]["platforms"]["a2a"]["enabled"] is True
+        assert raw["web"]["backend"] == "tavily"
+        # …and nothing was written at the root.
+        assert "platforms" not in raw
+
+    def test_creates_gateway_section_when_missing(self, tmp_path):
+        body = "_config_version: 30\nmodel:\n  provider: deepseek\n"
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            write_platform_config_field("photon", "enabled", True, raw=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["gateway"]["platforms"]["photon"]["enabled"] is True
+        assert "platforms" not in raw
+        assert raw["model"]["provider"] == "deepseek"
+
+    def test_idempotent_across_runs(self, tmp_path):
+        body = "_config_version: 30\ngateway:\n  platforms:\n    line:\n      enabled: true\n"
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            write_platform_config_field("photon", "enabled", True, raw=True)
+            first = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+            write_platform_config_field("photon", "enabled", True, raw=True)
+            second = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+            raw = yaml.safe_load(second)
+
+        assert raw["gateway"]["platforms"]["photon"]["enabled"] is True
+        # Re-running setup must not duplicate the platform block or rewrite the file.
+        assert second == first
+        assert len(raw["gateway"]["platforms"]) == 2
+
+    def test_migrates_stray_root_platforms_block(self, tmp_path):
+        # Older setup runs wrote ``platforms.photon`` at the root (never read); re-running
+        # setup must fold that block under gateway.platforms and drop the stray key.
+        body = """_config_version: 30
+gateway:
+  platforms:
+    line:
+      enabled: true
+platforms:
+  photon:
+    enabled: true
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            write_platform_config_field("photon", "enabled", True, raw=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["gateway"]["platforms"]["photon"]["enabled"] is True
+        assert raw["gateway"]["platforms"]["line"]["enabled"] is True
+        assert "platforms" not in raw
+
+    def test_dashboard_path_writes_under_gateway_platforms(self, tmp_path):
+        # Non-raw callers (dashboard platform toggles) resolve through load_config().
+        body = "_config_version: 30\nmodel:\n  provider: deepseek\n"
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            write_platform_config_field("whatsapp", "enabled", True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["gateway"]["platforms"]["whatsapp"]["enabled"] is True
+        assert "platforms" not in raw
+
+
 class TestVerifyOnStopMigration:
     """v30 → v31: switch verify_on_stop OFF once, preserving explicit choices."""
 

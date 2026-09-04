@@ -1,7 +1,9 @@
 import { useEffect, useReducer, useRef } from 'react'
 
 import {
-  initialQuickComposerState,
+  createInitialQuickComposerState,
+  loadPersistedQuickEntryTarget,
+  persistQuickEntryTarget,
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
@@ -42,7 +44,7 @@ export function QuickEntryApp() {
     }
 
     return next
-  }, initialQuickComposerState)
+  }, undefined, createInitialQuickComposerState)
 
   // Re-summoned by the chord: the shell reuses the window, so reset the draft
   // and take the keyboard back for a fresh capture. Also adopt gateway-state
@@ -51,7 +53,8 @@ export function QuickEntryApp() {
     const api = window.hermesDesktop?.quickEntry
 
     const offShown = api?.onShown(() => {
-      dispatch({ type: 'shown' })
+      // Reset to the persisted picker choice, not always the current chat.
+      dispatch({ resetTarget: loadPersistedQuickEntryTarget(), type: 'shown' })
       requestAnimationFrame(() => inputRef.current?.focus())
     })
 
@@ -164,7 +167,14 @@ export function QuickEntryApp() {
             aria-label="Target session"
             disabled={!state.connected}
             id="quick-entry-target"
-            onChange={event => dispatch({ target: event.target.value, type: 'target' })}
+            onChange={event => {
+              const target = event.target.value
+              // Persist the picker choice in the event handler (not the reducer
+              // body) so the reducer stays pure and replayable; the next summon
+              // opens on the same target.
+              persistQuickEntryTarget(target)
+              dispatch({ target, type: 'target' })
+            }}
             onKeyDown={event => {
               if (event.key === 'Escape') {
                 event.preventDefault()

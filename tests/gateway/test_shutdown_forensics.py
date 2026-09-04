@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,6 +135,90 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 
 class TestCheckSystemdTimingAlignment:
+
+    def test_ignores_unloaded_user_unit_and_checks_system_manager(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *args, **kwargs: io.StringIO(
+                "0::/hermes-gateway.service\n"
+            ),
+        )
+        calls = []
+
+        def fake_run(command, **kwargs):
+            is_user = "--user" in command
+            calls.append(is_user)
+            if is_user:
+                stdout = (
+                    "LoadState=not-found\n"
+                    "FragmentPath=\n"
+                    "TimeoutStopUSec=1min 30s\n"
+                )
+            else:
+                stdout = (
+                    "LoadState=loaded\n"
+                    "FragmentPath=/etc/systemd/system/hermes-gateway.service\n"
+                    "TimeoutStopUSec=3min 30s\n"
+                )
+            return SimpleNamespace(returncode=0, stdout=stdout)
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0, 0.0)
+
+        assert calls == [True, False]
+        assert result is not None
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False
+
+    @pytest.mark.parametrize(
+        ("cgroup_path", "expected_user_scope", "expected_timeout", "expected_mismatch"),
+        [
+            ("/system.slice/hermes-gateway.service", False, 210.0, False),
+            (
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/"
+                "hermes-gateway.service",
+                True,
+                90.0,
+                True,
+            ),
+        ],
+    )
+    def test_cgroup_scope_selects_manager_when_both_units_are_loaded(
+        self,
+        monkeypatch,
+        cgroup_path,
+        expected_user_scope,
+        expected_timeout,
+        expected_mismatch,
+    ):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *args, **kwargs: io.StringIO(
+                f"0::{cgroup_path}\n"
+            ),
+        )
+        calls = []
+
+        def fake_run(command, **kwargs):
+            is_user = "--user" in command
+            calls.append(is_user)
+            timeout = "1min 30s" if is_user else "3min 30s"
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"LoadState=loaded\nTimeoutStopUSec={timeout}\n",
+            )
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0, 0.0)
+
+        assert calls == [expected_user_scope]
+        assert result is not None
+        assert result["timeout_stop_sec"] == expected_timeout
+        assert result["mismatch"] is expected_mismatch
 
     def test_returns_none_when_unit_undeterminable(self, monkeypatch):
         monkeypatch.setenv("INVOCATION_ID", "abc")

@@ -373,6 +373,32 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "credit_balance_exhausted",
+            "organization_spend_limit_exceeded",
+            "project_spend_limit_exceeded",
+            "organization_usage_limit_exceeded",
+        ],
+    )
+    def test_openai_spend_usage_limit_codes_are_billing(self, code):
+        # OpenAI / OpenAI-compatible aggregators emit these structured codes
+        # when a credit balance or org/project spend/usage cap is exhausted.
+        # They must classify as billing (rotate + fallback), not fall through
+        # to a generic bucket. (clean-room port of zed-industries/zed#63208)
+        # No status_code: SSE/stream-surfaced errors carry only the
+        # structured body, exercising the _classify_by_error_code path.
+        e = MockAPIError(
+            "request rejected",
+            body={"error": {"code": code, "message": "request rejected"}},
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-5")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     def test_429_rate_limit_phrase_never_promotes_to_billing(self):
         # The exclusion guard: "Rate limit exceeded" contains the
         # "limit exceeded" usage-limit substring, but an explicit rate-limit

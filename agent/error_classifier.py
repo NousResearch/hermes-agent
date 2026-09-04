@@ -178,6 +178,13 @@ _BILLING_ERROR_CODES = frozenset({
     "balance_depleted",
     "model_not_supported_on_free_tier",
     "member_spend_cap_exceeded",
+    # OpenAI (and OpenAI-compatible aggregators) spend/usage-limit family:
+    # emitted when a credit balance or an org/project spend or usage cap is
+    # exhausted — terminal for this credential until limits are raised.
+    "credit_balance_exhausted",
+    "organization_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+    "project_spend_limit_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 

@@ -850,10 +850,13 @@ DEFAULT_CONFIG = {
         # is never starved. They are always-on and fire regardless of the
         # warn/hard-stop thresholds above. A single turn issuing dozens of web
         # searches or spawning dozens of subagents is already pathological, so
-        # the defaults are low. Set either to 0 to disable that cap (unlimited).
+        # the defaults are low. Set any of them to 0 to disable that cap
+        # (unlimited). max_tool_searches covers successful identical
+        # tool_search loops that the failure-keyed hard stops never see.
         "loop_caps": {
             "max_web_searches": 50,   # max web_search calls per turn (0 = unlimited)
             "max_subagents": 50,      # max subagents spawned per turn (0 = unlimited)
+            "max_tool_searches": 50,  # max tool_search calls per turn (0 = unlimited)
         },
     },
 

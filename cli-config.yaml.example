@@ -549,6 +549,13 @@ tool_loop_guardrails:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+  # Per-turn ceilings. Always on; 0 = unlimited. tool_search is capped
+  # because successful identical catalog queries never trip the failure
+  # hard-stops and the identical-call stub is advisory only.
+  loop_caps:
+    max_web_searches: 50
+    max_subagents: 50
+    max_tool_searches: 50
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

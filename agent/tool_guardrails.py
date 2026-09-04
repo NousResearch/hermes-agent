@@ -240,6 +240,7 @@ class ToolCallGuardrailConfig:
 # pathological, so the defaults are deliberately low.
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+_DEFAULT_MAX_TOOL_SEARCHES_PER_TURN = 50
 
 
 @dataclass(frozen=True)
@@ -251,8 +252,8 @@ class LoopCapConfig:
     loops. Here the caps count *within a single agent loop* (one turn): the
     counters reset in ``reset_for_turn`` at the start of every
     ``run_conversation``, so a legitimate multi-turn session is never starved,
-    but a single turn that spirals into an unbounded search / delegation loop
-    is stopped.
+    but a single turn that spirals into an unbounded search / delegation /
+    tool-discovery loop is stopped.
 
     Semantics differ from the per-turn loop *detector* above (which keys on
     repeated identical/failing calls): these caps are a hard ceiling on the
@@ -262,6 +263,7 @@ class LoopCapConfig:
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    max_tool_searches: int = _DEFAULT_MAX_TOOL_SEARCHES_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
@@ -275,6 +277,9 @@ class LoopCapConfig:
             ),
             max_subagents=_non_negative_int(
                 data.get("max_subagents"), defaults.max_subagents
+            ),
+            max_tool_searches=_non_negative_int(
+                data.get("max_tool_searches"), defaults.max_tool_searches
             ),
         )
 
@@ -449,6 +454,7 @@ class ToolCallGuardrailController:
         # single agent loop rather than accumulating across the session.
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._turn_tool_search_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -856,6 +862,27 @@ class ToolCallGuardrailController:
                 self._halt_decision = decision
                 return decision
             self._turn_subagent_count += spawn_count
+            return None
+
+        if tool_name == "tool_search":
+            cap = caps.max_tool_searches
+            if cap and self._turn_tool_search_count >= cap:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="loop_tool_search_cap",
+                    message=(
+                        f"Blocked tool_search: this turn has already made {cap} "
+                        "tool searches, the per-turn limit. This looks like a "
+                        "runaway discovery loop. Use the tools you already "
+                        "found, or answer the user with what you have."
+                    ),
+                    tool_name=tool_name,
+                    count=self._turn_tool_search_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+            self._turn_tool_search_count += 1
             return None
 
         return None

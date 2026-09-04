@@ -114,3 +114,28 @@ def test_bundled_catalog_explains_missing_local_skills(gen_module):
     result = gen_module.build_catalog_md_bundled([])
     assert "respects local deletions and user edits" in result
     assert "hermes skills reset <name> --restore" in result
+
+
+def test_prune_stale_generated_pages_preserves_live_and_handwritten(
+    gen_module, tmp_path, monkeypatch
+):
+    """Removed skills must not leave published pages behind (#71856)."""
+    pages = tmp_path / "skills"
+    live = pages / "bundled" / "agents" / "agents-live.md"
+    stale = pages / "bundled" / "agents" / "agents-removed.md"
+    handwritten = pages / "bundled" / "agents" / "notes.md"
+    for path in (live, stale, handwritten):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    marker = gen_module.GENERATED_PAGE_MARKER
+    live.write_text(f"{marker}\nlive\n", encoding="utf-8")
+    stale.write_text(f"{marker}\nstale\n", encoding="utf-8")
+    handwritten.write_text("# Maintained by hand\n", encoding="utf-8")
+    monkeypatch.setattr(gen_module, "SKILLS_PAGES", pages)
+
+    removed = gen_module.prune_stale_generated_pages({live})
+
+    assert removed == [stale]
+    assert live.exists()
+    assert handwritten.exists()
+    assert not stale.exists()

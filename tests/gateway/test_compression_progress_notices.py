@@ -78,23 +78,20 @@ def test_enabled_still_suppresses_non_compression_noise(
 
 @pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "default"])
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-def test_compaction_completion_notice_reaches_chat(monkeypatch, platform, enabled):
-    """The #69546 'compacted' lifecycle edge is deliverable on chat surfaces.
-
-    COMPACTION_DONE_STATUS already flows through the status callback on
-    compaction completion and is not matched by the noise regex — the opt-in
-    gate must not change that in either mode, so users who enable
-    progress_notices see the completion stat notice paired with the start.
-    """
+def test_compaction_completion_notice_respects_progress_notices_gate(
+    monkeypatch, platform, enabled
+):
+    """The completion edge follows the same opt-in gate as the start edge."""
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",
         lambda: {"compression": {"progress_notices": enabled}},
     )
-    assert (
-        _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
-        == COMPACTION_DONE_STATUS
-    )
+    result = _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
+    if enabled:
+        assert result == COMPACTION_DONE_STATUS
+    else:
+        assert result is None
 
 
 def test_enabled_gate_does_not_leak_to_raw_platforms(progress_notices_enabled):

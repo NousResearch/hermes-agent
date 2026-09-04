@@ -10,10 +10,10 @@ export type HudResizeDirection = (typeof HUD_RESIZE_DIRECTIONS)[number]
 
 const HUD_WAYLAND_RESIZE_DIRECTIONS = ['e', 'se', 's'] as const satisfies readonly HudResizeDirection[]
 
-/** Native Wayland cannot read or change a top-level window's global x/y, so
- *  only edges that preserve the existing top-left position are truthful. */
-export function hudResizeDirections(nativeDrag: boolean): readonly HudResizeDirection[] {
-  return nativeDrag ? HUD_WAYLAND_RESIZE_DIRECTIONS : HUD_RESIZE_DIRECTIONS
+/** Edges the HUD can honestly resize. Native Wayland cannot change a
+ *  top-level's global x/y, so only edges that keep the existing origin. */
+export function hudResizeDirections(clientPlacement: boolean): readonly HudResizeDirection[] {
+  return clientPlacement ? HUD_RESIZE_DIRECTIONS : HUD_WAYLAND_RESIZE_DIRECTIONS
 }
 
 export interface HudResizeBounds {

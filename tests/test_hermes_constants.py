@@ -584,6 +584,38 @@ class TestSecureParentDir:
         secure_parent_dir(target2)
         assert called_with2 == [], "must not chmod dirs inside the install tree"
 
+    def test_install_tree_siblings_still_hardened(self, monkeypatch):
+        """Paths OUTSIDE the install tree must still be chmod'd.
+
+        Negative boundary for the install-tree exclusion (#93050): the guard
+        compares path components, so a sibling directory whose name merely
+        starts with the install root's name (``<install_root>-data``) must
+        still receive parent-dir hardening. Pins that the exclusion cannot
+        silently widen into a string-prefix match.
+        """
+        install_root = Path(hermes_constants.__file__).resolve().parent
+
+        # Prefix-named sibling of the install root (/opt/hermes-data/...).
+        prefix_sibling = Path(str(install_root) + "-data")
+        called_with = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with.append((str(p), m)))
+        secure_parent_dir(prefix_sibling / "auth.json")
+        assert called_with == [(str(prefix_sibling), 0o700)], (
+            "prefix-named siblings of the install root must still be hardened"
+        )
+
+        # Ordinary sibling next to the install root (same parent dir).
+        sibling = install_root.parent / "unrelated-dir"
+        if len(sibling.parts) >= 3 and install_root not in sibling.parents:
+            called_with2 = []
+            monkeypatch.setattr(
+                os, "chmod", lambda p, m: called_with2.append((str(p), m))
+            )
+            secure_parent_dir(sibling / "auth.json")
+            assert called_with2 == [(str(sibling), 0o700)], (
+                "siblings of the install root must still be hardened"
+            )
+
     @pytest.mark.require_symlinks
     def test_symlink_resolved(self, tmp_path, monkeypatch):
         """Symlinks should be resolved before checking depth."""

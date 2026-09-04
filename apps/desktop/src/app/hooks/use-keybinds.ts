@@ -66,6 +66,7 @@ import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
 import {
@@ -455,6 +456,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // clipboard (text AND images) into the active composer. Bubble phase so
     // editables' own paste handlers run first and mark the event handled.
     window.addEventListener('paste', handleWindowPaste)
+    // ⌘/Ctrl+L moves focus to the composer. Bubble phase so capture-phase
+    // claimants run first; the priority ladder lives in focus-chord.ts.
+    window.addEventListener('keydown', handleComposerFocusChord)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
@@ -462,6 +466,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('contextmenu', onContextMenu, { capture: true })
       window.removeEventListener('paste', handleWindowPaste)
+      window.removeEventListener('keydown', handleComposerFocusChord)
     }
   }, [])
 }

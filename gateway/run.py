@@ -7447,6 +7447,56 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
+async def _deliver_trailing_reasoning_block(
+    *,
+    runner,
+    adapter,
+    source,
+    stream_consumer_holder,
+    reasoning_block,
+    response,
+    intentional_silence,
+    event_metadata,
+) -> None:
+    """Deliver the 💭 reasoning block when streaming already sent the reply body.
+
+    The reasoning block is built in ``_handle_message_with_agent`` and prepended
+    to the final response. When streaming already delivered that body
+    (``already_sent=True``), the response — block included — is discarded and
+    only a trailing footer would ever be sent. This helper gives the block the
+    same trailing-send rail as the footer (#7251 / #50193).
+
+    Gates:
+    - No block, no response, or intentional silence -> no send.
+    - Non-streamed delivery (stream consumer did not confirm content delivery)
+      means the normal final send carries the block inline -> no duplicate.
+    - Defensive prefix check: if the response still starts with the block
+      (inline path ran), it is already covered -> no duplicate.
+
+    Send failures are logged at debug level and never raise — display-only
+    content must not fail the turn.
+    """
+    if not reasoning_block or not response or intentional_silence:
+        return
+    try:
+        _sc = stream_consumer_holder[0] if stream_consumer_holder else None
+        _streamed_body = bool(
+            _sc and getattr(_sc, "final_content_delivered", False)
+        )
+    except Exception:
+        _streamed_body = True
+    if not _streamed_body:
+        return
+    if str(response or "").startswith(str(reasoning_block)[:20]):
+        return
+    if adapter is None or not hasattr(adapter, "send"):
+        return
+    try:
+        await adapter.send(source.chat_id, reasoning_block, metadata=event_metadata)
+    except Exception as e:
+        logger.debug("trailing reasoning send failed: %s", e)
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -23366,6 +23416,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
+            _reasoning_block = ""
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -23390,21 +23441,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     except Exception:
                         _reasoning_style = "code"
+                    # Escape ``` inside reasoning so inner fences don't
+                    # break the outer code block used to render it.
+                    display_reasoning = escape_code_fences_for_display(display_reasoning)
                     if _reasoning_style == "subtext":
                         _quoted = "\n".join(
                             f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
                         )
-                        response = f"-# 💭 Reasoning\n{_quoted}\n\n{response}"
+                        _reasoning_block = f"-# 💭 Reasoning\n{_quoted}"
+                        response = f"{_reasoning_block}\n\n{response}"
                     elif _reasoning_style == "blockquote":
                         _quoted = "\n".join(
                             f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
                         )
-                        response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
+                        _reasoning_block = f"> 💭 **Reasoning:**\n{_quoted}"
+                        response = f"{_reasoning_block}\n\n{response}"
                     else:
-                        # Escape ``` inside reasoning so inner fences don't
-                        # break the outer code block used to render it.
-                        display_reasoning = escape_code_fences_for_display(display_reasoning)
-                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                        _reasoning_block = (
+                            f"💭 **Reasoning:**\n```\n{display_reasoning}\n```"
+                        )
+                        response = f"{_reasoning_block}\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -23815,6 +23871,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                # Reasoning block: built above but prepended to a response that
+                # streaming already delivered — it would be silently dropped
+                # here (#7251 / #50193). Deliver it as its own trailing message,
+                # same rail as the trailing footer. Skipped when the streamed
+                # body already contains it (non-streaming path keeps it inline).
+                await _deliver_trailing_reasoning_block(
+                    runner=self,
+                    adapter=self._adapter_for_source(source),
+                    source=source,
+                    stream_consumer_holder=stream_consumer_holder,
+                    reasoning_block=_reasoning_block,
+                    response=response,
+                    intentional_silence=_intentional_silence,
+                    event_metadata=self._thread_metadata_for_source(
+                        source, self._reply_anchor_for_event(event)
+                    ),
+                )
                 # This branch returns None so the adapter does not send the
                 # body twice. /loop and /goal hooks in _handle_message read
                 # the return value, so stash the delivered text on the event

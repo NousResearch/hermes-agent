@@ -52,6 +52,103 @@ from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
+_CUSTOM_PROVIDER_MAX_MESSAGES = 128
+
+
+def cap_custom_provider_messages(
+    agent, messages: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Cap custom-provider wire messages without mutating session history.
+
+    Some OpenAI-compatible gateways enforce a hard message-count limit even
+    when their token context window is larger. Hermes' compression path can
+    legitimately preserve a long transcript after a failed or ineffective
+    summary attempt, so enforce the gateway contract at the final outbound
+    request boundary as a deterministic safety net.
+
+    The request copy keeps leading system/developer instructions and removes
+    the oldest conversation rows at a safe boundary. A boundary never starts
+    on a tool result or an assistant tool-call declaration, which prevents the
+    cap from creating an orphaned tool sequence. The durable transcript is
+    never changed.
+    """
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if not (provider == "custom" or provider.startswith("custom:")):
+        return messages
+    if len(messages) <= _CUSTOM_PROVIDER_MAX_MESSAGES:
+        return messages
+
+    max_messages = _CUSTOM_PROVIDER_MAX_MESSAGES
+    prefix_end = 0
+    while (
+        prefix_end < len(messages)
+        and isinstance(messages[prefix_end], dict)
+        and messages[prefix_end].get("role") in {"system", "developer"}
+    ):
+        prefix_end += 1
+
+    def _safe_start(index: int) -> bool:
+        message = messages[index]
+        if not isinstance(message, dict):
+            return True
+        role = message.get("role")
+        return role != "tool" and not (
+            role == "assistant" and bool(message.get("tool_calls"))
+        )
+
+    required_drop = len(messages) - max_messages
+    tail_start = max(0, required_drop)
+    if prefix_end >= max_messages:
+        # A transcript with more leading instructions than the entire gateway
+        # budget is pathological, but still keep the hard count invariant and
+        # retain the latest conversation row for a useful provider error.
+        boundary = next(
+            (
+                index
+                for index in range(
+                    max(1, len(messages) - (max_messages - 1)), len(messages)
+                )
+                if _safe_start(index)
+            ),
+            None,
+        )
+        retained = (
+            messages[:1] + messages[boundary:]
+            if boundary is not None
+            else messages[:max_messages]
+        )
+    else:
+        boundary = next(
+            (
+                index
+                for index in range(max(prefix_end, tail_start), len(messages))
+                if _safe_start(index)
+            ),
+            None,
+        )
+        if boundary is None:
+            # A malformed input should already have been repaired by the
+            # normal sanitizer. Keep the count invariant even if no semantic
+            # boundary is available; the next sanitizer/provider response can
+            # diagnose it.
+            boundary = max(prefix_end, tail_start)
+        retained = messages[:prefix_end] + messages[boundary:]
+
+    if len(retained) > max_messages:
+        if prefix_end >= max_messages:
+            retained = messages[:1] + messages[-(max_messages - 1):]
+        else:
+            retained = retained[:prefix_end] + messages[-(max_messages - prefix_end):]
+
+    logger.warning(
+        "%sCapped custom-provider request messages: %d -> %d (limit=%d); "
+        "durable session history unchanged",
+        getattr(agent, "log_prefix", ""),
+        len(messages),
+        len(retained),
+        max_messages,
+    )
+    return retained
 
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry

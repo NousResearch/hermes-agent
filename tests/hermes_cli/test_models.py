@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
+    detect_static_provider_for_model,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
     union_with_portal_free_recommendations,
@@ -159,6 +160,34 @@ class TestDetectProviderForModel:
         detection must return None instead of switching to openai.
         """
         assert detect_provider_for_model("gpt-5.4", "custom:foo") is None
+
+    def test_current_plugin_catalog_wins_over_built_in_provider(self):
+        """A plugin can advertise a model that also belongs to a built-in."""
+        from providers import ProviderProfile, register_provider
+
+        model = _models_mod._PROVIDER_MODELS["openai-api"][0]
+        provider = "test-current-plugin-catalog"
+        register_provider(ProviderProfile(name=provider, fallback_models=(model,)))
+
+        assert detect_provider_for_model(model, provider) is None
+
+    def test_plugin_catalog_does_not_enable_cross_provider_guessing(self):
+        """Only the current plugin's profile participates in detection."""
+        from providers import ProviderProfile, register_provider
+
+        model = _models_mod._PROVIDER_MODELS["openai-api"][0]
+        provider = "test-unrelated-plugin-catalog"
+        register_provider(
+            ProviderProfile(name=provider, fallback_models=("plugin-only-model",))
+        )
+
+        assert detect_static_provider_for_model(model, provider) == ("openai-api", model)
+        assert detect_static_provider_for_model("plugin-only-model", "anthropic") is None
+
+    def test_explicit_built_in_provider_remains_authoritative(self):
+        model = _models_mod._PROVIDER_MODELS["openai-api"][0]
+
+        assert detect_provider_for_model(model, "openai-api") is None
 
 
 

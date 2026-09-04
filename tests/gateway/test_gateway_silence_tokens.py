@@ -195,3 +195,60 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+
+
+class _DeferredHookAdapter:
+    platform = Platform.TELEGRAM
+
+    def __init__(self):
+        self.callbacks = []
+
+    async def send(self, *args, **kwargs):
+        return MagicMock(success=True)
+
+    def register_post_delivery_callback(self, session_key, callback, *, generation=None):
+        self.callbacks.append((session_key, callback, generation))
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_waits_for_post_delivery(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    adapter = _DeferredHookAdapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "done",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        "model": "gpt-5.6-terra",
+        "provider": "openai-codex",
+    })
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert not [
+        call for call in runner.hooks.emit.await_args_list
+        if call.args[0] == "agent:end"
+    ]
+    assert len(adapter.callbacks) == 1
+    session_key, callback, generation = adapter.callbacks[0]
+    assert session_key == "agent:main:telegram:group:-1001:12345"
+    assert generation == 1
+
+    await callback()
+
+    end_context = next(
+        call.args[1]
+        for call in runner.hooks.emit.await_args_list
+        if call.args[0] == "agent:end"
+    )
+    assert end_context["model"] == "gpt-5.6-terra"
+    assert end_context["provider"] == "openai-codex"

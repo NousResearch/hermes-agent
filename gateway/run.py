@@ -23428,13 +23428,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
-            # Emit agent:end hook
-            await self.hooks.emit("agent:end", {
+            # Emit agent:end after the adapter has delivered the visible
+            # response.  Capture hooks read the delivery ledger, so firing
+            # before BasePlatformAdapter sends can race the obligation write
+            # and lose the final outbound receipt.
+            _agent_end_context = {
                 **hook_ctx,
                 "response": (response or "")[:500],
                 "model": agent_result.get("model", ""),
                 "provider": agent_result.get("provider", ""),
-            })
+            }
+            _hook_adapter = self._adapter_for_source(source)
+            _register_post_delivery = getattr(
+                _hook_adapter, "register_post_delivery_callback", None
+            ) if _hook_adapter else None
+            if session_key and callable(_register_post_delivery):
+                async def _emit_agent_end_after_delivery() -> None:
+                    await self.hooks.emit("agent:end", _agent_end_context)
+
+                try:
+                    _register_post_delivery(
+                        session_key,
+                        _emit_agent_end_after_delivery,
+                        generation=run_generation,
+                    )
+                except Exception:
+                    logger.debug(
+                        "agent:end post-delivery registration failed",
+                        exc_info=True,
+                    )
+                    await self.hooks.emit("agent:end", _agent_end_context)
+            else:
+                await self.hooks.emit("agent:end", _agent_end_context)
             
             # Check for pending process watchers (check_interval on background processes)
             try:

@@ -661,6 +661,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |
+| `POST` | `/tasks/:id/steer` | Steer the **currently running** worker — see [Steering a running worker](#steering-a-running-worker). `409` when the task isn't `running` |
 | `POST` | `/tasks/:id/specify` | Run the triage specifier — auxiliary LLM fleshes out the task body and promotes it from `triage` to `todo`. Returns `{ok, task_id, reason, new_title}`; `ok=false` with a human-readable reason on "not in triage" / no aux client / LLM error is a 200, not a 4xx |
 | `POST` | `/tasks/:id/decompose` | Run the kanban decomposer — auxiliary LLM produces a task graph and the helper atomically creates the children + links the root + flips `triage → todo`. Returns `{ok, task_id, reason, fanout, child_ids, new_title}`. Same 200-on-LLM-error convention as `/specify`. |
 | `GET` | `/profiles` | List installed profiles with their descriptions (consumed by the dashboard's profile-description editor and the orchestrator picker). |
@@ -829,9 +830,50 @@ The dashboard plugin API now exposes these read-only endpoints (plus a run-contr
 | `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, last heartbeat |
 | `GET /api/plugins/kanban/runs/{id}` | Single-run detail — task id, status, started/ended, exit code, log path |
 | `POST /api/plugins/kanban/runs/{run_id}/terminate` | Terminate a reclaimable run — stops the worker and frees the task for re-dispatch |
+| `POST /api/plugins/kanban/runs/{run_id}/steer` | Steer that run without stopping it — see below |
 | `GET /api/plugins/kanban/inspect` | Combined dispatcher snapshot — backlog, in-progress count vs. `max_in_progress`, recent events |
 
 All of these are gated by the same dashboard plugin auth as the rest of the kanban plugin API.
+
+### Steering a running worker
+
+Terminate is a blunt instrument: you lose the run's context and pay for a
+respawn. When a worker is *working, just heading the wrong way*, steer it
+instead — the same nudge `/steer` gives an interactive session.
+
+```bash
+curl -X POST "$HERMES/api/plugins/kanban/tasks/$TASK/steer?board=$BOARD" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"text": "Skip the migration — just fix the query."}'
+```
+
+The text lands on the worker's **next tool result**, so the model reads it
+as an interjection on its following iteration. No interrupt, no new turn.
+
+Two channels, two moments — pick by whether a worker is running right now:
+
+| | `POST /tasks/:id/comments` | `POST /tasks/:id/steer` |
+|---|---|---|
+| Arrives | At the **next spawn**, via `build_worker_context` | **Mid-run**, on the next tool result |
+| Requires | Any status | `status = running` (else `409`) |
+| Durable | Yes — part of the card's thread | No — delivered once, then spent |
+
+Mechanics and caveats worth knowing before you build on it:
+
+- A worker is a detached subprocess, so the steer travels through the
+  board's `task_steers` table rather than a direct call. Delivery is
+  therefore **at the next tool-call boundary**, not instant.
+- `{"status": "queued"}` means *accepted*, never *read*. A steer sent while
+  the worker is composing its final answer may never be picked up, and one
+  pending when the run is interrupted is dropped — the same contract
+  `AIAgent.steer()` has everywhere else. Watch the task's events for
+  `steer_delivered` to confirm pickup.
+- Steers are pinned to the run that was live when you sent them. If that run
+  is reclaimed, the steer dies with it rather than surprising its
+  replacement. Pass `run_id` to make that guard explicit when you're acting
+  on a board view that may be stale.
+- Text is capped at 4 KB, and at most 10 undelivered steers may be queued
+  per run.
 
 ### Kanban Swarm topology helper
 
@@ -1150,6 +1192,8 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 |---|---|---|
 | `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
 | `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
+| `steer_queued` | `{author, len}` | An operator queued a mid-run steer via `POST /tasks/:id/steer`. Pinned to the `run_id` that was live at the time. |
+| `steer_delivered` | `{count}` | The worker drained `count` queued steers at a tool-call boundary and injected them into its next tool result. Absence of this event after a `steer_queued` means the model never saw the text. |
 | `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. |
 | `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |

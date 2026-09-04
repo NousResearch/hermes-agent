@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -5220,6 +5221,39 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 
+def _pull_board_steer(agent) -> None:
+    """Fold any kanban-queued steer into the agent's pending-steer slot.
+
+    No-op unless this process is a dispatcher-spawned worker
+    (``HERMES_KANBAN_TASK`` set). For those, the board's ``task_steers``
+    mailbox is the only inbound control channel an operator has — the
+    worker is a detached subprocess, so nothing outside it can call
+    ``agent.steer()`` the way ``session.steer`` does for in-process
+    sessions.
+
+    Routing the text through ``agent.steer()`` rather than appending it to
+    the tool result directly is deliberate: it inherits the existing
+    concatenation, empty-text rejection, and interrupt-supersedes-steer
+    semantics for free, so a board steer and a ``/steer`` behave
+    identically from here on.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return
+    try:
+        from tools.kanban_tools import fetch_pending_steer_from_env
+        text = fetch_pending_steer_from_env()
+    except Exception:
+        # Import-time failures on deployment surfaces without kanban_tools.
+        # The bridge already swallows its own runtime errors.
+        return
+    if not text:
+        return
+    try:
+        agent.steer(text)
+    except Exception:
+        _ra().logger.debug("board steer: agent.steer() failed", exc_info=True)
+
+
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
     """Append any pending /steer text to the last tool result in this turn.
 
@@ -5236,6 +5270,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     """
     if num_tool_msgs <= 0 or not messages:
         return
+    _pull_board_steer(agent)
     steer_text = agent._drain_pending_steer()
     if not steer_text:
         return

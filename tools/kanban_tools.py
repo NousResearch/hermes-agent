@@ -442,6 +442,71 @@ def inject_new_comments_from_env(agent: Any) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Board steer mailbox → agent steer bridge
+# ---------------------------------------------------------------------------
+# A dispatcher-spawned worker is a detached subprocess with stdin on
+# /dev/null and no RPC listener, so the in-process route every other surface
+# uses (``agent.steer(text)`` from the CLI key handler, the gateway, or the
+# ``session.steer`` JSON-RPC method) is unreachable from outside. The board
+# DB is the one piece of state the worker and the operator both hold open, so
+# it carries the steer instead.
+#
+# Constraints, mirroring the heartbeat bridge above:
+#   - Best-effort: never raise into the agent loop.
+#   - No-op outside dispatcher-spawned worker context.
+#   - Rate-limited, but far tighter than the heartbeat's 60s — this one sets
+#     how stale an operator's redirect can be, and a tool batch is the only
+#     place it can land. A read against an indexed, usually-empty table is
+#     cheap enough to run most batches.
+
+_STEER_POLL_MIN_INTERVAL_SECONDS = 3.0
+_steer_poll_last_attempt: float = 0.0
+
+
+def fetch_pending_steer_from_env() -> Optional[str]:
+    """Claim any operator-queued steer for the current worker's live run.
+
+    Returns the steer text, or ``None`` when this process is not a
+    dispatcher-spawned worker, the poll is rate-limited, the mailbox is
+    empty, or anything at all went wrong.
+
+    Identity comes from ``HERMES_KANBAN_TASK`` and ``HERMES_KANBAN_RUN_ID``.
+    The run id is REQUIRED — without it we cannot tell a steer written for
+    this attempt from one written for an attempt that was reclaimed, and
+    delivering the latter would inject an instruction about work that no
+    longer exists.
+    """
+    global _steer_poll_last_attempt
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid:
+        return None
+    run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    try:
+        run_id = int(run_id_raw) if run_id_raw else None
+    except (TypeError, ValueError):
+        run_id = None
+    if run_id is None:
+        return None
+    import time as _time
+    now = _time.monotonic()
+    if (now - _steer_poll_last_attempt) < _STEER_POLL_MIN_INTERVAL_SECONDS:
+        return None
+    _steer_poll_last_attempt = now
+    try:
+        kb, conn = _connect()
+        try:
+            return kb.pop_pending_steer(conn, tid, run_id=run_id)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("steer bridge: poll failed", exc_info=True)
+        return None
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 

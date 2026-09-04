@@ -33333,7 +33333,10 @@ def _start_gateway_housekeeping(
         cleanup_video_cache,
     )
     from tools.tool_result_storage import cleanup_spillover_cache
-    from tools.environments.local import cleanup_terminal_temp_cache
+    from tools.environments.local import (
+        cleanup_terminal_temp_cache,
+        TERMINAL_TEMP_MAX_AGE_HOURS,
+    )
     from tools.bot_mode_dm import cleanup_bot_dm_cache
     from tools.bot_relay import cleanup_bot_relay_artifacts
     from hermes_cli.debug import _sweep_expired_pastes
@@ -33397,7 +33400,17 @@ def _start_gateway_housekeeping(
         if tick_count % IMAGE_CACHE_EVERY == 0:
             for cache_name, cleanup_fn in MEDIA_CACHE_CLEANUPS:
                 try:
-                    removed = cleanup_fn(max_age_hours=24)
+                    # Every other registered cache uses the shared 24h media
+                    # retention; terminal temp artifacts are documented and
+                    # tested at 72h (see TERMINAL_TEMP_MAX_AGE_HOURS) — a
+                    # long-lived cron/background session's log/pid/exit
+                    # files must not be pruned 2 days earlier than promised.
+                    max_age = (
+                        TERMINAL_TEMP_MAX_AGE_HOURS
+                        if cleanup_fn is cleanup_terminal_temp_cache
+                        else 24
+                    )
+                    removed = cleanup_fn(max_age_hours=max_age)
                     if removed:
                         logger.info("%s cache cleanup: removed %d stale file(s)", cache_name, removed)
                 except Exception as e:

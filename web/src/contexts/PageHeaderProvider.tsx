@@ -35,6 +35,15 @@ export function PageHeaderProvider({
   const displayTitle = titleOverride ?? defaultTitle;
 
   const isChatRoute = pathname === "/chat" || pathname === "/chat/";
+  const isMobileChatRoute = pathname === "/mobile-chat" || pathname === "/mobile-chat/";
+  // MobileChatPage is a fixed-height app shell (its own header/composer
+  // pinned, only its message list scrolls internally) — same contract as
+  // /chat. Without this, <main> below gets the generic `overflow-y-auto`
+  // every other route uses, which scrolls the WHOLE MobileChatPage shell
+  // (including its own header + context badge) while only this outer
+  // "Mobile Chat" title bar stays fixed — the exact bug reported
+  // 2026-08-22 ("scrolled off screen, have to scroll up to see it").
+  const usesFixedMain = isChatRoute || isMobileChatRoute;
   /** Env jump-nav is wide — stack below title on small screens so KEYS stays readable. */
   const isEnvRoute =
     pathname === "/env" || pathname.startsWith("/env/");
@@ -64,7 +73,7 @@ export function PageHeaderProvider({
           <div
             className={cn(
               "flex w-full min-w-0 flex-1 gap-3 px-3 sm:h-full sm:gap-3 sm:px-6",
-              isChatRoute
+              usesFixedMain
                 ? "flex-row items-center"
                 : "flex-col justify-center sm:flex-row sm:items-center",
             )}
@@ -109,7 +118,7 @@ export function PageHeaderProvider({
               <div
                 className={cn(
                   "flex min-w-0 sm:max-w-md sm:flex-1",
-                  isChatRoute
+                  usesFixedMain
                     ? "w-auto shrink-0 justify-end"
                     : "w-full justify-start sm:justify-end",
                 )}
@@ -125,7 +134,7 @@ export function PageHeaderProvider({
             "min-h-0 w-full min-w-0 flex-1 flex flex-col",
             // Bottom inset for scrolled pages lives on the route outlet wrapper in
             // `App.tsx` (`w-full min-w-0`) so it pads scrollable content, not flex chrome.
-            isChatRoute
+            usesFixedMain
               ? "overflow-hidden"
               : "overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
           )}

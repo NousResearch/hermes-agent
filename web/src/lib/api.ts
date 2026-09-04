@@ -491,6 +491,24 @@ export const api = {
       body: form,
     });
   },
+  getUploadTargets: () =>
+    fetchJSON<{ targets: Array<{ id: string; label: string; accept?: string | null }> }>(
+      "/api/uploads/targets",
+    ),
+  uploadToTarget: (targetId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return fetchJSON<{
+      ok: boolean;
+      target: string;
+      filename: string;
+      size: number;
+      path: string;
+    }>(`/api/uploads/${encodeURIComponent(targetId)}`, {
+      method: "POST",
+      body: form,
+    });
+  },
   createDirectory: (path: string) =>
     fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
       method: "POST",

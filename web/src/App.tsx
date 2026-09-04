@@ -47,6 +47,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Star,
   Terminal,
@@ -96,6 +97,7 @@ const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const MobileChatPage = lazy(() => import("@/pages/MobileChatPage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -156,6 +158,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/mobile-chat": MobileChatPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -189,6 +192,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "sessions",
     label: "Sessions",
     icon: MessageSquare,
+  },
+  {
+    path: "/mobile-chat",
+    label: "Mobile Chat",
+    icon: Smartphone,
   },
   { path: "/files", label: "Files", icon: FolderOpen },
   {
@@ -400,6 +408,28 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  const isMobileChatRoute = normalizedPath === "/mobile-chat";
+  // MobileChatPage is a fixed-height app shell (header/composer pinned,
+  // only the message list scrolls) — but the global mobile media query in
+  // index.css intentionally makes the WHOLE PAGE scroll below 768px for
+  // the desktop-dashboard-on-a-phone case (sidebar layout doesn't fit).
+  // On /mobile-chat that page-level scroll drags the header (with the
+  // context-usage badge) off-screen as messages accumulate — the badge
+  // becomes invisible exactly when it matters most. Flag the route on
+  // <html> so index.css can restore the bounded-height/internal-scroll
+  // behavior scoped to just this page, without touching the desktop
+  // dashboard's intentional mobile scrolling everywhere else.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (isMobileChatRoute) {
+      root.setAttribute("data-mobile-chat-fixed", "true");
+    } else {
+      root.removeAttribute("data-mobile-chat-fixed");
+    }
+    return () => {
+      root.removeAttribute("data-mobile-chat-fixed");
+    };
+  }, [isMobileChatRoute]);
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
@@ -766,9 +796,17 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute &&
+                  // /mobile-chat is a fixed-height app shell just like /chat —
+                  // its own header/composer are pinned and only its internal
+                  // message list scrolls. Without excluding it here (and
+                  // granting it the flex/min-h-0 treatment below), this
+                  // ancestor has no bounded height for MobileChatPage's
+                  // `h-full` to resolve against, so the page grows to fit
+                  // all messages instead of scrolling internally — the
+                  // "chat area itself has no scroll" bug (2026-08-22).
+                  !isChatRoute && !isMobileChatRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute) &&
+                  (isDocsRoute || isChatRoute || isMobileChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
@@ -871,6 +909,17 @@ function SidebarNavLink({
     <li
       onMouseEnter={collapsed ? showTooltip : undefined}
       onMouseLeave={collapsed ? hideTooltip : undefined}
+      className={cn(
+        // The desktop xterm-based "/chat" is not phone-usable (fixed-column
+        // terminal emulation, no reflow) and sits above "Mobile Chat" in
+        // this list — on a phone, tapping the first "chat"-looking item
+        // (muscle memory) lands on this instead of the intended
+        // /mobile-chat page, which reads as "menu takes me to the regular
+        // dashboard, not back to my chat" (2026-08-22 report). Hide it
+        // below the `lg` breakpoint so only Mobile Chat is offered there;
+        // desktop users still get both.
+        path === "/chat" && "max-lg:hidden",
+      )}
     >
       <NavLink
         to={path}

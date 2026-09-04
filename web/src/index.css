@@ -141,6 +141,22 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   }
 }
 
+/* Override the mobile page-scroll rule above for /mobile-chat specifically.
+   That page is a fixed-height app shell (header/context-badge + composer
+   pinned, only the message list scrolls) — letting the whole page scroll
+   drags the header off-screen as messages accumulate, hiding the context
+   badge exactly when it matters. App.tsx sets this attribute on <html>
+   only while /mobile-chat is the active route. */
+@media (max-width: 768px) {
+  html[data-mobile-chat-fixed="true"],
+  html[data-mobile-chat-fixed="true"] body,
+  html[data-mobile-chat-fixed="true"] #root {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+}
+
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }

@@ -13284,6 +13284,10 @@ def _raise_if_cron_registration_error(e: Exception) -> None:
 from hermes_cli.web_routers import cron as _cron_routes  # noqa: E402
 
 app.include_router(_cron_routes.router)
+
+from hermes_cli.web_routers import uploads as _uploads_routes  # noqa: E402
+
+app.include_router(_uploads_routes.router, prefix="/api")
 from hermes_cli.web_routers.cron import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     list_cron_jobs,
     get_cron_job,

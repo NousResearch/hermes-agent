@@ -348,7 +348,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
       allowProposedApi: true,
       cursorBlink: true,
       fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
+        "'FiraCode Nerd Font Mono', 'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
       fontSize: 13,
       lineHeight: 1.25,
       letterSpacing: 0,

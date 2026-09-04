@@ -75,6 +75,16 @@ export default defineConfig({
     tailwindcss(),
     hermesDevToken(),
   ],
+  // Build-time stamp surfaced in the mobile chat header (and anywhere else
+  // that imports it) so you can confirm which build a browser/PWA instance
+  // is actually running — critical for diagnosing "did my update land"
+  // issues on an installed PWA that doesn't reload on its own. Falls back
+  // to "dev" outside a real `vite build` (e.g. `vite dev`).
+  define: {
+    __HERMES_BUILD_TIME__: JSON.stringify(
+      process.env.HERMES_BUILD_TIME ?? new Date().toISOString(),
+    ),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

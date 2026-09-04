@@ -161,6 +161,44 @@ def _error(message: str) -> dict:
     return {"error": _sanitize_error_text(message)}
 
 
+def _authorize_relay_target(platform_name: str, chat_id) -> str | None:
+    """Relay egress-authorization guard (P5a); None when the send may proceed.
+
+    Thin delegate to ``gateway.relay.egress`` so the tool keeps working in
+    environments where the gateway package can't be imported.
+
+    THE TWO FAILURES ARE NOT THE SAME, and conflating them disabled the
+    boundary. A missing gateway module means there is no relay egress to
+    authorize, so proceeding is correct. A fault INSIDE the guard means
+    authorization did not happen — and returning None there means "authorized",
+    so a single runtime bug in the guard silently switched the whole P5(a)
+    boundary off. Review found this by making the guard raise and watching the
+    send go through.
+
+    So: the import is tolerated, the CALL is not. A guard that cannot answer
+    refuses, which is the only safe polarity for an authorization check.
+    """
+    try:
+        from gateway.relay.egress import authorize_relay_target
+    except Exception:  # noqa: BLE001 - no gateway package ⇒ no relay egress
+        logger.debug("relay target authorization unavailable", exc_info=True)
+        return None
+
+    try:
+        return authorize_relay_target(platform_name, chat_id)
+    except Exception:  # noqa: BLE001 - the guard faulted; FAIL CLOSED
+        logger.exception(
+            "relay target authorization FAILED for %s — refusing the send",
+            platform_name,
+        )
+        return (
+            f"Refusing to send to relay target '{platform_name}': the egress "
+            "authorization check failed, so this destination could not be "
+            "verified. This is a bug — the send was blocked rather than "
+            "allowed through unchecked."
+        )
+
+
 def _display_chat_id(platform_name: str, chat_id: str) -> str:
     """Return a result-safe chat identifier for tool transcripts/log consumers."""
     if platform_name == "signal" and str(chat_id).startswith("group:"):
@@ -330,6 +368,13 @@ def _handle_react(args, remove=False):
             )
         chat_id = home.chat_id
 
+    # P5(a): same egress-authorization floor as the send path — a reaction is
+    # an outbound act against a named destination, so an unattested relay
+    # target must be refused here too, not just on `send`.
+    _relay_denial = _authorize_relay_target(platform_name, chat_id)
+    if _relay_denial:
+        return tool_error(_relay_denial)
+
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -486,6 +531,26 @@ def _handle_send(args):
             if _resolve_err:
                 return json.dumps(_resolve_err)
             chat_id = _resolved
+
+    # P5(a): a relay-routed destination must be one this gateway can show a
+    # provenance for. The `target` parameter is free-form, so without this a
+    # model could name ANY chat id and the gateway would dutifully emit an
+    # outbound frame for it — authenticating the sender while never
+    # authorizing the destination. Applies to the generic `relay` plane and to
+    # connector-fronted platforms with no live native adapter; every other
+    # platform keeps its adapter's own authorization unchanged.
+    #
+    # POSITION IS LOAD-BEARING — this must stay BELOW Slack user→DM resolution.
+    # `_parse_target_ref` emits internal pseudo-ids (`user_name:ben`,
+    # `user:U...`) that no provenance can ever contain, because provenances
+    # record RESOLVED conversation ids. Authorizing above the resolver compared
+    # a handle against a set of `D...` ids and refused every Slack DM — a fix
+    # that caused the outage it was meant to prevent. Pinned by
+    # test_slack_user_targets_resolve_then_authorize; moving this call back up
+    # turns those cases red.
+    _relay_denial = _authorize_relay_target(platform_name, chat_id)
+    if _relay_denial:
+        return tool_error(_relay_denial)
 
     try:
         from model_tools import _run_async

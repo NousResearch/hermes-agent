@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, cast
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.relay.descriptor import CapabilityDescriptor
+from gateway.relay.egress import decline_error, is_egress_decline, log_decline
 from gateway.relay.media import RelayMediaClient
 from gateway.relay.transport import RelayTransport
 from gateway.session import SessionSource
@@ -869,7 +870,12 @@ class RelayAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False, error=f"task_card_stop transport error: {e}"
             )
-        return SendResult(success=bool(result.get("success")))
+        if is_egress_decline(result):
+            log_decline("task_card_stop", chat_id, result)
+        return SendResult(
+            success=bool(result.get("success")),
+            error=result.get("error"),
+        )
 
     async def abandon_open_draft(
         self,
@@ -2341,6 +2347,10 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("relay delete_message failed", exc_info=True)
             return False
+        if is_egress_decline(result):
+            # Cosmetic lane (bool contract) — it degrades by design, but an
+            # AUTHORIZATION refusal must not vanish into debug-level noise.
+            log_decline("delete", chat_id, result)
         return bool(result.get("success"))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -2403,12 +2413,15 @@ class RelayAdapter(BasePlatformAdapter):
         if phrase:
             frame["content"] = str(phrase)
         try:
-            await self._transport.send_outbound(
+            _typing_result = await self._transport.send_outbound(
                 frame,
                 platform=self._platform_by_chat.get(str(chat_id)),
             )
         except Exception:  # noqa: BLE001 - typing is cosmetic, never breaks a turn
             logger.debug("relay send_typing failed for %s", chat_id, exc_info=True)
+        else:
+            if is_egress_decline(_typing_result):
+                log_decline("typing", chat_id, _typing_result)
 
     async def stop_typing(
         self,
@@ -2438,7 +2451,7 @@ class RelayAdapter(BasePlatformAdapter):
         # timeout. Shared helper with send_typing so the two guards cannot drift.
         md = self._with_status_thread_anchor(chat_id, metadata)
         try:
-            await self._transport.send_outbound(
+            _clear_result = await self._transport.send_outbound(
                 {
                     "op": "typing",
                     "chat_id": chat_id,
@@ -2449,6 +2462,9 @@ class RelayAdapter(BasePlatformAdapter):
             )
         except Exception:  # noqa: BLE001 - status clear is cosmetic, never breaks a turn
             logger.debug("relay stop_typing failed for %s", chat_id, exc_info=True)
+        else:
+            if is_egress_decline(_clear_result):
+                log_decline("typing_clear", chat_id, _clear_result)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).
@@ -2603,6 +2619,19 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay send_media transport failure", exc_info=True)
             return None
         if not result.get("success"):
+            if is_egress_decline(result):
+                # AUTHORIZATION refusal, not a size cap / platform rejection.
+                # Returning None here would hand the caller back to its
+                # text-notice fallback — a DIFFERENT op against the SAME
+                # destination the connector just refused, laundering a
+                # security decision into "media unsupported". Surface the
+                # decline verbatim as a failed lane instead.
+                log_decline("send_media", chat_id, result)
+                return SendResult(
+                    success=False,
+                    error=decline_error(result),
+                    raw_response=result,
+                )
             # A structured connector decline (size cap, platform rejection).
             # Surface it as a failed lane so the caller's fallback still
             # delivers SOMETHING (the caption/notice), mirroring native
@@ -2891,6 +2920,17 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay prompt transport failure", exc_info=True)
             return None
         if not result.get("success"):
+            if is_egress_decline(result):
+                # AUTHORIZATION refusal. Returning None here reported "prompt
+                # op unavailable" to the caller — a WRONG reason — and sent
+                # the caller's numbered-text fallback into the very chat the
+                # connector just refused. Surface the decline verbatim.
+                log_decline("prompt", chat_id, result)
+                return SendResult(
+                    success=False,
+                    error=decline_error(result),
+                    raw_response=result,
+                )
             logger.warning(
                 "relay prompt declined for %s: %s", chat_id, result.get("error")
             )
@@ -2956,10 +2996,16 @@ class RelayAdapter(BasePlatformAdapter):
             options=options,
             metadata=metadata,
         )
-        if result is not None:
+        if result is not None and result.success:
             return result
-        # Lane unavailable: unregister and let run.py's text fallback run.
+        # Nothing was delivered — unregister the minted prompt either way.
         self._pending_prompts.pop(prompt_id, None)
+        if result is not None:
+            # A DECLINE (P5b): surface it verbatim. Reporting "op unavailable"
+            # here would send run.py's text fallback into the very chat the
+            # connector refused, turning a refusal into an apparent success.
+            return result
+        # Lane unavailable: let run.py's text fallback run.
         return SendResult(success=False, error="relay prompt op unavailable")
 
     async def send_slash_confirm(
@@ -2999,9 +3045,13 @@ class RelayAdapter(BasePlatformAdapter):
             options=options,
             metadata=metadata,
         )
-        if result is not None:
+        if result is not None and result.success:
             return result
         self._pending_prompts.pop(prompt_id, None)
+        if result is not None:
+            # DECLINE (P5b): verbatim, not "op unavailable" — the gateway's
+            # text-intercept fallback must not re-address the refused chat.
+            return result
         return SendResult(success=False, error="relay prompt op unavailable")
 
     async def send_clarify(
@@ -3049,9 +3099,13 @@ class RelayAdapter(BasePlatformAdapter):
                 options=options,
                 metadata=metadata,
             )
-            if result is not None:
+            if result is not None and result.success:
                 return result
             self._pending_prompts.pop(prompt_id, None)
+            if result is not None:
+                # DECLINE (P5b): the base class's numbered-text fallback would
+                # send() into the same refused chat. Surface the refusal.
+                return result
         return await super().send_clarify(
             chat_id, question, choices, clarify_id, session_key, metadata=metadata
         )
@@ -3316,6 +3370,8 @@ class RelayAdapter(BasePlatformAdapter):
                 },
                 platform=self._platform_by_chat.get(str(chat_id)),
             )
+            if is_egress_decline(result):
+                log_decline("react", chat_id, result)
             return bool(result.get("success"))
         except Exception:  # noqa: BLE001 - reactions are cosmetic
             logger.debug("relay react failed", exc_info=True)
@@ -3379,11 +3435,14 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay thread_create transport failure", exc_info=True)
             return None
         if not result.get("success"):
-            logger.info(
-                "relay thread_create declined for %s: %s",
-                parent_chat_id,
-                result.get("error"),
-            )
+            if is_egress_decline(result):
+                log_decline("thread_create", parent_chat_id, result)
+            else:
+                logger.info(
+                    "relay thread_create declined for %s: %s",
+                    parent_chat_id,
+                    result.get("error"),
+                )
             return None
         thread_id = result.get("thread_id") or result.get("message_id")
         return str(thread_id) if thread_id else None
@@ -3441,10 +3500,13 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay thread_rename transport failure", exc_info=True)
             return False
         if not result.get("success"):
-            logger.info(
-                "relay thread_rename declined for %s: %s",
-                thread_id,
-                result.get("error"),
-            )
+            if is_egress_decline(result):
+                log_decline("thread_rename", thread_id, result)
+            else:
+                logger.info(
+                    "relay thread_rename declined for %s: %s",
+                    thread_id,
+                    result.get("error"),
+                )
             return False
         return True

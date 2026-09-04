@@ -182,20 +182,29 @@ test('remote image displays, zooms, saves byte-for-byte and survives a reload al
     await expect.poll(() => zoomed.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(2600)
     await page.keyboard.press('Escape')
 
-    const savePath = path.join(sandbox.root, 'saved.png')
-    await app.evaluate(({ dialog }, filePath) => {
-      dialog.showSaveDialog = async () => ({ canceled: false, filePath })
-    }, savePath)
-    await page
-      .locator('[data-slot="aui_markdown-image"]')
-      .first()
-      .getByRole('button', { name: 'Download image' })
-      .click()
-    await expect.poll(() => fs.existsSync(savePath)).toBe(true)
-    await expect.poll(() => fs.statSync(savePath).size).toBe(bytes.length)
-    expect(createHash('sha256').update(fs.readFileSync(savePath)).digest('hex')).toBe(
-      createHash('sha256').update(bytes).digest('hex')
-    )
+    for (const saveMethod of ['button', 'context-menu']) {
+      const savePath = path.join(sandbox.root, `saved-${saveMethod}.png`)
+      await app.evaluate(({ dialog }, filePath) => {
+        dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+      }, savePath)
+
+      if (saveMethod === 'button') {
+        await page
+          .locator('[data-slot="aui_markdown-image"]')
+          .first()
+          .getByRole('button', { name: 'Download image' })
+          .click()
+      } else {
+        await image.click({ button: 'right' })
+        await page.getByRole('menuitem', { name: 'Save image as…' }).click()
+      }
+
+      await expect.poll(() => fs.existsSync(savePath)).toBe(true)
+      await expect.poll(() => fs.statSync(savePath).size).toBe(bytes.length)
+      expect(createHash('sha256').update(fs.readFileSync(savePath)).digest('hex')).toBe(
+        createHash('sha256').update(bytes).digest('hex')
+      )
+    }
 
     await page.screenshot({ path: testInfo.outputPath('remote-media-delivery.png') })
     await page.reload()

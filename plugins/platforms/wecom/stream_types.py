@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
@@ -45,6 +46,44 @@ class StreamFrameResult(Enum):
     # are truthy (frame was sent — don't duplicate), FAILED is falsy.
     def __bool__(self) -> bool:
         return self is not StreamFrameResult.FAILED
+
+
+@dataclass
+class StreamSendOutcome:
+    """Rich return of ``send_stream_frame`` / ``_send_stream_frame_inner``.
+
+    Wraps the tri-state ``StreamFrameResult`` and signals a Layer 2 rotation
+    back to the gateway so it can render the NEW bubble with only the
+    incremental (post-split) text instead of the full cumulative buffer —
+    which would repeat what the sealed old bubble already showed.
+
+    Backward compatibility is preserved so the gateway's existing checks need
+    no change:
+    * ``__bool__`` proxies ``result`` so ``if ok:`` still works (FAILED falsy).
+    * ``value`` proxies ``result.value`` so the ``_is_indeterminate`` check
+      (``getattr(ok, "value", None) == "indeterminate"``) still works.
+
+    ``rotated`` is True when a rotation sealed the old bubble on (or before,
+    for the deferred active-timer case) this call.  The adapter does NOT report
+    a split *length*: the sealed content is the gateway's cumulative text at
+    seal time, but the adapter only sees the composed frame (which may carry a
+    tool-progress overlay), so its length is not a clean ``_accumulated``
+    coordinate.  The gateway instead advances its split offset to its OWN
+    clean seal point — the ``_accumulated`` length as of the PREVIOUS committed
+    frame (``_native_committed_len``), i.e. what the old bubble actually showed.
+    (Using ``len(_accumulated)`` at observe-time would be the current length,
+    which already includes this frame's own increment and would drop it — the
+    off-by-one that silently lost a segment.)
+    """
+    result: StreamFrameResult
+    rotated: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.result)
+
+    @property
+    def value(self) -> str:
+        return self.result.value
 
 
 class WeComStreamExpiredError(RuntimeError):
@@ -106,6 +145,14 @@ class StreamTurn:
         # where no text deltas produce frames.  MUST be cancelled on every
         # turn exit path (same as keepalive_handle / idle_flush_handle).
         self.rotation_check_handle: Optional[asyncio.TimerHandle] = None
+        # Pending rotation signal awaiting delivery to the gateway.  Set True
+        # when an ACTIVE-timer rotation seals the old bubble while NO frame-send
+        # is in flight (pure tool-call stretch), so the gateway cannot learn
+        # about the rotation from a synchronous return value.  The next
+        # _send_stream_frame_inner call drains this into its returned
+        # StreamSendOutcome.rotated (deferred by one frame).  The gateway then
+        # takes its own len(_accumulated) as the split offset.
+        self.pending_rotation_signal: bool = False
         # Per-turn rotation lock (Layer 2 concurrency guard).  The active
         # rotation timer runs _rotate_stream as an independent coroutine
         # concurrently with the frame-send path; both read/mutate stream_id,

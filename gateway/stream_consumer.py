@@ -408,6 +408,29 @@ class GatewayStreamConsumer(ToolTimerMixin):
         # accumulated" throttling so we don't spam frames at WeCom's
         # 30 frames/min rate ceiling.
         self._native_last_pushed_len = 0
+        # Native-streaming Layer 2 rotation split offset (in _accumulated
+        # coordinates).  When the WeCom adapter rotates to a fresh bubble (the
+        # old one neared WeCom's 10-min wall), it reports rotated=True; we then
+        # set this to the SEAL POINT (self._native_committed_len — the previous
+        # frame's length, i.e. what the old bubble showed) so every subsequent
+        # frame on the NEW bubble carries only self._accumulated[offset:] — the
+        # incremental text — instead of the full cumulative buffer (which the
+        # sealed old bubble already showed → visible prefix repeat).  ONLY
+        # affects what is rendered to the wire; self._accumulated stays FULL so
+        # finalize reconciliation (_record_turn_final_payload /
+        # delivered_final_matches) keeps seeing the complete response and never
+        # mis-fires a resend.
+        self._native_split_offset = 0
+        # Clean-coordinate tracker: the length of self._accumulated as of the
+        # LAST successfully pushed native frame.  On a Layer 2 rotation this is
+        # exactly the seal point — how much the OLD bubble actually showed — so
+        # the fresh bubble's split offset must become THIS value (the previous
+        # frame's length), NOT len(_accumulated) (which already includes the
+        # rotation frame's own increment; using it drops that increment — the
+        # off-by-one that silently lost a segment).  Tracked in _accumulated
+        # coordinates (never the wire text, which may carry a tool overlay), so
+        # it stays a clean offset into _accumulated regardless of overlay.
+        self._native_committed_len = 0
         # Finalize text used at an interaction boundary (approval/clarify) when
         # no content has accumulated yet.  Set by close_for_approval_prompt();
         # defaults to the approval wording for backward compatibility.
@@ -502,15 +525,23 @@ class GatewayStreamConsumer(ToolTimerMixin):
         Strategy B: when both accumulated text and tool-progress lines exist,
         append tool lines below the text separated by a horizontal rule.
         On finalize, only accumulated text is sent (no tool lines).
+
+        After a Layer 2 rotation the body is sliced to
+        ``_accumulated[_native_split_offset:]`` so the fresh bubble carries only
+        the text produced since the previous bubble was sealed — no visible
+        prefix repeat.  ``_native_split_offset`` is 0 (whole buffer) until the
+        first rotation, so pre-rotation behaviour is unchanged.
         """
         # Build the tool overlay via the ToolTimerMixin helper.
         tool_lines = self._compose_tool_overlay()
 
-        if self._accumulated and tool_lines:
+        body = self._accumulated[self._native_split_offset:]
+
+        if body and tool_lines:
             # Text + active tool status at the bottom
-            return self._accumulated + "\n\n---\n" + "\n".join(tool_lines)
-        elif self._accumulated:
-            return self._accumulated
+            return body + "\n\n---\n" + "\n".join(tool_lines)
+        elif body:
+            return body
         elif tool_lines:
             return "\n".join(tool_lines)
         return ""
@@ -922,6 +953,12 @@ class GatewayStreamConsumer(ToolTimerMixin):
         self._accumulated = ""
         self._stream_ledger = ""
         self._last_sent_text = ""
+        # A segment/boundary reset starts a fresh logical bubble; the rotation
+        # split offset is an _accumulated coordinate, so it MUST reset to 0
+        # alongside _accumulated or a stale offset would mis-slice the new
+        # (shorter) buffer.
+        self._native_split_offset = 0
+        self._native_committed_len = 0
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
@@ -1816,6 +1853,21 @@ class GatewayStreamConsumer(ToolTimerMixin):
                         # A segment-break finalize closes a preamble, not the
                         # turn-final answer — only got_done marks delivered (#29346).
                         is_turn_final=got_done,
+                        # display_text was sliced by _compose_frame_content ONLY
+                        # on the pure mid-frame path (the 1815 guard:
+                        # not got_done and not got_segment_break and
+                        # commentary_text is None).  On EVERY other path here —
+                        # got_done, got_segment_break, OR a commentary frame —
+                        # display_text is the FULL _accumulated (compose+slice was
+                        # skipped), so it must be sliced at the wire.  Keep this
+                        # gate in exact lockstep with the 1815 guard's negation,
+                        # or a rotated commentary/segment frame re-repeats the
+                        # sealed prefix on the fresh bubble.
+                        _wire_full=(
+                            got_done
+                            or got_segment_break
+                            or commentary_text is not None
+                        ),
                     )
                     self._last_edit_time = time.monotonic()
                     # Reset tool_progress_active flag after frame delivery —
@@ -3160,6 +3212,8 @@ class GatewayStreamConsumer(ToolTimerMixin):
         self._accumulated = ""
         self._stream_ledger = ""
         self._last_sent_text = ""
+        self._native_split_offset = 0
+        self._native_committed_len = 0
         self._already_sent = False
         self._final_response_sent = False
         self._final_content_delivered = False
@@ -3173,6 +3227,7 @@ class GatewayStreamConsumer(ToolTimerMixin):
 
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+        _wire_full: bool = True,
     ) -> bool:
         """Send or edit the streaming message.
 
@@ -3182,6 +3237,15 @@ class GatewayStreamConsumer(ToolTimerMixin):
 
         ``finalize`` is True when this is the last edit in a streaming
         sequence.
+
+        ``_wire_full`` — for native streaming, whether ``text`` is the FULL
+        cumulative buffer (``_accumulated``-based) and therefore must be sliced
+        by ``_native_split_offset`` before it hits the wire, so the current
+        bubble carries only its own post-rotation segment.  The one caller that
+        already passes pre-sliced composed content (``_compose_frame_content``,
+        the mid-frame tool-overlay path) sets ``_wire_full=False`` to avoid a
+        double slice.  Reconciliation (``_record_turn_final_payload``) always
+        uses the UNSLICED ``text`` so the recorded final stays complete.
         """
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
@@ -3344,9 +3408,18 @@ class GatewayStreamConsumer(ToolTimerMixin):
                 self._record_turn_final_payload(text)
 
             ok = False
+            # Native wire text: after a Layer 2 rotation the fresh bubble must
+            # carry only the post-split segment.  Slice full (_accumulated-based)
+            # text by the current split offset; pre-sliced composed frames pass
+            # _wire_full=False and are sent verbatim.  ``text`` itself stays FULL
+            # for _record_turn_final_payload / _last_sent_text (reconciliation
+            # and dedup operate on the complete buffer).
+            wire_text = text
+            if self._use_native_streaming and _wire_full and self._native_split_offset:
+                wire_text = text[self._native_split_offset:]
             try:
                 ok = await self.adapter.send_stream_frame(
-                    text,
+                    wire_text,
                     finalize=finalize,
                     chat_id=self.chat_id,
                     reply_to=self._initial_reply_to_id,
@@ -3367,10 +3440,38 @@ class GatewayStreamConsumer(ToolTimerMixin):
                 hasattr(ok, "value") and getattr(ok, "value", None) == "indeterminate"
             )
 
+            # Layer 2 rotation observed: the adapter sealed the old bubble and
+            # opened a fresh one on (or before) this call.  The seal point — how
+            # much the OLD bubble actually showed — is the length of _accumulated
+            # as of the PREVIOUS pushed frame (self._native_committed_len), NOT
+            # len(_accumulated): the current buffer already includes this frame's
+            # own increment, and the adapter DEFERRED that increment's body (it
+            # belongs on the fresh bubble, carried by the next frame's full
+            # slice).  Advancing to the seal point makes every subsequent frame
+            # render _accumulated[seal:] — the fresh bubble's own text — with no
+            # prefix repeat and no dropped segment.  _accumulated stays full for
+            # reconciliation.
+            if ok and getattr(ok, "rotated", False):
+                self._native_split_offset = self._native_committed_len
+                logger.info(
+                    "[stream] native rotation observed — split offset -> %d "
+                    "(seal point = previous committed length; turn=%s); fresh "
+                    "bubble carries incremental text only.",
+                    self._native_split_offset, self._turn_id,
+                )
+
             if ok:
                 self._already_sent = True
                 self._last_sent_text = text
                 self._native_last_pushed_len = len(text)
+                # Record the clean committed length AFTER using the previous
+                # value as the seal point above, so the NEXT rotation reads this
+                # frame's length as its seal point.  A deferred rotation frame
+                # (adapter returned without sending body) still advances this —
+                # its increment lands on the fresh bubble via the next frame's
+                # full slice, so the committed length correctly reflects the
+                # accumulated content the stream is responsible for.
+                self._native_committed_len = len(self._accumulated)
                 if finalize:
                     self._final_response_sent = True
                     if _is_indeterminate:

@@ -47,6 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from plugins.platforms.wecom.stream_types import (  # noqa: F401 — re-exported
     StreamFrameResult,
+    StreamSendOutcome,
     WeComStreamExpiredError,
     StreamTurn,
     STREAM_EXPIRED_ERRCODE,
@@ -206,6 +207,13 @@ ROTATION_LEAD_SECONDS = 15.0  # Lead/safety margin — the active rotation timer
 # is a network round-trip that must land inside the 570->600s window, so we
 # trigger rotation at (safe_duration - lead) to leave room for jitter + the
 # seal RTT.  Lead >= one check-interval jitter keeps the wake ahead of the wall.
+
+ROTATION_CONTINUATION_SUFFIX = "\n\n---\n⏬⏬⏬"  # Appended to the OLD bubble's
+# finish=true seal on Layer 2 rotation, so the sealed bubble visibly marks
+# itself as continued in the next bubble.  Language-neutral by design (Hermes
+# is an international project): a horizontal rule + down-arrows, no localized
+# text.  The NEW bubble carries only the incremental text (no repeat) and no
+# prefix marker (product decision).
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -2006,6 +2014,12 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         # last intermediate frame the same way finalize does, so the server does
         # not silently drop a duplicate-content finish frame.
         close_text = turn.accumulated_text or turn.last_sent_content or ""
+        # Append the continuation marker so the sealed bubble reads as "to be
+        # continued" and the fresh bubble can carry only the incremental text.
+        # This also guarantees close_text != last_sent_content, so the server
+        # never drops the seal as a duplicate (the \u200b disambiguation below
+        # becomes a no-op but is kept harmless).
+        close_text = close_text + ROTATION_CONTINUATION_SUFFIX
         if close_text and close_text == turn.last_sent_content:
             close_text = close_text + "\u200b"  # zero-width space
         try:
@@ -2035,6 +2049,12 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
 
         # Old bubble sealed — swap in a fresh stream on the same req_id.
         turn.rotate()
+        # Signal the gateway that a rotation happened so it can split its
+        # cumulative buffer and send only the incremental text on the fresh
+        # bubble.  The passive path drains this into its synchronous return;
+        # the active-timer path (no frame in flight) leaves it set so the NEXT
+        # _send_stream_frame_inner call reports it (deferred by one frame).
+        turn.pending_rotation_signal = True
         logger.info(
             "[%s] Stream rotated for chat %s: %s -> %s (new bubble, req_id "
             "unchanged), continuing remaining content.",
@@ -2930,7 +2950,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         chat_id: Optional[str] = None,
         reply_to: Optional[str] = None,
         **kwargs,
-    ) -> Union[StreamFrameResult, bool]:
+    ) -> Union[StreamSendOutcome, StreamFrameResult, bool]:
         """Public entry-point for the gateway streaming consumer.
 
         Native streaming lifecycle (per-turn):
@@ -3002,6 +3022,43 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         reply_to: Optional[str] = None,
         finalize: bool = False,
         turn_id: Optional[str] = None,
+    ) -> StreamSendOutcome:
+        """Thin wrapper over ``_send_stream_frame_core`` that reports rotation.
+
+        Runs the core frame logic, then drains the operated turn's
+        ``pending_rotation_signal`` into a ``StreamSendOutcome``.  The signal is
+        set by ``_rotate_stream_locked`` for BOTH rotation paths:
+        * passive (this very call rotated) — drained here, reported synchronously;
+        * active-timer (an earlier tick rotated with no frame in flight) — the
+          flag survived on the turn and is reported on this next call (deferred
+          by one frame).
+
+        Returning a ``StreamSendOutcome`` (not the bare enum) lets the gateway
+        learn a rotation occurred and split its cumulative buffer so the fresh
+        bubble carries only the incremental text.  ``StreamSendOutcome`` proxies
+        ``__bool__``/``value`` so existing callers are unaffected.
+        """
+        holder: dict = {}
+        result = await self._send_stream_frame_core(
+            text, chat=chat, reply_to=reply_to, finalize=finalize,
+            turn_id=turn_id, _turn_holder=holder,
+        )
+        rotated = False
+        turn = holder.get("turn")
+        if turn is not None and turn.pending_rotation_signal:
+            rotated = True
+            turn.pending_rotation_signal = False  # drained — report once
+        return StreamSendOutcome(result=result, rotated=rotated)
+
+    async def _send_stream_frame_core(
+        self,
+        text: str,
+        *,
+        chat: str,
+        reply_to: Optional[str] = None,
+        finalize: bool = False,
+        turn_id: Optional[str] = None,
+        _turn_holder: Optional[dict] = None,
     ) -> StreamFrameResult:
         """Actual stream frame logic with per-turn state.
 
@@ -3013,6 +3070,10 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         keyed by (chat, turn_id) instead of (chat, req_id). This ensures
         concurrent consumers (e.g., /background, parallel subagents) maintain
         independent streams.
+
+        ``_turn_holder`` — when provided, the resolved ``StreamTurn`` is stored
+        under key ``"turn"`` so the ``_send_stream_frame_inner`` wrapper can
+        drain its ``pending_rotation_signal`` after this returns.
 
         IMPORTANT: Once a turn is created, it locks to its req_id. Even if
         _last_chat_req_ids[chat] changes (e.g., user sends /approve), the
@@ -3139,6 +3200,12 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 )
                 return StreamFrameResult.FAILED
 
+            # Report the resolved turn to the wrapper so it can drain a pending
+            # rotation signal (passive: set below in this call; active-timer:
+            # set by an earlier tick, delivered here) into the StreamSendOutcome.
+            if _turn_holder is not None:
+                _turn_holder["turn"] = turn
+
             # ── Layer 2 clock rotation + seed (LOCKED critical section) ───────
             # Defect C: hold the per-turn rotation lock across the whole
             # "check stream state -> rotate/seed -> mutate seeded/start_time/
@@ -3233,6 +3300,33 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                         _seed_only_return = True
             # Lock released here.
             if _seed_only_return:
+                return StreamFrameResult.DELIVERED
+
+            # Defer the body of an intermediate frame that just rotated.  A
+            # rotation is pending delivery to the gateway (turn.pending_rotation_
+            # signal): either THIS frame triggered it (passive), or an earlier
+            # active-timer tick did and this is the first frame to re-seed the
+            # fresh bubble.  In both cases the gateway has NOT yet advanced its
+            # split offset (it learns that from the rotated=True this call
+            # reports), so the frame's text is still the pre-rotation full slice
+            # — sending it would repeat the sealed prefix on the fresh bubble.
+            # Skip the body: the fresh bubble keeps just its seed, and this
+            # frame's increment is carried by the NEXT frame's full slice, which
+            # the gateway will cut at the correct seal point (the previous
+            # committed length).  No content is lost — verified.  Finalize is
+            # exempt: it must close the bubble and cannot defer; its (rare)
+            # self-triggered-rotation repeat is an accepted, active-timer-
+            # prevented residual (never a loss).
+            if (
+                turn.pending_rotation_signal
+                and not finalize
+                and turn.seeded
+            ):
+                logger.debug(
+                    "[stream] rotation pending — fresh bubble %s re-seeded, "
+                    "body deferred to next delta (turn=%s)",
+                    turn.stream_id, turn_id,
+                )
                 return StreamFrameResult.DELIVERED
 
             # Send the frame

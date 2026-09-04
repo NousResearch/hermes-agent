@@ -38,7 +38,9 @@ from plugins.platforms.wecom.adapter import (
     WeComAdapter,
     WeComStreamExpiredError,
     STREAM_EXPIRED_ERRCODE,
+    ROTATION_CONTINUATION_SUFFIX,
 )
+from plugins.platforms.wecom.stream_types import StreamSendOutcome
 
 
 CHAT_ID = "chat-dup"
@@ -628,5 +630,229 @@ class TestActiveRotationTimer:
             assert turn.stream_id != old_stream_id
             assert turn.expired is False
             assert CHAT_ID not in adapter._stream_expired_chats
+        finally:
+            await adapter.disconnect()
+
+
+class TestRotationSplitSignal:
+    """Layer 2 rotation must (1) seal the OLD bubble with a continuation divider
+    and (2) report the rotation back to the gateway via StreamSendOutcome so the
+    fresh bubble can carry only incremental text (no prefix repeat)."""
+
+    @pytest.mark.asyncio
+    async def test_seal_appends_continuation_divider(self):
+        """The finish=true seal of the old bubble ends with the continuation
+        suffix, so the sealed bubble reads as 'to be continued'."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            reply = AsyncMock(return_value={"errcode": 0})
+            adapter._send_stream_reply = reply
+
+            await adapter._send_stream_frame_inner(
+                "AAAA", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            old_stream_id = turn.stream_id
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+
+            # Next frame crosses the wall → passive rotation seals the old bubble.
+            await adapter._send_stream_frame_inner(
+                "AAAABBBB", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+
+            seals = [c for c in _finalize_calls(reply) if c.args[1] == old_stream_id]
+            assert len(seals) == 1, "exactly one seal of the old bubble"
+            close_text = seals[0].args[2]
+            assert close_text.endswith(ROTATION_CONTINUATION_SUFFIX), (
+                f"seal must end with continuation divider; got {close_text!r}"
+            )
+            # The sealed content still contains the old bubble's body.
+            assert "AAAA" in close_text
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_passive_rotation_reports_rotated_in_outcome(self):
+        """A frame that triggers passive rotation returns StreamSendOutcome
+        with rotated=True (synchronous, same call)."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            reply = AsyncMock(return_value={"errcode": 0})
+            adapter._send_stream_reply = reply
+
+            first = await adapter._send_stream_frame_inner(
+                "AAAA", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            assert isinstance(first, StreamSendOutcome)
+            assert first.rotated is False, "no rotation on the opening frame"
+
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+
+            out = await adapter._send_stream_frame_inner(
+                "AAAABBBB", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            assert isinstance(out, StreamSendOutcome)
+            assert out.rotated is True, "passive rotation must report rotated=True"
+            assert bool(out) is True, "outcome must stay truthy (frame delivered)"
+            # Flag is drained — not re-reported on the next frame.
+            assert turn.pending_rotation_signal is False
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_active_rotation_reports_rotated_on_next_frame(self):
+        """An ACTIVE-timer rotation (no frame in flight) leaves the signal on
+        the turn; the NEXT frame's outcome reports rotated=True (deferred)."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            reply = AsyncMock(return_value={"errcode": 0})
+            adapter._send_stream_reply = reply
+
+            await adapter._send_stream_frame_inner(
+                "AAAA", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+
+            # Active timer rotates with NO frame-send in flight.
+            await adapter._rotation_check_execute(turn, TURN_ID)
+            assert turn.pending_rotation_signal is True, (
+                "active rotation leaves the signal pending for the next frame"
+            )
+
+            # The next frame carries the deferred signal.
+            out = await adapter._send_stream_frame_inner(
+                "AAAABBBB", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            assert out.rotated is True, "deferred rotation reported on next frame"
+            assert turn.pending_rotation_signal is False, "drained after report"
+        finally:
+            await adapter.disconnect()
+
+
+class TestRotationNoLossEndToEnd:
+    """The check every earlier attempt missed: concatenating each bubble's final
+    frame (minus the continuation divider) MUST equal the complete _accumulated —
+    no dropped segment, no repeated prefix.  Drives the gateway's real
+    _send_or_edit into the REAL adapter (only _send_stream_reply faked), for both
+    the passive and active-timer rotation paths.  These are the guards that would
+    have caught the silent-loss regression.
+    """
+
+    def _make_gateway_consumer(self, adapter):
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+        cfg = StreamConsumerConfig(chat_type="dm", cursor="")
+        c = GatewayStreamConsumer(adapter, CHAT_ID, cfg)
+        c._use_native_streaming = True
+        c._native_stream_opened = True
+        c._turn_id = TURN_ID
+        c._initial_reply_to_id = None
+        return c
+
+    def _concat_bubbles(self, calls):
+        """Each stream_id's final non-seed frame, divider stripped, concatenated
+        in bubble order — i.e. what the user ultimately sees across bubbles."""
+        from collections import OrderedDict
+        last = OrderedDict()
+        for stream_id, finish, content in calls:
+            if content == "<think></think>":
+                continue
+            last[stream_id] = content
+        return "".join(
+            ct.split(ROTATION_CONTINUATION_SUFFIX)[0].replace("​", "")
+            for ct in last.values()
+        )
+
+    @pytest.mark.asyncio
+    async def test_passive_rotation_concat_no_loss_no_repeat(self):
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            calls = []
+
+            async def rec(req_id, stream_id, content, finish=False, **kw):
+                calls.append((stream_id, finish, content))
+                return {"errcode": 0}
+            adapter._send_stream_reply = rec
+
+            c = self._make_gateway_consumer(adapter)
+            c._accumulated = "AAAA"
+            await c._send_or_edit("AAAA", finalize=False)
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+            c._accumulated = "AAAABBBB"        # this frame trips rotation
+            await c._send_or_edit("AAAABBBB", finalize=False)
+            c._accumulated = "AAAABBBBCCCC"    # next delta on the fresh bubble
+            await c._send_or_edit("AAAABBBBCCCC", finalize=False)
+
+            seen = self._concat_bubbles(calls)
+            assert seen == "AAAABBBBCCCC", (
+                f"concat across bubbles must equal the full response (no loss, "
+                f"no repeat); got {seen!r}"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_active_rotation_concat_no_loss_no_repeat(self):
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            calls = []
+
+            async def rec(req_id, stream_id, content, finish=False, **kw):
+                calls.append((stream_id, finish, content))
+                return {"errcode": 0}
+            adapter._send_stream_reply = rec
+
+            c = self._make_gateway_consumer(adapter)
+            c._accumulated = "AAAA"
+            await c._send_or_edit("AAAA", finalize=False)
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+            # Active-timer rotation with no frame in flight.
+            await adapter._rotation_check_execute(turn, TURN_ID)
+            c._accumulated = "AAAABBBB"        # first frame re-seeds fresh bubble
+            await c._send_or_edit("AAAABBBB", finalize=False)
+            c._accumulated = "AAAABBBBCCCC"
+            await c._send_or_edit("AAAABBBBCCCC", finalize=False)
+
+            seen = self._concat_bubbles(calls)
+            assert seen == "AAAABBBBCCCC", (
+                f"active-path concat must equal the full response; got {seen!r}"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_toggle_wrong_offset_would_lose_segment(self):
+        """Toggle guard: with the OLD buggy offset (len(_accumulated) instead of
+        the seal point), 'BBBB' is dropped — proving these tests track behavior,
+        not a frozen snapshot."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            calls = []
+
+            async def rec(req_id, stream_id, content, finish=False, **kw):
+                calls.append((stream_id, finish, content))
+                return {"errcode": 0}
+            adapter._send_stream_reply = rec
+
+            c = self._make_gateway_consumer(adapter)
+            c._accumulated = "AAAA"
+            await c._send_or_edit("AAAA", finalize=False)
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+            c._accumulated = "AAAABBBB"
+            await c._send_or_edit("AAAABBBB", finalize=False)
+            # Simulate the OLD bug: offset = full length instead of seal point.
+            c._native_split_offset = len(c._accumulated)
+            c._accumulated = "AAAABBBBCCCC"
+            await c._send_or_edit("AAAABBBBCCCC", finalize=False)
+
+            seen = self._concat_bubbles(calls)
+            assert "BBBB" not in seen, (
+                "sanity: the old offset MUST drop BBBB (else the no-loss tests "
+                "above are not actually exercising the fix)"
+            )
         finally:
             await adapter.disconnect()

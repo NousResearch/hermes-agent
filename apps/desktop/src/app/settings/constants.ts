@@ -743,7 +743,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
-      'voice.record_key',
+      // `voice.record_key` is the CLI prompt_toolkit shortcut. Desktop voice
+      // capture uses the renderer keybind (`composer.voice`) instead, so do
+      // not expose a setting that desktop cannot consume.
       'voice.max_recording_seconds',
       'voice.client_direct'
     ]

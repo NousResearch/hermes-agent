@@ -96,10 +96,12 @@ class TestCodexBuildKwargs:
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             base_url="https://responses.example.com/v1",
+            reasoning_config={"enabled": True, "effort": "none"},
             request_overrides={"prompt_cache_options": {"ttl": "30m"}},
         )
 
         assert "prompt_cache_options" not in kw
+        assert kw["reasoning"]["effort"] == "none"
 
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —

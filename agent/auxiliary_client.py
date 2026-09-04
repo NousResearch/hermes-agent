@@ -1380,8 +1380,13 @@ class _CodexCompletionsAdapter:
             if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
                 # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
                 # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
-                from agent.reasoning_effort import clamp_effort, codex_supported_efforts
-                effort = clamp_effort(reasoning_cfg.get("effort") or "medium", codex_supported_efforts(model))
+                from agent.reasoning_effort import clamp_effort
+                from agent.transports.codex import _codex_efforts_for_route
+                is_codex_backend = base_url_host_matches(host, "chatgpt.com") and "/backend-api/codex" in host.lower()
+                effort = clamp_effort(
+                    reasoning_cfg.get("effort") or "medium",
+                    _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend),
+                )
                 resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
                 resp_kwargs["include"] = ["reasoning.encrypted_content"]
         tools = kwargs.get("tools")

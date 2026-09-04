@@ -128,3 +128,41 @@ describe('ConfigField searchable routing', () => {
     expect(onChange).toHaveBeenCalledWith('')
   })
 })
+
+describe('ConfigField list editing', () => {
+  const listSchema: ConfigFieldSchema = { type: 'list' }
+
+  it('keeps unfinished comma input as a draft until blur commits it', () => {
+    const onChange = vi.fn()
+
+    render(<ConfigField onChange={onChange} schema={listSchema} schemaKey="test.list" value={['first']} />)
+
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'first,' } })
+
+    expect(input.value).toBe('first,')
+    expect(onChange).not.toHaveBeenCalled()
+
+    fireEvent.blur(input)
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(['first'])
+    expect(input.value).toBe('first')
+  })
+
+  it('commits exactly once when Enter blurs the list field', () => {
+    const onChange = vi.fn()
+
+    render(<ConfigField onChange={onChange} schema={listSchema} schemaKey="test.list" value={['first']} />)
+
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    input.focus()
+    fireEvent.change(input, { target: { value: 'first, second' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(['first', 'second'])
+    expect(input.value).toBe('first, second')
+  })
+})

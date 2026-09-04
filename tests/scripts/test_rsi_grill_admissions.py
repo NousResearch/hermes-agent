@@ -243,6 +243,115 @@ def test_correction_id_admissions_update_prior_feedback_not_scaffold(tmp_path):
     assert feedback["c-020"]["evidence"].startswith("No four-trailing-failure")
 
 
+def test_chained_429_then_fenced_admissions_merge_clean(tmp_path):
+    """The exact production chain: initial merge fails (literal HTTP 429
+    body), the failed scaffold becomes --prior-report, and the documented
+    top-level grill schema (fenced, no per-row suggested_fix, plus a
+    non-audited 'interview' admission) merges clean with every mandatory
+    row filled and audit-exact IDs/categories."""
+    # Run 1: initial merge with a literal HTTP 429 error body -> exit 1.
+    raw_429 = "HTTP 429 Too Many Requests: rate limited, try again later"
+    run1, out1, grill1 = _merge_run(tmp_path, "coder", raw_429)
+    assert run1.returncode == 1
+    scaffold = json.loads(out1.read_text(encoding="utf-8"))
+    # the failed scaffold has empty qualitative fields, exactly as produced
+    assert scaffold["autonomous_failures"][0]["suggested_fix"] == ""
+
+    # Run 2: grill response in the documented schema — suggested_fix only at
+    # top level — merged into the failed scaffold. Includes the real coder
+    # payload's non-audited id=interview admission.
+    admissions = _admissions()
+    admissions["admissions"].append(
+        {
+            "id": "interview",
+            "what_happened": "The interview schema made me under-report fixes.",
+            "why_misreported": "I filled the full report from memory.",
+        }
+    )
+    fenced = "```json\n" + json.dumps(admissions) + "\n```"
+    run2, out2, grill2 = _merge_run(tmp_path, "coder", fenced, prior=out1)
+
+    assert run2.returncode == 0, run2.stdout + run2.stderr
+    result = json.loads(run2.stdout)
+    assert result["valid"] is True
+    merged = json.loads(out2.read_text(encoding="utf-8"))
+    # audit-exact accounting: only the audited row, never the 'interview' id
+    assert [r["id"] for r in merged["autonomous_failures"]] == ["session-failed"]
+    assert [r["id"] for r in merged["incomplete_tasks"]] == []
+    assert merged["accounted_session_ids"] == ["session-failed"]
+    # the empty row fix was filled from the TOP-LEVEL suggested_fix
+    row = merged["autonomous_failures"][0]
+    assert row["summary"].startswith("The run stopped")
+    assert row["evidence"].startswith("I reported")
+    assert row["suggested_fix"] == "Validate output as JSON before finishing the run."
+    # the non-audited admission is surfaced as omitted, not silently dropped
+    assert result["omitted_admission_ids"] == ["interview"]
+
+
+def test_top_level_suggested_fix_fills_empty_row_fix_never_clobbers(tmp_path):
+    """Empty mandatory row fixes fill from the top-level proposal; a row
+    that already carries a fix is never overwritten."""
+    prior = _prior()
+    prior["autonomous_failures"].append(
+        {
+            "id": "session-empty",
+            "summary": "s",
+            "evidence": "e",
+            "suggested_fix": "",
+            "audit_source": "session",
+        }
+    )
+    prior["accounted_session_ids"] = ["session-failed", "session-empty"]
+    audit = _audit()
+    audit["profiles"]["coder"]["session_failures"].append(
+        {"id": "session-empty", "source": "session", "fail_hits": ["tool:x"]}
+    )
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    prior_path = tmp_path / "prior.json"
+    prior_path.write_text(json.dumps(prior), encoding="utf-8")
+    raw_path = tmp_path / "raw.out"
+    admissions = _admissions()
+    # no per-row suggested_fix anywhere — the documented grill schema
+    raw_path.write_text(json.dumps(admissions), encoding="utf-8")
+    output_path = tmp_path / "merged.json"
+    cmd = [
+        "python3", str(MERGE), "coder", str(raw_path), str(output_path),
+        "--audit", str(audit_path), "--prior-report", str(prior_path),
+    ]
+    run = subprocess.run(cmd, cwd=str(tmp_path), text=True, capture_output=True, check=False)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    merged = json.loads(output_path.read_text(encoding="utf-8"))
+    rows = {r["id"]: r for r in merged["autonomous_failures"]}
+    assert rows["session-empty"]["suggested_fix"] == (
+        "Validate output as JSON before finishing the run."
+    )
+    assert rows["session-failed"]["suggested_fix"] == "prior fix"
+
+
+def test_unknown_admission_ids_are_omitted_safely_not_conflicts(tmp_path):
+    """A non-audited admission id is omitted and surfaced without failing the
+    otherwise-valid audited admissions (safe omission per review round 1)."""
+    prior_path = _write_prior(tmp_path)
+    admissions = _admissions()
+    admissions["admissions"].append(
+        {"id": "interview", "what_happened": "x", "why_misreported": "y"}
+    )
+    run, output_path, grill_path = _merge_run(
+        tmp_path, "coder", json.dumps(admissions), prior=prior_path
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads(run.stdout)
+    assert result["valid"] is True
+    assert result["omitted_admission_ids"] == ["interview"]
+    merged = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [r["id"] for r in merged["autonomous_failures"]] == ["session-failed"]
+    assert [r["id"] for r in merged["incomplete_tasks"]] == []
+    assert not grill_path.exists()
+
+
 def test_admissions_ids_outside_audit_do_not_alter_scaffold(tmp_path):
     """An admission naming an audited ID in the wrong category, or an unknown
     ID, cannot reclassify or add scaffold rows (audit-owned categories)."""
@@ -259,17 +368,16 @@ def test_admissions_ids_outside_audit_do_not_alter_scaffold(tmp_path):
         tmp_path, "coder", json.dumps(admissions), prior=prior_path
     )
 
-    assert run.returncode == 1
+    # safe omission: the unknown id cannot alter the audit-owned scaffold, and
+    # it is surfaced in the merge result instead of silently disappearing
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads(run.stdout)
+    assert result["omitted_admission_ids"] == ["unknown-id"]
     merged = json.loads(output_path.read_text(encoding="utf-8"))
     # unknown admission id must not appear as a scaffold row
     assert [r["id"] for r in merged["autonomous_failures"]] == ["session-failed"]
     assert [r["id"] for r in merged["incomplete_tasks"]] == []
-    grill_text = grill_path.read_text(encoding="utf-8")
-    # full-schema regrill: the unknown admission id is surfaced as a conflict
-    # and the retry must produce the full report schema, not admissions again
-    assert "does not name a prior report row" in grill_text
-    assert "REPORT_JSON_SCHEMA" in grill_text
-    assert "MANDATORY_REPORT_SCAFFOLD" in grill_text
+    assert not grill_path.exists()
 
 
 def test_correction_feedback_admissions_update_prior_report(tmp_path):

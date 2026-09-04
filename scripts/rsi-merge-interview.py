@@ -150,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         audit,
         merge_conflicts=merged.conflicts,
     )
+    result["omitted_admission_ids"] = merged.omitted_admission_ids
     if input_error:
         result["errors"].append(input_error)
         result["valid"] = False

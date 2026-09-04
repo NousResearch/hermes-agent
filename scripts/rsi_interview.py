@@ -24,6 +24,7 @@ class MergeResult(NamedTuple):
     report: dict[str, Any]
     conflicts: list[str]
     missing_qualitative_ids: list[str]
+    omitted_admission_ids: list[str] = []
 
 
 def _ordered_unique(values: list[str]) -> list[str]:
@@ -85,6 +86,7 @@ def apply_grill_admissions(
     written into per-row records.
     """
     conflicts: list[str] = []
+    omitted: list[str] = []
     profile = str(prior_report.get("profile") or "")
     required = required_ids(profile, audit)
 
@@ -130,9 +132,11 @@ def apply_grill_admissions(
                     feedback_row["correction"] = why.strip()
                 continue
             if item_id:
-                conflicts.append(
-                    f"admission id={item_id} does not name a prior report row"
-                )
+                # A non-audited id (e.g. the real 2026-09-05 coder payload's
+                # "interview" meta-admission) cannot add or reclassify an
+                # audit-owned row. Safe omission: recorded in the merge
+                # result so it is visible, but never a validation failure.
+                omitted.append(item_id)
             continue
         what = admission.get("what_happened")
         if isinstance(what, str) and what.strip():
@@ -153,6 +157,24 @@ def apply_grill_admissions(
             and not _nonempty(target.get("suggested_fix"))
         ):
             target["suggested_fix"] = fix.strip()
+
+    # The documented grill schema carries suggested_fix ONLY at top level
+    # (the real 2026-09-05 coder/QA/reviewer payloads had no per-row fix),
+    # so per-row filling alone left every failed initial scaffold's
+    # autonomous-failure fixes empty. Fill each still-empty mandatory row
+    # fix from the top-level proposal — never overwrite a prior row's fix.
+    top_fix = admissions_report.get("suggested_fix")
+    if isinstance(top_fix, str) and top_fix.strip():
+        top_fix = top_fix.strip()
+        for field in ("autonomous_failures", "incomplete_tasks"):
+            mandatory = set(required[field])
+            for row in report[field]:
+                if (
+                    isinstance(row, dict)
+                    and row.get("id") in mandatory
+                    and not _nonempty(row.get("suggested_fix"))
+                ):
+                    row["suggested_fix"] = top_fix
 
     feedback = admissions_report.get("correction_feedback")
     if isinstance(feedback, list):
@@ -182,6 +204,7 @@ def apply_grill_admissions(
         report=report,
         conflicts=conflicts,
         missing_qualitative_ids=_ordered_unique(missing),
+        omitted_admission_ids=_ordered_unique(omitted),
     )
 
 

@@ -23,6 +23,23 @@ class _Host(CLIAgentSetupMixin):
         self.requested_provider = "auto"
         self._explicit_api_key = None
         self._explicit_base_url = None
+        self.model = "gpt-5.6-sol"
+
+
+class _EnsureHost(_Host):
+    def __init__(self):
+        super().__init__()
+        self.api_mode = "chat_completions"
+        self.provider = "cliproxyapi"
+        self.api_key = "old-key"
+        self.base_url = "http://localhost:8317/v1"
+        self.acp_command = None
+        self.acp_args = []
+        self.agent = None
+        self._active_agent_route_signature = None
+
+    def _normalize_model_for_provider(self, _provider):
+        return False
 
 
 def _ready_with(runtime: dict) -> bool:
@@ -56,6 +73,36 @@ def test_keyless_lookalike_domain_is_ready():
 
 def test_keyless_local_endpoint_is_ready():
     assert _ready_with({"api_key": None, "base_url": "http://localhost:11434/v1"}) is True
+
+
+def test_runtime_readiness_resolves_for_the_selected_model():
+    host = _Host()
+    with patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={"api_key": "key", "base_url": "http://localhost:8317/v1"},
+    ) as resolve:
+        assert host._runtime_credentials_ready() is True
+
+    assert resolve.call_args.kwargs["target_model"] == "gpt-5.6-sol"
+
+
+def test_runtime_refresh_resolves_for_the_selected_model():
+    host = _EnsureHost()
+    runtime = {
+        "api_key": "new-key",
+        "base_url": "http://localhost:8317/v1",
+        "provider": "cliproxyapi",
+        "api_mode": "codex_responses",
+        "args": [],
+    }
+    with patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value=runtime,
+    ) as resolve:
+        assert host._ensure_runtime_credentials() is True
+
+    assert resolve.call_args.kwargs["target_model"] == "gpt-5.6-sol"
+    assert host.api_mode == "codex_responses"
 
 
 def test_validate_requested_model_proxy_url_routes_to_custom():

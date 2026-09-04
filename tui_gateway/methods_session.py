@@ -271,7 +271,8 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=(Path(profile_home).name if profile_home else None), compensate=True)
+                            profile_name=(Path(profile_home).name if profile_home else None),
+                            compensate=True, title_source="derived")
             record["pending_title"] = None
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,

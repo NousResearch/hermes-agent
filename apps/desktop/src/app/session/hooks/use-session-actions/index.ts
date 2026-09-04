@@ -49,14 +49,7 @@ import {
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
-import {
-  $projectScope,
-  beginSessionMutation,
-  endSessionMutation,
-  resolveNewSessionCwd,
-  tombstoneSessions,
-  untombstoneSessions
-} from '@/store/projects'
+import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
 import { setApprovalRequest } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
@@ -99,6 +92,13 @@ import {
   setYoloActive
 } from '@/store/session'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
+import {
+  beginSessionMutation,
+  endSessionMutation,
+  isSessionRemovalPending,
+  tombstoneSessions,
+  untombstoneSessions
+} from '@/store/session-removal'
 import {
   requestForSessionProfile,
   type SessionOwnerRoute,
@@ -157,6 +157,7 @@ import {
   isSessionGoneError,
   overlayConcurrentMessageChanges,
   patchSessionWorkspace,
+  preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
@@ -858,6 +859,15 @@ export function useSessionActions({
 
   const resumeSession = useCallback(
     async (storedSessionId: string, replaceRoute = false, capturedOwner?: SessionProfileRoute) => {
+      // Delete/archive tombstones the durable id before the route flips, and
+      // requestSessionResume already refuses to queue for a doomed id. This is
+      // the actuator-side half of the same rule: a resume that was queued
+      // BEFORE the tombstone (an idle-reap 4001 racing the delete) must not
+      // re-select the chat and toast "Resume failed / Session not found".
+      if (isSessionRemovalPending(storedSessionId)) {
+        return
+      }
+
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
@@ -1363,26 +1373,37 @@ export function useSessionActions({
 
               const activatedState = updateSessionState(
                 cachedRuntimeId,
-                state => ({
-                  ...state,
-                  messages: visibleActivatedMessages,
-                  transcriptProvenance:
-                    acceptedPersistedDisplayTranscript || hasValidProvenance
-                      ? (expectedProvenance ?? undefined)
-                      : undefined,
-                  ...(pendingClarifyProjection
-                    ? {
-                        awaitingResponse: false,
-                        sawAssistantPayload: true,
-                        streamId: pendingClarifyProjection.streamId
-                      }
-                    : {}),
-                  ...(clearedClarifyProjection
-                    ? {
-                        streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
-                      }
-                    : {})
-                }),
+                state => {
+                  // #95595: the reconcilers above always produce fresh
+                  // message objects, so an unconditional publish replaces the
+                  // warm-cached array with new-object equivalents and every
+                  // visible row re-normalizes + remounts (markdown re-parse +
+                  // shiki re-highlight per row, seconds of main-thread work).
+                  // Keep the existing array when the content is unchanged —
+                  // same guard the cold-resume path uses below.
+                  const messages = preserveEquivalentTranscript(state.messages, visibleActivatedMessages)
+
+                  return {
+                    ...state,
+                    messages,
+                    transcriptProvenance:
+                      acceptedPersistedDisplayTranscript || hasValidProvenance
+                        ? (expectedProvenance ?? undefined)
+                        : undefined,
+                    ...(pendingClarifyProjection
+                      ? {
+                          awaitingResponse: false,
+                          sawAssistantPayload: true,
+                          streamId: pendingClarifyProjection.streamId
+                        }
+                      : {}),
+                    ...(clearedClarifyProjection
+                      ? {
+                          streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                        }
+                      : {})
+                  }
+                },
                 storedSessionId
               )
 

@@ -35,6 +35,7 @@ holds POSIX locks on that inode, so raw descriptor counts lag the real
 connection count and make such assertions flaky.
 """
 
+import hermes_state_readpool
 import queue
 import threading
 
@@ -499,7 +500,8 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
 def test_peak_is_bounded_across_many_database_files(tmp_path):
     """Read connections must be capped for the PROCESS, not just per file."""
     import hermes_state
-    from hermes_state import SessionDB, _READ_POOL_MAX, _READ_POOL_PROCESS_MAX
+    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_PROCESS_MAX
 
     n_files = (_READ_POOL_PROCESS_MAX // _READ_POOL_MAX) + 2
     dbs = []
@@ -539,16 +541,17 @@ def test_peak_is_bounded_across_many_database_files(tmp_path):
     finally:
         for d in dbs:
             d.close()
-        assert hermes_state._process_read_permits.acquire(blocking=False), (
+        assert hermes_state_readpool._process_read_permits.acquire(blocking=False), (
             "close() stranded a process permit"
         )
-        hermes_state._process_read_permits.release()
+        hermes_state_readpool._process_read_permits.release()
 
 
 @pytest.mark.requires_wal
 def test_idle_connections_are_reclaimed_across_database_files(tmp_path):
     """A quiet profile's idle connections must not starve the busy one."""
-    from hermes_state import SessionDB, _READ_POOL_MAX, _READ_POOL_PROCESS_MAX
+    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_PROCESS_MAX
 
     quiet = []
     try:
@@ -582,7 +585,7 @@ def test_no_read_connection_is_opened_without_descriptor_headroom(db, monkeypatc
     subprocess pipes, and EMFILE lands on whoever asks next -- which in the
     report was terminal_tool, not SQLite.
     """
-    import hermes_state
+    import hermes_state_readpool as readpool
 
     # Drain the pool so the next read must OPEN rather than reuse.
     while True:
@@ -591,19 +594,19 @@ def test_no_read_connection_is_opened_without_descriptor_headroom(db, monkeypatc
         except queue.Empty:
             break
 
-    monkeypatch.setattr(hermes_state, "_fd_soft_limit", lambda: 256)
-    monkeypatch.setattr(hermes_state, "_open_fd_count", lambda: 250)
-    monkeypatch.setattr(hermes_state, "_fd_usage_cache", (0.0, None))
+    monkeypatch.setattr(readpool, "_fd_soft_limit", lambda: 256)
+    monkeypatch.setattr(readpool, "_open_fd_count", lambda: 250)
+    monkeypatch.setattr(readpool, "_fd_usage_cache", (0.0, None))
 
     assert db._get_read_conn() is None, "a read connection was opened with 6 fds left"
     # The read still has to work -- degradation, not failure.
     assert db.get_session("s1") is not None
-    assert hermes_state._read_open_denied_fd_headroom > 0, (
+    assert readpool._read_open_denied_fd_headroom > 0, (
         "the guard fired without leaving a trace to diagnose it from"
     )
 
-    monkeypatch.setattr(hermes_state, "_open_fd_count", lambda: 10)
-    monkeypatch.setattr(hermes_state, "_fd_usage_cache", (0.0, None))
+    monkeypatch.setattr(readpool, "_open_fd_count", lambda: 10)
+    monkeypatch.setattr(readpool, "_fd_usage_cache", (0.0, None))
     conn = db._get_read_conn()
     assert conn is not None, "headroom returned but the read path stayed degraded"
     db._close_read_conn(conn)
@@ -611,17 +614,17 @@ def test_no_read_connection_is_opened_without_descriptor_headroom(db, monkeypatc
 
 def test_fd_headroom_guard_fails_open_where_it_cannot_measure(monkeypatch):
     """No RLIMIT_NOFILE (Windows) means unmeasurable, not tight."""
-    import hermes_state
+    import hermes_state_readpool as readpool
 
-    monkeypatch.setattr(hermes_state, "_fd_soft_limit", lambda: None)
-    assert hermes_state._fd_headroom_ok() is True
+    monkeypatch.setattr(readpool, "_fd_soft_limit", lambda: None)
+    assert readpool._fd_headroom_ok() is True
 
     # A probe that could not get a descriptor of its own is evidence, not
     # absence of evidence.
-    monkeypatch.setattr(hermes_state, "_fd_soft_limit", lambda: 256)
-    monkeypatch.setattr(hermes_state, "_open_fd_count", lambda: -1)
-    monkeypatch.setattr(hermes_state, "_fd_usage_cache", (0.0, None))
-    assert hermes_state._fd_headroom_ok() is False
+    monkeypatch.setattr(readpool, "_fd_soft_limit", lambda: 256)
+    monkeypatch.setattr(readpool, "_open_fd_count", lambda: -1)
+    monkeypatch.setattr(readpool, "_fd_usage_cache", (0.0, None))
+    assert readpool._fd_headroom_ok() is False
 
 
 @pytest.mark.requires_wal
@@ -629,7 +632,8 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     """Writer connections cannot be capped, so duplicates must be visible."""
     import logging
 
-    from hermes_state import SessionDB, _HANDLES_PER_PATH_WARN
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _HANDLES_PER_PATH_WARN
 
     extra = []
     try:

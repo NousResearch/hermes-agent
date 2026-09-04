@@ -4631,6 +4631,7 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    assign_if_unassigned: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -4686,18 +4687,31 @@ def claim_task(
                 """,
                 (now, int(stale["current_run_id"])),
             )
+        assignment = (assign_if_unassigned or "").strip() or None
+        assignment_sql = (
+            ", assignee = COALESCE(NULLIF(assignee, ''), ?)" if assignment else ""
+        )
+        assignment_guard = (
+            " AND (assignee IS NULL OR assignee = '')" if assignment else ""
+        )
+        params = [lock, expires, now]
+        if assignment:
+            params.append(assignment)
+        params.append(task_id)
         cur = conn.execute(
-            """
+            f"""
             UPDATE tasks
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
                    started_at    = COALESCE(started_at, ?)
+                   {assignment_sql}
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               {assignment_guard}
             """,
-            (lock, expires, now, task_id),
+            tuple(params),
         )
         if cur.rowcount != 1:
             return None
@@ -4731,6 +4745,14 @@ def claim_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        if assignment:
+            _append_event(
+                conn,
+                task_id,
+                "assigned",
+                {"assignee": assignment, "source": "kanban.default_assignee"},
+                run_id=run_id,
+            )
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id},
@@ -8095,6 +8117,53 @@ class DispatchResult:
     deferred tasks stay queued for the next tick."""
 
 
+@dataclass
+class ExactDispatchResult:
+    """Strict outcome for one atomic named-task dispatch attempt."""
+
+    task_id: str
+    ok: bool = False
+    reason: str = "ineligible"
+    idempotent: bool = False
+    selected: Optional[str] = None
+    claimed: Optional[str] = None
+    spawned: Optional[str] = None
+    run_id: Optional[int] = None
+    run_status: Optional[str] = None
+    worker_pid: Optional[int] = None
+
+
+def _exact_workspace_preflight(task: Task, *, board: Optional[str]) -> Optional[str]:
+    """Validate workspace metadata without mutating board or filesystem state."""
+    kind = task.workspace_kind or "scratch"
+    if kind not in VALID_WORKSPACE_KINDS:
+        return "workspace_invalid"
+    if kind == "dir":
+        if not task.workspace_path or not Path(task.workspace_path).expanduser().is_absolute():
+            return "workspace_invalid"
+    if kind == "worktree":
+        raw = (task.workspace_path or "").strip()
+        if raw and not Path(raw).expanduser().is_absolute():
+            return "workspace_invalid"
+        if not raw:
+            board_slug = board if board else get_current_board()
+            default_workdir = (
+                read_board_metadata(board_slug).get("default_workdir") or ""
+            ).strip()
+            if not default_workdir or not Path(default_workdir).expanduser().is_absolute():
+                return "workspace_invalid"
+            if _git_toplevel(Path(default_workdir).expanduser()) is None:
+                return "workspace_invalid"
+        else:
+            requested = Path(raw).expanduser()
+            if (
+                _git_toplevel(requested) is None
+                and _repo_root_for_worktree_target(requested.parent) is None
+            ):
+                return "workspace_invalid"
+    return None
+
+
 # Bounded registry of recently-reaped worker child exits, populated by the
 # reap loop at the top of ``dispatch_once`` and consulted by
 # ``detect_crashed_workers`` to classify a dead-pid task.
@@ -9896,6 +9965,223 @@ def dispatch_once(
     # the lock hold and stall a sibling dispatcher's tick.
     _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
     return result
+
+
+def dispatch_task_once(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    spawn_fn=None,
+    ttl_seconds: Optional[int] = None,
+    max_spawn: Optional[int] = None,
+    max_in_progress: Optional[int] = None,
+    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    board: Optional[str] = None,
+    default_assignee: Optional[str] = None,
+    max_in_progress_per_profile: Optional[int] = None,
+) -> ExactDispatchResult:
+    """Atomically dispatch only ``task_id`` under the canonical tick lock.
+
+    This edge primitive performs no board-wide maintenance and never enumerates
+    another card. Eligibility is revalidated while the canonical lock is held;
+    ineligible requests do not mutate task rows, events, or runs. Repeated calls
+    recognize only a run spawned by this exact-dispatch path.
+    """
+    result = ExactDispatchResult(task_id=task_id)
+    try:
+        db_path = kanban_db_path(board=board)
+    except Exception:
+        result.reason = "dispatch_lock_unavailable"
+        return result
+
+    with _dispatch_tick_lock(db_path) as held:
+        if not held:
+            result.reason = "dispatch_locked"
+            return result
+
+        task = get_task(conn, task_id)
+        if task is None:
+            result.reason = "not_found"
+            return result
+
+        # Provenance-bound idempotency: a task claimed by board-global dispatch
+        # must not be misreported as this request's success.
+        if task.status == "running" and task.current_run_id is not None:
+            event = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND run_id=? "
+                "AND kind='exact_dispatched' ORDER BY id DESC LIMIT 1",
+                (task_id, int(task.current_run_id)),
+            ).fetchone()
+            if event is not None:
+                try:
+                    payload = json.loads(event["payload"] or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                result.ok = True
+                result.reason = "spawned"
+                result.idempotent = True
+                result.selected = task_id
+                result.claimed = task_id
+                result.spawned = task_id
+                result.run_id = int(task.current_run_id)
+                result.run_status = "running"
+                result.worker_pid = (
+                    int(payload["worker_pid"])
+                    if payload.get("worker_pid") is not None
+                    else task.worker_pid
+                )
+                return result
+
+        if task.status != "ready" or task.claim_lock is not None:
+            result.reason = "status_ineligible"
+            return result
+        if not _parents_satisfied(conn, task_id):
+            result.reason = "parents_not_done"
+            return result
+
+        # Exact recovery is fail-closed when the admission gate cannot be read.
+        try:
+            from agent.estop import check_paused
+            if check_paused("kanban", _log):
+                result.reason = "dispatch_suspended"
+                return result
+        except Exception:
+            result.reason = "admission_unavailable"
+            return result
+
+        assignee = (task.assignee or "").strip()
+        fallback_assignee = (default_assignee or "").strip()
+        assign_if_unassigned = None
+        if not assignee:
+            if not fallback_assignee:
+                result.reason = "unassigned"
+                return result
+            assignee = fallback_assignee
+            assign_if_unassigned = fallback_assignee
+        try:
+            from hermes_cli.profiles import profile_exists
+            if not profile_exists(assignee):
+                result.reason = "nonspawnable_assignee"
+                return result
+        except Exception:
+            result.reason = "profile_check_unavailable"
+            return result
+
+        failures = int(task.consecutive_failures or 0)
+        effective_limit = (
+            int(task.max_retries)
+            if task.max_retries is not None
+            else int(failure_limit)
+        )
+        if failures >= effective_limit:
+            result.reason = "failure_limit"
+            return result
+
+        running = count_running_tasks(conn)
+        if max_spawn is not None and running >= max_spawn:
+            result.reason = "board_cap"
+            return result
+        if max_in_progress is not None:
+            total_running = running + count_running_tasks_other_boards(board)
+            if total_running >= max_in_progress:
+                result.reason = "host_cap"
+                return result
+        if max_in_progress_per_profile is not None and max_in_progress_per_profile > 0:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM tasks "
+                "WHERE status='running' AND assignee=?",
+                (assignee,),
+            ).fetchone()
+            if int(row["n"]) >= max_in_progress_per_profile:
+                result.reason = "profile_cap"
+                return result
+
+        if _memory_pressure_level() == "critical":
+            result.reason = "memory_pressure"
+            return result
+        guard_reason = check_respawn_guard(conn, task_id)
+        if guard_reason is not None:
+            result.reason = guard_reason
+            return result
+        workspace_reason = _exact_workspace_preflight(task, board=board)
+        if workspace_reason is not None:
+            result.reason = workspace_reason
+            return result
+
+        # Materialize before claim so a malformed workspace cannot alter task
+        # state or failure counters.
+        try:
+            resolved_branch_name = None
+            if task.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _resolve_worktree_workspace(
+                    task, board=board
+                )
+            else:
+                workspace = resolve_workspace(task, board=board)
+        except Exception:
+            result.reason = "workspace_invalid"
+            return result
+
+        claimed = claim_task(
+            conn,
+            task_id,
+            ttl_seconds=ttl_seconds,
+            assign_if_unassigned=assign_if_unassigned,
+        )
+        if claimed is None:
+            result.reason = "claim_conflict"
+            return result
+        result.selected = task_id
+        result.claimed = task_id
+        result.run_id = claimed.current_run_id
+        result.run_status = "running"
+
+        set_workspace_path(conn, task_id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            set_branch_name(
+                conn,
+                task_id,
+                resolved_branch_name
+                or (claimed.branch_name or "").strip()
+                or f"wt/{task_id}",
+            )
+        _maybe_emit_scratch_tip(conn, task_id, claimed.workspace_kind)
+        spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        try:
+            import inspect
+            try:
+                sig = inspect.signature(spawn)
+                pid = (
+                    spawn(claimed, str(workspace), board=board)
+                    if "board" in sig.parameters
+                    else spawn(claimed, str(workspace))
+                )
+            except (TypeError, ValueError):
+                pid = spawn(claimed, str(workspace))
+            if pid:
+                _set_worker_pid(conn, task_id, int(pid))
+            _fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "exact_dispatched",
+                    {"worker_pid": int(pid) if pid else None, "version": 1},
+                    run_id=claimed.current_run_id,
+                )
+            result.ok = True
+            result.reason = "spawned"
+            result.spawned = task_id
+            result.worker_pid = int(pid) if pid else None
+        except Exception as exc:
+            _record_spawn_failure(
+                conn, task_id, str(exc), failure_limit=failure_limit
+            )
+            result.reason = "spawn_failed"
+            result.run_status = "spawn_failed"
+
+        _maybe_checkpoint_wal(conn, db_path)
+        return result
 
 
 def _dispatch_once_locked(

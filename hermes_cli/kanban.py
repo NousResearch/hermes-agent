@@ -795,6 +795,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
+    p_disp.add_argument(
+        "--task-id",
+        default=None,
+        help="Atomically dispatch exactly this task (requires --json)",
+    )
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -2740,6 +2745,23 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    task_id = getattr(args, "task_id", None)
+    if task_id and not getattr(args, "json", False):
+        print("kanban dispatch: --task-id requires --json", file=sys.stderr)
+        return 2
+    if task_id and getattr(args, "dry_run", False):
+        print(json.dumps({
+            "capability": "kanban.exact-task-dispatch",
+            "version": 1,
+            "ok": False,
+            "reason": "dry_run_unsupported",
+            "idempotent": False,
+            "selected": None,
+            "claimed": None,
+            "spawned": None,
+            "run": None,
+        }, indent=2))
+        return 2
     # Honour kanban.default_assignee as the fallback for unassigned ready
     # tasks (#27145), kanban.max_in_progress as the global concurrency cap
     # (#33488), kanban.max_in_progress_per_profile as the per-profile
@@ -2781,13 +2803,49 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+    if task_id:
+        with kb.connect_closing() as conn:
+            exact = kb.dispatch_task_once(
+                conn,
+                task_id,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=getattr(
+                    args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT
+                ),
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+        print(json.dumps({
+            "capability": "kanban.exact-task-dispatch",
+            "version": 1,
+            "ok": exact.ok,
+            "reason": exact.reason,
+            "idempotent": exact.idempotent,
+            "selected": {"task_id": exact.selected} if exact.selected else None,
+            "claimed": (
+                {"task_id": exact.claimed, "run_id": exact.run_id}
+                if exact.claimed else None
+            ),
+            "spawned": (
+                {"task_id": exact.spawned, "worker_pid": exact.worker_pid}
+                if exact.spawned else None
+            ),
+            "run": (
+                {"id": exact.run_id, "status": exact.run_status}
+                if exact.run_id is not None else None
+            ),
+        }, indent=2))
+        return 0 if exact.ok else 1
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
             dry_run=args.dry_run,
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
-            failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            failure_limit=getattr(
+                args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT
+            ),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )

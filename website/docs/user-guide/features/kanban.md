@@ -764,8 +764,9 @@ hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events 
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
-hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
+hermes kanban dispatch [--dry-run] [--max N]           # one-shot board-global pass
         [--failure-limit N] [--json]
+hermes kanban dispatch --task-id <id> --json            # atomic exact-task dispatch
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
         [--failure-limit N] [--pidfile PATH] [-v]
 hermes kanban stats [--json]                           # per-status + per-assignee counts
@@ -784,6 +785,8 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+`dispatch --task-id <id> --json` is an automation edge for recovery controllers that have already selected one canonical card. It takes the same board-scoped dispatcher lock as the global pass, revalidates dependency, emergency-stop, concurrency, profile, failure, cooldown, and workspace gates, then claims and spawns only that ID. It never falls through to another ready card. Ineligible requests return non-zero with strict JSON and null `selected` / `claimed` / `spawned` / `run` evidence; successful and idempotent repeats include `capability: "kanban.exact-task-dispatch"`, `version: 1`, and matching task/run evidence. `--dry-run` is intentionally unsupported for exact dispatch because separating selection from mutation would recreate the race this primitive avoids.
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

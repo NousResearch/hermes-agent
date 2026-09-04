@@ -985,7 +985,13 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             try:
                 agent._persist_session(snapshot)
             except Exception:
-                pass
+                # This is the sole persist path after a WS disconnect/restart
+                # and _persist_session has no handling of its own, so a silent
+                # drop here loses the unflushed turn with no way to diagnose it.
+                logger.warning(
+                    "Final session persist failed during finalize; "
+                    "unflushed turn may be lost", exc_info=True
+                )
 
     # ── Plugin hook: on_session_end ────────────────────────────────────
     # Signals every plugin that the session is closing, with

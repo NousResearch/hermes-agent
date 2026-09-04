@@ -183,6 +183,47 @@ class TestFinalizeSessionPersistE2E:
         agent.commit_memory_session = lambda *a, **k: None
         return agent
 
+    def test_persist_failure_is_logged_not_swallowed(self, tmp_path, monkeypatch, caplog):
+        """A failed final persist must leave a diagnostic trace.
+
+        ``_finalize_session`` is the sole persist path after a WS
+        disconnect/restart, and ``AIAgent._persist_session`` contains no
+        exception handling of its own — a transient SQLite failure propagates
+        here. Swallowing it discards the unflushed turn with nothing in the log
+        to explain why the conversation vanished from state.db.
+        """
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from hermes_state import SessionDB
+        import tui_gateway.server as srv
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "sess-persist-fails"
+        db.create_session(session_id=session_id, source="tui")
+        monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+        turn = [
+            {"role": "user", "content": "important question"},
+            {"role": "assistant", "content": "important answer"},
+        ]
+        agent = self._real_agent(db, session_id, turn)
+
+        def boom(*a, **k):
+            raise RuntimeError("database is locked")
+
+        agent._persist_session = boom
+        session = _make_session(agent=agent, history=turn, session_key=session_id)
+
+        with caplog.at_level(logging.WARNING):
+            srv._finalize_session(session, end_reason="ws_disconnect")
+
+        assert any(
+            "persist" in r.message.lower() or "session" in r.message.lower()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        ), "a failed final persist must be logged, not swallowed"
+
     def test_unflushed_turn_survives_disconnect(self, tmp_path, monkeypatch):
         """A completed turn whose transcript flush did NOT durably persist
         (messages live only in agent._session_messages / session['history'],

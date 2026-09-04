@@ -16,6 +16,9 @@ import json
 import pytest
 
 import tools.approval as A
+import tools.approval_prompt as approval_prompt
+from tools import approval_context
+from tools import approval_detection, approval_floors
 from hermes_cli import approvals_test as at
 
 
@@ -30,7 +33,7 @@ def _args(command, env_type="local", as_json=False):
 @pytest.fixture
 def isolated_approvals(monkeypatch):
     """Isolate the evaluators from the dev machine's real config/state."""
-    monkeypatch.setattr(A, "_get_approval_config", lambda: {"mode": "manual"})
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "manual"})
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(A, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(A, "load_permanent_allowlist", lambda: set())
@@ -40,6 +43,7 @@ def isolated_approvals(monkeypatch):
     def _boom(*_a, **_kw):  # pragma: no cover - failure path
         raise AssertionError("read-only tester touched a prompt/persistence path")
     monkeypatch.setattr(A, "prompt_dangerous_approval", _boom)
+    monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", _boom)
     monkeypatch.setattr(A, "save_permanent_allowlist", _boom)
     monkeypatch.setattr(A, "submit_pending", _boom, raising=False)
     yield A
@@ -71,7 +75,7 @@ class TestVerdicts:
     def test_user_deny_rule_from_config_honored(self, isolated_approvals, capsys,
                                                 monkeypatch):
         monkeypatch.setattr(
-            A, "_get_approval_config",
+            approval_context, "_get_approval_config",
             lambda: {"mode": "manual", "deny": ["git push *"]})
         rc = at.approvals_test_command(_args(["git", "push", "origin", "main"]))
         out = capsys.readouterr().out
@@ -91,7 +95,7 @@ class TestVerdicts:
 
     def test_mode_off_bypasses_dangerous_but_not_hardline(self, isolated_approvals,
                                                           capsys, monkeypatch):
-        monkeypatch.setattr(A, "_get_approval_config", lambda: {"mode": "off"})
+        monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "off"})
         rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
         out = capsys.readouterr().out
         assert rc == 0
@@ -134,14 +138,14 @@ class TestNormalizationParity:
                 return real(c)
             return wrapper
 
-        monkeypatch.setattr(A, "detect_hardline_command",
-                            _spy("hardline", A.detect_hardline_command))
-        monkeypatch.setattr(A, "detect_dangerous_command",
-                            _spy("dangerous", A.detect_dangerous_command))
-        monkeypatch.setattr(A, "_match_user_deny_rule",
-                            _spy("deny", A._match_user_deny_rule))
-        monkeypatch.setattr(A, "_command_detection_variants",
-                            _spy("variants", A._command_detection_variants))
+        monkeypatch.setattr(approval_detection, "detect_hardline_command",
+                            _spy("hardline", approval_detection.detect_hardline_command))
+        monkeypatch.setattr(approval_detection, "detect_dangerous_command",
+                            _spy("dangerous", approval_detection.detect_dangerous_command))
+        monkeypatch.setattr(approval_floors, "_match_user_deny_rule",
+                            _spy("deny", approval_floors._match_user_deny_rule))
+        monkeypatch.setattr(approval_detection, "_command_detection_variants",
+                            _spy("variants", approval_detection._command_detection_variants))
         cmd = "rm -rf ~/project/build"
         at.approvals_test_command(_args(cmd.split()))
         capsys.readouterr()

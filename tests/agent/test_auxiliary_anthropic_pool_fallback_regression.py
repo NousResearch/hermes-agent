@@ -53,7 +53,7 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
         with patch(
             "agent.auxiliary_client._select_pool_entry", return_value=(True, None)
         ), patch(
-            "agent.anthropic_adapter.resolve_anthropic_token", return_value=None
+            "agent.anthropic_credentials.resolve_anthropic_token", return_value=None
         ):
             from agent.auxiliary_client import _try_anthropic
 

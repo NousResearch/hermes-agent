@@ -21,6 +21,7 @@ import pytest
 
 from agent.delegation_context import delegated_child_context
 from tools import terminal_tool as tt
+from tools import terminal_tool_sudo as tts
 
 
 @pytest.fixture(autouse=True)
@@ -29,12 +30,12 @@ def _clean_sudo_state(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     # Host sudoers NOPASSWD must not short-circuit the path under test.
-    monkeypatch.setattr(tt, "_sudo_nopasswd_works", lambda: False)
-    tt._reset_cached_sudo_passwords()
+    monkeypatch.setattr(tts, "_sudo_nopasswd_works", lambda: False)
+    tts._reset_cached_sudo_passwords()
     tt.set_sudo_password_callback(None)
     yield
     tt.set_sudo_password_callback(None)
-    tt._reset_cached_sudo_passwords()
+    tts._reset_cached_sudo_passwords()
 
 
 def _transform_in_child(command: str):
@@ -50,7 +51,7 @@ def _transform_in_child(command: str):
             ctx = contextvars.copy_context()
 
             def _worker():
-                result["value"] = ctx.run(tt._transform_sudo_command, command)
+                result["value"] = ctx.run(tts._transform_sudo_command, command)
 
             t = threading.Thread(target=_worker)
             t.start()
@@ -66,7 +67,7 @@ class TestDelegatedChildNeverPrompts:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         calls = []
         monkeypatch.setattr(
-            tt,
+            tts,
             "_prompt_for_sudo_password",
             lambda timeout_seconds=45: calls.append(1) or "hunter2",
         )
@@ -88,7 +89,7 @@ class TestDelegatedChildNeverPrompts:
             tt.set_sudo_password_callback(lambda: calls.append(1) or "pw")
             try:
                 with delegated_child_context("child-session"):
-                    return tt._transform_sudo_command("sudo systemctl restart foo")
+                    return tts._transform_sudo_command("sudo systemctl restart foo")
             finally:
                 tt.set_sudo_password_callback(None)
 
@@ -101,10 +102,10 @@ class TestDelegatedChildNeverPrompts:
         """The fix must not break interactive prompting outside children."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.setattr(
-            tt, "_prompt_for_sudo_password", lambda timeout_seconds=45: "hunter2"
+            tts, "_prompt_for_sudo_password", lambda timeout_seconds=45: "hunter2"
         )
 
-        transformed, sudo_stdin = tt._transform_sudo_command("sudo whoami")
+        transformed, sudo_stdin = tts._transform_sudo_command("sudo whoami")
 
         assert sudo_stdin == "hunter2\n"
         assert "sudo -S -p ''" in transformed
@@ -122,7 +123,7 @@ class TestDelegatedChildNeverPrompts:
 class TestDelegatedChildFailureMessaging:
     def test_child_gets_headless_sudo_tip(self):
         with delegated_child_context("child-session"):
-            out = tt._handle_sudo_failure(
+            out = tts._handle_sudo_failure(
                 "sudo: a password is required", env_type="local"
             )
         assert "Subagents cannot prompt" in out
@@ -130,10 +131,10 @@ class TestDelegatedChildFailureMessaging:
 
     def test_parent_output_unchanged(self, monkeypatch):
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        out = tt._handle_sudo_failure("sudo: a password is required", env_type="local")
+        out = tts._handle_sudo_failure("sudo: a password is required", env_type="local")
         assert out == "sudo: a password is required"
 
     def test_gateway_tip_preserved(self, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        out = tt._handle_sudo_failure("sudo: a password is required", env_type="local")
+        out = tts._handle_sudo_failure("sudo: a password is required", env_type="local")
         assert "To enable sudo over messaging" in out

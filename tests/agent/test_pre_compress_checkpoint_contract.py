@@ -520,10 +520,9 @@ def test_agent_init_suppresses_micro_compaction_under_checkpoint_gate():
 
     source = inspect.getsource(agent_init)
     # The suppression must happen before the compressor attribute assignment.
-    suppress_idx = source.find(
-        "if compression_checkpoint_required and compression_micro_compact:"
-    )
-    assign_idx = source.find("_cc._micro_compact_enabled = compression_micro_compact")
+    suppress_idx = source.find("if cs.checkpoint_required and cs.micro_compact:")
+    # The compressor attribute assignment is table-driven; pin the table entry.
+    assign_idx = source.find('("_micro_compact_enabled", cs.micro_compact)')
     assert suppress_idx != -1, (
         "init_agent must suppress micro-compaction when checkpoint_required"
     )

@@ -51,7 +51,7 @@ def mock_gemini_response(fake_pcm_bytes):
 
 class TestWrapPcmAsWav:
     def test_riff_header_structure(self):
-        from tools.tts_tool import _wrap_pcm_as_wav
+        from tools.tts_tool_delivery import _wrap_pcm_as_wav
 
         pcm = b"\x01\x02\x03\x04" * 10
         wav = _wrap_pcm_as_wav(pcm, sample_rate=24000, channels=1, sample_width=2)
@@ -71,7 +71,7 @@ class TestWrapPcmAsWav:
         assert wav[44:] == pcm
 
     def test_header_size_is_44(self):
-        from tools.tts_tool import _wrap_pcm_as_wav
+        from tools.tts_tool_delivery import _wrap_pcm_as_wav
 
         pcm = b"\xff" * 100
         wav = _wrap_pcm_as_wav(pcm)
@@ -129,11 +129,8 @@ class TestGenerateGeminiTts:
         assert headers["X-Goog-Api-Client"] == f"hermes-agent/{__version__}"
 
     def test_default_voice_and_model(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import (
-            DEFAULT_GEMINI_TTS_MODEL,
-            DEFAULT_GEMINI_TTS_VOICE,
-            _generate_gemini_tts,
-        )
+        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 

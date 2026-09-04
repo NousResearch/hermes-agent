@@ -5367,6 +5367,212 @@ async def transcribe_audio_upload(
     }
 
 
+@app.websocket("/api/audio/transcribe-stream")
+async def transcribe_stream_ws(ws: "WebSocket") -> None:
+    """Live STT for the desktop: mic PCM in as the user speaks, text out.
+
+    The client streams 16 kHz mono s16le PCM captured while the user is
+    STILL speaking; the server feeds it to the active streaming-capable
+    STT provider (plugin-registered, e.g. ``soniox-stt``) and returns the
+    transcript right when the user stops — instead of "record the whole
+    utterance, then transcribe the file" (latency ≥ utterance duration).
+
+    Protocol:
+      client → ``{"sample_rate": 16000}``   first frame (must be 16000)
+               binary PCM frames (s16le mono @ 16000)
+               ``{"eos": true}``             recording finished
+      server → ``{"type": "partial", "text": "..."}`` as speech is recognized
+               ``{"type": "final", "success": true, "transcript": "...",
+                    "provider": "..."}``
+               ``{"type": "error", "message": "..."}`` on failure (and no
+               streaming provider for the configured STT — the client falls
+               back to the POST /api/audio/transcribe relay).
+    """
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+
+    # Profile via query param, like /api/audio/speak-stream: provider chain +
+    # API keys must resolve from the requesting profile's config.
+    profile = (ws.query_params.get("profile") or "").strip() or None
+    loop = asyncio.get_running_loop()
+
+    def _resolve():
+        from tools import transcription_tools as tt
+
+        with _config_profile_scope(profile):
+            cfg = tt._load_stt_config()
+            if not tt.is_stt_enabled(cfg):
+                return None, "stt disabled"
+            provider = tt._get_provider(cfg)
+            if provider in tt.BUILTIN_STT_PROVIDERS:
+                return None, "built-in provider has no streaming wire"
+            language = tt._resolve_stt_language(provider, cfg)
+            from agent.transcription_registry import open_streaming_session
+
+            session = open_streaming_session(provider, language=language)
+            if session is None:
+                return None, "configured STT provider is not streaming-capable"
+            return session, None
+
+    try:
+        session, error = await loop.run_in_executor(None, _resolve)
+    except Exception:
+        _log.exception("transcribe-stream provider resolution failed")
+        session, error = None, "resolution error"
+    if session is None:
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "message": f"no streaming STT available ({error})"})
+            await ws.close()
+        return
+    _log.info("transcribe-stream: streaming session opened (%s)", type(session).__name__)
+
+    # First frame: session parameters.
+    try:
+        first = await ws.receive_json()
+    except Exception:
+        first = {}
+    if first.get("sample_rate") != 16000:
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "message": "sample_rate must be 16000"})
+            await ws.close()
+        return
+
+    audio_in: queue.Queue = queue.Queue()  # bytes; None = end-of-audio
+    result_out: queue.Queue = queue.Queue()  # final envelope
+
+    def _feed_and_finalize() -> None:
+        # Session.push_audio is a plain socket send; feed inline until EOS,
+        # then finalize (blocks until the provider's transcript is ready).
+        while True:
+            chunk = audio_in.get()
+            if chunk is None:
+                break
+            try:
+                session.push_audio(chunk)
+            except Exception:
+                _log.warning("transcribe-stream push failed", exc_info=True)
+                break
+        try:
+            result_out.put(session.finalize())
+        except Exception as exc:  # noqa: BLE001 — envelope everything
+            result_out.put(
+                {"success": False, "transcript": "", "provider": "unknown", "error": str(exc)}
+            )
+
+    feeder = threading.Thread(target=_feed_and_finalize, daemon=True)
+    feeder.start()
+    session_started_at = time.monotonic()
+    audio_chunks = 0
+    pcm_abs_sum = 0
+    pcm_samples = 0
+
+    async def _send_partials() -> None:
+        # Surface non-final text while the user is still speaking.
+        last = ""
+        while True:
+            await asyncio.sleep(0.4)
+            try:
+                partial = session.partial_transcript()
+            except Exception:
+                partial = ""
+            if partial and partial != last:
+                last = partial
+                with contextlib.suppress(Exception):
+                    await ws.send_json({"type": "partial", "text": partial})
+
+    partials_task = asyncio.create_task(_send_partials())
+
+    try:
+        # Receive audio until the client signals end-of-audio or drops.
+        while True:
+            try:
+                message = await ws.receive()
+            except Exception:
+                # Client disconnected mid-recording (barge-in / cancel).
+                audio_in.put(None)
+                break
+            if message.get("type") == "websocket.disconnect" or message.get("bytes") is None and message.get("text") is None:
+                # Disconnect or non-data frame — treat as end-of-audio.
+                audio_in.put(None)
+                break
+            chunk = message.get("bytes")
+            if chunk is not None:
+                audio_chunks += 1
+                audio_in.put(chunk)
+                # Energy probe (16 kHz s16le): distinguishes "mic sent silence"
+                # from "provider rejected real audio" in the end-of-session log.
+                try:
+                    view = memoryview(chunk).cast("h")
+                    pcm_abs_sum += sum(abs(int(sample)) for sample in view)
+                    pcm_samples += len(view)
+                except Exception:  # noqa: BLE001 — energy is diagnostic-only
+                    pass
+                continue
+            raw_text = message.get("text")
+            if raw_text is not None:
+                import json as _json
+
+                try:
+                    payload = _json.loads(raw_text)
+                except ValueError:
+                    payload = {}
+                if payload.get("eos"):
+                    audio_in.put(None)
+                    break
+        # Wait for the feeder to finalize — bounded, so a stalled provider
+        # session can never leave the client's recording UI hanging.
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, result_out.get), timeout=45
+            )
+        except asyncio.TimeoutError:
+            _log.warning("transcribe-stream finalize timed out")
+            result = {
+                "success": False,
+                "transcript": "",
+                "error": "transcribe-stream timed out",
+            }
+    except Exception:
+        _log.exception("transcribe-stream session failed")
+        result = {"success": False, "transcript": "", "error": "transcribe-stream session failed"}
+    finally:
+        partials_task.cancel()
+
+    _log.info(
+        "transcribe-stream: session ended in %.1fs (success=%s, %d audio chunks, "
+        "avg_abs_level=%.0f/32768)",
+        time.monotonic() - session_started_at,
+        bool(result.get("success")),
+        audio_chunks,
+        (pcm_abs_sum / pcm_samples) if pcm_samples else 0,
+    )
+    if not result.get("success"):
+        _log.warning("transcribe-stream: finalize failed: %s", result.get("error"))
+    elif result.get("transcript"):
+        _log.info("transcribe-stream: transcript %d chars", len(result["transcript"]))
+
+    if not result.get("success"):
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "message": result.get("error") or "transcription failed"})
+    else:
+        with contextlib.suppress(Exception):
+            await ws.send_json(
+                {
+                    "type": "final",
+                    "success": True,
+                    "transcript": result.get("transcript", ""),
+                    "provider": result.get("provider", ""),
+                }
+            )
+    with contextlib.suppress(Exception):
+        await ws.close()
+
+
 @app.get("/api/audio/voice-config")
 async def get_client_voice_config(profile: Optional[str] = None):
     """The active profile's STT/TTS config for CLIENT-DIRECT voice.

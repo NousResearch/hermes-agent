@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from agent.transcription_provider import TranscriptionProvider
 from hermes_constants import hermes_home_key
@@ -123,6 +123,30 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[Transcri
     key = name.strip().lower()
     with _lock:
         return _scoped_providers.get(scope or hermes_home_key(), {}).get(key) or _providers.get(key)
+
+
+def open_streaming_session(
+    name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+    scope: Optional[str] = None,
+) -> Optional[Any]:
+    """Open a live transcription session for a streaming-capable provider.
+
+    Returns the provider's :class:`~agent.transcription_provider.TranscriptionStreamSession`
+    when a provider is registered under *name* AND reports
+    ``streaming_capable``; otherwise None (callers fall back to the
+    file-based path). Never raises for lookup failures.
+    """
+    provider = get_provider(name, scope=scope)
+    if provider is None or not provider.streaming_capable:
+        return None
+    try:
+        return provider.open_stream_session(language=language, prompt=prompt)
+    except Exception:  # noqa: BLE001 — a broken session open must not break dispatch
+        logger.warning("Streaming session open failed for '%s'", name, exc_info=True)
+        return None
 
 
 def snapshot_registration(

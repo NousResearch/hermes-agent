@@ -196,3 +196,82 @@ class TranscriptionProvider(abc.ABC):
                 providers may use it as a vocabulary/context hint; others
                 should ignore it.
         """
+
+    # ------------------------------------------------------------------
+    # Live streaming (optional capability)
+    # ------------------------------------------------------------------
+
+    @property
+    def streaming_capable(self) -> bool:
+        """Whether this provider can transcribe LIVE audio chunk-by-chunk.
+
+        Streaming lets a caller feed audio as it is captured (microphone
+        input) instead of only whole files, cutting dictation latency
+        from "record, then transcribe" to "transcribe while speaking".
+
+        Providers that return True must implement
+        :meth:`open_stream_session` and accept 16 kHz mono s16le PCM in
+        arbitrary chunk sizes. Default: False — the file-based
+        :meth:`transcribe` path is unchanged for everyone else.
+        """
+        return False
+
+    def open_stream_session(
+        self,
+        *,
+        language: Optional[str] = None,
+        prompt: Optional[str] = None,
+    ) -> "TranscriptionStreamSession":
+        """Open a live transcription session (streaming-capable only).
+
+        Args:
+            language: Optional BCP-47 language hint (e.g. ``"pt"``).
+            prompt: Optional vocabulary/context hint — same semantics as
+                the ``prompt`` extra on :meth:`transcribe`.
+
+        Returns:
+            A :class:`TranscriptionStreamSession` bound to this provider.
+            Sessions are single-use; open a fresh one per utterance.
+
+        Raises:
+            NotImplementedError: this provider is not streaming-capable.
+        """
+        raise NotImplementedError(
+            f"{self.name} does not support live streaming transcription"
+        )
+
+
+class TranscriptionStreamSession(abc.ABC):
+    """Live audio → transcript session from a streaming-capable provider.
+
+    Contract: audio arrives as 16 kHz mono s16le PCM in arbitrary chunk
+    sizes via :meth:`push_audio`; :meth:`finalize` ends the session,
+    flushes trailing audio and returns the standard transcription
+    envelope (``success``/``transcript``/``provider``).
+
+    Sessions are single-use. A session may transcribe on a background
+    thread (e.g. a provider websocket reader); implementations must make
+    :meth:`push_audio` and :meth:`partial_transcript` safe to call from
+    the feeding thread.
+    """
+
+    @abc.abstractmethod
+    def push_audio(self, chunk: bytes) -> None:
+        """Feed one chunk of 16 kHz mono s16le PCM to the session."""
+
+    @abc.abstractmethod
+    def finalize(self) -> Dict[str, Any]:
+        """End the session and return the transcription envelope.
+
+        Blocks until the provider has finalized the transcript. Must not
+        raise — convert failures to the error envelope, matching
+        :meth:`TranscriptionProvider.transcribe`.
+        """
+
+    def partial_transcript(self) -> str:
+        """Latest non-final transcript (``''`` when none available).
+
+        Callers may poll this to show live captions while the user is
+        still speaking. Default: no partials.
+        """
+        return ""

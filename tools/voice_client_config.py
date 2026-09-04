@@ -69,6 +69,25 @@ def _client_direct_enabled() -> bool:
     return True
 
 
+def _plugin_streaming_capable(provider: str) -> bool:
+    """Whether a plugin-registered STT provider supports live streaming.
+
+    Plugin/command providers can't be called from the client directly,
+    but a streaming-capable plugin enables the *live relay*: the client
+    streams PCM to ``/api/audio/transcribe-stream`` and the host feeds
+    it to the provider while the user speaks.
+    """
+    try:
+        from agent.transcription_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        registered = get_provider(provider)
+        return bool(registered is not None and registered.streaming_capable)
+    except Exception:  # noqa: BLE001 — capability probe must never break config
+        return False
+
+
 def _relay(reason: str) -> Dict[str, Any]:
     """A relay verdict that tells the client (and logs) WHY, without secrets."""
     return {"mode": "relay", "reason": reason}
@@ -93,7 +112,15 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     if tt._is_local_stt_provider(provider, stt_config):
         return _relay("local provider")
     if provider not in tt.BUILTIN_STT_PROVIDERS:
-        return _relay("command/plugin provider")
+        # Plugin/command providers can't be called from the client directly.
+        # A streaming-capable plugin instead enables the live relay: the
+        # client streams PCM to /api/audio/transcribe-stream and the host
+        # feeds it to the provider while the user speaks.
+        streaming = _plugin_streaming_capable(provider)
+        relay = _relay("command/plugin provider")
+        if streaming:
+            relay["streaming"] = True
+        return relay
 
     language = tt._resolve_stt_language(
         provider, stt_config,

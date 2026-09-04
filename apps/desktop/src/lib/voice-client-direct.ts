@@ -43,6 +43,10 @@ export interface DirectTtsConfig {
 interface RelayConfig {
   mode: 'relay'
   reason?: string
+  /** True when the relayed STT provider is streaming-capable: the client may
+   *  stream live PCM to /api/audio/transcribe-stream instead of uploading one
+   *  blob after the recording ends (host feeds the provider while speaking). */
+  streaming?: boolean
 }
 
 export interface VoiceClientConfig {
@@ -234,6 +238,21 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
   }
 
   return null
+}
+
+/**
+ * True when the active profile's STT is a RELAY provider that supports live
+ * streaming (e.g. a plugin-registered provider like soniox-stt). The client
+ * can then stream mic PCM to /api/audio/transcribe-stream while the user is
+ * still speaking — the transcript lands right at end-of-recording instead of
+ * after a post-hoc file transcription. Any direct-wire provider returns false
+ * (they transcribe the finished blob client-side, which is already fast).
+ */
+export async function sttStreamingRelayAvailable(): Promise<boolean> {
+  const config = await fetchVoiceClientConfig()
+  const stt = config?.stt
+
+  return Boolean(stt && stt.mode === 'relay' && (stt as { streaming?: boolean }).streaming === true)
 }
 
 // ---------------------------------------------------------------------------

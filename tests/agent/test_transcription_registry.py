@@ -20,7 +20,7 @@ from typing import Any, Optional
 import pytest
 
 from agent import transcription_registry
-from agent.transcription_provider import TranscriptionProvider
+from agent.transcription_provider import TranscriptionProvider, TranscriptionStreamSession
 
 
 class _FakeProvider(TranscriptionProvider):
@@ -185,3 +185,88 @@ class TestBuiltinSync:
             "These two lists exist as a circular-import workaround and "
             "MUST be kept in sync manually."
         )
+
+
+# ---------------------------------------------------------------------------
+# Streaming capability
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamingProvider(_FakeProvider):
+    """A streaming-capable provider whose session records pushed chunks."""
+
+    def __init__(self, name: str = "streamer", fail_open: bool = False):
+        super().__init__(name=name)
+        self._fail_open = fail_open
+        self.pushed: list[bytes] = []
+        self.opened_language: Optional[str] = None
+
+    @property
+    def streaming_capable(self) -> bool:
+        return True
+
+    def open_stream_session(self, *, language=None, prompt=None):
+        if self._fail_open:
+            raise RuntimeError("boom")
+        self.opened_language = language
+        return _FakeStreamSession(self)
+
+
+class _FakeStreamSession(TranscriptionStreamSession):
+    def __init__(self, provider: _FakeStreamingProvider):
+        self._provider = provider
+        self.finalized = False
+
+    def push_audio(self, chunk: bytes) -> None:
+        self._provider.pushed.append(chunk)
+
+    def finalize(self):
+        self.finalized = True
+        return {
+            "success": True,
+            "transcript": "".join(c.decode(errors="ignore") for c in self._provider.pushed),
+            "provider": self._provider.name,
+        }
+
+
+class TestStreamingCapability:
+    def test_default_not_streaming_capable(self):
+        # Plain TranscriptionProvider subclasses don't stream.
+        p = _FakeProvider(name="openrouter")
+        assert p.streaming_capable is False
+
+    def test_open_streaming_session_none_for_file_only_provider(self):
+        p = _FakeProvider(name="openrouter")
+        transcription_registry.register_provider(p)
+        assert transcription_registry.open_streaming_session("openrouter") is None
+
+    def test_open_streaming_session_unknown_name_returns_none(self):
+        assert transcription_registry.open_streaming_session("ghost") is None
+
+    def test_streaming_session_push_and_finalize(self):
+        p = _FakeStreamingProvider(name="streamer")
+        transcription_registry.register_provider(p)
+        session = transcription_registry.open_streaming_session("streamer", language="pt")
+        assert session is not None
+        session.push_audio(b"ola")
+        session.push_audio(b" mundo")
+        result = session.finalize()
+        assert result == {
+            "success": True,
+            "transcript": "ola mundo",
+            "provider": "streamer",
+        }
+        assert p.opened_language == "pt"
+        assert p.pushed == [b"ola", b" mundo"]
+
+    def test_default_partial_transcript_empty(self):
+        p = _FakeStreamingProvider(name="streamer")
+        transcription_registry.register_provider(p)
+        session = transcription_registry.open_streaming_session("streamer")
+        assert session is not None
+        assert session.partial_transcript() == ""
+
+    def test_open_failure_returns_none(self):
+        p = _FakeStreamingProvider(name="streamer", fail_open=True)
+        transcription_registry.register_provider(p)
+        assert transcription_registry.open_streaming_session("streamer") is None

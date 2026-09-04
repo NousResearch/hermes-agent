@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { float32ToInt16Pcm, resampleTo16k } from '@/lib/pcm'
+
 type BrowserAudioContext = typeof AudioContext
 
 export interface MicRecorderOptions {
@@ -9,6 +11,11 @@ export interface MicRecorderOptions {
   silenceLevel?: number
   silenceMs?: number
   idleSilenceMs?: number
+  /** Live PCM tap: receives 16 kHz mono s16le chunks as they are captured
+   *  (used by streaming dictation — the chunks feed the host's live STT
+   *  relay while the user is still speaking). Only delivered when a 16 kHz
+   *  AudioContext is available; the MediaRecorder blob path is unaffected. */
+  onPcm?: (chunk: ArrayBuffer) => void
 }
 
 export interface MicRecording {
@@ -71,6 +78,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
   const animationRef = useRef<number | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
@@ -82,6 +90,11 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     if (animationRef.current) {
       window.cancelAnimationFrame(animationRef.current)
       animationRef.current = null
+    }
+
+    if (processorRef.current) {
+      processorRef.current.disconnect()
+      processorRef.current = null
     }
 
     void audioContextRef.current?.close()
@@ -105,6 +118,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
 
     try {
+      const wantsPcm = typeof options.onPcm === 'function'
       const audioContext = new AudioContextCtor()
       const analyser = audioContext.createAnalyser()
       const source = audioContext.createMediaStreamSource(stream)
@@ -114,6 +128,43 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
       source.connect(analyser)
       audioContextRef.current = audioContext
+
+      if (wantsPcm) {
+        // The context runs at the device rate — macOS can clamp a requested
+        // 16 kHz context to the hardware rate, and a silent rate mismatch
+        // used to starve the streaming leg. The tap resamples in JS, so
+        // onPcm ALWAYS delivers 16 kHz mono s16le regardless of context rate.
+        // ScriptProcessor is deprecated but universally supported and needs
+        // no worklet module URL in the Electron renderer.
+        //
+        // Two input channels + explicit L/R average: a mono-configured node
+        // relies on the browser's downmix, which has produced silent input in
+        // some Electron/macOS combos — averaging ourselves is deterministic
+        // whether the track is mono or stereo.
+        const processor = audioContext.createScriptProcessor(4096, 2, 1)
+        processorRef.current = processor
+        const contextRate = audioContext.sampleRate
+
+        // The tap only hears what is connected to it: source → processor,
+        // or onaudioprocess fires with SILENT buffers (201 chunks of pure
+        // zero — caught by the server's energy probe, avg_abs_level=0).
+        source.connect(processor)
+
+        processor.onaudioprocess = event => {
+          const left = event.inputBuffer.getChannelData(0)
+          const right = event.inputBuffer.numberOfChannels > 1 ? event.inputBuffer.getChannelData(1) : null
+          const input = new Float32Array(left.length)
+
+          for (let i = 0; i < left.length; i += 1) {
+            input[i] = right ? (left[i] + right[i]) * 0.5 : left[i]
+          }
+
+          const resampled = resampleTo16k(input, contextRate)
+          options.onPcm?.(float32ToInt16Pcm(resampled))
+        }
+
+        processor.connect(audioContext.destination)
+      }
 
       const tick = () => {
         analyser.getByteTimeDomainData(data)

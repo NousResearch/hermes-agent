@@ -3518,6 +3518,60 @@ def _plugin_tts_providers() -> list[dict]:
     return rows
 
 
+def _plugin_stt_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered STT providers.
+
+    Mirror of :func:`_plugin_tts_providers` for the Speech-to-Text
+    category (``register_transcription_provider()`` plugin hook). Built-in
+    STT rows stay hardcoded in ``TOOL_CATEGORIES["stt"]``; this function
+    injects PLUGIN-registered providers — e.g. ``soniox-stt`` — so they
+    are selectable from ``hermes tools`` (and the desktop provider UI,
+    which shares this code path) with their ``get_setup_schema`` env-var
+    prompts writing to ``.env``.
+
+    Selecting a row writes ``stt.provider: <name>`` through the same
+    generic path as built-ins; the transcription dispatcher resolves the
+    plugin from the registry automatically.
+    """
+    try:
+        from agent.transcription_registry import _BUILTIN_NAMES, list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name:
+            continue
+        # Defensive: reject built-in shadowing at the picker layer too.
+        if name.lower().strip() in _BUILTIN_NAMES:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            # Selecting this row writes ``stt.provider: <name>`` — the
+            # same write-path used by hardcoded rows.
+            "stt_provider": name,
+            "stt_plugin_name": name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 def _visible_providers(
     cat: dict,
     config: dict,
@@ -3600,6 +3654,12 @@ def _visible_providers(
     # is filtered out by ``_plugin_tts_providers`` defensively.
     if cat.get("name") == "Text-to-Speech":
         visible.extend(_plugin_tts_providers())
+
+    # Inject plugin-registered STT backends (register_transcription_provider
+    # plugin hook) so streaming-capable providers like soniox-stt are
+    # selectable from the picker like any built-in.
+    if cat.get("name") == "Speech-to-Text":
+        visible.extend(_plugin_stt_providers())
 
     return visible
 

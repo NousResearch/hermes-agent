@@ -29,6 +29,48 @@ const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
+let jumpRaf = 0
+
+export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
+  cancelAnimationFrame(jumpRaf)
+  const start = viewport.scrollTop
+  const delta = top - start
+
+  if (Math.abs(delta) < 2) {
+    viewport.scrollTop = top
+
+    return
+  }
+
+  const t0 = performance.now()
+  const ease = (t: number) => 1 - (1 - t) ** 3 // easeOutCubic
+
+  const step = (now: number) => {
+    const p = Math.min(1, (now - t0) / duration)
+    viewport.scrollTop = start + delta * ease(p)
+
+    if (p < 1) {
+      jumpRaf = requestAnimationFrame(step)
+    }
+  }
+
+  jumpRaf = requestAnimationFrame(step)
+}
+
+export function scrollToPrompt(root: HTMLElement | null, id: string) {
+  const viewport = ownViewport(root)
+  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+
+  if (!viewport || !node) {
+    return
+  }
+
+  const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
+
+  triggerHaptic('selection')
+  jumpScroll(viewport, Math.max(0, top))
+}
+
 /** Hidden rails do not subscribe to streaming messages or measure layout. */
 export const ThreadTimeline: FC = () => {
   const paneVisible = usePaneVisible()

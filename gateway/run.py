@@ -25254,6 +25254,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         such paths into uploads after the fact sent files the model never
         asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
         attachment contract — trigger post-stream uploads.
+
+        Threads ``event.source``'s own session key and profile explicitly
+        into Docker container-path translation so an isolated task's
+        (#64889) or a named profile's (#94441) own sandbox resolves,
+        instead of falling back to the shared ``default`` one.
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -25267,8 +25272,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
+            # This rescan runs after streaming has already finished the turn,
+            # so any profile-scope context the turn entered may have already
+            # exited (#93950) — read the delivering source's own identity
+            # directly rather than the ambient active profile (#64889, #94441).
+            _media_source = event.source
+            _media_session_key = (
+                self._session_key_for_source(_media_source) if _media_source else ""
+            )
+            _media_profile = getattr(_media_source, "profile", None)
+
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                media_files, session_key=_media_session_key, profile=_media_profile
+            )
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
@@ -25617,7 +25634,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if response:
                 media_files, response = adapter.extract_media(response)
                 from gateway.platforms.base import BasePlatformAdapter
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                # Same reasoning as _deliver_media_from_response: this runs
+                # after the background task's own run scope has exited, so
+                # thread the task's own source identity explicitly rather
+                # than depend on the ambient active profile (#64889, #94441).
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                    media_files,
+                    session_key=self._session_key_for_source(source),
+                    profile=getattr(source, "profile", None),
+                )
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")

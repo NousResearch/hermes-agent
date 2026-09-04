@@ -1819,6 +1819,48 @@ class TestSendMediaViaAdapter:
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
 
+    def test_job_id_resolves_own_isolated_docker_sandbox_not_default(self, tmp_path, monkeypatch):
+        """The job's own id must resolve its own Docker sandbox instead of
+        falling back to the shared "default" one (#64889) — the same
+        contract validated for the gateway path in
+        TestDockerProfileSandboxMediaTranslation.test_legacy_session_sandbox_still_resolves,
+        exercised here through cron's own call site."""
+        from tools.environments.base import get_sandbox_dir, sanitize_task_id_for_path
+
+        # An earlier test in this same process may have already tripped
+        # terminal_tool's one-shot config→env bridge under different (or no)
+        # TERMINAL_* settings; that attempt is remembered process-wide and
+        # never retried, which can leave a stale docker_volumes mount that
+        # masks the synthetic /workspace candidate this test depends on.
+        # Reset it so the bridge re-evaluates under THIS test's own env.
+        monkeypatch.setattr("tools.terminal_tool._terminal_config_bridge_attempted", False)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        job_id = "isolated-job-42"
+        sandbox_name = sanitize_task_id_for_path(f"session:{job_id}")
+        workspace = get_sandbox_dir() / "docker" / sandbox_name / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "chart.png"
+        produced.write_bytes(b"png")
+        # The shared "default" sandbox has no such file — if the job id were
+        # not threaded through, resolution would fall back there and fail.
+        default_ws = get_sandbox_dir() / "docker" / "default" / "workspace"
+        default_ws.mkdir(parents=True, exist_ok=True)
+        assert not (default_ws / "chart.png").exists()
+
+        adapter = MagicMock()
+        adapter.send_image_file = AsyncMock()
+        media_files = [("/workspace/chart.png", False)]
+
+        self._run_with_loop(adapter, "123", media_files, None, {"id": job_id})
+
+        adapter.send_image_file.assert_called_once()
+        # _run_with_loop's fake_run_coro closes the send coroutine without
+        # awaiting it (only the scheduling is exercised here), so the sent
+        # path lives in call_args (recorded at call time), not await_args.
+        call_kwargs = adapter.send_image_file.call_args.kwargs
+        assert str(produced.resolve()) in str(call_kwargs.get("image_path", call_kwargs))
+
 
 class TestParallelTick:
     """Verify that tick() runs due jobs concurrently and isolates ContextVars."""

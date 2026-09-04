@@ -1643,7 +1643,9 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     return mounts
 
 
-def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
+def _docker_sandbox_dir_candidates(
+    session_key: str = "", profile: Optional[str] = None
+) -> List[str]:
     """Candidate host sandbox dir names for the delivering session, best first.
 
     Mirrors ``_resolve_container_task_id`` (tools/terminal_tool.py). Persistent
@@ -1658,6 +1660,16 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     ``_handle_message_with_agent`` cleared the turn's session contextvars
     (#93950) — an ambient lookup here would silently collapse onto
     ``default`` and miss the session's real sandbox.
+
+    ``profile``, when the caller can identify it explicitly (e.g.
+    ``SessionSource.profile``, or a cron job's own ``profile`` field), takes
+    precedence over the ambient ``get_active_profile_name()`` lookup for the
+    SAME reason the session_key parameter above does: delivery code
+    frequently runs after the turn's ``_profile_runtime_scope`` (which backs
+    ``get_active_profile_name()``) has already exited, so the ambient lookup
+    can silently resolve a DIFFERENT (often the default) profile's sandbox in
+    a multiplexed gateway — passing the explicit value sidesteps that
+    entirely rather than depending on scope-exit timing (#64889, #94441).
     """
     candidates: List[str] = []
     try:
@@ -1668,14 +1680,17 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
     if shared:
         candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
-    try:
-        from hermes_cli.profiles import get_active_profile_name
+    if profile:
+        resolved_profile = profile
+    else:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
 
-        profile = get_active_profile_name() or "default"
-    except Exception:
-        profile = "default"
-    if profile != "default":
-        candidates.append(sanitize_task_id_for_path(f"profile:{profile}"))
+            resolved_profile = get_active_profile_name() or "default"
+        except Exception:
+            resolved_profile = "default"
+    if resolved_profile != "default":
+        candidates.append(sanitize_task_id_for_path(f"profile:{resolved_profile}"))
     candidates.append("default")
     if session_key:
         # Bug-window legacy layout: per-session sandboxes.
@@ -1683,7 +1698,9 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     return candidates
 
 
-def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
+def _default_docker_workspace_host_roots(
+    session_key: str = "", profile: Optional[str] = None
+) -> List[Path]:
     """Existing host-path candidates for the persistent ``/workspace`` mount.
 
     Ordered best-first (active profile layout, then the legacy bug-window
@@ -1718,7 +1735,7 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
 
         base = get_sandbox_dir() / "docker"
         roots = []
-        for name in _docker_sandbox_dir_candidates(session_key):
+        for name in _docker_sandbox_dir_candidates(session_key, profile):
             cand = (base / name / "workspace").resolve(strict=False)
             if cand.is_dir():
                 roots.append(cand)
@@ -1727,7 +1744,9 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     return roots
 
 
-def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
+def _docker_persistent_home_host_roots(
+    session_key: str = "", profile: Optional[str] = None
+) -> List[Path]:
     """Existing host-path candidates for the persistent ``/root`` home mount.
 
     Persistent containers bind ``<sandbox>/docker/<task>/home`` to ``/root``
@@ -1749,7 +1768,7 @@ def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
 
         base = get_sandbox_dir() / "docker"
         roots = []
-        for name in _docker_sandbox_dir_candidates(session_key):
+        for name in _docker_sandbox_dir_candidates(session_key, profile):
             cand = (base / name / "home").resolve(strict=False)
             if cand.is_dir():
                 roots.append(cand)
@@ -1800,13 +1819,17 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
     )
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path(
+    candidate: Path, session_key: str = "", profile: Optional[str] = None
+) -> Optional[Path]:
     """Translate a container-absolute path to its host path when possible.
 
     Uses longest-prefix match across configured ``docker_volumes``, the
     auto-mounted Hermes cache dirs (``/root/.hermes/...``), the session's
     persistent Docker ``/workspace`` host root, and the persistent ``/root``
-    home mount.
+    home mount. ``profile`` is forwarded to :func:`_docker_sandbox_dir_candidates`
+    so an explicitly-known profile (rather than the ambient active one) picks
+    the right sandbox (#64889, #94441).
     """
     if not candidate.is_absolute():
         return None
@@ -1828,7 +1851,7 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     # Multiple candidates: profile-scoped layout first, then the legacy
     # bug-window per-session layout — the file is tried against each.
     if not any(c.as_posix() == "/workspace" for _, c in mounts):
-        for ws_root in _default_docker_workspace_host_roots(session_key):
+        for ws_root in _default_docker_workspace_host_roots(session_key, profile):
             mounts.append((ws_root, Path("/workspace")))
     # Synthetic /root mounts for the persistent home bind. Cache mounts above
     # are longer prefixes, so /root/.hermes/... still translates to the host
@@ -1841,7 +1864,7 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
         # host-side credential denylist prefixes — refuse instead so the
         # normal "container path doesn't exist on host" rejection applies.
         if not candidate.as_posix().startswith("/root/.hermes"):
-            for home_root in _docker_persistent_home_host_roots(session_key):
+            for home_root in _docker_persistent_home_host_roots(session_key, profile):
                 mounts.append((home_root, Path("/root")))
 
     if not mounts:
@@ -1873,7 +1896,9 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     return None
 
 
-def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+def validate_media_delivery_path(
+    path: str, session_key: str = "", profile: Optional[str] = None
+) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
     Default mode (single-user / private gateway): accept any existing regular
@@ -1914,7 +1939,9 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     # Docker agents emit MEDIA:/workspace/... (or other configured container
     # mount paths). Resolve those to host paths before the normal host-side
     # existence / denylist checks.
-    translated = _translate_docker_container_media_path(expanded, session_key=session_key)
+    translated = _translate_docker_container_media_path(
+        expanded, session_key=session_key, profile=profile
+    )
     if translated is not None:
         resolved = translated
     else:
@@ -5157,17 +5184,21 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
-    def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+    def validate_media_delivery_path(
+        path: str, session_key: str = "", profile: Optional[str] = None
+    ) -> Optional[str]:
         """Return a resolved path if it is safe for native attachment upload."""
-        return validate_media_delivery_path(path, session_key=session_key)
+        return validate_media_delivery_path(path, session_key=session_key, profile=profile)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
+    def filter_media_delivery_paths(
+        media_files, session_key: str = "", profile: Optional[str] = None
+    ) -> List[Tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
-            safe_path = validate_media_delivery_path(raw, session_key=session_key)
+            safe_path = validate_media_delivery_path(raw, session_key=session_key, profile=profile)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
@@ -5175,12 +5206,14 @@ class BasePlatformAdapter(ABC):
         return safe_media
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
+    def filter_local_delivery_paths(
+        file_paths, session_key: str = "", profile: Optional[str] = None
+    ) -> List[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
-            safe_path = validate_media_delivery_path(raw, session_key=session_key)
+            safe_path = validate_media_delivery_path(raw, session_key=session_key, profile=profile)
             if safe_path:
                 safe_paths.append(safe_path)
             else:

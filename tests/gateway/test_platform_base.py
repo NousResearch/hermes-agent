@@ -1552,3 +1552,83 @@ class TestPlatformLockTakeoverGovernance:
         assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
         assert len(takeover_calls) == 1
         assert adapter._platform_lock_takeover_attempted is True
+
+
+class TestDockerExplicitProfileOverridesAmbientLookup:
+    """An explicitly-passed ``profile`` must win over the ambient
+    ``get_active_profile_name()`` lookup (#64889, #94441).
+
+    Delivery code (post-stream MEDIA rescan, cron result delivery) commonly
+    runs after the turn's ``_profile_runtime_scope`` has already exited, so
+    the ambient active-profile lookup can silently reflect a DIFFERENT
+    profile (or the default) than the one that actually produced the file.
+    Passing the delivering source's own profile explicitly must resolve the
+    correct sandbox regardless of what the ambient lookup would say.
+    """
+
+    @staticmethod
+    def _sandbox_dir(task_id: str = "default"):
+        from tools.environments.base import get_sandbox_dir, sanitize_task_id_for_path
+
+        name = task_id if task_id == "default" else sanitize_task_id_for_path(task_id)
+        return get_sandbox_dir() / "docker" / name
+
+    def _enable_docker(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+
+    def test_explicit_profile_wins_when_ambient_disagrees(self, monkeypatch):
+        """Ambient lookup says one profile; the explicit param names another.
+        The explicit one must be the one that resolves."""
+        self._enable_docker(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "stale_profile"
+        )
+        workspace = self._sandbox_dir("profile:real_profile") / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "chart.png"
+        produced.write_bytes(b"png")
+        # The ambient-named profile's sandbox does NOT exist at all — if the
+        # explicit param were ignored, translation would fall through to
+        # "default" (also absent here) and return None.
+        assert not (self._sandbox_dir("profile:stale_profile")).exists()
+
+        result = BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/chart.png", profile="real_profile"
+        )
+
+        assert result == str(produced.resolve())
+
+    def test_omitted_profile_still_falls_back_to_ambient(self, monkeypatch):
+        """Backward compatibility: no explicit profile behaves exactly as
+        before — ambient lookup decides."""
+        self._enable_docker(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "ambient_profile"
+        )
+        workspace = self._sandbox_dir("profile:ambient_profile") / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "chart.png"
+        produced.write_bytes(b"png")
+
+        result = BasePlatformAdapter.validate_media_delivery_path("/workspace/chart.png")
+
+        assert result == str(produced.resolve())
+
+    def test_explicit_profile_and_session_key_compose(self, monkeypatch):
+        """Both new-style profile scoping and the legacy session_key fallback
+        can be passed together — profile still wins when its sandbox exists,
+        session_key remains available as a fallback candidate."""
+        self._enable_docker(monkeypatch)
+        legacy_ws = self._sandbox_dir("session:legacy-key") / "workspace"
+        legacy_ws.mkdir(parents=True, exist_ok=True)
+        legacy_file = legacy_ws / "old.png"
+        legacy_file.write_bytes(b"png")
+
+        # Only the legacy sandbox exists — the named profile's does not — so
+        # passing both must still fall through to the legacy candidate.
+        result = BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/old.png", session_key="legacy-key", profile="no_such_profile"
+        )
+
+        assert result == str(legacy_file.resolve())

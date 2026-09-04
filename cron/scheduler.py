@@ -2957,7 +2957,14 @@ def _send_media_via_adapter(
 
     errors: list = []
     requested = [(str(p), v) for p, v in (media_files or [])]
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # job["id"] is the same task_id run_job() passes into
+    # agent.run_conversation(), so this resolves the job's own Docker
+    # environment directly instead of falling back to the shared "default"
+    # sandbox for any isolated (per-task) sandbox produced during the run
+    # (#64889).
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, session_key=str(job.get("id") or "")
+    )
     # Report paths the safety filter dropped: the model referenced them in
     # MEDIA: tags but they will never be sent (missing file, denied prefix,
     # or strict-mode policy miss).
@@ -3296,7 +3303,14 @@ def _deliver_result(
 
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     requested_media = [(str(p), v) for p, v in media_files]
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # job["id"] is the same task_id run_job() passes into
+    # agent.run_conversation(), so this resolves the job's own Docker
+    # environment directly instead of falling back to the shared "default"
+    # sandbox for any isolated (per-task) sandbox produced during the run
+    # (#64889).
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, session_key=str(job.get("id") or "")
+    )
     # Attachments the policy filter dropped will never be sent on ANY lane —
     # record them up front so the run status says so (previously one
     # stderr WARNING was the only trace: text delivered, file vanished).

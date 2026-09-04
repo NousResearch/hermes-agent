@@ -93,6 +93,7 @@ def _fake_runner(thread_meta):
     runner = SimpleNamespace(
         _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
         _reply_anchor_for_event=lambda event: None,
+        _session_key_for_source=lambda source: "test-session-key",
     )
     return runner
 

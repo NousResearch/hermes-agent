@@ -116,34 +116,16 @@ def _read_config(path: Path) -> dict[str, Any]:
         return {}
 
 def _read_config_strict(path: Path) -> dict[str, Any]:
-    """Reader for the WRITE paths: never lets a failed read become an empty store.
-
-    A missing file is the bootstrap case and reads as ``{}``. A file that EXISTS but cannot be read
-    (EACCES after a root-owned write, EIO, a stalled mount) raises instead: ``atomic_json_write`` replaces
-    the whole file and ``os.replace`` needs only a writable parent, so degrading here would let the next
-    persist erase every other host's credentials. Genuine corruption still degrades, but only after
-    preserving a ``.corrupt`` copy: a truncated store usually holds the other hosts' tokens verbatim.
-    """
+    """Reader for the WRITE paths. A missing file reads as ``{}``. A file that exists but cannot be read
+    or parsed raises so the caller leaves it alone: ``atomic_json_write`` replaces the whole file, and a
+    write seeded from ``{}`` would erase every other host's credentials and the root keys."""
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}
-    except OSError:
-        logger.warning("Honcho config at %s could not be read; refusing to treat it as empty "
-                       "(a persist would erase every other host's credentials)", path, exc_info=True)
+    except (OSError, ValueError) as exc:
+        logger.warning("Honcho config at %s exists but could not be read (%s); refusing to overwrite it.", path, exc)
         raise
-    except json.JSONDecodeError as exc:
-        corrupt = path.with_name(path.name + ".corrupt")
-        preserved = False
-        try:
-            import shutil
-            shutil.copy2(path, corrupt)
-            preserved = True
-        except Exception:
-            logger.debug("could not preserve a copy at %s", corrupt, exc_info=True)
-        logger.warning("Honcho config at %s is corrupt (%s); starting from an empty store. %s", path, exc,
-                       f"Original preserved at {corrupt}" if preserved else f"A copy could NOT be preserved at {corrupt}")
-        return {}
 
 def _load_cred(path: Path, host: str, raw: dict[str, Any] | None = None) -> OAuthCredential | None:
     """Credential from ``host``'s block in ``raw`` (or the file at ``path``)."""
@@ -293,7 +275,7 @@ def _rotate_and_persist(
     try:
         # Read before spending the single-use refresh token: an exchange that cannot be persisted loses the grant.
         raw = _read_config_strict(path)
-    except OSError:
+    except (OSError, ValueError):
         _refresh_failure_at[key] = time.monotonic()
         return None
     try:

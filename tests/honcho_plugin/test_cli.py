@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 import json
 
+import pytest
+
 
 class TestResolveApiKey:
     """Test _resolve_api_key with various config shapes."""
@@ -744,3 +746,50 @@ class TestCmdSetupDeviceFlow:
         assert len(calls) == 1
         assert "apiKey" not in cfg.get("hosts", {}).get("hermes", {})
 
+
+
+class TestWriteRefusesUnparseableStore:
+    """A honcho.json that exists but does not parse reads as {} on the tolerant path. Writing that
+    back would replace every host and root key with the current command's block, so writes refuse."""
+
+    def _point_at(self, monkeypatch, cfg_path):
+        import plugins.memory.honcho.cli as honcho_cli
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_coder")
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: False)
+        return honcho_cli
+
+    def test_write_config_refuses_and_leaves_file_alone(self, monkeypatch, tmp_path):
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text('{"hosts": {"hermes": {"apiKey": "k"', encoding="utf-8")
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        with pytest.raises(honcho_cli.ConfigWriteRefused):
+            honcho_cli._write_config({"hosts": {"hermes_coder": {"enabled": True}}})
+        assert cfg_path.read_text(encoding="utf-8") == '{"hosts": {"hermes": {"apiKey": "k"'
+
+    def test_write_config_still_bootstraps_a_missing_file(self, monkeypatch, tmp_path):
+        cfg_path = tmp_path / "honcho.json"
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        honcho_cli._write_config({"apiKey": "k"})
+        assert json.loads(cfg_path.read_text(encoding="utf-8")) == {"apiKey": "k"}
+
+    def test_enable_prints_one_sentence_and_writes_nothing(self, monkeypatch, tmp_path, capsys):
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{not json", encoding="utf-8")
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        monkeypatch.setenv("HONCHO_API_KEY", "env-key")
+        honcho_cli.honcho_command(SimpleNamespace(honcho_command="enable", target_profile=None))
+        out = capsys.readouterr().out
+        assert "could not be read as JSON" in out
+        assert "Nothing was written" in out
+        assert cfg_path.read_text(encoding="utf-8") == "{not json"
+
+    def test_setup_refuses_before_asking_anything(self, monkeypatch, tmp_path, capsys):
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{not json", encoding="utf-8")
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        monkeypatch.setattr(honcho_cli, "_prompt", lambda *a, **k: pytest.fail("wizard asked a question"))
+        honcho_cli.cmd_setup(SimpleNamespace())
+        assert "Nothing was written" in capsys.readouterr().out
+        assert cfg_path.read_text(encoding="utf-8") == "{not json"

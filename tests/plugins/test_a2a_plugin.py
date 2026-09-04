@@ -25,6 +25,18 @@ from types import SimpleNamespace
 import pytest
 
 from plugins.platforms.a2a import protocol, security, tools
+from tools.registry import invalidate_check_fn_cache
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tool_gate_cache():
+    """Upstream's registry memoizes check_fn results (~30s TTL). Within one
+    pytest process, an earlier test evaluating the A2A gate with a patched or
+    absent config poisons the cache for later convention tests — drop it
+    before and after each test in this file."""
+    invalidate_check_fn_cache()
+    yield
+    invalidate_check_fn_cache()
 
 
 def _free_port() -> int:
@@ -646,7 +658,11 @@ class TestRegistryDispatchConvention:
         model gets a nested {"function": {"function": {...}}} with no
         parameters and tool calls fail validation."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(tools, "_load_config", lambda: {})
+        # Upstream's registry (#95681 era) now filters get_definitions by
+        # check_fn, so the gate must be open for the schema assertions to
+        # run; the fork's older registry registered/defined unconditionally.
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}})
         from tools.registry import registry
 
         class _Ctx:

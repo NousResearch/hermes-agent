@@ -6,10 +6,11 @@ import json
 
 from plugins.platforms.a2a import tools as a2a_tools
 from tools import tool_search
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, invalidate_check_fn_cache
 
 
 def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
+    invalidate_check_fn_cache()
     registry = ToolRegistry()
 
     # The client tools are config-gated now (test_a2a_tools_gate.py):

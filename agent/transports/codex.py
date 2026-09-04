@@ -11,7 +11,8 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
+    ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
     codex_supported_efforts,
@@ -226,7 +227,9 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         declared = _profile_declared_efforts(params.get("provider"), model, params.get("base_url"))
         if declared is not None and not declared:
             reasoning_enabled = False
-        supported = declared or codex_supported_efforts(model)
+        supported = declared or _codex_efforts_for_route(
+            model, params.get("base_url"), is_codex_backend=params.get("is_codex_backend") is True
+        )
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -273,6 +276,15 @@ def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
     from utils import base_url_host_matches
 
     return base_url_host_matches(str(base_url or ""), "api.openai.com")
+
+
+def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
+    """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
+    if _is_astra_model(model) and not (
+        is_codex_backend or _is_official_openai_responses_route(model, base_url)
+    ):
+        return CODEX_LEGACY_EFFORTS
+    return codex_supported_efforts(str(model or ""))
 
 
 def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:

@@ -139,7 +139,7 @@ class TestFindAgentBrowser:
         without calling agent_browser_runnable — that keeps the probe a cheap
         existence check with no subprocess spawn."""
         fake_binary = tmp_path / "agent-browser"
-        fake_binary.write_text("#!/bin/sh\n")
+        fake_binary.write_text("#!/bin/sh\n", encoding="utf-8")
         fake_binary.chmod(0o755)
 
         def mock_which(cmd, path=None):
@@ -171,7 +171,7 @@ class TestFindAgentBrowser:
         local_bin_dir = repo_root / "node_modules" / ".bin"
 
         fake_binary = tmp_path / "agent-browser"
-        fake_binary.write_text("#!/bin/sh\n")
+        fake_binary.write_text("#!/bin/sh\n", encoding="utf-8")
         fake_binary.chmod(0o755)
 
         def mock_which(cmd, path=None):
@@ -248,7 +248,7 @@ class TestAgentBrowserCandidatePresent:
 
     def test_executable_file_is_true(self, tmp_path):
         binary = tmp_path / "agent-browser"
-        binary.write_text("#!/bin/sh\n")
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
         binary.chmod(0o755)
         assert _agent_browser_candidate_present(str(binary)) is True
 
@@ -258,7 +258,7 @@ class TestAgentBrowserCandidatePresent:
     )
     def test_nonexecutable_file_is_false(self, tmp_path):
         binary = tmp_path / "agent-browser"
-        binary.write_text("#!/bin/sh\n")
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
         binary.chmod(0o644)
         assert _agent_browser_candidate_present(str(binary)) is False
 

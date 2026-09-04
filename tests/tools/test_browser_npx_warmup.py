@@ -230,12 +230,12 @@ class TestLegacyKillProcessTree:
         monkeypatch.setattr("os.getpgid", lambda pid: 999)
         killpg_calls = []
         monkeypatch.setattr(
-            "os.killpg", lambda pgid, sig: killpg_calls.append((pgid, sig))
+            "os.killpg", lambda pgid, sig: killpg_calls.append((pgid, sig))  # windows-footgun: ok
         )
 
         _legacy_kill_process_tree(proc)
 
-        assert killpg_calls == [(999, signal.SIGTERM), (999, signal.SIGKILL)]
+        assert killpg_calls == [(999, signal.SIGTERM), (999, signal.SIGKILL)]  # windows-footgun: ok
 
     def test_posix_missing_process_returns_silently(self, monkeypatch):
         proc = MagicMock()
@@ -295,7 +295,7 @@ class TestLegacyKillProcessTree:
             killpg_calls.append((pgid, sig))
             raise PermissionError()
 
-        monkeypatch.setattr("os.killpg", fake_killpg)
+        monkeypatch.setattr("os.killpg", fake_killpg)  # windows-footgun: ok
 
         _legacy_kill_process_tree(proc)  # must not raise
 

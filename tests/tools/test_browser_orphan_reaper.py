@@ -16,11 +16,14 @@ def fake_tmpdir(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_sessions():
+def _isolate_sessions(monkeypatch):
     """Ensure _active_sessions is empty for each test."""
     import tools.browser_tool as bt
     orig = bt._active_sessions.copy()
     bt._active_sessions.clear()
+    # Existing unit fixtures create complete PID files immediately. Disable
+    # only the real-time settle delay unless a test explicitly exercises it.
+    monkeypatch.setattr(bt, "BROWSER_PID_FILE_SETTLE_SECONDS", 0.0)
     yield
     bt._active_sessions.clear()
     bt._active_sessions.update(orig)
@@ -53,8 +56,8 @@ class TestReapOrphanedBrowserSessions:
         from tools.browser_tool import _reap_orphaned_browser_sessions
         _reap_orphaned_browser_sessions()  # should not raise
 
-    def test_stale_dir_without_pid_file_is_removed(self, fake_tmpdir):
-        """Socket dir with no PID file is cleaned up."""
+    def test_stale_dir_without_pid_file_is_retained(self, fake_tmpdir):
+        """Without a PID, daemon death cannot be confirmed; retain evidence."""
         from tools.browser_tool import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
         assert d.exists()
@@ -63,7 +66,7 @@ class TestReapOrphanedBrowserSessions:
             return_value=10_000,
         ):
             _reap_orphaned_browser_sessions()
-        assert not d.exists()
+        assert d.exists()
 
     def test_fresh_dir_without_pid_file_survives_creator_race(self, fake_tmpdir):
         """A concurrent reaper must not delete a session still starting."""
@@ -136,6 +139,27 @@ class TestReapOrphanedBrowserSessions:
 
         assert terminate_calls == []
 
+
+    def test_fresh_numeric_pid_prefix_is_retained(self, fake_tmpdir, monkeypatch):
+        """An integer-looking partial write must not select/dead-check that PID."""
+        import tools.browser_tool as bt
+
+        session = "hermes_bh_111_partial"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        (d / "bu.pid").write_text("2")  # possible prefix while writing 222
+        monkeypatch.setattr(bt, "BROWSER_PID_FILE_SETTLE_SECONDS", 1.0)
+        pid_probes = []
+
+        def _pid_exists(pid):
+            pid_probes.append(pid)
+            return False  # owner 111 is dead; PID 2 must never be probed
+
+        with patch("gateway.status._pid_exists", side_effect=_pid_exists):
+            bt._reap_orphaned_browser_sessions()
+
+        assert pid_probes == [111]
+        assert d.exists()
+        assert (d / "bu.pid").read_text() == "2"
 
     def test_corrupt_pid_file_is_retained_for_later_sweep(self, fake_tmpdir):
         """A malformed PID file is ambiguous, so retain all runtime evidence.

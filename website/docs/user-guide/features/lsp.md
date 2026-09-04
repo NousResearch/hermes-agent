@@ -119,11 +119,11 @@ download link.
 ### F#
 
 FsAutoComplete is a .NET global tool. Hermes looks for the
-`fsautocomplete` binary on PATH, in `<HERMES_HOME>/lsp/bin/`, and in
-the .NET global tools directory (`~/.dotnet/tools`, or
-`$DOTNET_CLI_HOME/tools` when that env var is set) — the last of
-those matters because `dotnet tool install -g` often leaves the
-tools directory off PATH.
+`fsautocomplete` binary on PATH first (so a user-installed global
+tool wins), then in `<HERMES_HOME>/lsp/bin/`, then in the .NET
+global tools directory (`~/.dotnet/tools`, or `$DOTNET_CLI_HOME/tools`
+when that env var is set) — the last of those matters because
+`dotnet tool install -g` often leaves the tools directory off PATH.
 
 Install it yourself with:
 

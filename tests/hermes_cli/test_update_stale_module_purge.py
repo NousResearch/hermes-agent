@@ -16,6 +16,7 @@ module graph from the updated checkout.
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 
@@ -134,3 +135,46 @@ def test_stale_symbol_scenario_end_to_end():
         sys.modules.pop(name, None)
         if real is not None:
             sys.modules[name] = real
+
+
+def test_purge_preserves_active_update_receipt(monkeypatch, tmp_path):
+    """The post-update finalizer must retain the receipt begun pre-purge."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    import hermes_cli
+
+    absent = object()
+    receipt_module_before_test = sys.modules.get("hermes_cli.update_receipt")
+    receipt_current_before_test = (
+        getattr(receipt_module_before_test, "_current", absent)
+        if receipt_module_before_test is not None
+        else absent
+    )
+
+    # The finalizer re-imports config after the purge. Restore the package
+    # attribute as well as the autouse fixture's sys.modules entry.
+    config_before_purge = importlib.import_module("hermes_cli.config")
+    monkeypatch.setattr(hermes_cli, "config", config_before_purge)
+
+    receipt_attr_before_test = hermes_cli.__dict__.get("update_receipt", absent)
+    try:
+        receipt_before_purge = importlib.import_module("hermes_cli.update_receipt")
+        receipt_before_purge.begin_update_receipt()
+
+        cli_main._purge_stale_hermes_modules()
+
+        receipt_after_purge = importlib.import_module("hermes_cli.update_receipt")
+        path = receipt_after_purge.finalize_update_receipt("success")
+
+        assert path is not None and path.is_file()
+        assert (hermes_home / "logs" / "update_receipts" / "latest.json").is_file()
+    finally:
+        if receipt_module_before_test is not None:
+            if receipt_current_before_test is absent:
+                receipt_module_before_test.__dict__.pop("_current", None)
+            else:
+                receipt_module_before_test._current = receipt_current_before_test
+        if receipt_attr_before_test is absent:
+            hermes_cli.__dict__.pop("update_receipt", None)
+        else:
+            hermes_cli.update_receipt = receipt_attr_before_test

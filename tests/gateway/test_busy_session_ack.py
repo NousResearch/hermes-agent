@@ -188,6 +188,36 @@ class TestBusySessionAck:
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
 
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_redirects_image_followup_into_active_turn(self):
+        """A busy image continues the active request instead of aborting it."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="")
+        event.message_type = MessageType.PHOTO
+        event.media_urls = ["/tmp/follow-up.jpg"]
+        event.media_types = ["image/jpeg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
+        agent.redirect.return_value = True
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        redirected = agent.redirect.call_args.args[0]
+        assert "vision_analyze" in redirected
+        assert "[User sent an image: /tmp/follow-up.jpg]" in redirected
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "Redirected" in content
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):
@@ -446,7 +476,7 @@ class TestBusySessionOnboardingHint:
 
         # The flag is now persisted to tmp_path/config.yaml
         import yaml
-        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
 

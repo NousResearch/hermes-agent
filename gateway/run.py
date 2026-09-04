@@ -3687,6 +3687,33 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
+def _build_image_followup_text(event) -> str:
+    """Represent an image-only busy follow-up for active-turn redirect."""
+    media_urls = list(getattr(event, "media_urls", None) or [])
+    if not media_urls or not all(
+        _event_media_is_image(event, index) for index in range(len(media_urls))
+    ):
+        return ""
+
+    text = (getattr(event, "text", None) or "").strip()
+    if text.lower() in {
+        "(attachment)",
+        "[attachment]",
+        "(image)",
+        "[image]",
+        "(the user sent a message with no text content)",
+    }:
+        text = ""
+    image_note = (
+        "[The user sent image attachment(s) during this run. "
+        "Inspect each image with vision_analyze before answering. "
+        "Treat the image as continuation/context for the unresolved user request; "
+        "do not ask the user to resend it.]\n"
+        + _build_media_placeholder(event)
+    )
+    return f"{text}\n\n{image_note}".strip() if text else image_note
+
+
 def _build_document_context_note(
     display_name: str,
     agent_path: str,
@@ -11494,21 +11521,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
-        elif (
-            effective_mode == "interrupt"
-            and event.message_type == MessageType.TEXT
-            and not event.media_urls
-            and not event.media_types
-            and running_agent is not None
-            and running_agent is not _AGENT_PENDING_SENTINEL
-            and getattr(running_agent, "_supports_active_turn_redirect", False) is True
-            and hasattr(running_agent, "redirect")
-        ):
-            try:
-                redirected = bool(running_agent.redirect((event.text or "").strip()))
-            except Exception as exc:
-                logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
-                redirected = False
+        elif effective_mode == "interrupt":
+            redirect_text = ""
+            if (
+                event.message_type == MessageType.TEXT
+                and not event.media_urls
+                and not event.media_types
+            ):
+                redirect_text = (event.text or "").strip()
+            else:
+                redirect_text = _build_image_followup_text(event)
+            if (
+                redirect_text
+                and running_agent is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+                and getattr(running_agent, "_supports_active_turn_redirect", False) is True
+                and hasattr(running_agent, "redirect")
+            ):
+                try:
+                    redirected = bool(running_agent.redirect(redirect_text))
+                except Exception as exc:
+                    logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
+                    redirected = False
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -19449,14 +19483,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event, _cmd_def_inner, _quick_key, source,
                 )
 
+            effective_busy_input_mode = self._effective_busy_input_mode(source)
             if event.message_type == MessageType.PHOTO:
+                image_followup_text = _build_image_followup_text(event)
+                photo_state = self._peek_session_state(_quick_key)
+                photo_agent = photo_state.turn.agent if photo_state else None
+                can_redirect_image = (
+                    effective_busy_input_mode == "interrupt"
+                    and bool(image_followup_text)
+                    and photo_agent is not None
+                    and photo_agent is not _AGENT_PENDING_SENTINEL
+                    and getattr(photo_agent, "_supports_active_turn_redirect", False)
+                    is True
+                    and hasattr(photo_agent, "redirect")
+                )
+                if can_redirect_image:
+                    try:
+                        if photo_agent.redirect(image_followup_text):
+                            logger.debug(
+                                "PRIORITY image redirect for session %s",
+                                _quick_key,
+                            )
+                            return None
+                    except Exception as exc:
+                        logger.warning(
+                            "PRIORITY image redirect failed for session %s: %s",
+                            _quick_key,
+                            exc,
+                        )
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
-            effective_busy_input_mode = self._effective_busy_input_mode(source)
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
             )

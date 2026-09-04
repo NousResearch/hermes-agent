@@ -46,3 +46,38 @@ async def test_handle_message_does_not_priority_interrupt_photo_followup():
     assert result is None
     running_agent.interrupt.assert_not_called()
     assert runner.adapters[Platform.TELEGRAM]._pending_messages[session_key] is event
+
+
+@pytest.mark.asyncio
+async def test_handle_message_priority_redirects_photo_when_supported():
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    running_agent = MagicMock()
+    running_agent._supports_active_turn_redirect = True
+    running_agent._active_children = []
+    running_agent.redirect.return_value = True
+    runner._running_agents[session_key] = running_agent
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/photo-a.jpg"],
+        media_types=["image/jpeg"],
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    redirected = running_agent.redirect.call_args.args[0]
+    assert "vision_analyze" in redirected
+    assert "[User sent an image: /tmp/photo-a.jpg]" in redirected
+    running_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages

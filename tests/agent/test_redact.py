@@ -1081,3 +1081,30 @@ class TestMaskSecretControlStripping:
     def test_all_control_value_returns_empty_fallback(self):
         assert mask_secret("\n\x85\u200b") == ""
         assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"
+
+
+class TestLaunchctlArrowAssignments:
+    def test_sensitive_name_is_redacted_in_code_file_mode(self):
+        secret = "syntheticOpaqueCredentialValue123456"
+        text = f"    THIRD_PARTY_TOKEN => {secret}"
+
+        result = redact_sensitive_text(text, force=True, code_file=True)
+
+        assert secret not in result
+        assert "THIRD_PARTY_TOKEN =>" in result
+
+    def test_structural_launchd_output_is_preserved(self):
+        text = (
+            "service = {\n"
+            "    state = running\n"
+            "    pid = 4242\n"
+            "    PATH => /usr/local/bin:/usr/bin\n"
+            "}"
+        )
+
+        assert redact_sensitive_text(text, force=True, code_file=True) == text
+
+    def test_secret_keyword_inside_prose_name_is_preserved(self):
+        text = "    TOKENIZER => cl100k_base"
+
+        assert redact_sensitive_text(text, force=True, code_file=True) == text

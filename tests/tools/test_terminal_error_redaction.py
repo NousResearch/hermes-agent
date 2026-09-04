@@ -99,6 +99,31 @@ def test_successful_output_keeps_command_aware_redactor(monkeypatch):
     assert calls == [("ordinary output", "echo ok")]
 
 
+def test_launchctl_arrow_secret_is_absent_from_captured_terminal_result(monkeypatch):
+    secret = "syntheticOpaqueCredentialValue123456"
+
+    class Env:
+        env = {}
+
+        def execute(self, command, **kwargs):
+            return {
+                "output": f"state = running\nTHIRD_PARTY_TOKEN => {secret}\n",
+                "returncode": 0,
+            }
+
+    _patch_common(monkeypatch, Env())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            command="launchctl print gui/501/ai.hermes.gateway"
+        )
+    )
+
+    assert result["exit_code"] == 0
+    assert secret not in result["output"]
+    assert "state = running" in result["output"]
+
+
 def test_environment_creation_import_error_redacts_exception_text(monkeypatch):
     _patch_common(monkeypatch, None)
     monkeypatch.setattr(terminal_tool, "_active_environments", {})

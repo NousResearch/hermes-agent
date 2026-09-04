@@ -611,6 +611,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20,
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
+    checkpoint_post_strategy: str = "smart",
     pass_session_id: bool = False,
     requested_provider: str = None,
 ):
@@ -1733,12 +1734,24 @@ def init_agent(
     
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoint_strategy import CheckpointStrategy
     agent._checkpoint_mgr = CheckpointManager(
         enabled=checkpoints_enabled,
         max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
     )
+    # Strategy used by the post-execution checkpoint hook in tool_executor.
+    # Defaults to SMART (checkpoint after mutations or error results).
+    # Can be overridden via the checkpoint_post_strategy init param.
+    try:
+        agent._checkpoint_post_strategy = CheckpointStrategy(checkpoint_post_strategy)
+    except ValueError:
+        logger.warning(
+            "Unknown checkpoint_post_strategy %r; falling back to SMART",
+            checkpoint_post_strategy,
+        )
+        agent._checkpoint_post_strategy = CheckpointStrategy.SMART
     
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db

@@ -46,19 +46,17 @@ class CheckpointStrategy(Enum):
 _DESTRUCTIVE_TOOLS = {
     "write_file",
     "patch",
-    "terminal",   # can modify files
     "delete_file",
     "move_file",
+    # Note: "terminal" is intentionally excluded here.  Whether a terminal
+    # call is destructive depends on the command, not the tool name.  The
+    # call site uses _is_destructive_command(command) to make that decision
+    # before consulting should_checkpoint().
 }
 
 # MCP tools use the naming convention  mcp_<server_id>_<tool_name>
 # Match by prefix rather than a literal "mcp_*" entry.
 _MCP_PREFIX = "mcp_"
-
-_UNCERTAIN_TOOLS = {
-    "execute_code",
-    "terminal",
-}
 
 
 def _is_mcp_tool(tool_name: str) -> bool:

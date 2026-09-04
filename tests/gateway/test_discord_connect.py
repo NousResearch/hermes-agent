@@ -440,6 +440,43 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
+async def test_post_connect_sync_does_not_mutate_shared_http_rate_limit(monkeypatch):
+    """Command sync must not lower rate-limit waits for concurrent Discord calls."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    http = SimpleNamespace(max_ratelimit_timeout=None)
+    adapter._client = SimpleNamespace(
+        http=http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    summary = {
+        "total": 0,
+        "unchanged": 0,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+    observed_limits = []
+
+    async def sync():
+        observed_limits.append(http.max_ratelimit_timeout)
+        return summary
+
+    monkeypatch.setattr(adapter, "_get_discord_command_sync_policy", lambda: "safe")
+    monkeypatch.setattr(adapter, "_desired_command_sync_fingerprint", lambda: "fingerprint")
+    monkeypatch.setattr(adapter, "_command_sync_skip_reason", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_record_command_sync_attempt", MagicMock())
+    monkeypatch.setattr(adapter, "_record_command_sync_success", MagicMock())
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+    await adapter._run_post_connect_initialization()
+
+    assert observed_limits == [None]
+    assert http.max_ratelimit_timeout is None
+
+
+@pytest.mark.asyncio
 async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)

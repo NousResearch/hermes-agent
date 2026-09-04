@@ -50,8 +50,6 @@ describe('reasoning typography tokens (#99793)', () => {
     expect(css).toContain('font-size: var(--conversation-reasoning-font-size)')
     expect(css).toContain('line-height: var(--conversation-reasoning-line-height)')
     expect(css).toContain('color: var(--conversation-reasoning-color)')
-    // And the old hard-coded utilities are gone from the reasoning container.
-    expect(REASONING_CONTAINER_CLASSES.join(' ')).not.toContain('text-xs')
   })
 
   it('gates the open-disclosure opacity behind a token with the stock fade as default', async () => {

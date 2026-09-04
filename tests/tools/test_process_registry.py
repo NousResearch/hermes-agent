@@ -38,9 +38,12 @@ def _reset_systemd_scope_cache():
     import tools.process_registry as _pr
 
     original = _pr._SYSTEMD_SCOPE_AVAILABLE
+    original_oom_policy = _pr._SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED
     _pr._SYSTEMD_SCOPE_AVAILABLE = False
+    _pr._SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED = None
     yield
     _pr._SYSTEMD_SCOPE_AVAILABLE = original
+    _pr._SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED = original_oom_policy
 
 
 def _make_session(
@@ -2440,6 +2443,74 @@ class TestSystemdCgroupIsolation:
         clock[0] += 61
         assert pr._systemd_run_user_scope_available() is True
         assert len(probe_calls) == 2
+
+    def test_systemd_probe_retries_without_oompolicy_on_rejection(self, monkeypatch):
+        """systemd 249 rejects OOMPolicy=kill for scope units (#102486).
+
+        When the first probe fails with an OOMPolicy assignment error, the
+        probe must retry without that property and still report the scope
+        mechanism as available, recording that OOMPolicy is unsupported.
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED", None)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        probe_argv_sets = []
+
+        def fake_run(argv, **kwargs):
+            probe_argv_sets.append(list(argv))
+            if "--property" in argv and "OOMPolicy=kill" in argv:
+                return subprocess.CompletedProcess(
+                    args=argv,
+                    returncode=1,
+                    stderr=b"Unknown assignment: OOMPolicy=kill.\n",
+                )
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert pr._SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED is False
+        assert len(probe_argv_sets) == 2
+        assert "OOMPolicy=kill" in probe_argv_sets[0]
+        assert "OOMPolicy=kill" not in probe_argv_sets[1]
+
+    def test_build_systemd_scope_argv_omits_oompolicy_when_unsupported(
+        self, monkeypatch
+    ):
+        """When the probe determined OOMPolicy is unsupported (systemd 249),
+        the scope argv must omit it rather than fail every dispatch."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED", False)
+
+        argv = pr._build_systemd_scope_argv(
+            ["/bin/bash", "-lc", "true"],
+            unit_suffix="test",
+        )
+
+        assert "OOMPolicy=kill" not in argv
+        assert "MemoryAccounting=yes" in argv
+        assert "/bin/bash" in argv
+
+    def test_build_systemd_scope_argv_includes_oompolicy_by_default(
+        self, monkeypatch
+    ):
+        """On hosts that support it (default), OOMPolicy=kill stays present."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED", None)
+
+        argv = pr._build_systemd_scope_argv(
+            ["/bin/bash", "-lc", "true"],
+            unit_suffix="test",
+        )
+
+        assert "OOMPolicy=kill" in argv
 
     def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
         import tools.process_registry as pr

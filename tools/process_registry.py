@@ -114,6 +114,12 @@ _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
 _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
+# systemd >= 250 supports OOMPolicy=kill for transient scope units.
+# systemd 249 (Ubuntu 22.04) rejects it as an unknown assignment (#102486).
+# The probe retries without OOMPolicy when the first attempt fails with
+# that error, and this flag records the outcome so _build_systemd_scope_argv
+# can omit the unsupported property.
+_SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED: Optional[bool] = None
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -192,7 +198,7 @@ def _systemd_run_user_scope_available() -> bool:
     (``systemd-run --user --scope --unit=… -- /bin/true``) and remember the
     outcome.
     """
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED
     cached = _SYSTEMD_SCOPE_AVAILABLE
     now = time.monotonic()
     if cached is True:
@@ -228,6 +234,7 @@ def _systemd_run_user_scope_available() -> bool:
                     # Probe: create a transient scope that immediately exits.
                     # A unique unit avoids collisions; timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                    _systemd_probe_oom_policy = True
                     result = subprocess.run(
                         [
                             binary, "--user", "--scope", "--quiet",
@@ -242,8 +249,39 @@ def _systemd_run_user_scope_available() -> bool:
                         capture_output=True,
                         timeout=3,
                     )
+                    if result.returncode != 0:
+                        stderr_text = (
+                            (result.stderr or b"").decode("utf-8", "replace").strip()
+                        )
+                        # systemd 249 rejects OOMPolicy=kill for scope
+                        # units (#102486).  Retry without it so the probe
+                        # succeeds on hosts where systemd-run --scope is
+                        # otherwise fully functional.
+                        if "OOMPolicy" in stderr_text:
+                            logger.debug(
+                                "systemd-run --user --scope probe rejected "
+                                "OOMPolicy=kill; retrying without it: %s",
+                                stderr_text,
+                            )
+                            result = subprocess.run(
+                                [
+                                    binary, "--user", "--scope", "--quiet",
+                                    "--unit", probe_unit,
+                                    "--collect",
+                                    "--property", "MemoryAccounting=yes",
+                                    "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+                                    "--",
+                                    "/bin/true",
+                                ],
+                                capture_output=True,
+                                timeout=3,
+                            )
+                            if result.returncode == 0:
+                                _systemd_probe_oom_policy = False
                     available = result.returncode == 0
-                    if not available:
+                    if available:
+                        _SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED = _systemd_probe_oom_policy
+                    elif not available:
                         logger.debug(
                             "systemd-run --user --scope probe failed (rc=%s): %s",
                             result.returncode,
@@ -304,7 +342,7 @@ def _build_systemd_scope_argv(
         return shell_argv
     unit_name = f"hermes-worker-{unit_suffix}"
     memory_max = _worker_memory_max_bytes()
-    return [
+    argv = [
         binary,
         "--user",
         "--scope",
@@ -316,11 +354,12 @@ def _build_systemd_scope_argv(
         "MemoryAccounting=yes",
         "--property",
         f"MemoryMax={memory_max}",
-        "--property",
-        "OOMPolicy=kill",
-        "--",
-        *shell_argv,
     ]
+    if _SYSTEMD_SCOPE_OOM_POLICY_SUPPORTED is not False:
+        argv.extend(["--property", "OOMPolicy=kill"])
+    argv.append("--")
+    argv.extend(shell_argv)
+    return argv
 
 
 def restart_safe_gateway_child_argv(

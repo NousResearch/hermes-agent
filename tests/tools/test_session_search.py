@@ -82,6 +82,8 @@ class TestSchema:
         assert "window" in params
         # Shared
         assert "role_filter" in params
+        assert "profile" in params
+        assert "all" in params["profile"]["description"]
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
 
@@ -569,6 +571,160 @@ class TestCrossProfileRead:
             assert result["success"] is True, kwargs
             assert result["mode"] == "read"
             assert result["session_id"] == "s_other"
+
+
+# =========================================================================
+# Discover / browse across every profile (profile=all)
+# =========================================================================
+
+class TestAllProfilesDiscover:
+    def _homes(self, tmp_path):
+        default_home = tmp_path / "default_home"
+        work_home = tmp_path / "work_home"
+        default_home.mkdir()
+        work_home.mkdir()
+        default_db = SessionDB(default_home / "state.db")
+        work_db = SessionDB(work_home / "state.db")
+        default_db.create_session("s_default", source="cli")
+        default_db.append_message(
+            "s_default", role="user", content="worked on the venom project in default"
+        )
+        default_db.append_message(
+            "s_default", role="assistant", content="venom milestone shipped here"
+        )
+        default_db._conn.commit()
+        work_db.create_session("s_work", source="cli")
+        work_db.append_message(
+            "s_work", role="user", content="worked on the venom project in work"
+        )
+        work_db.append_message(
+            "s_work", role="assistant", content="venom follow-up lives in work"
+        )
+        work_db._conn.commit()
+        return default_home, work_home, default_db, work_db
+
+    def _patch_homes(self, monkeypatch, default_home, work_home):
+        from collections import namedtuple
+
+        from hermes_cli import profiles as profiles_mod
+
+        Info = namedtuple("Info", "name path")
+        homes = {"default": default_home, "work": work_home}
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: homes[n])
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: [Info("default", default_home), Info("work", work_home)],
+        )
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+        monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n in homes)
+
+    def test_discover_merges_and_tags_each_profile(self, db, tmp_path, monkeypatch):
+        default_home, work_home, default_db, work_db = self._homes(tmp_path)
+        self._patch_homes(monkeypatch, default_home, work_home)
+
+        result = json.loads(
+            session_search(query="venom", profile="all", db=db, limit=10)
+        )
+        default_db.close()
+        work_db.close()
+
+        assert result["success"] is True
+        assert result["mode"] == "discover"
+        assert result["profiles_searched"] == 2
+        by_session = {row["session_id"]: row for row in result["results"]}
+        assert "s_default" in by_session
+        assert "s_work" in by_session
+        assert by_session["s_default"]["profile"] == "default"
+        assert by_session["s_work"]["profile"] == "work"
+        assert by_session["s_default"]["link"] == "@session:default/s_default"
+        assert by_session["s_work"]["link"] == "@session:work/s_work"
+
+    def test_star_sentinel_matches_all(self, db, tmp_path, monkeypatch):
+        default_home, work_home, default_db, work_db = self._homes(tmp_path)
+        self._patch_homes(monkeypatch, default_home, work_home)
+
+        result = json.loads(session_search(query="venom", profile="*", db=db, limit=10))
+        default_db.close()
+        work_db.close()
+
+        assert result["success"] is True
+        assert {row["session_id"] for row in result["results"]} == {"s_default", "s_work"}
+
+    def test_all_does_not_open_a_profile_named_all(self, db, tmp_path, monkeypatch):
+        default_home, work_home, default_db, work_db = self._homes(tmp_path)
+        self._patch_homes(monkeypatch, default_home, work_home)
+
+        def _fail_if_all(name):
+            if name == "all":
+                raise AssertionError("profile=all must not resolve a named profile")
+            return {"default": default_home, "work": work_home}[name]
+
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", _fail_if_all)
+
+        result = json.loads(session_search(query="venom", profile="all", db=db, limit=10))
+        default_db.close()
+        work_db.close()
+        assert result["success"] is True
+        assert result["count"] >= 2
+
+    def test_browse_merges_across_profiles(self, db, tmp_path, monkeypatch):
+        default_home, work_home, default_db, work_db = self._homes(tmp_path)
+        self._patch_homes(monkeypatch, default_home, work_home)
+
+        result = json.loads(session_search(profile="all", db=db, limit=10))
+        default_db.close()
+        work_db.close()
+
+        assert result["success"] is True
+        assert result["mode"] == "browse"
+        assert result["profiles_searched"] == 2
+        by_session = {row["session_id"]: row for row in result["results"]}
+        assert by_session["s_default"]["profile"] == "default"
+        assert by_session["s_work"]["profile"] == "work"
+
+    def test_newest_sort_is_global_across_profiles(self, db, tmp_path, monkeypatch):
+        default_home, work_home, default_db, work_db = self._homes(tmp_path)
+        now = int(time.time())
+        default_db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 10_000, "s_default"),
+        )
+        work_db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 100, "s_work"),
+        )
+        default_db._conn.commit()
+        work_db._conn.commit()
+        self._patch_homes(monkeypatch, default_home, work_home)
+
+        result = json.loads(
+            session_search(query="venom", profile="all", sort="newest", db=db, limit=10)
+        )
+        default_db.close()
+        work_db.close()
+
+        ids = [row["session_id"] for row in result["results"]]
+        assert ids[0] == "s_work"
+        assert "s_default" in ids
+
+    def test_single_named_profile_is_unchanged(self, db, tmp_path, monkeypatch):
+        default_home, work_home, default_db, work_db = self._homes(tmp_path)
+        self._patch_homes(monkeypatch, default_home, work_home)
+
+        result = json.loads(
+            session_search(query="venom", profile="work", db=db, limit=10)
+        )
+        default_db.close()
+        work_db.close()
+
+        assert result["success"] is True
+        ids = {row["session_id"] for row in result["results"]}
+        assert "s_work" in ids
+        assert "s_default" not in ids
 
 
 # =========================================================================

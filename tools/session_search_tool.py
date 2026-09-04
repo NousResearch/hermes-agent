@@ -388,6 +388,63 @@ def _session_link(session_id: str, profile: str = None) -> str:
     return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
 
 
+# Sentinel values for ``profile`` that mean "search every profile", not a
+# named profile. Checked before ``_resolve_profile_db`` so we never try to
+# open a profile literally named ``all``.
+_ALL_PROFILE_SENTINELS = frozenset({"all", "*"})
+
+
+def _is_all_profiles(profile: Optional[str]) -> bool:
+    return bool(profile) and str(profile).strip().lower() in _ALL_PROFILE_SENTINELS
+
+
+def _iter_profile_homes():
+    """Yield ``(name, home)`` for the default profile plus every named profile.
+
+    Deduplicates by ``state.db`` path so ``list_profiles()`` (which already
+    includes default) does not visit the same database twice.
+    """
+    from pathlib import Path
+
+    try:
+        from hermes_cli import profiles as profiles_mod
+    except Exception:
+        return []
+
+    targets = [("default", profiles_mod.get_profile_dir("default"))]
+    try:
+        targets += [(info.name, info.path) for info in profiles_mod.list_profiles()]
+    except Exception:
+        logging.debug("list_profiles failed during profile enumeration", exc_info=True)
+
+    seen: set = set()
+    homes = []
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        key = str(db_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        homes.append((name, Path(home)))
+    return homes
+
+
+def _open_profile_state_db(home):
+    """Open ``state.db`` under *home* read-only, or None if missing/unreadable."""
+    from pathlib import Path
+
+    from hermes_state import SessionDB
+
+    db_path = Path(home) / "state.db"
+    if not db_path.exists():
+        return None
+    try:
+        return SessionDB(db_path=db_path, read_only=True)
+    except Exception:
+        logging.debug("failed to open profile state.db at %s", db_path, exc_info=True)
+        return None
+
+
 def _locate_session_db(session_id: str):
     """Scan every profile's ``state.db`` (read-only) for a session id.
 
@@ -397,30 +454,9 @@ def _locate_session_db(session_id: str):
     reads where the model dropped the owning profile from the link and passed a
     bare id — we find it wherever it actually lives instead of failing.
     """
-    from pathlib import Path
-
-    try:
-        from hermes_cli import profiles as profiles_mod
-        from hermes_state import SessionDB
-    except Exception:
-        return None, None
-
-    targets = [("default", profiles_mod.get_profile_dir("default"))]
-    try:
-        targets += [(info.name, info.path) for info in profiles_mod.list_profiles()]
-    except Exception:
-        logging.debug("list_profiles failed during session locate", exc_info=True)
-
-    seen: set = set()
-    for name, home in targets:
-        db_path = Path(home) / "state.db"
-        key = str(db_path)
-        if key in seen or not db_path.exists():
-            continue
-        seen.add(key)
-        try:
-            pdb = SessionDB(db_path=db_path, read_only=True)
-        except Exception:
+    for name, home in _iter_profile_homes():
+        pdb = _open_profile_state_db(home)
+        if pdb is None:
             continue
         try:
             if pdb.get_session(session_id):
@@ -764,6 +800,67 @@ def _title_match_result(
     return entry
 
 
+def _build_discover_entry(db, lineage_root, match_info, result_detail: str):
+    """Hydrate one discover hit from the owning database. Returns None on view failure."""
+    hit_sid = match_info.get("session_id") or lineage_root
+    msg_id = match_info.get("id")
+    try:
+        view = db.get_anchored_view(hit_sid, msg_id, window=5, bookend=3)
+    except Exception as e:
+        logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
+        return None
+
+    try:
+        session_meta = db.get_session(lineage_root) or {}
+    except Exception:
+        session_meta = {}
+
+    window_messages = view.get("window") or []
+    if result_detail == "compact":
+        window_messages = [m for m in window_messages if m.get("id") == msg_id]
+
+    entry = {
+        "session_id": hit_sid,
+        "when": _format_timestamp(
+            session_meta.get("started_at") or match_info.get("session_started")
+        ),
+        "source": session_meta.get("source") or match_info.get("source", "unknown"),
+        "model": session_meta.get("model") or match_info.get("model") or "unknown",
+        "title": session_meta.get("title") or None,
+        "matched_role": match_info.get("role"),
+        "match_message_id": msg_id,
+        "snippet": match_info.get("snippet") or "",
+        "bookend_start": (
+            [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_start") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ]
+            if result_detail == "full"
+            else []
+        ),
+        "messages": [
+            _shape_message(m, anchor_id=msg_id, max_content_len=4000)
+            for m in window_messages
+        ],
+        "bookend_end": (
+            [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_end") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ]
+            if result_detail == "full"
+            else []
+        ),
+        "messages_before": view.get("messages_before", 0),
+        "messages_after": view.get("messages_after", 0),
+        "detail": result_detail,
+    }
+    if lineage_root and lineage_root != hit_sid:
+        entry["parent_session_id"] = lineage_root
+    return entry
+
+
 def _discover(
     db,
     query: str,
@@ -874,64 +971,10 @@ def _discover(
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
             continue
-        hit_sid = match_info.get("session_id") or lineage_root
-        msg_id = match_info.get("id")
-        try:
-            view = db.get_anchored_view(hit_sid, msg_id, window=5, bookend=3)
-        except Exception as e:
-            logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
-            continue
-
-        try:
-            session_meta = db.get_session(lineage_root) or {}
-        except Exception:
-            session_meta = {}
-
         result_detail = "full" if detail == "full" or not results else "compact"
-        window_messages = view.get("window") or []
-        if result_detail == "compact":
-            window_messages = [m for m in window_messages if m.get("id") == msg_id]
-
-        entry = {
-            "session_id": hit_sid,
-            "when": _format_timestamp(
-                session_meta.get("started_at") or match_info.get("session_started")
-            ),
-            "source": session_meta.get("source") or match_info.get("source", "unknown"),
-            "model": session_meta.get("model") or match_info.get("model") or "unknown",
-            "title": session_meta.get("title") or None,
-            "matched_role": match_info.get("role"),
-            "match_message_id": msg_id,
-            "snippet": match_info.get("snippet") or "",
-            "bookend_start": (
-                [
-                    _shape_message(m, max_content_len=1200)
-                    for m in (view.get("bookend_start") or [])
-                    if not _is_compaction_summary(m.get("content", ""))
-                ]
-                if result_detail == "full"
-                else []
-            ),
-            "messages": [
-                _shape_message(m, anchor_id=msg_id, max_content_len=4000)
-                for m in window_messages
-            ],
-            "bookend_end": (
-                [
-                    _shape_message(m, max_content_len=1200)
-                    for m in (view.get("bookend_end") or [])
-                    if not _is_compaction_summary(m.get("content", ""))
-                ]
-                if result_detail == "full"
-                else []
-            ),
-            "messages_before": view.get("messages_before", 0),
-            "messages_after": view.get("messages_after", 0),
-            "detail": result_detail,
-        }
-        if lineage_root and lineage_root != hit_sid:
-            entry["parent_session_id"] = lineage_root
-        results.append(entry)
+        entry = _build_discover_entry(db, lineage_root, match_info, result_detail)
+        if entry is not None:
+            results.append(entry)
 
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
@@ -954,6 +997,213 @@ def _discover(
     }
     _annotate_rebuild_status(db, _final_payload)
     return json.dumps(_final_payload, ensure_ascii=False)
+
+
+def _tag_discover_entry(entry: Dict[str, Any], profile_name: str) -> Dict[str, Any]:
+    """Attach source-profile metadata used by the all-profiles discover path."""
+    entry["profile"] = profile_name
+    entry["link"] = _session_link(entry["session_id"], profile_name)
+    return entry
+
+
+def _discover_all_profiles(
+    query: str,
+    role_filter: Optional[List[str]],
+    limit: int,
+    sort: Optional[str],
+    detail: str,
+) -> str:
+    """Fan out FTS5 across every profile, merge, dedup, and tag each hit."""
+    role_list = role_filter if role_filter else ["user", "assistant"]
+    opened: Dict[str, Any] = {}
+    all_raw: List[Dict[str, Any]] = []
+    title_results: List[Dict[str, Any]] = []
+
+    try:
+        for name, home in _iter_profile_homes():
+            if name in opened:
+                continue
+            pdb = _open_profile_state_db(home)
+            if pdb is None:
+                continue
+            opened[name] = pdb
+            try:
+                title = _title_match_result(pdb, query, None)
+                if title:
+                    title_results.append(_tag_discover_entry(title, name))
+                raw = pdb.search_messages(
+                    query=query,
+                    role_filter=role_list,
+                    exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                    limit=_DISCOVER_SCAN_LIMIT,
+                    offset=0,
+                    sort=sort,
+                    fields=_DISCOVER_SEARCH_FIELDS,
+                )
+            except Exception as e:
+                logging.error("FTS5 search failed for profile %s: %s", name, e, exc_info=True)
+                continue
+            for row in raw:
+                tagged = dict(row)
+                tagged["_profile"] = name
+                all_raw.append(tagged)
+
+        # Re-apply temporal sort on the merged set so newest/oldest is
+        # global, not per-profile concatenation order.
+        if sort in ("newest", "oldest"):
+            all_raw.sort(
+                key=lambda r: r.get("session_started") or 0,
+                reverse=(sort == "newest"),
+            )
+        all_raw = _order_for_recall(all_raw)
+        profiles_searched = len(opened)
+
+        if not all_raw and not title_results:
+            return json.dumps({
+                "success": True,
+                "mode": "discover",
+                "query": query,
+                "detail": detail,
+                "results": [],
+                "count": 0,
+                "profiles_searched": profiles_searched,
+                "message": (
+                    "No matching sessions found across profiles. FTS5 ANDs all "
+                    "terms by default — broaden with OR (`alpha OR beta`), "
+                    "exact-match with quoted phrases, exclude with NOT, or "
+                    "prefix-match with `deploy*`."
+                ),
+            }, ensure_ascii=False)
+
+        seen_sessions: Dict[str, Dict[str, Any]] = {}
+        results: List[Dict[str, Any]] = []
+
+        for title in title_results:
+            lineage = title.pop("_lineage_root", None) or title.get("session_id")
+            if lineage and lineage not in seen_sessions:
+                seen_sessions[lineage] = {"_title_only": True, "_profile": title.get("profile")}
+                results.append(title)
+
+        for row in all_raw:
+            if len(seen_sessions) >= limit:
+                break
+            raw_sid = row["session_id"]
+            profile_name = row.get("_profile") or "default"
+            pdb = opened.get(profile_name)
+            if pdb is None:
+                continue
+            resolved_sid, _ = _resolve_to_parent(pdb, raw_sid)
+            if resolved_sid not in seen_sessions:
+                tagged = dict(row)
+                tagged["_lineage_root"] = resolved_sid
+                seen_sessions[resolved_sid] = tagged
+
+        for lineage_root, match_info in seen_sessions.items():
+            if match_info.get("_title_only"):
+                continue
+            profile_name = match_info.get("_profile") or "default"
+            pdb = opened.get(profile_name)
+            if pdb is None:
+                continue
+            result_detail = "full" if detail == "full" or not results else "compact"
+            entry = _build_discover_entry(pdb, lineage_root, match_info, result_detail)
+            if entry is None:
+                continue
+            results.append(_tag_discover_entry(entry, profile_name))
+
+        return json.dumps({
+            "success": True,
+            "mode": "discover",
+            "query": query,
+            "detail": detail,
+            "results": results,
+            "count": len(results),
+            "sessions_searched": len(seen_sessions),
+            "profiles_searched": profiles_searched,
+            "link_hint": (
+                "When referring the user to a session, write its `link` value "
+                "verbatim inline mid-sentence (it renders as a titled link) — never "
+                "as markdown, in backticks, on its own line, or next to the "
+                "title/id/date. To read more around a compact result, scroll: "
+                "session_search(session_id=..., around_message_id=match_message_id)."
+            ),
+        }, ensure_ascii=False)
+    finally:
+        for pdb in opened.values():
+            try:
+                pdb.close()
+            except Exception:
+                logging.debug("Failed to close all-profiles SessionDB", exc_info=True)
+
+
+def _browse_all_profiles(limit: int, current_session_id: str = None) -> str:
+    """Merge recent sessions from every profile, tagged with source profile."""
+    merged: List[Dict[str, Any]] = []
+    opened: Dict[str, Any] = {}
+    try:
+        for name, home in _iter_profile_homes():
+            if name in opened:
+                continue
+            pdb = _open_profile_state_db(home)
+            if pdb is None:
+                continue
+            opened[name] = pdb
+            try:
+                sessions = pdb.list_sessions_rich(
+                    limit=limit + 15,
+                    exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                    order_by_last_active=True,
+                )
+            except Exception:
+                logging.debug("list_sessions_rich failed for profile %s", name, exc_info=True)
+                continue
+            for session in sessions:
+                row = dict(session)
+                row["_profile"] = name
+                merged.append(row)
+    finally:
+        for pdb in opened.values():
+            try:
+                pdb.close()
+            except Exception:
+                logging.debug("Failed to close all-profiles browse SessionDB", exc_info=True)
+
+    def _activity_ts(row: Dict[str, Any]):
+        return row.get("last_active") or row.get("started_at") or 0
+
+    merged.sort(key=_activity_ts, reverse=True)
+
+    results = []
+    for session in merged:
+        sid = session.get("id", "")
+        if current_session_id and sid == current_session_id:
+            continue
+        profile_name = session.get("_profile") or "default"
+        results.append({
+            "session_id": sid,
+            "link": _session_link(sid, profile_name),
+            "profile": profile_name,
+            "title": session.get("title") or None,
+            "source": session.get("source", ""),
+            "started_at": session.get("started_at", ""),
+            "last_active": session.get("last_active", ""),
+            "message_count": session.get("message_count", 0),
+            "preview": session.get("preview", ""),
+        })
+        if len(results) >= limit:
+            break
+
+    return json.dumps({
+        "success": True,
+        "mode": "browse",
+        "results": results,
+        "count": len(results),
+        "profiles_searched": len(opened),
+        "message": (
+            f"Showing {len(results)} most recent sessions across profiles. "
+            "Pass a query= to search, or session_id+around_message_id to scroll."
+        ),
+    }, ensure_ascii=False)
 
 
 def _session_search_impl(
@@ -998,10 +1248,15 @@ def _session_search_impl(
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
 
+    # Cross-profile fan-out: ``profile=all`` (or ``*``) searches every
+    # profile's DB. Must run before ``_resolve_profile_db`` so we never try
+    # to open a profile literally named ``all``.
+    all_profiles = _is_all_profiles(profile)
+
     # Cross-profile read: swap in the named profile's DB (read-only) for every
     # shape below. The current-session-lineage guards no longer apply across
     # profiles, but they key off ids that won't collide, so they stay inert.
-    if profile is not None and str(profile).strip():
+    if (not all_profiles) and profile is not None and str(profile).strip():
         try:
             profile_db = _resolve_profile_db(profile)
         except Exception as e:
@@ -1050,6 +1305,31 @@ def _session_search_impl(
         except (TypeError, ValueError):
             limit = 3
     limit = max(1, min(limit, 10))
+
+    # Browse / discover across every profile.
+    if all_profiles:
+        if not query or not isinstance(query, str) or not query.strip():
+            return _browse_all_profiles(limit, current_session_id)
+        role_list: Optional[List[str]] = None
+        if isinstance(role_filter, str) and role_filter.strip():
+            role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
+        sort_norm: Optional[str] = None
+        if isinstance(sort, str):
+            candidate = sort.strip().lower()
+            if candidate in ("newest", "oldest"):
+                sort_norm = candidate
+        detail_norm = (
+            "full"
+            if isinstance(detail, str) and detail.strip().lower() == "full"
+            else "adaptive"
+        )
+        return _discover_all_profiles(
+            query=query.strip(),
+            role_filter=role_list,
+            limit=limit,
+            sort=sort_norm,
+            detail=detail_norm,
+        )
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
@@ -1246,7 +1526,9 @@ SESSION_SEARCH_SCHEMA = {
                     "Optional. Read sessions from another Hermes profile's database "
                     "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
                     "pass the profile segment here with session_id as the id segment. "
-                    "Omit to use the current profile."
+                    "Pass 'all' to search across every profile's sessions and merge "
+                    "results tagged with their source profile. Omit to use the current "
+                    "profile."
                 ),
             },
         },

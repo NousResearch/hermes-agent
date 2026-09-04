@@ -255,6 +255,10 @@ export async function cutSelection(
 }
 
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+  if (env.TMUX) {
+    return true
+  }
+
   if (env.WT_SESSION) {
     return true
   }
@@ -279,6 +283,7 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
 }
 
 type ReturnDecisionKey = {
+  alt?: boolean
   ctrl: boolean
   meta: boolean
   return?: boolean
@@ -286,13 +291,20 @@ type ReturnDecisionKey = {
   super?: boolean
 }
 
+/** Extended-key protocols report Ctrl+J as a modified printable key instead
+ * of the legacy LF byte. Keep the documented Ctrl+J newline binding without
+ * consuming Ctrl+Shift+J or other modified chords. */
+export function isCtrlJNewline(input: string, key: ReturnDecisionKey): boolean {
+  return input.toLowerCase() === 'j' && key.ctrl && !key.alt && !key.meta && !key.shift && !key.super
+}
+
 /**
  * Decide whether a Return keypress should insert a newline instead of
  * submitting. An explicit modified Enter (Shift/Ctrl, or the platform action
  * modifier) always inserts a newline. Beyond that, terminals that can't send a
  * distinct Shift+Enter collapse a modified Enter / Ctrl+J down to a bare LF —
- * shouldPreserveCtrlJNewline() detects that via env (SSH, Windows Terminal,
- * Ghostty, WSL), and macOS terminals (Terminal.app, iTerm2 defaults) do it too
+ * shouldPreserveCtrlJNewline() detects that via env (tmux, SSH, Windows
+ * Terminal, Ghostty, WSL), and macOS terminals (Terminal.app, iTerm2 defaults) do it too
  * but aren't env-detectable, so a bare LF is treated as a newline there as well.
  * Plain Enter (CR) stays submit everywhere.
  */
@@ -1403,6 +1415,13 @@ export function TextInput({
 
           return
         }
+
+        return
+      }
+
+      if (isCtrlJNewline(inp, k)) {
+        flushKeyBurst()
+        pastePlainText('\n')
 
         return
       }

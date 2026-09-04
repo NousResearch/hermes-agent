@@ -309,6 +309,107 @@ def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 
 
+# Env refs that survived interpolation, and what to do about them.
+#
+# `_interpolate_env_vars` leaves the literal `${VAR}` in place when VAR is unset, and that placeholder
+# used to be handed to the MCP server as if it were a value. Observed consequence: a turn ran in a
+# process without JIRA_URL, `${JIRA_URL}` reached mcp-atlassian verbatim, and it died with
+# `requests.exceptions.MissingSchema: Invalid URL '${JIRA_URL}/rest/api/2/search...'` -- a message that
+# names `requests`, not the missing variable, from inside a subprocess. A second, still-latent instance
+# of the same shape: a config passing `${JIRA_PERSONAL_TOKEN}` when that variable is unset is harmless
+# only because mcp-atlassian ignores personal_token on Atlassian Cloud; on Server/DC the same value
+# would be used to authenticate.
+#
+# So: never pass a placeholder on. Three severities, because they are genuinely different:
+#
+#   SOME entries of env / headers  -> drop those entries and warn. Optional credentials live here, and a
+#                                     server that ignores an absent token keeps working with the rest of
+#                                     its configuration intact.
+#   ALL entries of env / headers   -> do not register. A mapping that was entirely placeholders leaves
+#                                     the server with no configuration at all.
+#   anywhere else unresolved       -> do not register and warn. `url`, `command` and `args` have no
+#                                     meaning half-filled, and registering is what turns a missing
+#                                     variable into an error raised by a subprocess.
+#
+# Variable NAMES are logged, never values.
+_PLACEHOLDER_MAPPINGS = ("env", "headers")
+
+
+def _unresolved_env_refs(value) -> List[str]:
+    """Env-var names still in ``${...}`` form after interpolation, deduped, in encounter order."""
+    found: List[str] = []
+
+    def walk(node):
+        if isinstance(node, str):
+            for m in _ENV_VAR_PATTERN.finditer(node):
+                body = m.group(1).strip()
+                # Context vars (${userHome} and friends) always resolve, so anything left is an env ref.
+                if body in _CONTEXT_VAR_RESOLVERS:
+                    continue
+                name = _env_ref_name(body)
+                if name and name not in found:
+                    found.append(name)
+        elif isinstance(node, dict):
+            for item in node.values():
+                walk(item)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(value)
+    return found
+
+
+def _strip_unresolved_placeholders(server: str, cfg: dict) -> Tuple[Optional[dict], List[str]]:
+    """Remove unset ``${VAR}`` placeholders from one server config.
+
+    Returns ``(cfg, dropped_names)``, or ``(None, offending_names)`` when the server must not be
+    registered at all.
+    """
+    cleaned = dict(cfg)
+    dropped: List[str] = []
+    for mapping_key in _PLACEHOLDER_MAPPINGS:
+        mapping = cleaned.get(mapping_key)
+        if not isinstance(mapping, dict):
+            continue
+        kept = {}
+        for key, val in mapping.items():
+            refs = _unresolved_env_refs(val)
+            if refs:
+                dropped.extend(r for r in refs if r not in dropped)
+                continue
+            kept[key] = val
+        if kept != mapping:
+            if mapping and not kept:
+                offending = _unresolved_env_refs(mapping)
+                logger.warning(
+                    "MCP server '%s' NOT registered: every entry of its `%s` was an unset placeholder "
+                    "(%s), so it would start with no configuration at all. Set the variables where this "
+                    "process can see them.",
+                    server, mapping_key, ", ".join(offending),
+                )
+                return None, offending
+            cleaned[mapping_key] = kept
+
+    rest = {k: v for k, v in cleaned.items() if k not in _PLACEHOLDER_MAPPINGS}
+    fatal = _unresolved_env_refs(rest)
+    if fatal:
+        logger.warning(
+            "MCP server '%s' NOT registered: %s unset in this process, and the placeholder would be "
+            "sent to the server verbatim. Set the variable where this process can see it, or remove "
+            "the reference from the config.",
+            server, ", ".join(fatal),
+        )
+        return None, fatal
+    if dropped:
+        logger.warning(
+            "MCP server '%s': dropped %s from its env/headers -- unset here, and passing the literal "
+            "placeholder is worse than passing nothing.",
+            server, ", ".join(dropped),
+        )
+    return cleaned, dropped
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
     try:
@@ -326,6 +427,9 @@ def _load_mcp_config() -> Dict[str, dict]:
         for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
+                interpolated, _ = _strip_unresolved_placeholders(name, interpolated)
+                if interpolated is None:
+                    continue
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
         _portable_mcp_servers(safe_servers)

@@ -1110,7 +1110,10 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
 
     Deliberately conservative — returns None for anything unusual:
     a version-pinned spec (``pkg@1.2.3``), extra npx flags, a package whose
-    manifest declares no single obvious bin, or any unreadable cache entry.
+    manifest declares no single obvious bin, any unreadable cache entry, or
+    more than one cache generation containing the package (directory
+    enumeration order is not npm's resolution order, so which generation is
+    current cannot be determined without it).
 
     Returns ``(binary_path, remaining_args)`` or None.
     """
@@ -1150,6 +1153,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     except OSError:
         return None
 
+    matching_entries = []
     for entry in entries:
         manifest = os.path.join(npx_root, entry, "package.json")
         try:
@@ -1157,29 +1161,37 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
                 deps = (json.load(fh) or {}).get("dependencies") or {}
         except (OSError, ValueError, TypeError):
             continue
-        if spec not in deps:
-            continue
+        if spec in deps:
+            matching_entries.append(entry)
 
-        pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
-        try:
-            with open(pkg_json, "r", encoding="utf-8") as fh:
-                bin_field = (json.load(fh) or {}).get("bin")
-        except (OSError, ValueError, TypeError):
-            continue
+    # Directory enumeration order is not npm's resolution order. With one
+    # matching generation there is nothing to disambiguate; with more than
+    # one, which version/tag npm would currently resolve to is unknowable
+    # from the filesystem alone, so let npx decide instead of guessing.
+    if len(matching_entries) != 1:
+        return None
+    entry = matching_entries[0]
 
-        if isinstance(bin_field, str):
-            names = [os.path.basename(spec)]
-        elif isinstance(bin_field, dict) and len(bin_field) == 1:
-            names = list(bin_field.keys())
-        else:
-            # Zero or several bins: which one npx would pick is not ours to
-            # guess. Let npx decide.
-            continue
+    pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
+    try:
+        with open(pkg_json, "r", encoding="utf-8") as fh:
+            bin_field = (json.load(fh) or {}).get("bin")
+    except (OSError, ValueError, TypeError):
+        return None
 
-        bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
-        for candidate in _npx_bin_candidates(bin_dir, names[0]):
-            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                return candidate, rest[1:]
+    if isinstance(bin_field, str):
+        names = [os.path.basename(spec)]
+    elif isinstance(bin_field, dict) and len(bin_field) == 1:
+        names = list(bin_field.keys())
+    else:
+        # Zero or several bins: which one npx would pick is not ours to
+        # guess. Let npx decide.
+        return None
+
+    bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
+    for candidate in _npx_bin_candidates(bin_dir, names[0]):
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate, rest[1:]
 
     return None
 

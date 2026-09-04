@@ -93,6 +93,46 @@ def test_ambiguous_bin_map_is_left_to_npx(tmp_path):
     assert _npx_cached_bin(["-y", "multi"]) is None
 
 
+@pytest.mark.parametrize(
+    "entry_order",
+    [
+        pytest.param(("old-cache", "new-cache"), id="old-first"),
+        pytest.param(("new-cache", "old-cache"), id="new-first"),
+    ],
+)
+def test_unpinned_package_with_multiple_cached_versions_falls_back_to_npx(
+    tmp_path, monkeypatch, entry_order
+):
+    _cache(
+        tmp_path,
+        package="mcp-linear",
+        deps={"mcp-linear": "1.0.0"},
+        bin_field={"mcp-linear": "dist/index.js"},
+        entry="old-cache",
+    )
+    _cache(
+        tmp_path,
+        package="mcp-linear",
+        deps={"mcp-linear": "2.0.0"},
+        bin_field={"mcp-linear": "dist/index.js"},
+        entry="new-cache",
+    )
+    npx_root = os.fspath(tmp_path / ".npm" / "_npx")
+    real_listdir = os.listdir
+
+    def ordered_listdir(path):
+        if os.fspath(path) == npx_root:
+            return list(entry_order)
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", ordered_listdir)
+
+    # Which cache generation npm would actually resolve is not decidable
+    # from directory order alone, so both enumeration orders must defer to
+    # npx rather than picking whichever entry happens to sort first.
+    assert _npx_cached_bin(["-y", "mcp-linear"]) is None
+
+
 def test_missing_or_non_executable_binary_falls_back(tmp_path):
     _cache(
         tmp_path,

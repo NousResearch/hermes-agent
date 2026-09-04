@@ -5851,12 +5851,15 @@ _NO_BACKEND_MESSAGES = {
         "WSL detected but systemd is not available.",
         "Run the gateway in foreground mode instead:", *_WSL_FOREGROUND_HINT, "",
         "To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell."),
-    ("start", "container"): (0,
+    ("start", "container"): (1,
         "Service start is not applicable inside a Docker container.",
         "The gateway runs as the container's main process.", "",
         "  docker start <container>     # start a stopped container",
         "  docker restart <container>   # restart a running container", "",
-        "Or run the gateway directly: hermes gateway run"),
+        "Or run the gateway directly: hermes gateway run", "",
+        # #102915: machine-readable terminal outcome — an unstarted gateway
+        # must be distinguishable from a started one by programmatic callers.
+        "gateway_start: not_applicable"),
     ("start", "unsupported"): (1, "Not supported on this platform."),
 }
 

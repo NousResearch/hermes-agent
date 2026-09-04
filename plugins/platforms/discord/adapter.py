@@ -7346,6 +7346,71 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_name = thread_name[:77] + "..."
         return thread_name
 
+    @staticmethod
+    def _is_starter_message_thread(candidate: Any, message_id: Any) -> bool:
+        """Return whether ``candidate`` is the thread backed by ``message_id``."""
+        if candidate is None or message_id is None:
+            return False
+        if str(getattr(candidate, "id", "")) != str(message_id):
+            return False
+
+        thread_type = getattr(discord, "Thread", None)
+        return not isinstance(thread_type, type) or isinstance(candidate, thread_type)
+
+    async def _reconcile_starter_message_thread(
+        self,
+        message: 'DiscordMessage',
+    ) -> Tuple[Optional[Any], bool]:
+        """Return an existing starter thread and whether REST confirmed absence."""
+        message_id = getattr(message, "id", None)
+        fetch_thread = getattr(message, "fetch_thread", None)
+        not_found_type = getattr(discord, "NotFound", None)
+        confirmed_absences = 0
+
+        for reconciliation_attempt in range(2):
+            existing_thread = getattr(message, "thread", None)
+            if self._is_starter_message_thread(existing_thread, message_id):
+                return existing_thread, False
+
+            client = self._client
+            get_channel = getattr(client, "get_channel", None) if client is not None else None
+            if message_id is not None and callable(get_channel):
+                try:
+                    existing_thread = get_channel(int(message_id))
+                except (TypeError, ValueError):
+                    existing_thread = None
+                if self._is_starter_message_thread(existing_thread, message_id):
+                    return existing_thread, False
+
+            if not callable(fetch_thread):
+                return None, False
+
+            try:
+                existing_thread = await fetch_thread()
+            except Exception as exc:
+                if isinstance(not_found_type, type) and isinstance(exc, not_found_type):
+                    confirmed_absences += 1
+                else:
+                    logger.debug(
+                        "[%s] Could not fetch Discord thread for starter message %s",
+                        self.name,
+                        message_id,
+                        exc_info=True,
+                    )
+            else:
+                if self._is_starter_message_thread(existing_thread, message_id):
+                    return existing_thread, False
+                logger.debug(
+                    "[%s] Discord returned an unexpected thread for starter message %s",
+                    self.name,
+                    message_id,
+                )
+
+            if reconciliation_attempt == 0:
+                await asyncio.sleep(0.25)
+
+        return None, confirmed_absences == 2
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
@@ -7372,6 +7437,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
+                existing_thread, absence_confirmed = await self._reconcile_starter_message_thread(message)
+                if existing_thread is not None:
+                    return existing_thread
+                if not absence_confirmed:
+                    logger.warning(
+                        "[%s] Direct auto-thread creation failed and reconciliation remained "
+                        "inconclusive; skipping fallback to avoid a duplicate thread. Direct error: %s",
+                        self.name,
+                        direct_error,
+                    )
+                    return None
+
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"

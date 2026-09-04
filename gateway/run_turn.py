@@ -2024,12 +2024,29 @@ class GatewayTurnMixin:
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
-            return self._format_session_info()
+            return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
-        """Model / provider / context-length / endpoint block so users can spot bad context detection."""
-        from gateway.run import _resolve_gateway_model_context
-        resolved = _resolve_gateway_model_context()
+    def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
+        """Model / provider / context-length / endpoint block so users can spot bad context detection.
+
+        ``source`` (when given) resolves the effective channel override (model/provider) so the
+        /new and auto-reset banners report the model the turn will actually use. Those banners run
+        before any turn, so the turn resolver's override path never ran and the global default
+        leaked in."""
+        from gateway.run import _get_channel_override, _resolve_gateway_model_context
+        override_model = override_provider = None
+        if source is not None:
+            cfg = getattr(self, "config", None)
+            if cfg is not None:
+                ch = _get_channel_override(
+                    cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                    parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+                )
+                if ch is not None:
+                    override_model = ch.model
+                    override_provider = ch.provider
+        resolved = _resolve_gateway_model_context(override_model or None)
         context_length = resolved.context_length
         ctx_source = {
             "config": "config",
@@ -2041,7 +2058,7 @@ class GatewayTurnMixin:
         )
         lines = [
             f"◆ Model: `{resolved.model}`",
-            f"◆ Provider: {resolved.provider or 'openrouter'}",
+            f"◆ Provider: {override_provider or resolved.provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
         base_url = resolved.base_url

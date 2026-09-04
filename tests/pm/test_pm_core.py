@@ -735,43 +735,34 @@ def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
     assert problems == []
 
 
-def test_drop_unloadable_runtime_files_removes_only_arm64_x64_vc_runtime(monkeypatch, tmp_path):
-    import pm.cli as cli
+def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):
+    import pm.packages as packages
+    from pm.registry import get_package
 
-    store = tmp_path / "store"
-    entry = store / "python-3.11-win32-arm64"
-    entry.mkdir(parents=True)
-    stray = entry / "vcruntime140_1.dll"
-    keep = entry / "vcruntime140.dll"
-    stray.write_bytes(b"x64")
-    keep.write_bytes(b"arm64")
-    facts = Facts(store / "facts.json")
-    facts.record("python", "3.11", entry.name, {}, store)
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
+    (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
-    monkeypatch.setattr(cli, "_facts", lambda: facts)
-    monkeypatch.setattr(cli, "current_target", lambda: "win32-arm64")
-    cli._drop_unloadable_runtime_files(store)
+    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.11.16", "win32-arm64")
 
-    assert not stray.exists()
-    assert keep.is_file()
+    assert not (staged / "vcruntime140_1.dll").exists()
+    assert (staged / "vcruntime140.dll").is_file()
 
 
-def test_drop_unloadable_runtime_files_keeps_other_targets(monkeypatch, tmp_path):
-    import pm.cli as cli
+def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
+    import pm.packages as packages
+    from pm.registry import get_package
 
-    store = tmp_path / "store"
-    entry = store / "python-3.11-win32-x64"
-    entry.mkdir(parents=True)
-    runtime = entry / "vcruntime140_1.dll"
-    runtime.write_bytes(b"x64")
-    facts = Facts(store / "facts.json")
-    facts.record("python", "3.11", entry.name, {}, store)
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
-    monkeypatch.setattr(cli, "_facts", lambda: facts)
-    monkeypatch.setattr(cli, "current_target", lambda: "win32-x64")
-    cli._drop_unloadable_runtime_files(store)
+    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.11.16", "win32-x64")
 
-    assert runtime.is_file()
+    assert (staged / "vcruntime140_1.dll").is_file()
 
 
 def test_verify_missing_binary_reports_path_and_listing(tmp_path):

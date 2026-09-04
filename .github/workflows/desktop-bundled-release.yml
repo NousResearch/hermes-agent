@@ -278,9 +278,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/build/agent-payload/tools
-          key: pm-store-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
           restore-keys: |
-            pm-store-${{ matrix.target.label }}-
+            pm-store-v2-${{ matrix.target.label }}-
 
       - name: Resolve electron's default download cache path
         shell: bash

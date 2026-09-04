@@ -108,17 +108,6 @@ def _bundle_package_names() -> list[str]:
     return names
 
 
-def _drop_unloadable_runtime_files(store_dir: Path) -> None:
-    """Drop the x64 VC runtime that python-build-standalone ships beside ARM64 Python."""
-    if current_target() != "win32-arm64":
-        return
-    facts = _facts()
-    facts.reload()
-    python = facts.get("python")
-    if python and "entry" in python:
-        (store_dir / python["entry"] / "vcruntime140_1.dll").unlink(missing_ok=True)
-
-
 def cmd_install(args) -> int:
     names = args.names or [
         n for n in _lockfile().names() if not get_package(n).optional
@@ -577,12 +566,10 @@ def cmd_bundle(args) -> int:
     os.environ["HERMES_RUNTIME_DIR"] = str(store_dir)
     paths._stamp.cache_clear()
 
-    failed = 0
     names = _bundle_package_names()
-    failed += _install_names(
+    failed = _install_names(
         [n for n in names if get_package(n).missing_reason(current_target()) is None]
     )
-    _drop_unloadable_runtime_files(store_dir)
 
     # Prune the staged store BEFORE the venv sync and packaging: drop the
     # fetch-<sha> download-cache archives (needed only at install time — dead

@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/agent-payload/tools
-          key: pm-store-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
 
       # win32-arm64 builds cryptography from sdist (no win_arm64 wheel);
       # its Rust core links OpenSSL statically from vcpkg.

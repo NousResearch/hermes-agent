@@ -194,6 +194,13 @@ class Python(BinaryPackage):
         binary = self.binary(staged, target)
         if binary is not None:
             _macos_sign_managed_python(binary)
+        # python-build-standalone ships the x64 VC runtime (vcruntime140_1.dll)
+        # beside ARM64 Windows Python; it cannot load on ARM64 and would fail
+        # the arch guard. Drop it HERE, before publish: the tree digest is
+        # recorded over the shipped bytes, so a post-publish deletion (as the
+        # old bundle-time drop did) makes doctor's re-hash mismatch.
+        if target == "win32-arm64":
+            (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
 
     def fetch_url(self, version: str, target: str) -> str:
         # lock version is "<python>+<release tag>", e.g. "3.11.13+202****0807"

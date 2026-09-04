@@ -1109,3 +1109,151 @@ class TestTeamsMediaAttachments:
         adapter._app.send.assert_awaited_once()
 
 
+# ---------------------------------------------------------------------------
+# Tests: Adaptive Card Action.Execute authorization
+# ---------------------------------------------------------------------------
+
+class TestTeamsCardActionAuthorization:
+    """The approval-button click handler (_on_card_action) must authorize
+    the clicker the same way a plain message from them would be authorized
+    -- via GatewayRunner._is_user_authorized (allowlist UNION pairing-store),
+    same as Slack's and Telegram's button handlers -- not via a bespoke
+    comparison of the raw AAD object ID against TEAMS_ALLOWED_USERS. Every
+    setup doc has operators put an email/UPN in TEAMS_ALLOWED_USERS, which
+    never equals the GUID/conversation ID Teams hands back on an invoke
+    activity, so the old comparison rejected every clicker unconditionally."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        return adapter
+
+    def _make_invoke_ctx(self, *, clicker_id="aad-shan", hermes_action="approve_once",
+                          session_key="sess-1", conversation_type="personal"):
+        action = SimpleNamespace(data={
+            "hermes_action": hermes_action,
+            "session_key": session_key,
+            "cmd": "echo hi",
+            "desc": "test command",
+        })
+        activity = MagicMock()
+        activity.value = SimpleNamespace(action=action)
+        activity.from_ = MagicMock()
+        activity.from_.id = clicker_id
+        activity.from_.aad_object_id = clicker_id
+        activity.from_.name = "Shan"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.conversation.conversation_type = conversation_type
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _wire_runner(self, adapter, is_authorized_result):
+        runner = SimpleNamespace(_is_user_authorized=MagicMock(return_value=is_authorized_result))
+        bound_handler = MagicMock()
+        bound_handler.__self__ = runner
+        adapter._message_handler = bound_handler
+        return runner
+
+    @pytest.mark.anyio
+    async def test_denied_when_shared_runner_rejects(self, monkeypatch):
+        adapter = self._make_adapter()
+        self._wire_runner(adapter, is_authorized_result=False)
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "aad-shan")  # even a literal ID match...
+
+        response = await adapter._on_card_action(self._make_invoke_ctx(clicker_id="aad-shan"))
+
+        assert response.body.value == "⛔ Not authorized."  # ...is overridden by the shared check
+
+    @pytest.mark.anyio
+    async def test_allowed_via_shared_runner_despite_mismatched_env_identity(self, monkeypatch):
+        """Regression for the actual bug: TEAMS_ALLOWED_USERS holds an email
+        (as every setup doc instructs), which never matches the AAD object ID
+        Teams sends -- but the clicker is authorized via pairing-store
+        approval, surfaced through the shared runner check. Before the fix,
+        this always fell through to '⛔ Not authorized.' regardless."""
+        adapter = self._make_adapter()
+        runner = self._wire_runner(adapter, is_authorized_result=True)
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "shanthan.s@envisagesolutions.net")
+        monkeypatch.setattr("tools.approval.has_blocking_approval", lambda _key: True)
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", MagicMock())
+
+        response = await adapter._on_card_action(self._make_invoke_ctx(clicker_id="aad-shan-guid"))
+
+        assert response.status == 200
+        assert response.body.value != "⛔ Not authorized."
+        runner._is_user_authorized.assert_called_once()
+        source = runner._is_user_authorized.call_args[0][0]
+        assert source.user_id == "aad-shan-guid"
+
+    @pytest.mark.anyio
+    async def test_fallback_denies_by_default_when_runner_unreachable(self, monkeypatch):
+        adapter = self._make_adapter()
+        adapter._message_handler = None  # no gateway runner wired
+        monkeypatch.delenv("TEAMS_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+
+        response = await adapter._on_card_action(self._make_invoke_ctx())
+
+        assert response.body.value == "⛔ Not authorized."
+
+    @pytest.mark.anyio
+    async def test_fallback_honors_allow_all_when_runner_unreachable(self, monkeypatch):
+        adapter = self._make_adapter()
+        adapter._message_handler = None
+        monkeypatch.delenv("TEAMS_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        monkeypatch.setattr("tools.approval.has_blocking_approval", lambda _key: True)
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", MagicMock())
+
+        response = await adapter._on_card_action(self._make_invoke_ctx())
+
+        assert response.body.value != "⛔ Not authorized."
+
+    @pytest.mark.anyio
+    async def test_group_chat_click_authorized_as_group_not_dm(self, monkeypatch):
+        """A click from a Teams channel/group must be evaluated against
+        group-scoped policy, not silently authorized as a DM -- otherwise a
+        clicker the group policy would reject as a message sender can still
+        approve dangerous commands by clicking the card in that channel."""
+        adapter = self._make_adapter()
+        runner = self._wire_runner(adapter, is_authorized_result=True)
+        monkeypatch.setattr("tools.approval.has_blocking_approval", lambda _key: True)
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", MagicMock())
+
+        ctx = self._make_invoke_ctx(clicker_id="aad-group-clicker", conversation_type="groupChat")
+        response = await adapter._on_card_action(ctx)
+
+        assert response.body.value != "⛔ Not authorized."
+        source = runner._is_user_authorized.call_args[0][0]
+        assert source.chat_type == "group"
+
+    @pytest.mark.anyio
+    async def test_fallback_reads_allowlist_via_scoped_secret(self, monkeypatch):
+        """The env-only fallback must use the scope-aware secret reader, not
+        raw os.environ -- under multiplexing, os.environ holds the DEFAULT
+        profile's values, so a secondary-profile bot must not borrow them."""
+        adapter = self._make_adapter()
+        adapter._message_handler = None
+        monkeypatch.delenv("TEAMS_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setattr("tools.approval.has_blocking_approval", lambda _key: True)
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", MagicMock())
+
+        def fake_scoped_secret(name, default=None):
+            return {"TEAMS_ALLOWED_USERS": "aad-scoped-clicker"}.get(name, default)
+
+        monkeypatch.setattr(_teams_mod, "_get_scoped_secret", fake_scoped_secret)
+
+        response = await adapter._on_card_action(
+            self._make_invoke_ctx(clicker_id="aad-scoped-clicker")
+        )
+
+        assert response.body.value != "⛔ Not authorized."
+
+

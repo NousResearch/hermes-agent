@@ -7969,6 +7969,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        # Sessions whose latest inbound user turn was voice. Catch-up /
+        # resume-pending synthetics are TEXT events; this stamp lets
+        # voice_only still reply in voice after a lease wait (#94660).
+        self._pending_voice_reply_sessions: set[str] = set()
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
@@ -13601,6 +13605,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 internal=True,
             )
+            self._restore_voice_type_on_catchup(entry.session_key, event)
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
             )
@@ -19086,6 +19091,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        self._remember_voice_inbound(_quick_key, event)
+        self._restore_voice_type_on_catchup(_quick_key, event)
         allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
         if (
@@ -23782,6 +23789,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ):
                 await self._send_voice_reply(event, response)
 
+            if (
+                session_key
+                and agent_result
+                and not agent_result.get("interrupted")
+                and not agent_result.get("failed")
+            ):
+                self._clear_pending_voice_reply(session_key)
+
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
             # sends raw text chunks that include MEDIA: tags — the normal
@@ -25061,6 +25076,123 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.handle_message(event)
 
+    # --------------------------------------------------------------------------------------
+    # Voice-Input Provenance Across Catch-Up / Resume Turns
+    # --------------------------------------------------------------------------------------
+
+    _PENDING_VOICE_REPLY_META = "last_inbound_message_type"
+
+    def _is_catchup_system_note(self, event: MessageEvent) -> bool:
+        """True when this event's text is a gateway catch-up / resume wrapper."""
+        text = (getattr(event, "text", None) or "").lstrip()
+        return text.startswith("[System note:")
+
+    def _is_voice_catchup_event(self, event: MessageEvent) -> bool:
+        """Synthetic turns that stand in for a queued voice inbound.
+
+        Empty internal resume-pending events and system-note catch-up wraps
+        are the replacement path. Other internals (heartbeat, plugin inject,
+        loop ticks) must stay TEXT so they do not inherit a stale voice stamp.
+        """
+        if self._is_catchup_system_note(event):
+            return True
+        text = (getattr(event, "text", None) or "").strip()
+        return bool(getattr(event, "internal", False) and not text)
+
+    def _clear_pending_voice_reply(self, session_key: Optional[str]) -> None:
+        if not session_key:
+            return
+        pending = getattr(self, "_pending_voice_reply_sessions", None)
+        if isinstance(pending, set):
+            pending.discard(session_key)
+        try:
+            store = getattr(self, "session_store", None)
+            if store is not None:
+                store.set_session_metadata(
+                    session_key, self._PENDING_VOICE_REPLY_META, None
+                )
+        except Exception:
+            logger.debug(
+                "Failed to clear pending voice-reply stamp for %s",
+                session_key,
+                exc_info=True,
+            )
+
+    def _session_has_pending_voice_reply(self, session_key: Optional[str]) -> bool:
+        if not session_key:
+            return False
+        pending = getattr(self, "_pending_voice_reply_sessions", None)
+        if isinstance(pending, set) and session_key in pending:
+            return True
+        try:
+            store = getattr(self, "session_store", None)
+            if store is None:
+                return False
+            return store.get_session_metadata(
+                session_key, self._PENDING_VOICE_REPLY_META
+            ) == "voice"
+        except Exception:
+            return False
+
+    def _remember_voice_inbound(self, session_key: Optional[str], event: MessageEvent) -> None:
+        """Stamp or clear voice-input provenance for this routing key.
+
+        Real user TEXT clears the stamp so a later text turn is not treated as
+        voice. Internal / catch-up synthetics leave the stamp in place so a
+        queued voice turn can still answer in voice after a lease wait.
+        """
+        if not session_key:
+            return
+        if getattr(event, "message_type", None) == MessageType.VOICE:
+            pending = getattr(self, "_pending_voice_reply_sessions", None)
+            if not isinstance(pending, set):
+                self._pending_voice_reply_sessions = set()
+                pending = self._pending_voice_reply_sessions
+            pending.add(session_key)
+            try:
+                store = getattr(self, "session_store", None)
+                if store is not None:
+                    store.set_session_metadata(
+                        session_key, self._PENDING_VOICE_REPLY_META, "voice"
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to persist pending voice-reply stamp for %s",
+                    session_key,
+                    exc_info=True,
+                )
+            return
+        if getattr(event, "internal", False) or self._is_voice_catchup_event(event):
+            return
+        self._clear_pending_voice_reply(session_key)
+
+    def _restore_voice_type_on_catchup(
+        self, session_key: Optional[str], event: MessageEvent
+    ) -> None:
+        """Re-attach VOICE to synthetic catch-up/resume events.
+
+        Those events are constructed as TEXT (empty resume, history catch-up)
+        even when the triggering inbound was voice. Adapter auto-TTS and
+        voice_only routing both read ``event.message_type``.
+        """
+        if getattr(event, "message_type", None) == MessageType.VOICE:
+            return
+        if not self._session_has_pending_voice_reply(session_key):
+            return
+        if self._is_voice_catchup_event(event):
+            event.message_type = MessageType.VOICE
+
+    def _event_is_voice_input(self, event: MessageEvent) -> bool:
+        if getattr(event, "message_type", None) == MessageType.VOICE:
+            return True
+        if not self._is_voice_catchup_event(event):
+            return False
+        try:
+            session_key = self._session_key_for_source(event.source)
+        except Exception:
+            return False
+        return self._session_has_pending_voice_reply(session_key)
+
     def _should_send_voice_reply(
         self,
         event: MessageEvent,
@@ -25085,7 +25217,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_id = event.source.chat_id
         voice_key = self._voice_key_for_source(event.source)
         voice_mode = self._voice_mode.get(voice_key)
-        is_voice_input = (event.message_type == MessageType.VOICE)
+        is_voice_input = self._event_is_voice_input(event)
 
         adapter = self._adapter_for_source(event.source)
         adapter_auto_tts = False
@@ -32836,6 +32968,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
+                    if next_message_type is None and self._session_has_pending_voice_reply(
+                        next_session_key
+                    ):
+                        next_message_type = MessageType.VOICE
 
                 # Clear the completed streaming marker from the prior logical
                 # turn so the recursive turn's streaming TTS is not suppressed
@@ -32878,6 +33014,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # recursive call runs under so the snapshot matches exactly
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
+
+                if next_message_type is None and self._session_has_pending_voice_reply(
+                    next_session_key
+                ):
+                    next_message_type = MessageType.VOICE
 
                 followup_result = await self._run_agent(
                     message=next_message,

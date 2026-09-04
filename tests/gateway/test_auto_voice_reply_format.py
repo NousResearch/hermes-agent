@@ -93,11 +93,70 @@ class TestAutoVoiceReplyFormat:
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
 
+    def test_voice_only_catchup_text_keeps_voice_reply_after_lease(self):
+        """Catch-up TEXT after a voice inbound must still answer in voice (#94660).
+
+        Lease contention replaces the original VOICE MessageEvent with a
+        synthetic catch-up/resume turn. voice_only must not treat that as
+        text-in → text-out.
+        """
+        runner = _make_runner()
+        chat_id = "15551234567"
+        runner._voice_mode[f"whatsapp:{chat_id}"] = "voice_only"
+        adapter = _make_adapter(Platform.WHATSAPP)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.WHATSAPP] = adapter
+
+        voice = _make_event(Platform.WHATSAPP, chat_id=chat_id, message_type=MessageType.VOICE)
+        session_key = runner._session_key_for_source(voice.source)
+        runner._remember_voice_inbound(session_key, voice)
+
+        catchup = _make_event(Platform.WHATSAPP, chat_id=chat_id, message_type=MessageType.TEXT)
+        catchup.text = (
+            "[System note: A new message has arrived. The conversation "
+            "history contains pending tool outputs from an interrupted turn. "
+            "IGNORE those pending results. Address the user's NEW message "
+            "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
+            "transcribed voice: hello"
+        )
+        catchup.internal = True
+        runner._restore_voice_type_on_catchup(session_key, catchup)
+
+        assert catchup.message_type == MessageType.VOICE
+        assert runner._should_send_voice_reply(catchup, "hello", [], already_sent=True) is True
+
+        later_text = _make_event(Platform.WHATSAPP, chat_id=chat_id, message_type=MessageType.TEXT)
+        later_text.text = "actually typed this"
+        runner._remember_voice_inbound(session_key, later_text)
+        assert runner._should_send_voice_reply(later_text, "hello", []) is False
+
+    def test_resume_pending_synthetic_inherits_voice_stamp(self):
+        runner = _make_runner()
+        chat_id = "15551234567"
+        voice = _make_event(Platform.WHATSAPP, chat_id=chat_id, message_type=MessageType.VOICE)
+        session_key = runner._session_key_for_source(voice.source)
+        runner._remember_voice_inbound(session_key, voice)
+
+        resume = _make_event(Platform.WHATSAPP, chat_id=chat_id, message_type=MessageType.TEXT)
+        resume.text = ""
+        resume.internal = True
+        runner._restore_voice_type_on_catchup(session_key, resume)
+        assert resume.message_type == MessageType.VOICE
+
+        heartbeat = _make_event(Platform.WHATSAPP, chat_id=chat_id, message_type=MessageType.TEXT)
+        heartbeat.text = "heartbeat tick"
+        heartbeat.internal = True
+        runner._restore_voice_type_on_catchup(session_key, heartbeat)
+        assert heartbeat.message_type == MessageType.TEXT
+        assert runner._should_send_voice_reply(heartbeat, "hello", []) is False
+
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._voice_mode = {}
+        runner._pending_voice_reply_sessions = set()
         runner.adapters = {}
+        runner.session_store = None
     return runner
 
 

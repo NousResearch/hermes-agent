@@ -493,7 +493,17 @@ export function resolveRegistryLocalRoute(
 ): RegistryLocalRoute {
   const profileKey = String(profile ?? '').trim() || 'default'
 
-  if (opts.globalRemote || opts.profileRemoteOverride) {
+  // A per-profile SSH/remote override is an explicit per-profile routing
+  // decision: the override owns this profile's backend, so the 'local' entry
+  // must delegate to the legacy profile route (which resolves the override),
+  // not spawn a forced-local child. Forcing local here is the #90477 split:
+  // the roster lists the profile via its override, but opening the thread
+  // spawned a local backend that fails when the profile doesn't exist locally.
+  if (opts.profileRemoteOverride) {
+    return { delegate: true, poolKey: profileKey }
+  }
+
+  if (opts.globalRemote) {
     return { delegate: false, poolKey: `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}` }
   }
 

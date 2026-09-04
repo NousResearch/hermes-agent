@@ -38,11 +38,11 @@ class TestContentAwareRefresh(unittest.TestCase):
         return agent
 
     def _refresh(self, agent, new_desc, **kw):
-        from tools.mcp_tool import refresh_agent_mcp_tools
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
 
         with patch("model_tools.get_tool_definitions",
                    return_value=_defs(new_desc)), \
-             patch("tools.mcp_tool._reinject_post_build_tools",
+             patch("tools.mcp_tool_agent._reinject_post_build_tools",
                    return_value=set()):
             return refresh_agent_mcp_tools(agent, **kw)
 
@@ -71,7 +71,7 @@ class TestCompactionWiring(unittest.TestCase):
         from agent.conversation_compression import _refresh_agent_tool_definitions
 
         agent = _Agent()
-        with patch("tools.mcp_tool.refresh_agent_mcp_tools",
+        with patch("tools.mcp_tool_agent.refresh_agent_mcp_tools",
                    return_value={"newly_added"}) as m:
             changed = _refresh_agent_tool_definitions(agent)
         self.assertTrue(changed)

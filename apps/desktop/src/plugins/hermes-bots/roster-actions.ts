@@ -165,7 +165,9 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
   try {
     const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
 
-    return typeof focused === 'string' && focused ? { registryId: String(canonical!.id), storedSessionId: focused } : null
+    return typeof focused === 'string' && focused
+      ? { registryId: String(canonical!.id), storedSessionId: focused }
+      : null
   } catch {
     return null
   }
@@ -201,7 +203,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   haptic('tap')
   saveSelectedRosterBot(bot)
   setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
-  const dismissedGroup = bot.remoteSource ? null : dismissGroupChatForLocalBotOpen()
+  const dismissedGroup = dismissGroupChatForBotOpen()
 
   if (!dismissedGroup) {
     $groupChatWorkspace.set(null)
@@ -243,6 +245,14 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
+
+    // Fronting is presentation-only: the pane keeps whatever transcript it
+    // last painted, which can predate rows the bot wrote while the user was
+    // elsewhere (another bot's turn, a cron delivery, a teammate's
+    // message_agent). Force a registry open so forceResume re-pulls the
+    // latest transcript instead of leaving a stale snapshot until the next
+    // user turn (#99393 class; #95600 only covered the not-yet-open path).
+    refreshOpenBotChat(bot)
 
     return true
   }
@@ -319,7 +329,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
 /** Bot-open handoff: capture the selected group and retire its registered
  * main tab (or clear the in-panel selection) before async source prep /
  * canonical open. */
-function dismissGroupChatForLocalBotOpen(): null | { group: string; roomId: string } {
+function dismissGroupChatForBotOpen(): null | { group: string; roomId: string } {
   const group = $groupChatWorkspace.get()
 
   if (!group) {

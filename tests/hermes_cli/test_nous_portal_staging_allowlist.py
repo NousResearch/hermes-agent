@@ -85,6 +85,7 @@ class TestResolveAccessTokenEnvOverrideWins:
         return auth_file
 
     def _run_and_capture(self, monkeypatch, auth):
+        import hermes_cli.auth_nous as auth_nous
         seen_portal_urls = []
 
         # The resolve memo is module-level state; clear it so each test's
@@ -101,6 +102,7 @@ class TestResolveAccessTokenEnvOverrideWins:
             }
 
         monkeypatch.setattr(auth, "_refresh_access_token", _fake_refresh)
+        monkeypatch.setattr(auth_nous, "_refresh_access_token", _fake_refresh)
 
         caplog_records = []
         logger = logging.getLogger("hermes_cli.auth")

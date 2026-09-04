@@ -629,6 +629,10 @@ to the routed profile**:
 - Unprefixed routes and `/p/default/...` keep using the default profile's key.
 - A named profile with no `API_SERVER_KEY` of its own fails closed — its
   prefix is unreachable until you set one.
+- Runs are per-profile scoped: `/v1/runs/{run_id}` and its `events`, `stop`,
+  `steer`, and `approval` routes only answer for the profile that created
+  the run (including runs started via `/api/sessions/{id}/chat/stream`);
+  another profile's run id returns `404`, never `403`.
 
 :::warning Breaking change (July 2026)
 Before this fix, a valid default-profile key was accepted on any

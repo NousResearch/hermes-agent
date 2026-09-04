@@ -25,6 +25,7 @@ import {
   $activeTreeGroup,
   $layoutTree,
   focusedSessionTabAnchor,
+  isPaneVisible,
   moveTreePane,
   noteActiveTreeGroup,
   revealTreePane
@@ -1110,8 +1111,23 @@ export const $botChatSessionIds = atom<ReadonlySet<string>>(
   new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
 )
 
-function rememberBotChatScope(storedSessionId: string, isBotChat: boolean): void {
+/** The bot-mode scope each stored id was last opened under, for the main tab
+ *  (which has no tile to carry one). Window-local: the caption falls back to
+ *  the stored title until the chat is opened again. */
+export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>({})
+
+function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspaceScope): void {
+  const isBotChat = scope.workspaceMode === 'bots'
   const current = $botChatSessionIds.get()
+  const { [storedSessionId]: previous, ...rest } = $botChatScopes.get()
+
+  const changed = isBotChat
+    ? previous?.workspaceOwnerKey !== scope.workspaceOwnerKey || previous?.workspaceTabTitle !== scope.workspaceTabTitle
+    : Boolean(previous)
+
+  if (changed) {
+    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
+  }
 
   if (current.has(storedSessionId) === isBotChat) {
     return
@@ -1141,7 +1157,7 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
   // Before the tile lookup: openSession routes every open through here, and a
   // bot chat usually has no tile to record the scope on.
-  rememberBotChatScope(storedSessionId, scope.workspaceMode === 'bots')
+  rememberBotChatScope(storedSessionId, scope)
 
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
@@ -1394,9 +1410,17 @@ export function openSessionTile(
   dir: TileDock = 'right',
   anchor?: string,
   before?: null | string,
-  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+  explicitScope?: SessionTileWorkspaceScope
 ) {
   const tiles = $sessionTiles.get()
+  const existing = tiles.find(t => t.storedSessionId === storedSessionId)
+
+  // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
+  // not a re-scope: keep the workspace it lives in instead of re-bucketing it
+  // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
+    workspaceMode: existing?.workspaceMode ?? 'sessions'
+  }
 
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
@@ -1406,7 +1430,9 @@ export function openSessionTile(
   markSessionRead(storedSessionId)
   ackStoredSessionId(storedSessionId)
 
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     return
   }
 
@@ -1414,7 +1440,7 @@ export function openSessionTile(
 
   const workspaceOwnerKey = workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceOwnerKey : undefined
 
-  if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
+  if (!tiles.some(t => aliases.includes(t.storedSessionId))) {
     saveTiles([
       ...tiles,
       {
@@ -1442,7 +1468,9 @@ export function openSessionTile(
     return
   }
 
-  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+  if (explicitScope) {
+    setSessionTileWorkspaceScope(storedSessionId, explicitScope)
+  }
 
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
@@ -1510,22 +1538,32 @@ export function focusOpenSession(
   storedSessionId: string,
   workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ): 'main' | 'tile' | null {
-  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
-    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
+  // Compression rotates a conversation's tip id while tiles stay keyed by
+  // whichever segment id they were opened with. An exact-id test right after
+  // a rotation said "not open" for a conversation that IS on screen, and
+  // callers opened the same chat in a second tab. Match any id of the
+  // lineage instead, and front the tile under ITS key.
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+  const tile = $sessionTiles.get().find(t => aliases.includes(t.storedSessionId))
+
+  if (tile) {
+    const paneId = `${TILE_PANE_PREFIX}${tile.storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
     const tree = $layoutTree.get()
     const group = tree ? findGroupOfPane(tree, paneId) : null
 
-    if (group) {
-      noteActiveTreeGroup(group.id)
+    if (!group || !isPaneVisible(paneId)) {
+      return null
     }
+
+    noteActiveTreeGroup(group.id)
 
     return 'tile'
   }
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 
@@ -1599,9 +1637,9 @@ export function focusWorkspaceOwnerSessionTile(
   const paneId = resolveRememberedActivePane(workspaceScopeKey('bots', workspaceOwnerKey), paneIds) ?? paneIds[0]
   const storedSessionId = paneId.slice(TILE_PANE_PREFIX.length)
 
-  focusOpenSession(storedSessionId, { workspaceMode: 'bots', workspaceOwnerKey })
-
-  return storedSessionId
+  return focusOpenSession(storedSessionId, { workspaceMode: 'bots', workspaceOwnerKey }) === 'tile'
+    ? storedSessionId
+    : null
 }
 
 /** Does a sidebar click still need to navigate after `focusOpenSession`? A miss

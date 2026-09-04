@@ -46,6 +46,33 @@ export type WorkspaceNewSessionTarget =
 /** Sessions uses its established ambient behavior (`null`). */
 export const $workspaceNewSessionTarget = atom<WorkspaceNewSessionTarget | null>(null)
 
+/** Display name per exact owner key, published by the workspace that owns the
+ *  key (Bot Mode: the roster's display name). Presentation only — never a
+ *  session title, which for a canonical Bot Chat is an identity the backend
+ *  resolves by name and must stay exactly as stored. */
+export const $workspaceOwnerLabels = atom<Readonly<Record<string, string>>>({})
+
+export function setWorkspaceOwnerLabel(ownerKey: string, label: string): void {
+  if ($workspaceOwnerLabels.get()[ownerKey] !== label) {
+    $workspaceOwnerLabels.set({ ...$workspaceOwnerLabels.get(), [ownerKey]: label })
+  }
+}
+
+/** The caption a workspace-owned tab shows: its owner's label while the stored
+ *  row still carries only the placeholder its opener registered — every bot's
+ *  canonical chat is stored under the same name, so the tab reads the bot's
+ *  (#99152). Any other title (a `+` side thread, a Sessions tab) is untouched. */
+export function workspaceOwnerTitle(
+  title: string,
+  scope: { workspaceMode?: WorkspaceMode; workspaceOwnerKey?: string; workspaceTabTitle?: string } | undefined
+): string {
+  if (scope?.workspaceMode !== 'bots' || !scope.workspaceOwnerKey || title !== scope.workspaceTabTitle) {
+    return title
+  }
+
+  return $workspaceOwnerLabels.get()[scope.workspaceOwnerKey] ?? title
+}
+
 /** One key for window-local active-pane memory. Owner keys stay opaque. */
 export function workspaceScopeKey(mode: WorkspaceMode, ownerKey: string | null): string {
   return mode === 'sessions' ? 'sessions' : `bots:${ownerKey ?? ''}`

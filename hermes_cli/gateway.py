@@ -2850,6 +2850,15 @@ def _profile_suffix() -> str:
     Returns ``""`` for the default root, the profile name for
     ``<root>/profiles/<name>``, or a short hash for any other path.
     Works correctly in Docker (HERMES_HOME=/opt/data) and standard deployments.
+
+    NOTE: ``""`` here means "the root of *this* HERMES_HOME", not
+    specifically the canonical ``~/.hermes`` root — s6/container dispatch
+    and the multiplexer guard rely on that to treat a single-root container
+    deployment as "the default profile" regardless of where its root lives.
+    Native launchd/systemd identity (label, plist path, unit name) must NOT
+    reuse this value directly for that reason: two independent custom roots
+    would both get ``""`` and collide (#93349). Those call sites go through
+    :func:`_native_service_suffix` instead, which folds in a root hash.
     """
     import hashlib
     import re
@@ -2870,6 +2879,98 @@ def _profile_suffix() -> str:
         pass
     # Fallback: short hash for arbitrary HERMES_HOME paths
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
+
+
+def _real_native_hermes_root() -> Path:
+    """Canonical Hermes root anchored to the real OS-user account, not ``Path.home()``.
+
+    Profile-mode Hermes often runs subprocesses with ``HOME`` pointed at
+    ``{HERMES_HOME}/home`` for tool-config isolation (see
+    ``hermes_constants.get_subprocess_home``), so ``Path.home()`` — and
+    anything derived from it, like ``get_default_hermes_root()`` — can
+    reflect that redirected profile home rather than the account's real
+    one. Comparing against it directly would make an ordinary canonical
+    profile look "custom" purely because of the caller's HOME, and give it
+    a spurious hash suffix that drifts between subprocess contexts. Mirrors
+    :func:`_launchd_user_home`'s pwd-based resolution for the same reason.
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    if is_windows():
+        return _get_platform_default_hermes_home()
+    import pwd
+
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"  # windows-footgun: ok — guarded by is_windows() above
+    except Exception:
+        # Sandboxed/container UID with no matching passwd entry (also hit by
+        # tests that stub getuid()/Path without stubbing pwd fully). This is
+        # a best-effort precision improvement over Path.home() — fall back
+        # to it rather than raising.
+        return _get_platform_default_hermes_home()
+
+
+def _native_root_hash(root: Path) -> str:
+    """Short stable digest of *root*, or ``""`` when it is the canonical root.
+
+    Shared by :func:`_native_service_suffix` (current process) and
+    :func:`launchd_gateway_labels_for_install` (every profile of an
+    install), so both fold the same root identity into their names.
+
+    The pwd-anchored comparison against :func:`_real_native_hermes_root` only
+    runs when ``HERMES_HOME`` is actually set — i.e. there is real evidence
+    of a custom root or profile-mode HOME redirection to correct for. When
+    ``HERMES_HOME`` is unset, *root* is ``get_default_hermes_root()``'s
+    plain ``Path.home()``-based default with nothing Hermes-controlled to
+    redirect it, so it's trusted as canonical outright. Falling through to
+    the pwd check unconditionally would flag a plain default install as
+    "custom" any time ``$HOME`` merely disagrees with the ``/etc/passwd``
+    entry for reasons unrelated to Hermes (containers with a synthetic
+    ``HOME``, restricted-UID pods, ``sudo`` without ``-H``, CI runners) —
+    giving it a spurious hashed identity on every invocation.
+    """
+    import hashlib
+
+    if not os.environ.get("HERMES_HOME", "").strip():
+        return ""
+    resolved = root.resolve()
+    if resolved == _real_native_hermes_root().resolve():
+        return ""
+    return hashlib.sha256(str(resolved).encode()).hexdigest()[:12]
+
+
+def _native_suffix_for(profile_suffix: str, root: Path) -> str:
+    """Combine a ``_profile_suffix()``-shaped suffix with *root*'s hash.
+
+    ``_profile_suffix()`` alone collides across distinct custom
+    ``HERMES_HOME`` roots on the same account: two roots that both use the
+    default profile, or both have a same-named profile, produce the same
+    suffix and therefore the same launchd label/plist path or systemd unit
+    name (#93349) — installing the second can overwrite or unlink the
+    first's service. Folding in *root*'s hash (empty for the canonical
+    ``~/.hermes`` root, so its names stay backward compatible) makes every
+    root/profile pair distinct:
+
+      canonical default   -> ``""``
+      canonical ``coder``  -> ``coder``
+      custom root default -> ``<root-hash>``
+      custom root ``coder``-> ``coder-<root-hash>``
+    """
+    root_hash = _native_root_hash(root)
+    if not root_hash:
+        return profile_suffix
+    return f"{profile_suffix}-{root_hash}" if profile_suffix else root_hash
+
+
+def _native_service_suffix() -> str:
+    """Root-qualified service-identity suffix for launchd/systemd naming.
+
+    See :func:`_native_suffix_for` for why this differs from
+    :func:`_profile_suffix`.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    return _native_suffix_for(_profile_suffix(), get_default_hermes_root())
 
 
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
@@ -2920,9 +3021,10 @@ def get_service_name() -> str:
 
     Default ``~/.hermes`` returns ``hermes-gateway`` (backward compatible).
     Profile ``~/.hermes/profiles/coder`` returns ``hermes-gateway-coder``.
-    Any other HERMES_HOME appends a short hash for uniqueness.
+    A custom HERMES_HOME root appends a root hash for cross-root uniqueness
+    (see :func:`_native_service_suffix`).
     """
-    suffix = _profile_suffix()
+    suffix = _native_service_suffix()
     if not suffix:
         return _SERVICE_BASE
     return f"{_SERVICE_BASE}-{suffix}"
@@ -3729,8 +3831,10 @@ def get_launchd_plist_path() -> Path:
 
     Default ``~/.hermes`` → ``ai.hermes.gateway.plist`` (backward compatible).
     Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``.
+    A custom HERMES_HOME root appends a root hash for cross-root uniqueness
+    (see :func:`_native_service_suffix`).
     """
-    suffix = _profile_suffix()
+    suffix = _native_service_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
     return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
 
@@ -3754,14 +3858,21 @@ def launchd_gateway_labels_for_install() -> list[str]:
     import re as _re
 
     from hermes_cli.profiles import list_profiles
+    from hermes_constants import get_default_hermes_root
 
+    # All profiles of this install share one root, so one root hash — not
+    # a per-profile one — is folded into every label below.
+    root = get_default_hermes_root().resolve()
     root_label: list[str] = []
     profile_labels: list[str] = []
     for profile in list_profiles():
         if profile.is_default:
-            root_label.append("ai.hermes.gateway")
+            suffix = _native_suffix_for("", root)
+            root_label.append(f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway")
         elif _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile.name):
-            profile_labels.append(f"ai.hermes.gateway-{profile.name}")
+            profile_labels.append(
+                f"ai.hermes.gateway-{_native_suffix_for(profile.name, root)}"
+            )
     return root_label + sorted(profile_labels)
 
 
@@ -5004,8 +5115,12 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
 
 def get_launchd_label() -> str:
-    """Return the launchd service label, scoped per profile."""
-    suffix = _profile_suffix()
+    """Return the launchd service label, scoped per profile and root.
+
+    See :func:`_native_service_suffix` for why this is root-qualified
+    rather than using :func:`_profile_suffix` directly.
+    """
+    suffix = _native_service_suffix()
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 

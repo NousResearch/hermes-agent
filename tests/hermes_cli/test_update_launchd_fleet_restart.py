@@ -97,10 +97,19 @@ class TestLaunchdGatewayLabelsForInstall:
                 _Profile("Bad Name!"),  # cannot map to a service suffix — skipped
             ],
         )
+        # The hermetic test HERMES_HOME is a tmp dir, not the real ~/.hermes,
+        # so it is a "custom root" for identity purposes and every label is
+        # root-qualified with the same hash (#93349) — this is what keeps a
+        # second, independent custom-root install's identically-named
+        # profiles from colliding with this one's.
+        import hashlib
+        from hermes_constants import get_default_hermes_root
+
+        root_hash = hashlib.sha256(str(get_default_hermes_root().resolve()).encode()).hexdigest()[:12]
         assert launchd_gateway_labels_for_install() == [
-            "ai.hermes.gateway",
-            "ai.hermes.gateway-merit-ops",
-            "ai.hermes.gateway-tfl-wiki",
+            f"ai.hermes.gateway-{root_hash}",
+            f"ai.hermes.gateway-merit-ops-{root_hash}",
+            f"ai.hermes.gateway-tfl-wiki-{root_hash}",
         ]
 
     def test_no_profiles_means_no_fleet(self, monkeypatch):

@@ -68,6 +68,42 @@ describe('transcript tail bookkeeping', () => {
 
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
   })
+
+  it('counts the same session id on separate connections as separate entries', () => {
+    const page = {
+      messages: [row(1, 'tail')],
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 1 }
+    }
+
+    const sourceA = { connectionId: 'source-a', profile: 'backend' }
+    const sourceB = { connectionId: 'source-b', profile: 'backend' }
+
+    recordTranscriptTail('same-session', page, sourceA)
+    recordTranscriptTail('same-session', page, sourceB)
+
+    expect(Object.keys($transcriptTailBySessionId.get())).toHaveLength(2)
+    expect(transcriptTailState('same-session', sourceA)?.profile).toEqual(sourceA)
+    expect(transcriptTailState('same-session', sourceB)?.profile).toEqual(sourceB)
+    expect(transcriptTailState('same-session')).toBeUndefined()
+  })
+
+  it('bounds entries and deterministically evicts the oldest scoped identity', () => {
+    const page = {
+      messages: [row(1, 'tail')],
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 1 }
+    }
+
+    const scope = { connectionId: 'source-a', profile: 'backend' }
+
+    for (let index = 0; index < 257; index += 1) {
+      recordTranscriptTail(`bounded-${index}`, page, scope)
+    }
+
+    expect(Object.keys($transcriptTailBySessionId.get())).toHaveLength(256)
+    expect(transcriptTailState('bounded-0', scope)).toBeUndefined()
+    expect(transcriptTailState('bounded-1', scope)).toBeDefined()
+    expect(transcriptTailState('bounded-256', scope)).toBeDefined()
+  })
 })
 
 describe('mergeOlderTranscriptPage', () => {
@@ -163,6 +199,36 @@ describe('backfillOlderTranscriptPage', () => {
     expect(applyOlderPage.mock.calls[0][0].map((m: ChatMessage) => m.rowId)).toEqual([1, 2])
     // A short older page means the transcript is now fully loaded.
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
+  })
+
+  it('backfills the matching connection when two owners share one session id', async () => {
+    const sourceA = { connectionId: 'source-a', profile: 'backend-a' }
+    const sourceB = { connectionId: 'source-b', profile: 'backend-b' }
+
+    const page = {
+      messages: Array.from({ length: 120 }, (_, index) => row(index, `tail${index}`)),
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 120 }
+    }
+
+    recordTranscriptTail('same-session', page, sourceA)
+    recordTranscriptTail('same-session', page, sourceB)
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [row(1, 'older')],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'same-session'
+    } as never)
+
+    await backfillOlderTranscriptPage({
+      storedSessionId: 'same-session',
+      profile: sourceB,
+      isCurrent: () => true,
+      applyOlderPage: vi.fn()
+    })
+
+    expect(getOlderSessionMessages).toHaveBeenCalledWith('same-session', sourceB, 120)
+    expect(transcriptTailState('same-session', sourceA)).toMatchObject({ possiblyTruncated: true })
+    expect(transcriptTailState('same-session', sourceB)).toMatchObject({ possiblyTruncated: false })
+    expect(transcriptTailState('same-session')).toBeUndefined()
   })
 
   it('keeps backfill available while pages keep coming back full', async () => {

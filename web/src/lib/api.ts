@@ -79,6 +79,10 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  // OAuth/account state is profile-owned too: status, login sessions, polling,
+  // cancellation, and disconnect must all follow the selected management
+  // profile rather than silently targeting the dashboard process's profile.
+  "/api/providers/oauth",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -1944,6 +1948,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile stamped by the list/detail endpoints (the store the row
+   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  profile?: string;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -2180,6 +2187,7 @@ export interface ProfileInfo {
   gateway_running: boolean;
   description: string;
   description_auto: boolean;
+  display_name?: string;
   distribution_name: string | null;
   distribution_version: string | null;
   distribution_source: string | null;

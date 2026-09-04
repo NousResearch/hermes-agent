@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetSessionLinkTitleCache } from '@/lib/session-link-title'
+import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { DirectiveContent } from './directive-text'
 import { MarkdownTextContent } from './markdown-text'
@@ -16,6 +17,7 @@ const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDeskt
 
 afterEach(() => {
   cleanup()
+  closeRightRail()
   openSession.mockClear()
   delete desktopWindow.hermesDesktop
   __resetSessionLinkTitleCache()
@@ -45,11 +47,11 @@ describe('session refs open the session', () => {
   })
 })
 
-// A url the user sent renders as a chip too, and it opens in the browser — the
-// same door the composer's hover pill uses, so a link behaves the same before
-// and after send.
-describe('url refs open externally', () => {
-  it('opens a url chip in the user transcript', () => {
+// A url the user sent renders as a chip too, and it opens in the IN-APP
+// browser — the same door the composer's hover pill uses, so a link behaves
+// the same before and after send.
+describe('url refs open in the browser pane', () => {
+  it('opens a url chip in the user transcript', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
 
     desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
@@ -61,6 +63,7 @@ describe('url refs open externally', () => {
     expect(chip.tagName).toBe('BUTTON')
     fireEvent.click(chip)
 
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
+    expect(openExternal).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
   })
 })

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
 import {
@@ -19,20 +20,11 @@ import { TreeGroup } from './tree-group'
 // doesn't close it". Renders the REAL zone renderer and opens the REAL
 // context menu.
 
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', TestResizeObserver)
+  stubResizeObserver()
+  stubMenuDomApis()
   // jsdom lacks CSS.escape, which tab-strip-scroll uses in a layout effect.
   vi.stubGlobal('CSS', { ...globalThis.CSS, escape: (value: string) => value })
-  Element.prototype.hasPointerCapture ??= () => false
-  Element.prototype.setPointerCapture ??= () => undefined
-  Element.prototype.releasePointerCapture ??= () => undefined
-  HTMLElement.prototype.scrollIntoView ??= () => undefined
 })
 
 const disposers: (() => void)[] = []

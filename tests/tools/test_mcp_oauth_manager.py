@@ -334,9 +334,10 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
 
     async def fake_base_flow(self, request):
         # Mimic the SDK: yield the request, receive the response, then finish.
-        forwarded.append(("out", request))
-        response = yield request
-        forwarded.append(("in", response))
+        async with self.context.lock:
+            forwarded.append(("out", request))
+            response = yield request
+            forwarded.append(("in", response))
 
     from mcp.client.auth.oauth2 import OAuthClientProvider
     monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)

@@ -366,6 +366,191 @@ def test_shift_space_inserts_space():
     assert _parse("\x1b[27;2;32~") == [" "]
 
 
+def _parse_presses(byte_seq: str):
+    """Feed bytes through the VT100 parser and return the full KeyPress
+    objects (key + data), so buffer-level data leakage is observable."""
+    from prompt_toolkit.input.vt100_parser import Vt100Parser as _Vt100Parser
+    from prompt_toolkit.key_binding.key_processor import KeyPress as _KeyPress
+
+    out = []
+    parser = _Vt100Parser(out.append)
+    for ch in byte_seq:
+        parser.feed(ch)
+    parser.flush()
+    assert all(isinstance(kp, _KeyPress) for kp in out)
+    return out
+
+
+@pytest.mark.parametrize(
+    "seq",
+    ["\x1b[32;2u", "\x1b[27;2;32~"],  # kitty CSI-u and xterm modifyOtherKeys
+)
+def test_shift_space_keypress_data_is_plain_space(seq):
+    """The KeyPress data for Shift+Space must be ' ', not the raw CSI
+    sequence — self-insert inserts event.data, so raw bytes would leak
+    into the buffer even though the key is correctly mapped (#88071)."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses(seq)
+    assert [kp.key for kp in presses] == [" "]
+    assert [kp.data for kp in presses] == [" "], (
+        f"{seq!r} KeyPress data must be ' ', got {[kp.data for kp in presses]!r}"
+    )
+
+
+@pytest.mark.parametrize("seq", ["\x1b[97;2u", "\x1b[27;2;97~"])
+def test_shift_letter_keypress_data_is_uppercase(seq):
+    """Shift+letter (modifier 2) maps to the uppercase letter; its KeyPress
+    data must be that letter, not the raw escape text (#88071)."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses(seq)
+    assert [kp.key for kp in presses] == ["A"]
+    assert [kp.data for kp in presses] == ["A"], (
+        f"{seq!r} KeyPress data must be 'A', got {[kp.data for kp in presses]!r}"
+    )
+
+
+def test_keypad_digit_keypress_data_is_digit():
+    """Keypad digits (Kitty PUA) map to plain digits; their KeyPress data
+    must be the digit, not the raw escape text (#88071)."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses("\x1b[57404u")
+    assert [kp.key for kp in presses] == ["5"]
+    assert [kp.data for kp in presses] == ["5"], (
+        f"keypad 5 KeyPress data must be '5', got {[kp.data for kp in presses]!r}"
+    )
+
+
+def test_plain_space_keypress_data_unchanged():
+    """A plain space must keep data == ' ' — normalization must not break
+    the ordinary typing path."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses(" ")
+    assert [kp.key for kp in presses] == [" "]
+    assert [kp.data for kp in presses] == [" "]
+
+
+def test_buffer_level_shift_space_no_raw_csi():
+    """End-to-end: feeding Shift+Space through a real Application must put
+    a space in the buffer, not raw CSI bytes (#88071).
+
+    This is the regression the parser-only tests miss: Vt100Parser maps
+    the key to ' ' but the KeyPress data still carried the raw sequence,
+    and the default self-insert binding inserts event.data.
+    """
+    import asyncio
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.layout import HSplit, Layout, Window, BufferControl
+
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+
+    async def _probe(payload: str) -> str:
+        buf = Buffer()
+        with create_pipe_input() as inp:
+            app = Application(
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+            )
+            run_task = asyncio.ensure_future(app.run_async())
+            await asyncio.sleep(0.05)
+            inp.send_text("ab")
+            inp.send_text(payload)
+            inp.send_text("cd")
+            await asyncio.sleep(0.15)
+            result = buf.text
+            app.exit()
+            try:
+                await asyncio.wait_for(run_task, 2)
+            except Exception:
+                pass
+        return result
+
+    for label, payload in (
+        ("Shift+Space xterm", "\x1b[27;2;32~"),
+        ("Shift+Space kitty", "\x1b[32;2u"),
+        ("plain space", " "),
+    ):
+        buffer = asyncio.run(_probe(payload))
+        assert buffer == "ab cd", (
+            f"{label}: buffer={buffer!r} — expected 'ab cd'; raw CSI bytes "
+            f"must never land in the buffer"
+        )
+
+
+def test_buffer_level_shift_letter_no_raw_csi():
+    """End-to-end: Shift+letter through a real Application must type the
+    capital letter, not literal ``^[[27;2;<code>~`` text (#92343).
+
+    Same KeyPress.data defect as Shift+Space (#88071), surfaced live on
+    Ghostty after 1a8fea3ce2 dropped it onto the modifyOtherKeys-only path:
+    ANSI_SEQUENCES maps the sequence to 'M', but self-insert pastes
+    event.data — the raw escape bytes.
+    """
+    import asyncio
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.layout import HSplit, Layout, Window, BufferControl
+
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+
+    async def _probe(payload: str) -> str:
+        buf = Buffer()
+        with create_pipe_input() as inp:
+            app = Application(
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+            )
+            run_task = asyncio.ensure_future(app.run_async())
+            await asyncio.sleep(0.05)
+            inp.send_text("ab")
+            inp.send_text(payload)
+            inp.send_text("cd")
+            await asyncio.sleep(0.15)
+            result = buf.text
+            app.exit()
+            try:
+                await asyncio.wait_for(run_task, 2)
+            except Exception:
+                pass
+        return result
+
+    for label, payload, expected in (
+        ("Shift+M xterm modifyOtherKeys", "\x1b[27;2;77~", "abMcd"),
+        ("Shift+M kitty CSI-u (shifted cp)", "\x1b[77;2u", "abMcd"),
+        ("Shift+L kitty CSI-u (unshifted cp)", "\x1b[108;2u", "abLcd"),
+        ("plain letter", "M", "abMcd"),
+    ):
+        buffer = asyncio.run(_probe(payload))
+        assert buffer == expected, (
+            f"{label}: buffer={buffer!r} — expected {expected!r}; raw CSI "
+            f"bytes must never land in the buffer"
+        )
+
+
+def test_plain_letter_keypress_data_unchanged():
+    """The normalization predicate only fires on ESC-prefixed payloads —
+    ordinary ASCII typing must pass through untouched."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses("M")
+    assert [(kp.key, kp.data) for kp in presses] == [("M", "M")]
+
+
 # ---------------------------------------------------------------------------
 # Multi-modifier combos (Ctrl+Shift / Ctrl+Alt / Shift+Alt / Ctrl+Alt+Shift)
 # ---------------------------------------------------------------------------
@@ -433,3 +618,130 @@ def test_cmd_backspace_alias_not_clobbered():
     install_cmd_backspace_alias()
     install_modify_other_keys_aliases()
     assert _parse("\x1b[127;9u") == [Keys.ControlU]
+
+
+# ---------------------------------------------------------------------------
+# Lock-bit variants (#89651): kitty/ghostty OR the CapsLock (64) / NumLock
+# (128) state into the CSI-u modifier parameter, so with a lock enabled
+# every combo arrives shifted (ESC[99;133u instead of ESC[99;5u) and died
+# as literal text without these aliases.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("letter", CTRL_LETTERS)
+def test_ctrl_letter_with_numlock_parses_as_raw_byte(letter):
+    """Ctrl+<letter> with NumLock on (modifier + 128) must parse identically
+    to the raw control byte — the exact garbage from #89651 ([127;133u)."""
+    raw_byte = chr(ord(letter) - ord('a') + 1)
+    raw_result = _parse(raw_byte)
+
+    numlock_seq = f"\x1b[{ord(letter)};133u"  # 5 + 128
+    assert _parse(numlock_seq) == raw_result, (
+        f"NumLock Ctrl+{letter} ({numlock_seq!r}) should parse identically "
+        f"to raw {raw_byte!r}"
+    )
+
+
+@pytest.mark.parametrize("letter", ["a", "c", "z"])
+def test_ctrl_letter_with_capslock_parses_as_raw_byte(letter):
+    raw_byte = chr(ord(letter) - ord('a') + 1)
+    capslock_seq = f"\x1b[{ord(letter)};69u"  # 5 + 64
+    assert _parse(capslock_seq) == _parse(raw_byte)
+
+
+def test_ctrl_c_with_both_locks_parses_as_raw_byte():
+    """Ctrl+C with CapsLock and NumLock both on (5 + 64 + 128 = 197)."""
+    assert _parse("\x1b[99;197u") == _parse("\x03")
+
+
+def test_alt_letter_with_numlock_keeps_escape_prefix():
+    assert _parse("\x1b[97;131u") == [Keys.Escape, "a"]  # 3 + 128
+
+
+def test_shift_letter_with_capslock_types_uppercase():
+    assert _parse("\x1b[97;66u") == ["A"]  # 2 + 64
+
+
+def test_esc_key_with_numlock_is_escape():
+    assert _parse("\x1b[27;129u") == [Keys.Escape]  # 1 + 128
+    assert _parse("\x1b[27;133u") == [Keys.Escape]  # 5 + 128
+
+
+def test_ctrl_backspace_with_numlock_is_backward_kill_word():
+    """The exact sequence from the #89651 report ([127;133u)."""
+    assert _parse("\x1b[127;133u") == [Keys.Escape, Keys.ControlH]
+
+
+def test_modify_other_keys_tilde_form_has_no_lock_variants():
+    """The xterm modifyOtherKeys encoding never carries lock bits, so no
+    +64/+128 variants of the ESC[27;N;CP~ form may be installed."""
+    for seq in ("\x1b[27;69;99~", "\x1b[27;133;99~", "\x1b[27;197;99~"):
+        assert seq not in ANSI_SEQUENCES
+
+
+# ---------------------------------------------------------------------------
+# Follow-up widening: lock twins on the alias installers, legacy CSI-letter /
+# CSI-tilde navigation, unmodified CSI-u keys, and PUA functional keys.
+# ---------------------------------------------------------------------------
+
+
+def test_lock_bits_on_legacy_cursor_keys_map_to_plain_keys():
+    """kitty stamps lock bits onto legacy CSI-letter arrows too:
+    plain Down + NumLock = ESC[1;129B, CapsLock = ESC[1;65B, both = 193."""
+    for mod, key in ((129, Keys.Down), (65, Keys.Down), (193, Keys.Down)):
+        assert _parse(f"\x1b[1;{mod}B") == [key]
+    assert _parse("\x1b[1;130B") == [Keys.ShiftDown]   # Shift + NumLock
+    assert _parse("\x1b[1;131D") == [Keys.Escape, Keys.Left]  # Alt + NumLock
+    assert _parse("\x1b[1;133D") == [Keys.ControlLeft]        # Ctrl + NumLock
+
+
+def test_lock_bits_on_tilde_navigation_keys():
+    """Delete/PageUp/etc. carry the modifier in CSI-tilde form."""
+    assert _parse("\x1b[3;129~") == [Keys.Delete]
+    assert _parse("\x1b[3;69~") == [Keys.ControlDelete]   # Ctrl+Delete + Caps
+    assert _parse("\x1b[5;193~") == [Keys.PageUp]         # both locks
+
+
+def test_lock_bits_on_plain_f1_through_f4():
+    """Plain F1-F4 base mappings are SS3 (ESC O P); their CSI lock twins
+    must still resolve (ESC[1;129P etc.)."""
+    base = _parse("\x1bOP")
+    assert _parse("\x1b[1;129P") == base
+    assert _parse("\x1b[1;65P") == base
+
+
+def test_lock_bits_on_unmodified_csi_u_keys():
+    """Tab/Enter/Space/Backspace with only a lock held (modifier 1+lock)."""
+    assert _parse("\x1b[9;65u") == _parse("\t")
+    assert _parse("\x1b[13;193u") == _parse("\r")
+    assert _parse("\x1b[32;129u") == _parse(" ")
+    assert _parse("\x1b[127;129u") == _parse("\x7f")
+
+
+def test_lock_bits_on_pua_functional_keys():
+    """Kitty PUA functional keys (keypad, F13+) keep working under locks —
+    NumLock especially matters because it gates the keypad itself."""
+    assert _parse("\x1b[57399;129u") == ["0"]        # KP_0 + NumLock
+    assert _parse("\x1b[57376;129u") == [Keys.F13]   # F13 + NumLock
+    assert _parse("\x1b[57427;129u") == [Keys.Ignore]  # KP_BEGIN + NumLock
+
+
+def test_lock_bits_on_shift_enter_and_ctrl_enter_aliases():
+    from hermes_cli.pt_input_extras import (
+        install_ctrl_enter_alias,
+        install_shift_enter_alias,
+    )
+    install_shift_enter_alias()
+    install_ctrl_enter_alias()
+    newline = _parse("\x1b\r")
+    assert _parse("\x1b[13;130u") == newline   # Shift+Enter + NumLock
+    assert _parse("\x1b[13;66u") == newline    # Shift+Enter + CapsLock
+    assert _parse("\x1b[13;133u") == newline   # Ctrl+Enter + NumLock
+
+
+def test_lock_bits_on_cmd_backspace_alias():
+    from hermes_cli.pt_input_extras import install_cmd_backspace_alias
+    install_cmd_backspace_alias()
+    assert _parse("\x1b[127;137u") == [Keys.ControlU]  # Cmd+Backspace + NumLock
+    assert _parse("\x1b[127;73u") == [Keys.ControlU]   # Cmd+Backspace + Caps
+    assert _parse("\x1b[3;137~") == [Keys.ControlK]    # Cmd+FwdDel + NumLock

@@ -9,6 +9,7 @@ profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
 import yaml
+import gateway.status as _gw_status
 
 
 _VALID_WORKER_BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
@@ -88,7 +89,7 @@ class TestProfileScopedMessagingReads:
         assert resp.status_code == 404
 
     def test_local_photon_does_not_require_cloud_credentials(self):
-        from hermes_cli.web_server import _messaging_platform_payload
+        from hermes_cli.web_routers.messaging import _messaging_platform_payload
 
         photon = _messaging_platform_payload(
             {
@@ -129,12 +130,12 @@ class TestProfileScopedMessagingReads:
             yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(_gw_status, "get_running_pid", lambda *a, **k: None)
         monkeypatch.setattr(
-            web_server, "get_running_pid_cached", lambda *a, **k: None
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
         )
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             # Accepts path= : the profile-scoped read now passes the
             # profile's own gateway_state.json explicitly rather than
@@ -295,4 +296,3 @@ class TestMultiplexPortBindingGuard:
                 json={"clear_env": [api_server["env_vars"][0]["key"]]},
             )
             assert resp.status_code == 200
-

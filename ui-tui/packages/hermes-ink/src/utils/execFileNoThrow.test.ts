@@ -65,19 +65,26 @@ afterEach(() => {
 })
 
 describe.skipIf(onWindows)('execFileNoThrow with daemon-style children', () => {
-  // Skipped because the bug it documents is a forever-hang. Without
-  // resolveOnExit, the 'close' event doesn't fire when the immediate
-  // child has exited but a forked daemon still holds stdio open. Even
-  // SIGTERM at the timeout doesn't help — the daemon survives it. To
-  // verify by hand: remove `it.skip` and watch the test timeout. This
-  // test is here so a reviewer reading the resolveOnExit option knows
-  // *why* every clipboard-tool spawn in osc.ts wires it on.
-  it.skip('(documented hang) without resolveOnExit, await never resolves when daemon inherits stdio', async () => {
+  // Formerly a documented forever-hang: without resolveOnExit, the 'close'
+  // event doesn't fire when the immediate child has exited but a forked
+  // daemon still holds stdio open, and even the SIGTERM at timeout used to
+  // leave the promise unsettled (#93134). The unconditional settle(124) in
+  // the timeout handler now guarantees the await resolves with 124.
+  // The daemon script's sleeper lives 30s so it genuinely outlives the
+  // timeout (and vitest's own 5s test timeout — before the fix this test
+  // fails by timing out, not by asserting).
+  it('settles with code=124 on timeout when a daemon inherits stdio and resolveOnExit is off', async () => {
     const pidFile = join(scriptDir, 'sleeper-skip.pid')
-    const result = await execFileNoThrow(daemonScript, [pidFile], { timeout: 300 })
+    const longDaemonScript = join(scriptDir, 'fake-daemonizer-long.sh')
+    writeFileSync(longDaemonScript, '#!/bin/sh\nsleep 30 &\necho $! > "$1"\nexit 0\n')
+    chmodSync(longDaemonScript, 0o755)
+    const start = Date.now()
+
+    const result = await execFileNoThrow(longDaemonScript, [pidFile], { timeout: 300 })
     trackSleeperPid(pidFile)
 
     expect(result.code).toBe(124)
+    expect(Date.now() - start).toBeLessThan(2000)
   })
 
   it("settles immediately on 'exit' when resolveOnExit is true, regardless of daemon stdio", async () => {

@@ -4,6 +4,8 @@
 // entries. Pure and side-effect free; the MCP tab merges the result into the
 // editor draft. Returns null when nothing recognizable is in the text.
 
+import { isServerShape, normalizeEntry } from '@/lib/mcp-servers'
+
 export interface McpImportEntry {
   config: Record<string, unknown>
   name: string
@@ -11,21 +13,6 @@ export interface McpImportEntry {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
-
-const isServerShape = (value: Record<string, unknown>) =>
-  typeof value.command === 'string' || typeof value.url === 'string'
-
-// Cursor/Claude write `type`; Hermes reads `transport` (same normalization the
-// MCP tab applies to pasted JSON).
-function normalizeEntry(entry: Record<string, unknown>): Record<string, unknown> {
-  if (typeof entry.type === 'string' && entry.transport === undefined) {
-    const { type, ...rest } = entry
-
-    return { ...rest, transport: type }
-  }
-
-  return entry
-}
 
 const URL_RE = /^https?:\/\/\S+$/i
 

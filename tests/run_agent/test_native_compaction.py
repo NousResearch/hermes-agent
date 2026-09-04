@@ -25,8 +25,9 @@ def _agent(
     base_url="https://api.openai.com/v1",
     enabled=True,
     compression_enabled=True,
-    threshold=DEFAULT_COMPACT_THRESHOLD,
+    threshold: object = DEFAULT_COMPACT_THRESHOLD,
     compressor=None,
+    capabilities=None,
 ):
     return SimpleNamespace(
         model=model,
@@ -35,6 +36,7 @@ def _agent(
         compression_enabled=compression_enabled,
         codex_responses_compact_threshold=threshold,
         context_compressor=compressor,
+        capabilities=capabilities or {},
     )
 
 
@@ -87,6 +89,16 @@ class TestRequestGate:
         payload = native_compaction_context_management(
             _agent(base_url="https://chatgpt.com/backend-api/codex"),
             is_codex_backend=True,
+        )
+        assert payload is not None
+
+    def test_trusted_proxy_capability_gets_payload(self):
+        payload = native_compaction_context_management(
+            _agent(
+                base_url="https://trusted-proxy.example/v1",
+                capabilities={"openai_native_compaction": True},
+            ),
+            is_codex_backend=False,
         )
         assert payload is not None
 
@@ -145,20 +157,51 @@ class TestRequestGate:
         )
         assert payload[0]["compact_threshold"] < 100_000
 
+    def test_omitted_threshold_tracks_resolved_local_trigger(self):
+        compressor = SimpleNamespace(threshold_tokens=765_000)
+        payload = native_compaction_context_management(
+            _agent(threshold=None, compressor=compressor), is_codex_backend=False
+        )
+        assert payload == [{"type": "compaction", "compact_threshold": 756_808}]
+
 
 class TestThresholdClamp:
+    def test_omitted_threshold_derives_from_local_trigger(self):
+        assert resolve_compact_threshold(None, 765_000) == 756_808
+
     def test_clamps_below_local_trigger(self):
         assert resolve_compact_threshold(200_000, 100_000) == 100_000 - 8_192
+
+    def test_explicit_threshold_remains_absolute_for_larger_window(self):
+        assert resolve_compact_threshold(200_000, 765_000) == 200_000
 
     def test_no_local_trigger_uses_configured(self):
         assert resolve_compact_threshold(200_000, None) == 200_000
 
-    def test_garbage_configured_falls_back_to_default(self):
-        assert resolve_compact_threshold("garbage", None) == DEFAULT_COMPACT_THRESHOLD
-        assert resolve_compact_threshold(True, None) == DEFAULT_COMPACT_THRESHOLD
-        assert resolve_compact_threshold(-5, None) == DEFAULT_COMPACT_THRESHOLD
+    @pytest.mark.parametrize("configured", ["garbage", True, -5, 1.5])
+    def test_invalid_configured_uses_automatic_local_threshold(self, configured):
+        assert resolve_compact_threshold(configured, 765_000) == 756_808
 
-    def test_tiny_local_trigger_stays_positive(self):
+    def test_automatic_without_local_trigger_uses_documented_fallback(self):
+        assert resolve_compact_threshold(None, None) == DEFAULT_COMPACT_THRESHOLD
+
+    @pytest.mark.parametrize(
+        ("local_trigger", "expected"),
+        [
+            (8_193, 1_024),
+            (8_192, 6_553),
+            (4_000, 3_200),
+            (1_024, 1_024),
+            (1_000, 1_024),
+            (1, 1_024),
+        ],
+    )
+    def test_automatic_tiny_local_trigger_respects_provider_floor(
+        self, local_trigger, expected
+    ):
+        assert resolve_compact_threshold(None, local_trigger) == expected
+
+    def test_explicit_tiny_local_trigger_stays_positive(self):
         assert resolve_compact_threshold(200_000, 4_000) >= 1_024
 
 
@@ -382,7 +425,7 @@ class TestResponseCapture:
 
 
 class TestAgentInitConfig:
-    def test_defaults_off_and_threshold(self, monkeypatch):
+    def test_defaults_off_and_automatic_threshold(self, monkeypatch):
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -397,7 +440,59 @@ class TestAgentInitConfig:
             enabled_toolsets=[],
         )
         assert agent.codex_responses_native_compaction is False
-        assert agent.codex_responses_compact_threshold == 200_000
+        assert agent.codex_responses_compact_threshold is None
+
+    def test_public_config_default_selects_automatic_threshold(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert (
+            DEFAULT_CONFIG["compression"]["codex_responses_compact_threshold"] is None
+        )
+
+    @pytest.mark.parametrize(
+        ("threshold_yaml", "configured", "resolved"),
+        [
+            (None, None, 756_808),
+            ("null", None, 756_808),
+            ("200000", 200_000, 200_000),
+            ("true", None, 756_808),
+            ("-5", None, 756_808),
+            ("1.5", None, 756_808),
+            ('"bad"', None, 756_808),
+        ],
+    )
+    def test_loaded_config_reaches_request_threshold(
+        self, tmp_path, monkeypatch, threshold_yaml, configured, resolved
+    ):
+        from run_agent import AIAgent
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        lines = ["compression:", "  codex_responses_native: true"]
+        if threshold_yaml is not None:
+            lines.append(f"  codex_responses_compact_threshold: {threshold_yaml}")
+        (home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.openai.com/v1",
+            api_mode="codex_responses",
+            model="gpt-5.6",
+            provider="openai-api",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=[],
+        )
+        compressor = getattr(agent, "context_compressor")
+        compressor.threshold_tokens = 765_000
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert getattr(agent, "codex_responses_compact_threshold") == configured
+        assert kwargs["context_management"] == [
+            {"type": "compaction", "compact_threshold": resolved}
+        ]
 
     def test_kwargs_have_no_context_management_by_default(self):
         from run_agent import AIAgent
@@ -694,7 +789,11 @@ class TestCheckpointGatedOnCurrentEligibility:
 
         class _Responses:
             def create(self, **kwargs):
-                seen["input"] = kwargs.get("input")
+                # #93650 routes the bulk input around the SDK transform via
+                # extra_body; accept the payload in either wire shape.
+                seen["input"] = kwargs.get("input") or (
+                    kwargs.get("extra_body") or {}
+                ).get("input")
                 raise RuntimeError("stop before network")
 
         class _Client:

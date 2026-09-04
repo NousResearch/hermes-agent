@@ -15,6 +15,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
+from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -94,7 +95,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
     hidden_flags = 0x08000000
@@ -147,7 +148,7 @@ async def test_start_sidecar_local_mode_omits_cloud_credentials(
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
 
@@ -189,7 +190,7 @@ async def test_start_sidecar_cold_installs_missing_deps(
 ) -> None:
     """Missing dependencies are installed into the resolved writable sidecar."""
     adapter = _make_adapter(monkeypatch)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     installs: List[str] = []
 
@@ -245,7 +246,7 @@ async def test_start_sidecar_reinstalls_empty_node_modules(
     """
     adapter = _make_adapter(monkeypatch)
     (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     installs: List[str] = []
     monkeypatch.setattr(
@@ -265,7 +266,7 @@ async def test_start_sidecar_raises_when_cold_install_fails(
     """If the bootstrap install can't produce node_modules, fail with the
     actionable error (surfaced as SIDECAR_FAILED by connect())."""
     adapter = _make_adapter(monkeypatch)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", lambda: None)
 
     with pytest.raises(RuntimeError, match="could not be installed"):

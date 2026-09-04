@@ -56,7 +56,7 @@ Every installed skill is automatically available as a slash command:
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
 /github-pr-workflow create a PR for the auth refactor
-/plan design a rollout for migrating our auth provider
+/songsee analyze the frequency spread of this mix
 
 # Just the skill name loads it and lets the agent ask what you need:
 /excalidraw
@@ -82,7 +82,7 @@ that happen to start with `/` (like file paths) are never swallowed:
 For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
 same effect under one short command.
 
-The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
+(Plan mode works the same way but is a built-in command now: `/plan [request]` tells Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.)
 
 You can also interact with skills through natural conversation:
 
@@ -331,6 +331,45 @@ complete quarantined bundle and records the source URL, exact content hash,
 scanner version, findings, timestamp, and fresh-or-cached status in
 `skills/.hub/lock.json`.
 
+### Advisory SkillEvaluator scan
+
+In addition to the built-in security scanner (which enforces the install
+policy above), Hermes can run [NVIDIA SkillEvaluator](https://github.com/NVIDIA/SkillEvaluator)
+Tier 1 checks on every hub install as a second opinion. Tier 1 is
+deterministic and keyless — PII detection (leaked emails, personal paths,
+connection strings), unicode-smuggling detection, script lint, license
+compliance, and a static security scan via
+[NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector).
+
+The scan is **advisory only**: findings are printed with file and line
+before the install confirmation, and the install continues. Findings that
+look like real credentials (private keys, cloud access keys, tokens,
+credentialed connection strings) are highlighted in red so you can review
+the flagged lines before deciding. PII-class findings are informational —
+the upstream scanner has known false-positive classes (e.g.
+`git@github.com` SSH syntax, documentation example emails), so they never
+block anything.
+
+To enable it, install the optional scanner binaries (the second one powers
+the `security` check; without it that check simply reports "not run"):
+
+```bash
+uv tool install --python 3.13 \
+  "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
+uv tool install "git+https://github.com/NVIDIA/SkillSpector.git@v2.9.5"
+```
+
+Without the binary on PATH the scan is silently skipped. To turn it off
+entirely:
+
+```yaml
+skills:
+  tier1_advisory: false
+```
+
+The dashboard's Browse-hub scan button returns the same advisory data in
+its response (`tier1` field) alongside the built-in scanner's verdict.
+
 ## External Skill Directories
 
 If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.
@@ -349,7 +388,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
@@ -372,6 +411,25 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ```
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
+
+## Redirecting Skill Creation (`skills.create_dir`)
+
+By default the agent writes new skills to the profile-local `~/.hermes/skills/`. If you want agent-created skills to land somewhere else — a shared "brain" directory, a git-tracked repo, or a fleet-wide skills volume — set `create_dir` under the `skills` section:
+
+```yaml
+skills:
+  create_dir: /opt/brain/skills
+```
+
+What this changes:
+
+- **`skill_manage` create writes there.** New skills (including category subdirectories) are created under `create_dir` instead of the local skills dir. The directory is created on first write if it doesn't exist.
+- **The agent's instructions follow the config.** Every agent-facing instruction that names the skill-creation path — the `skill_manage` tool description and related prompt text — dynamically renders the configured directory, so the agent is told to create skills there. No system-prompt overrides or filesystem tricks needed.
+- **The directory is fully integrated.** Skills under `create_dir` are scanned alongside the local dir: they appear in the skill index, `skills_list`, `skill_view`, slash commands, and can be patched or deleted like any local skill.
+- **Everything else stays local.** Existing skills are still modified in place wherever they live; bundled skill sync, the hub, and the curator keep operating on the profile-local dir.
+
+Paths support `~` expansion and `${VAR}` substitution; relative paths resolve against your Hermes home. Setting `create_dir` to the local skills dir is the same as leaving it unset.
+
 
 ## Project-Local Skills
 
@@ -407,6 +465,14 @@ Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.y
 Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
 
 Like external dirs, project skill directories are treated as repo-owned: autonomous skill maintenance (the curator) never modifies them, and new agent-created skills always go to `~/.hermes/skills/`.
+
+### Scan-time quarantine
+
+Trust is a repo-level decision, but a repo's skill content changes with every `git pull`. To close that gap, every project skill is scanned with the same security scanner used for Skills Hub installs before it enters the index. A skill whose scan verdict is **dangerous** (prompt-injection directives, credential-exfiltration commands, hidden-text tricks) is quarantined: it does not appear in the skill index, `skills_list`, slash commands, and refuses to load by name with an explanatory error. Scans are content-hash cached under `~/.hermes/cache/project_skill_scans/` (never inside your repo) and re-run automatically when the skill's content changes.
+
+### Non-interactive surfaces (cron, API, ACP)
+
+Cron jobs and other non-interactive surfaces inherit your interactive trust decision — they never prompt and never auto-trust. The project root resolves from the surface's working directory (a cron job's `workdir`, via the same mechanism the terminal tool uses). A cron job whose `workdir` is inside a repo you previously trusted loads that repo's project skills; a job in an untrusted or undecided repo loads none.
 
 ## Skill Bundles
 
@@ -895,7 +961,7 @@ Useful when you want to share one skill without asking the user to subscribe to 
 
 #### Trust levels for taps
 
-New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_hub.py` (requires a Hermes core PR).
+New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_guard.py` (requires a Hermes core PR).
 
 #### Tap management
 

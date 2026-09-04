@@ -97,7 +97,13 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 // one localStorage area. A global key here is how one gateway's pins bleed
 // into another window's sidebar (#77318). The local connection keeps the
 // bare legacy key; remote connections get their own namespaced keys.
-export const $pinnedSessionIds = connectionScopedAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
+//
+// Pins omit the profile from that key: `sessions.pinned` is gateway-wide,
+// and a per-profile localStorage copy is how an unpin in profile A comes
+// back when the window rescopes to B (stale ids flush as pinned=true).
+export const $pinnedSessionIds = connectionScopedAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray, {
+  includeProfile: false
+})
 export const $sidebarSessionOrderIds = connectionScopedAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],
@@ -392,6 +398,18 @@ export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
 export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
+
+// Live date/status divider ids (`list-group:yesterday`, …) currently in the
+// recents list. Not persisted — the open/closed choice lives on
+// `$sidebarWorkspaceNodeOpen`; this just names what's on screen so "Collapse
+// all" can fold every labelled bucket, including ones never toggled.
+export const $sidebarListGroupIds = atom<string[]>([])
+
+// Date/status dividers share `$sidebarWorkspaceNodeOpen` under this prefix so
+// they don't collide with repo paths.
+export function listGroupNodeId(key: string): string {
+  return `list-group:${key}`
+}
 
 // Resolve a node's open state against its default (absent = follow default).
 export function workspaceNodeOpen(id: string, defaultOpen = true): boolean {

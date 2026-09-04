@@ -17,11 +17,14 @@
 
 import { getOlderSessionMessages } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { recordTranscriptBackfillPage, transcriptTailState } from '@/store/transcript-tail'
+import { recordTranscriptBackfillPage, type TranscriptProfileScope, transcriptTailState } from '@/store/transcript-tail'
 
 /** Older rows likely exist beyond what the in-memory store holds. */
-export function transcriptBackfillAvailable(storedSessionId: null | string | undefined): boolean {
-  return Boolean(transcriptTailState(storedSessionId)?.possiblyTruncated)
+export function transcriptBackfillAvailable(
+  storedSessionId: null | string | undefined,
+  profile?: TranscriptProfileScope
+): boolean {
+  return Boolean(transcriptTailState(storedSessionId, profile)?.possiblyTruncated)
 }
 
 /**
@@ -92,6 +95,8 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
 export interface BackfillRequest {
   /** Durable stored session id — the tail bookkeeping key. */
   storedSessionId: string
+  /** Owner scope captured when the tail was hydrated. */
+  profile?: TranscriptProfileScope
   /** Stale-response guard: called after the fetch resolves; when it reports
    *  false (the user switched sessions mid-flight) the page is discarded and
    *  the bookkeeping is left untouched, mirroring the isCurrentResume()
@@ -118,15 +123,16 @@ export function _resetTranscriptBackfillForTests(): void {
  * for the same session share one fetch.
  */
 export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<boolean> {
-  const { storedSessionId } = request
-  const inflight = inflightByStoredSessionId.get(storedSessionId)
+  const { profile, storedSessionId } = request
+  const inflightKey = JSON.stringify([profile || null, storedSessionId])
+  const inflight = inflightByStoredSessionId.get(inflightKey)
 
   if (inflight) {
     return inflight
   }
 
   const run = (async () => {
-    const tail = transcriptTailState(storedSessionId)
+    const tail = transcriptTailState(storedSessionId, profile)
 
     if (!tail?.possiblyTruncated) {
       return false
@@ -152,15 +158,15 @@ export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<b
     // the paging query and returned the FULL transcript one-shot. The merge
     // below prepends whatever prefix the store is missing, and the recorded
     // state marks the session fully loaded so the REST action retires.
-    recordTranscriptBackfillPage(storedSessionId, page)
+    recordTranscriptBackfillPage(storedSessionId, page, profile)
     request.applyOlderPage(toChatMessages(page.messages))
 
     return true
   })().finally(() => {
-    inflightByStoredSessionId.delete(storedSessionId)
+    inflightByStoredSessionId.delete(inflightKey)
   })
 
-  inflightByStoredSessionId.set(storedSessionId, run)
+  inflightByStoredSessionId.set(inflightKey, run)
 
   return run
 }

@@ -380,6 +380,12 @@ class GatewayAuthorizationMixin:
             return False
         extra = _adapter_config_extra(adapter)
         adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
+        if not adapter_allow and is_group and source.platform == Platform.DISCORD:
+            # Discord exposes ONE global ``allow_from`` sender list covering DMs
+            # and guild channels. Under multiplex the YAML→env bridge
+            # deliberately skips process-global env writes, so channel auth must
+            # consult that adapter-scoped value too.
+            adapter_allow = extra.get("allow_from")
         if not adapter_allow:
             # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
             # under multiplex only the default profile's list reaches the env (first-writer-wins

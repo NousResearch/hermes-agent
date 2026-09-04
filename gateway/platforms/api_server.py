@@ -20,6 +20,8 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/steer      — inject guidance into a running agent
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
+- GET  /v1/bots/{profile}/clone     — download an owner-enabled bot clone
+- POST /v1/bots/clone               — push a bot clone when the owner permits it
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -138,6 +140,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms import api_server_bot_clone as _bot_clone
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
@@ -2261,6 +2264,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
         ]
+        routes.extend(_bot_clone._http_routes(self))
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
@@ -3480,6 +3484,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "bot_cloning": {
+                    "pull": True,
+                    "push": self._bot_push_enabled(),
+                    "max_bytes": MAX_REQUEST_BYTES,
+                },
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -3527,6 +3536,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+                **_bot_clone._capabilities(),
                 "sessions": {"method": "GET", "path": "/api/sessions"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
                 "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
@@ -4174,6 +4184,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 "X-Artifact-Id": receipt.artifact_id,
                 "Content-Disposition": f'attachment; filename="{receipt.filename}"',
             },
+        )
+
+    @staticmethod
+    def _bot_push_enabled() -> bool:
+        return _bot_clone._bot_push_enabled(coerce_bool=_coerce_request_bool)
+
+    async def _handle_bot_clone_download(self, request: "web.Request") -> "web.Response":
+        return await _bot_clone._handle_bot_clone_download(
+            self, request, error_factory=_openai_error, web_module=web
+        )
+
+    async def _handle_bot_clone_upload(self, request: "web.Request") -> "web.Response":
+        return await _bot_clone._handle_bot_clone_upload(
+            self, request, error_factory=_openai_error, web_module=web
         )
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":

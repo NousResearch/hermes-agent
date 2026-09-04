@@ -80,15 +80,29 @@ def make_targz(base: str, root_dir: str, base_dir: str) -> str:
     return archive_path
 
 
-def safe_extract_targz(archive: Path, destination: Path) -> None:
+def safe_extract_targz(
+    archive: Path,
+    destination: Path,
+    *,
+    max_bytes: int | None = None,
+    max_members: int | None = None,
+) -> None:
     """Extract ``archive`` into ``destination`` without path escapes or links.
 
     Only directories and regular files are extracted; symlinks, hardlinks,
     and device nodes raise rather than being silently skipped, so a
     tampered archive fails the import instead of landing a partial tree.
+    Optional limits bound the expanded object rather than only its compressed
+    representation. The byte limit is checked both against member metadata and
+    while streaming so a dishonest header cannot bypass it.
     """
+    extracted_bytes = 0
     with tarfile.open(archive, "r:gz") as tf:
-        for member in tf.getmembers():
+        for member_count, member in enumerate(tf, start=1):
+            if max_members is not None and member_count > max_members:
+                raise ValueError(
+                    f"Archive exceeds the {max_members} member extraction limit."
+                )
             parts = normalize_archive_parts(member.name)
             target = destination.joinpath(*parts)
 
@@ -100,14 +114,28 @@ def safe_extract_targz(archive: Path, destination: Path) -> None:
                 raise ValueError(
                     f"Unsupported archive member type: {member.name}"
                 )
+            if max_bytes is not None and member.size > max_bytes - extracted_bytes:
+                raise ValueError(
+                    f"Archive exceeds the {max_bytes} byte expanded-size limit."
+                )
 
             target.parent.mkdir(parents=True, exist_ok=True)
             extracted = tf.extractfile(member)
             if extracted is None:
                 raise ValueError(f"Cannot read archive member: {member.name}")
 
-            with extracted, open(target, "wb") as dst:
-                shutil.copyfileobj(extracted, dst)
+            try:
+                with extracted, open(target, "wb") as dst:
+                    while chunk := extracted.read(1024 * 1024):
+                        extracted_bytes += len(chunk)
+                        if max_bytes is not None and extracted_bytes > max_bytes:
+                            raise ValueError(
+                                f"Archive exceeds the {max_bytes} byte expanded-size limit."
+                            )
+                        dst.write(chunk)
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
 
             try:
                 os.chmod(target, member.mode & 0o777)
@@ -115,7 +143,12 @@ def safe_extract_targz(archive: Path, destination: Path) -> None:
                 pass
 
 
-def archive_root_dirs(archive: Path) -> set[str]:
+def archive_root_dirs(
+    archive: Path,
+    *,
+    max_bytes: int | None = None,
+    max_members: int | None = None,
+) -> set[str]:
     """Return the archive's top-level directory names.
 
     Transfer archives carry exactly one root directory, which names the
@@ -123,13 +156,22 @@ def archive_root_dirs(archive: Path) -> set[str]:
     the caller resolve the target name (and refuse a malformed archive)
     without first mutating a live tree.
     """
+    roots: set[str] = set()
+    declared_bytes = 0
     with tarfile.open(archive, "r:gz") as tf:
-        return {
-            parts[0]
-            for member in tf.getmembers()
-            for parts in [normalize_archive_parts(member.name)]
-            if len(parts) > 1 or member.isdir()
-        }
+        for member_count, member in enumerate(tf, start=1):
+            if max_members is not None and member_count > max_members:
+                raise ValueError(f"Archive exceeds the {max_members} member limit.")
+            if member.isfile():
+                declared_bytes += member.size
+                if max_bytes is not None and declared_bytes > max_bytes:
+                    raise ValueError(
+                        f"Archive exceeds the {max_bytes} byte expanded-size limit."
+                    )
+            parts = normalize_archive_parts(member.name)
+            if len(parts) > 1 or member.isdir():
+                roots.add(parts[0])
+    return roots
 
 
 def copy_regular_files(src: Path, dst: Path) -> int:

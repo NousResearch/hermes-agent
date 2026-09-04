@@ -31,7 +31,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import (
@@ -940,12 +940,17 @@ def _profile_yaml_path(profile_dir: Path) -> Path:
 def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``<profile_dir>/profile.yaml`` and return a dict.
 
-    Returns ``{"description": "", "description_auto": False,
-    "display_name": ""}`` when the file is missing or unreadable. Never
+    Returns empty presentation metadata plus ``cloneable: false`` when the
+    file is missing or unreadable. Never
     raises — a corrupt profile.yaml on an unrelated profile must not
     break ``hermes profile list``.
     """
-    empty = {"description": "", "description_auto": False, "display_name": ""}
+    empty = {
+        "description": "",
+        "description_auto": False,
+        "display_name": "",
+        "cloneable": False,
+    }
     path = _profile_yaml_path(profile_dir)
     if not path.is_file():
         return empty
@@ -961,6 +966,9 @@ def read_profile_meta(profile_dir: Path) -> dict:
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
         "display_name": str(data.get("display_name") or "").strip(),
+        # Fail closed for hand-edited malformed values (e.g. the string
+        # "false", which Python would otherwise coerce to True).
+        "cloneable": data.get("cloneable") is True,
     }
 
 
@@ -970,6 +978,7 @@ def write_profile_meta(
     description: Optional[str] = None,
     description_auto: Optional[bool] = None,
     display_name: Optional[str] = None,
+    cloneable: Optional[bool] = None,
 ) -> None:
     """Update ``<profile_dir>/profile.yaml`` in place.
 
@@ -1000,6 +1009,8 @@ def write_profile_meta(
             existing["display_name"] = display_name.strip()
         else:
             existing.pop("display_name", None)
+    if cloneable is not None:
+        existing["cloneable"] = bool(cloneable)
     # Atomic write: bare open("w") truncates before the dump, and the read
     # path above swallows parse errors as {}, so a crashed write would
     # silently drop unspecified fields on the next call (#51356, #16743).
@@ -2415,7 +2426,14 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         return Path(result)
 
 
-def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
+def import_profile(
+    archive_path: str,
+    name: Optional[str] = None,
+    *,
+    max_extract_bytes: Optional[int] = None,
+    max_archive_members: Optional[int] = None,
+    prepare_staged: Optional[Callable[[Path], None]] = None,
+) -> Path:
     """Import a profile from a tar.gz archive.
 
     If *name* is not given, infers it from the archive's top-level directory.
@@ -2427,7 +2445,11 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    top_dirs = archive_root_dirs(archive)
+    top_dirs = archive_root_dirs(
+        archive,
+        max_bytes=max_extract_bytes,
+        max_members=max_archive_members,
+    )
     archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
     inferred_name = name or archive_root
     if not inferred_name:
@@ -2454,13 +2476,19 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+    was_tombstoned = named_profile_is_deleted(profile_dir)
 
     profiles_root = _get_profiles_root()
     profiles_root.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
         staging_root = Path(tmpdir)
-        safe_extract_targz(archive, staging_root)
+        safe_extract_targz(
+            archive,
+            staging_root,
+            max_bytes=max_extract_bytes,
+            max_members=max_archive_members,
+        )
 
         extracted = staging_root / archive_root
         if not extracted.is_dir():
@@ -2468,12 +2496,21 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                 f"Profile archive root is missing or invalid: {archive_root}"
             )
 
+        if prepare_staged is not None:
+            prepare_staged(extracted)
+
         final_source = extracted
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
 
-        shutil.move(str(final_source), str(profile_dir))
+        clear_named_profile_deleted(profile_dir)
+        try:
+            shutil.move(str(final_source), str(profile_dir))
+        except BaseException:
+            if was_tombstoned:
+                mark_named_profile_deleted(profile_dir)
+            raise
 
     return profile_dir
 

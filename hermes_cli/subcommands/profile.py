@@ -6,7 +6,76 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import sys
 from typing import Callable
+
+
+def handle_bot_transfer_action(args) -> bool:
+    """Handle profile share/pull/push actions outside the CLI godfile."""
+    action = getattr(args, "profile_action", None)
+    if action not in {"share", "pull", "push"}:
+        return False
+
+    from hermes_cli.bot_transfer import (
+        BotTransferError,
+        ensure_profile_bot_id,
+        get_profile_bot_id,
+        profile_is_cloneable,
+        pull_bot_profile,
+        push_bot_profile,
+        set_profile_cloneable,
+    )
+
+    try:
+        if action == "share":
+            from hermes_cli.profiles import (
+                get_profile_dir,
+                normalize_profile_name,
+                validate_profile_name,
+            )
+
+            name = normalize_profile_name(args.profile_name)
+            validate_profile_name(name)
+            profile_dir = get_profile_dir(name)
+            if not profile_dir.is_dir():
+                raise FileNotFoundError(f"Profile '{name}' does not exist.")
+            if args.allow_pull or args.deny_pull:
+                allowed = bool(args.allow_pull)
+                bot_id = set_profile_cloneable(name, allowed)
+            else:
+                allowed = profile_is_cloneable(name)
+                bot_id = get_profile_bot_id(profile_dir)
+            state = "allowed" if allowed else "denied"
+            print(f"Remote pull: {state} for '{name}'")
+            if bot_id:
+                print(f"Bot ID:      {bot_id}")
+            elif args.allow_pull:
+                print(f"Bot ID:      {ensure_profile_bot_id(profile_dir)}")
+        elif action == "pull":
+            profile_dir, bot_id = pull_bot_profile(
+                args.profile_name,
+                remote=getattr(args, "remote_url", None),
+                name=getattr(args, "clone_name", None),
+            )
+            print(f"✓ Pulled bot '{profile_dir.name}' ({bot_id})")
+            print(f"  Path: {profile_dir}")
+        else:
+            remote_name, bot_id = push_bot_profile(
+                args.profile_name,
+                remote=getattr(args, "remote_url", None),
+                name=getattr(args, "clone_name", None),
+            )
+            print(f"✓ Pushed bot '{remote_name}' ({bot_id})")
+    except (
+        BotTransferError,
+        ValueError,
+        FileExistsError,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    return True
 
 
 def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
@@ -149,6 +218,48 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         dest="import_name",
         metavar="NAME",
         help="Profile name (default: inferred from archive)",
+    )
+
+    profile_share = profile_subparsers.add_parser(
+        "share", help="Control whether a profile may be pulled from this gateway"
+    )
+    profile_share.add_argument("profile_name", help="Profile to share")
+    share_policy = profile_share.add_mutually_exclusive_group()
+    share_policy.add_argument(
+        "--allow-pull",
+        action="store_true",
+        help="Allow authenticated remote clients to clone this bot",
+    )
+    share_policy.add_argument(
+        "--deny-pull",
+        action="store_true",
+        help="Disable remote cloning for this bot",
+    )
+
+    profile_pull = profile_subparsers.add_parser(
+        "pull", help="Clone a bot from an authenticated remote gateway"
+    )
+    profile_pull.add_argument("profile_name", help="Remote profile to clone")
+    profile_pull.add_argument(
+        "--from",
+        dest="remote_url",
+        help="Remote gateway URL (default: gateway.proxy_url)",
+    )
+    profile_pull.add_argument(
+        "--name", dest="clone_name", help="Local name for the cloned bot"
+    )
+
+    profile_push = profile_subparsers.add_parser(
+        "push", help="Clone a local bot to an opt-in remote gateway"
+    )
+    profile_push.add_argument("profile_name", help="Local profile to clone")
+    profile_push.add_argument(
+        "--to",
+        dest="remote_url",
+        help="Remote gateway URL (default: gateway.proxy_url)",
+    )
+    profile_push.add_argument(
+        "--name", dest="clone_name", help="Name to use on the remote gateway"
     )
 
     # ---------- Distribution subcommands (issue #20456) ----------

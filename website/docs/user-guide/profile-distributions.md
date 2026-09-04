@@ -673,6 +673,38 @@ The profile name is inferred from the archive unless you pass `--name`. Importin
 
 Importing in the desktop app also applies the `desktop.json` overlay and drops you into the new profile on a fresh chat. Importing a desktop-made archive from the CLI is fine — the overlay file rides along on disk and applies the next time you open that profile in the desktop.
 
+### Clone directly between gateways
+
+When both machines expose the authenticated Hermes API server, you can move a
+bot definition without first saving and sending an archive. The bot owner opts
+in per profile:
+
+```bash
+# On the remote gateway host
+hermes profile share research-bot --allow-pull
+
+# On the receiving Hermes host
+hermes profile pull research-bot --from https://gateway.example
+```
+
+Pushing in the other direction requires a separate gateway-owner opt-in:
+
+```bash
+# On the receiving gateway host
+hermes config set gateway.bot_sharing.allow_push true
+
+# On the sender
+hermes profile push research-bot --to https://gateway.example
+```
+
+Clients authenticate with `GATEWAY_PROXY_KEY`; the remote server validates it
+against `API_SERVER_KEY`. Non-loopback gateway URLs must use HTTPS. A direct
+clone is intentionally narrower than a
+profile export: it carries the runnable agent definition and desktop overlay,
+but never memories, sessions, credentials, databases, logs, or caches. Each
+shared bot receives a stable UUID. The receiver refuses both name collisions
+and duplicate UUIDs; pass `--name another-name` to resolve only a name conflict.
+
 :::note
 You cannot import as `default` — that name is the built-in root profile (`~/.hermes`). Pass `--name something-else`.
 :::

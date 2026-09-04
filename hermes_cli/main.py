@@ -473,7 +473,7 @@ from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
-from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.profile import build_profile_parser, handle_bot_transfer_action
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
@@ -11270,6 +11270,9 @@ def cmd_profile(args):
     from hermes_constants import display_hermes_home
 
     action = getattr(args, "profile_action", None)
+
+    if handle_bot_transfer_action(args):
+        return
 
     if action is None:
         # Bare `hermes profile` — show current profile status

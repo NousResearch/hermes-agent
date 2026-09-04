@@ -26,6 +26,9 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `rename` | Rename a profile. |
 | `export` | Export a profile to a tar.gz archive. |
 | `import` | Import a profile from a tar.gz archive. |
+| `share` | Allow or deny authenticated pulls of a profile from this gateway. |
+| `pull` | Clone a shared bot from a remote gateway. |
+| `push` | Clone a local bot to an opt-in remote gateway. |
 | `install` | Install a profile distribution from a git URL or local directory. See [Profile Distributions](../user-guide/profile-distributions.md). |
 | `update` | Re-pull a distribution-managed profile and re-apply its bundle. |
 | `info` | Show distribution metadata for a profile (origin URL, commit, last update). |
@@ -291,6 +294,51 @@ hermes profile import ./work-2026-03-29.tar.gz
 
 hermes profile import ./work-2026-03-29.tar.gz --name work-restored
 ```
+
+## `hermes profile share`
+
+Controls whether authenticated clients of this gateway may pull a bot profile.
+Remote pull is denied per profile until its owner explicitly enables it.
+
+```bash
+hermes profile share research-bot --allow-pull
+hermes profile share research-bot                 # show policy and Bot ID
+hermes profile share research-bot --deny-pull
+```
+
+The first policy change assigns a persistent Bot ID. The ID survives renames
+and cloning, so a gateway refuses to install the same bot twice under different
+names.
+
+## `hermes profile pull` and `push`
+
+Clone bot definitions directly between API gateways:
+
+```bash
+# Remote owner first enables this bot for pulls.
+hermes profile pull research-bot --from https://gateway.example --name research-local
+
+# Remote gateway owner first opts in to receiving pushed bots:
+hermes config set gateway.bot_sharing.allow_push true
+hermes profile push research-bot --to https://gateway.example --name team-research
+```
+
+Both commands authenticate with `GATEWAY_PROXY_KEY`, which must match the
+remote gateway's `API_SERVER_KEY`. `--from` / `--to` may be omitted when
+`gateway.proxy_url` is configured. The remote API server must be enabled.
+Non-loopback gateways must use HTTPS so the bearer key is never sent in cleartext.
+
+| Option | Meaning |
+|---|---|
+| `--from <url>` / `--to <url>` | Remote Hermes API gateway (default: `gateway.proxy_url`). |
+| `--name <name>` | New profile name on the receiving gateway. |
+
+Cloning never overwrites an existing name or Bot ID. A name conflict returns an
+error; choose a different `--name`. Transfer archives are capped at 10 MB and
+contain runnable bot definition only: configuration, SOUL, skills, plugins,
+cron, scripts, MCP configuration, profile metadata, and desktop appearance.
+Credentials, memories, sessions, databases, logs, and caches never cross the
+gateway.
 
 ## Distribution commands
 

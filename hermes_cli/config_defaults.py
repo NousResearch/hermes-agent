@@ -3440,6 +3440,12 @@ DEFAULT_CONFIG = {
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
         },
+        # Authenticated profile cloning over the API gateway. Pull permission
+        # is opt-in per profile (`hermes profile share --allow-pull`); remote
+        # pushes are additionally disabled gateway-wide by default.
+        "bot_sharing": {
+            "allow_push": False,
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

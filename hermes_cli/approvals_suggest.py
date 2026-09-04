@@ -34,6 +34,7 @@ Safety posture:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -379,6 +380,43 @@ def apply_proposals(proposals: list[Proposal], indices: list[int]) -> set:
     return merged
 
 
+def _apply_command_hint() -> str:
+    """Return the follow-up apply command, preserving the active profile.
+
+    A bare ``hermes approvals suggest --apply 1,3`` always targets the
+    default profile, but the proposals scanned (and the allowlist the
+    entries would merge into) belong to the *active* profile's home.  When
+    a non-default profile is active, rendering the bare command invites
+    the operator to apply proposal numbers recomputed from a different
+    profile's history into the wrong config (#97266).
+    """
+    from hermes_cli.profiles import get_active_profile_name
+
+    profile = get_active_profile_name()
+    if profile and profile != "default" and profile != "custom":
+        return f"hermes -p {profile} approvals suggest --apply 1,3"
+    return "hermes approvals suggest --apply 1,3"
+
+
+def _config_destination() -> str:
+    """Return a display path for the config file entries merge into.
+
+    Resolved from the active Hermes home (profile-aware) and folded to
+    ``~`` when it lives under the user's home, so a named profile shows
+    ``~/.hermes/profiles/<name>/config.yaml`` instead of the default
+    profile's path (#97266).
+    """
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    config = home / "config.yaml"
+    user_home = Path(os.path.expanduser("~"))
+    try:
+        return str(Path("~") / config.relative_to(user_home))
+    except ValueError:
+        return str(config)
+
+
 def _render_text(proposals: list[Proposal], days: int) -> None:
     window = "all history" if days <= 0 else f"last {days} days"
     if not proposals:
@@ -398,9 +436,9 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
         for ex in p.examples:
             print(f"       e.g. {ex}")
     print(
-        "\nNothing has been changed. Apply selected entries with:\n"
-        "  hermes approvals suggest --apply 1,3\n"
-        "Entries are merged into command_allowlist in ~/.hermes/config.yaml."
+        f"\nNothing has been changed. Apply selected entries with:\n"
+        f"  {_apply_command_hint()}\n"
+        f"Entries are merged into command_allowlist in {_config_destination()}."
     )
 
 
@@ -438,8 +476,10 @@ def suggest_command(args) -> int:
             print("Added to command_allowlist:")
             for pattern in applied:
                 print(f"  + {pattern}")
-            print(f"\ncommand_allowlist now has {len(merged)} entries "
-                  "(~/.hermes/config.yaml).")
+            print(
+                f"\ncommand_allowlist now has {len(merged)} entries "
+                f"({_config_destination()})."
+            )
         return 0
 
     if getattr(args, "json", False):

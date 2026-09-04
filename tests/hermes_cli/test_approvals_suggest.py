@@ -11,6 +11,7 @@ and the --apply merge path.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from argparse import Namespace
@@ -252,6 +253,85 @@ class TestJsonOutput:
         assert payload["proposals"][0]["count"] == 4
         assert payload["proposals"][0]["n"] == 1
         assert isolated_allowlist["saves"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Profile-aware rendering (#97266)
+# ---------------------------------------------------------------------------
+
+class TestProfileAwareRendering:
+    """Suggested apply command and config path must follow the active profile.
+
+    The scan and the merge target resolve through the active profile's
+    Hermes home; the printed follow-up command and config destination
+    must not silently redirect an operator to the default profile.
+    """
+
+    def _profile_env(self, monkeypatch, tmp_path, name="coder"):
+        """Point HERMES_HOME at a profile-shaped home, as -p/--profile does."""
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / name
+        profile_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        return root, profile_home
+
+    def test_dry_render_preserves_named_profile(
+        self, db_path, isolated_allowlist, monkeypatch, tmp_path, capsys
+    ):
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(con, "git push --force origin main")
+        _, profile_home = self._profile_env(monkeypatch, tmp_path)
+
+        assert suggest_command(_args(path)) == 0
+        out = capsys.readouterr().out
+        assert "hermes -p coder approvals suggest --apply 1,3" in out
+        assert str(profile_home / "config.yaml") in out
+        # Must not advertise the default profile's config.
+        assert "~/.hermes/config.yaml" not in out
+        assert "hermes approvals suggest --apply" not in out.replace(
+            "hermes -p coder approvals suggest --apply", ""
+        )
+
+    def test_apply_message_names_profile_config(
+        self, db_path, isolated_allowlist, monkeypatch, tmp_path, capsys
+    ):
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(con, "git push --force origin main")
+        _, profile_home = self._profile_env(monkeypatch, tmp_path)
+
+        assert suggest_command(_args(path, apply_indices="1")) == 0
+        out = capsys.readouterr().out
+        assert str(profile_home / "config.yaml") in out
+        assert "~/.hermes/config.yaml" not in out
+        assert isolated_allowlist["saves"] == 1
+
+    def test_helpers_default_profile_unchanged(self, monkeypatch, tmp_path):
+        from hermes_cli.approvals_suggest import (
+            _apply_command_hint,
+            _config_destination,
+        )
+
+        # Default home (plain root, not profile-shaped): bare command,
+        # config path resolved under that home.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        assert _apply_command_hint() == "hermes approvals suggest --apply 1,3"
+        assert _config_destination().endswith(".hermes/config.yaml")
+
+    def test_helpers_named_profile(self, monkeypatch, tmp_path):
+        from hermes_cli.approvals_suggest import (
+            _apply_command_hint,
+            _config_destination,
+        )
+
+        _, profile_home = self._profile_env(monkeypatch, tmp_path, name="reviewer")
+        assert _apply_command_hint() == (
+            "hermes -p reviewer approvals suggest --apply 1,3"
+        )
+        assert _config_destination().endswith(
+            f".hermes{os.sep}profiles{os.sep}reviewer{os.sep}config.yaml"
+        )
 
 
 # ---------------------------------------------------------------------------

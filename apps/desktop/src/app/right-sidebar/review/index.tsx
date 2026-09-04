@@ -150,9 +150,15 @@ export function ReviewPane() {
         <PaneEmptyState label={t.rightSidebar.noDiffs} />
       )}
 
-      {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel. */}
+      {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel.
+          `h-[55%]`, not `max-h-[55%]`: the panel below is virtualized, so it
+          renders `absolute inset-0` and contributes no intrinsic height. With
+          only a maximum this `shrink-0` box sized to its content — a 37px
+          header plus a `flex-1` body whose basis is zero — and the diff
+          collapsed to nothing. A definite height is what the windowed panel
+          resolves its `h-full` against. */}
       {selectedFile && (
-        <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
+        <div className="flex h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"

@@ -512,6 +512,7 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # compact_skill_index: true               # Give children a names-only skill index (descriptions dropped), re-promoting only the skills the brief passed via delegate_task(skills=[...]). Demote-never-hide: every skill stays loadable with skill_view(). Set false to give children the full index.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

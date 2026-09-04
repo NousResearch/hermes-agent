@@ -2165,6 +2165,11 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
+        # Give delegated subagents a names-only skill index (descriptions
+        # dropped) and re-promote only the skills the dispatching brief named
+        # via delegate_task(skills=[...]). Demote-never-hide: every skill stays
+        # loadable with skill_view(). Set false to give children the full index.
+        "compact_skill_index": True,
         "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

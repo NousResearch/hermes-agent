@@ -35,6 +35,71 @@
 
 import http from 'node:http'
 import https from 'node:https'
+import { gunzip } from 'node:zlib'
+
+const JSON_ACCEPT_ENCODING = 'gzip'
+const JSON_RESPONSE_MAX_WIRE_BYTES = 16 * 1024 * 1024
+const JSON_RESPONSE_MAX_DECODED_BYTES = 64 * 1024 * 1024
+
+type JsonResponseDecodeOptions = {
+  maxWireBytes?: number
+  maxDecodedBytes?: number
+}
+
+function gunzipBounded(input: Buffer, maxOutputLength: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    gunzip(input, { maxOutputLength }, (error, output) => {
+      if (error) {
+        reject(error)
+
+        return
+      }
+
+      resolve(output)
+    })
+  })
+}
+
+async function decodeJsonResponseBody(
+  body: AsyncIterable<Uint8Array>,
+  contentEncoding: string | string[] | undefined,
+  options: JsonResponseDecodeOptions = {}
+): Promise<Buffer> {
+  const maxWireBytes = options.maxWireBytes ?? JSON_RESPONSE_MAX_WIRE_BYTES
+  const maxDecodedBytes = options.maxDecodedBytes ?? JSON_RESPONSE_MAX_DECODED_BYTES
+  const chunks: Buffer[] = []
+  let wireBytes = 0
+
+  for await (const chunk of body) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    wireBytes += buffer.length
+
+    if (wireBytes > maxWireBytes) {
+      throw new Error(`JSON response exceeds the ${maxWireBytes}-byte wire limit`)
+    }
+
+    chunks.push(buffer)
+  }
+
+  const encoded = Buffer.concat(chunks, wireBytes)
+  const encoding = String(Array.isArray(contentEncoding) ? contentEncoding.join(',') : contentEncoding || 'identity')
+    .trim()
+    .toLowerCase()
+
+  if (encoding === 'identity') {
+    if (encoded.length > maxDecodedBytes) {
+      throw new Error(`JSON response exceeds the ${maxDecodedBytes}-byte decoded limit`)
+    }
+
+    return encoded
+  }
+
+  if (encoding !== JSON_ACCEPT_ENCODING) {
+    throw new Error(`Unsupported JSON response content-encoding: ${encoding}`)
+  }
+
+  return gunzipBounded(encoded, maxDecodedBytes)
+}
 
 // JSON pool: many small concurrent calls (session lists, config, prompts).
 const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50 })
@@ -168,10 +233,12 @@ async function withRetry(makeAttempt, options: any = {}) {
 }
 
 export {
+  decodeJsonResponseBody,
   destroyKeepaliveAgents,
   downloadAgentFor,
   isIdempotentMethod,
   isTransientTransportError,
+  JSON_ACCEPT_ENCODING,
   jsonAgentFor,
   shouldRetryRequest,
   withRetry

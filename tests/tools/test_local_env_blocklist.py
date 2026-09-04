@@ -1786,3 +1786,134 @@ class TestHermesInternalDynamicSecrets:
         assert "GATEWAY_RELAY_SECRET" in _HERMES_PROVIDER_ENV_BLOCKLIST
         assert "GATEWAY_RELAY_DELIVERY_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
         assert "GATEWAY_RELAY_ID" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+class TestKanbanNestedSpawnScrub:
+    """Nested subprocesses must not inherit the parent worker's Kanban identity.
+
+    A dispatcher-owned Kanban worker has HERMES_KANBAN_* in its own env, but a
+    nested ``hermes`` CLI it launches through the terminal tool inherits that
+    env and is accepted as the parent run owner — it can complete/block the
+    parent's card while the real worker is still running (#81508).  The
+    terminal-tool spawn env must strip the dispatcher identity unconditionally,
+    not just for delegate_task children.
+
+    See https://github.com/NousResearch/hermes-agent/issues/81508
+    """
+
+    _WORKER_ENV = {
+        "HERMES_KANBAN_TASK": "t_6229de04",
+        "HERMES_KANBAN_RUN_ID": "71",
+        "HERMES_KANBAN_CLAIM_LOCK": "claim-lock-abc",
+        "HERMES_KANBAN_BOARD": "default",
+        "HERMES_KANBAN_DB": "/tmp/parent-kanban.db",
+        "HERMES_KANBAN_WORKSPACE": "/tmp/parent-workspace",
+        "HERMES_KANBAN_BRANCH": "wt/t_6229de04",
+        "HERMES_KANBAN_GOAL_MODE": "1",
+        "HERMES_KANBAN_GOAL_MAX_TURNS": "12",
+        "HERMES_KANBAN_WORKER_SCOPE": "lifecycle-only",
+        # Drift oracle: a future dispatcher key must be stripped without first
+        # being added to a hand-maintained allow/deny list.
+        "HERMES_KANBAN_FUTURE_CAPABILITY": "must-not-leak",
+    }
+
+    def test_worker_terminal_foreground_spawn_strips_kanban_env(self):
+        """A worker's foreground terminal command must not see HERMES_KANBAN_*."""
+        result_env = _run_with_env(extra_os_env=dict(self._WORKER_ENV))
+        for key in self._WORKER_ENV:
+            assert key not in result_env, f"{key} leaked into nested subprocess env"
+
+    def test_worker_terminal_foreground_spawn_keeps_other_env(self):
+        """Non-Kanban vars still flow to the nested subprocess."""
+        result_env = _run_with_env(extra_os_env={**self._WORKER_ENV, "MY_APP_VAR": "keep-me"})
+        assert result_env.get("MY_APP_VAR") == "keep-me"
+
+    def test_worker_terminal_foreground_spawn_not_marked_delegated_child(self):
+        """A plain nested spawn is NOT a delegate_task child — no lineage marker."""
+        result_env = _run_with_env(extra_os_env=dict(self._WORKER_ENV))
+        assert result_env.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
+
+    def test_worker_terminal_background_spawn_strips_kanban_env(self):
+        """The process_registry (background/PTY) path strips too.
+
+        ``process_registry.spawn_local`` builds its env via
+        ``_sanitize_subprocess_env``, which must scrub the dispatcher identity
+        for every caller — the nested-CLI attack is not foreground-only.
+        """
+        from tools.environments.local import _sanitize_subprocess_env
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin", **self._WORKER_ENV}, clear=True):
+            env = _sanitize_subprocess_env(dict(os.environ))
+        for key in self._WORKER_ENV:
+            assert key not in env, f"{key} leaked via background spawn env"
+
+    def test_worker_terminal_spawn_real_subprocess_sees_no_kanban_env(self):
+        """End-to-end: a REAL spawned child must not see HERMES_KANBAN_*.
+
+        Unlike the mocked-Popen tests above, this spawns an actual
+        subprocess through ``_make_run_env`` and asserts the dispatcher
+        identity never crosses the process boundary (#81508).
+        """
+        import subprocess
+        import sys
+
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(
+            os.environ,
+            {"PATH": "/usr/bin:/bin", "HOME": "/tmp", **self._WORKER_ENV},
+            clear=True,
+        ):
+            run_env = _make_run_env(dict(os.environ))
+
+        probe = (
+            "import os;"
+            "leaked=[k for k in os.environ if k.startswith('HERMES_KANBAN_')];"
+            "print('LEAK:' + ','.join(sorted(leaked)) if leaked else 'CLEAN')"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "LEAK:" not in result.stdout
+        # Plain nested spawns are not delegated children — no false marker.
+        assert "HERMES_DELEGATED_CHILD_CONTEXT" not in run_env
+
+    def test_worker_execute_code_spawn_strips_kanban_env(self):
+        """execute_code sandbox children must not inherit Kanban identity.
+
+        Regression for the sibling subprocess boundary: a worker's
+        execute_code child could otherwise spawn a nested hermes with full
+        board mutation capability (#81508).
+        """
+        from tools.code_execution_tool import _scrub_child_env
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin", **self._WORKER_ENV}, clear=True):
+            env = _scrub_child_env(
+                dict(os.environ),
+                is_passthrough=lambda k: k.startswith("HERMES_KANBAN_"),
+                is_windows=False,
+            )
+        for key in self._WORKER_ENV:
+            assert key not in env, f"{key} leaked into execute_code sandbox env"
+        # Passthrough must not re-grant it either.
+        assert env.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
+
+    def test_worker_execute_code_spawn_still_marks_delegated_children(self):
+        """Delegated children keep the lineage marker (existing behavior)."""
+        from agent.delegation_context import delegated_child_context
+        from tools.code_execution_tool import _scrub_child_env
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin", **self._WORKER_ENV}, clear=True):
+            with delegated_child_context():
+                env = _scrub_child_env(
+                    dict(os.environ),
+                    is_passthrough=lambda k: k.startswith("HERMES_KANBAN_"),
+                    is_windows=False,
+                )
+        assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
+        assert "HERMES_KANBAN_TASK" not in env

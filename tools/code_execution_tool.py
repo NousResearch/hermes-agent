@@ -335,21 +335,30 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             ", ".join(sorted(_dropped_hermes)),
         )
 
-    # delegate_task children are marked with a ContextVar, not os.environ, while
-    # the execute_code sandbox crosses a process boundary. Bridge that context
-    # into the child env and strip dispatcher-owned Kanban variables after the
-    # normal secret/passthrough scrub so an explicit passthrough cannot re-grant
-    # a delegated child the parent's board mutation capability.
+    # The execute_code sandbox crosses a process boundary.  Strip dispatcher-
+    # owned Kanban variables after the normal secret/passthrough scrub so an
+    # explicit passthrough cannot re-grant a nested process (delegated child
+    # OR plain worker-spawned sandbox) the parent's board mutation capability
+    # (#81508).  Delegated children additionally keep the lineage marker.
+    # Fail closed: on import failure the prefix sweep still strips the
+    # dispatcher identity.
     try:
         from agent.delegation_context import (
             is_delegated_child_process_context,
             scrub_kanban_env,
+            strip_kanban_env,
         )
 
         if is_delegated_child_process_context():
             scrubbed = scrub_kanban_env(scrubbed)
+        else:
+            scrubbed = strip_kanban_env(scrubbed)
     except Exception:
-        pass
+        scrubbed = {
+            key: value
+            for key, value in scrubbed.items()
+            if not key.startswith("HERMES_KANBAN_")
+        }
     return scrubbed
 
 

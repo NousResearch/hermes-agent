@@ -768,13 +768,62 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
-    sanitized = _scrub_delegated_child_kanban_env(sanitized)
+    # Any subprocess spawned from a Kanban worker (terminal tool foreground /
+    # background / PTY, watchers, cua-driver) must not inherit the worker's
+    # dispatcher identity (#81508).  The codex/ACP runtime keeps its env via
+    # hermes_subprocess_env, which calls the delegated-child-only scrub.
+    sanitized = _scrub_terminal_spawn_kanban_env(sanitized)
 
     return sanitized
 
 
+def _scrub_terminal_spawn_kanban_env(env: dict[str, str]) -> dict[str, str]:
+    """Strip dispatcher-owned Kanban env from terminal-spawned subprocesses.
+
+    A dispatcher-owned worker legitimately carries ``HERMES_KANBAN_*`` in its
+    own env, but any subprocess it spawns through the terminal tool (or the
+    execute_code sandbox) must NOT inherit that identity: a nested ``hermes``
+    CLI would otherwise be accepted as the parent run owner and could
+    complete/block the parent's card (#81508).  The dispatcher's own worker
+    spawn (``kanban_db._default_spawn``) builds its env explicitly, so it is
+    unaffected by this scrub.
+
+    Delegated children additionally keep the lineage marker (strip + marker);
+    plain nested spawns are stripped without the marker — they are not
+    delegate_task children.
+
+    Fail closed: if the delegation module cannot be imported, the
+    ``HERMES_KANBAN_*`` prefix sweep still strips the dispatcher identity —
+    the env must never reach a terminal child unscrubbed.
+    """
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_process_context,
+            scrub_kanban_env,
+            strip_kanban_env,
+        )
+
+        if is_delegated_child_process_context():
+            return scrub_kanban_env(env)
+        return strip_kanban_env(env)
+    except Exception:
+        # Fail-closed fallback: prefix sweep is robust to any future
+        # HERMES_KANBAN_* key without duplicating the canonical key list.
+        return {
+            key: value
+            for key, value in env.items()
+            if not key.startswith("HERMES_KANBAN_")
+        }
+
+
 def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
-    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses."""
+    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses.
+
+    Non-terminal spawn surface (browser, lazy-deps, TUI/ACP hosts, codex
+    runtime): only delegated children lose the Kanban identity.  A codex-app-
+    server / ACP runtime subprocess of a worker legitimately needs
+    ``HERMES_KANBAN_TASK`` to write completion back to the board.
+    """
     try:
         from agent.delegation_context import (
             is_delegated_child_process_context,
@@ -1587,7 +1636,10 @@ def _make_run_env(env: dict) -> dict:
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
-    run_env = _scrub_delegated_child_kanban_env(run_env)
+    # Foreground terminal spawns from a Kanban worker must not inherit the
+    # worker's dispatcher identity: a nested `hermes` CLI launched through the
+    # terminal would otherwise be accepted as the parent run owner (#81508).
+    run_env = _scrub_terminal_spawn_kanban_env(run_env)
 
     return run_env
 

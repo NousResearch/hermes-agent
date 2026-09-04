@@ -178,6 +178,30 @@ class TestDelegatedChildMarker:
         assert "HERMES_KANBAN_WORKSPACE" not in env
         assert env["MY_APP_VAR"] == "keep-me"
 
+    def test_non_delegated_worker_keeps_kanban_env_for_runtime(self):
+        """A worker's codex/ACP runtime subprocess keeps HERMES_KANBAN_*.
+
+        ``hermes_subprocess_env`` feeds the codex app server and copilot ACP
+        runtimes, which are the worker's OWN execution surface — they must
+        retain ``HERMES_KANBAN_TASK`` so the runtime can write completion /
+        block back to the board (#81508 fixes the terminal-tool boundary; the
+        non-terminal runtime boundary is intentionally unchanged).
+        """
+        env = _build(
+            {
+                "HERMES_KANBAN_TASK": "t_parent",
+                "HERMES_KANBAN_RUN_ID": "123",
+                "HERMES_KANBAN_DB": "/tmp/parent-kanban.db",
+                "HERMES_KANBAN_WORKSPACE": "/tmp/parent-workspace",
+            },
+            inherit_credentials=True,
+        )
+        assert env["HERMES_KANBAN_TASK"] == "t_parent"
+        assert env["HERMES_KANBAN_RUN_ID"] == "123"
+        assert env["HERMES_KANBAN_DB"] == "/tmp/parent-kanban.db"
+        # Plain (non-delegated) spawns must not receive the lineage marker.
+        assert env.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
+
 
 _INTERNAL_DYNAMIC_SAMPLE = {
     "AUXILIARY_VISION_API_KEY": "sk-vision",

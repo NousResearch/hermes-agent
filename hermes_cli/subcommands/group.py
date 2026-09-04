@@ -246,6 +246,8 @@ class HostedTransport:
         )
 
     def wait(self, sent, *, timeout, poll_seconds, on_reply):
+        if not (float(poll_seconds) > 0):
+            raise GroupCLIError("--poll must be a positive number of seconds")
         room_id, my_id, my_seq = sent.ref.room_id, sent.message_id, int(sent.seq or 0)
         handles = self._handles(sent.ref)
         cursor = my_seq
@@ -264,10 +266,19 @@ class HostedTransport:
                 if kind.startswith("turn.") or kind == "room.activity":
                     saw_driver_activity = True
                 if kind == "message.member":
-                    pending[str(event["event_id"])] = event
+                    # Only OUR discussion's replies: other relays/threads in the
+                    # same room interleave in the log and must not stream here.
+                    if (
+                        str(payload.get("discussion_event_id") or "") == my_id
+                        and str(payload.get("thread_id") or "") == sent.thread
+                    ):
+                        pending[str(event["event_id"])] = event
                 elif kind == "turn.settled":
                     committed = pending.pop(str(payload.get("message_event_id") or ""), None)
-                    if committed is not None:
+                    if (
+                        committed is not None
+                        and str(payload.get("discussion_event_id") or "") == my_id
+                    ):
                         member_id = str(committed["payload"].get("member_id") or "?")
                         text = str(committed["payload"].get("text") or "")
                         replies.append(
@@ -290,6 +301,12 @@ class HostedTransport:
                         "replies": replies,
                     }
                 elif kind == "room.stop_requested" and cursor > my_seq:
+                    # The stop fence is ROOM-WIDE by design: the policy's
+                    # stopped_through_seq supersedes every earlier user turn in
+                    # every thread (gateway/hosted_room_discussion.py
+                    # plan_next_task). A stop issued after our send therefore
+                    # cancels our discussion too, so exit 4 is the truth even
+                    # when the stop was aimed at another thread.
                     return EXIT_SUPERSEDED, {
                         "status": "stopped",
                         "reason": "room.stop_requested",
@@ -312,7 +329,7 @@ class HostedTransport:
                     flush=True,
                 )
                 warned = True
-            time.sleep(max(0.0, float(poll_seconds)))
+            time.sleep(float(poll_seconds))
 
     def log(self, ref, *, since):
         handles = self._handles(ref)
@@ -533,7 +550,9 @@ def build_group_parser(subparsers) -> None:
             "start a new thread rather than reuse another session's.\n"
             "\n"
             "Exit codes: 0 settled/bounded, 1 error, 2 usage, 3 timeout "
-            "(partial replies already printed), 4 superseded by a room stop.\n"
+            "(partial replies already printed), 4 superseded by a room stop. A "
+            "room stop is room-wide: it cancels every pending user turn in every "
+            "thread, including this relay's.\n"
             "\n"
             "Examples:\n"
             "  hermes group list\n"

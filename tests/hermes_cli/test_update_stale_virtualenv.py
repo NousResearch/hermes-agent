@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import hermes_cli.main as main_mod
+from hermes_cli import main_install_repair
 
 
 class StaleVirtualEnvTest(unittest.TestCase):
@@ -24,13 +25,13 @@ class StaleVirtualEnvTest(unittest.TestCase):
         def fake_verify(prefix, *, env=None):
             return None
 
-        with mock.patch.object(main_mod, "_run_quarantined_install", fake_quarantine), \
-             mock.patch.object(main_mod, "_verify_console_scripts_installed", fake_verify), \
-             mock.patch.object(main_mod, "_venv_scripts_dir", return_value=None), \
-             mock.patch.object(main_mod, "_is_windows", return_value=is_windows), \
-             mock.patch.object(main_mod.sys, "executable", fake_executable), \
+        with mock.patch.object(main_install_repair, "_run_quarantined_install", fake_quarantine), \
+             mock.patch.object(main_install_repair, "_verify_console_scripts_installed", fake_verify), \
+             mock.patch.object(main_install_repair, "_venv_scripts_dir", return_value=None), \
+             mock.patch.object(main_install_repair, "_is_windows", return_value=is_windows), \
+             mock.patch.object(main_install_repair.sys, "executable", fake_executable), \
              mock.patch.object(main_mod, "PROJECT_ROOT", Path("/fake/project")):
-            main_mod._install_python_dependencies_with_optional_fallback(
+            main_install_repair._install_python_dependencies_with_optional_fallback(
                 list(uv_cmd),
                 env={"VIRTUAL_ENV": str(venv_path)},
                 group="all",
@@ -88,7 +89,7 @@ class StaleVirtualEnvTest(unittest.TestCase):
         )
         # Force the caller path through a manual pin with a pre-existing flag.
         args = ["install", "--python", "/caller/choice/python.exe", "hermes"]
-        pinned = main_mod._insert_python_pin(args)
+        pinned = main_install_repair._insert_python_pin(args)
         self.assertEqual(pinned, args, "existing --python must win")
         self.assertEqual(pinned.count("--python"), 1)
 
@@ -96,8 +97,7 @@ class StaleVirtualEnvTest(unittest.TestCase):
         """On Windows with a missing project venv, quarantine must target the
         interpreter's Scripts dir (where the shims actually live), not None."""
         fake_scripts = Path("/fake/python311/Scripts")
-        with mock.patch.object(
-            main_mod, "_interpreter_scripts_dir", return_value=fake_scripts
+        with mock.patch.object(main_install_repair, "_interpreter_scripts_dir", return_value=fake_scripts
         ):
             captured = self._call(
                 uv_cmd=[Path("/fake/uv"), "pip"],

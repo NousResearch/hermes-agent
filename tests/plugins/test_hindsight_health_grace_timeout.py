@@ -13,7 +13,7 @@ import pytest
 
 hindsight = importlib.import_module("plugins.memory.hindsight")
 _export = hindsight._export_port_health_grace_timeout
-_ENV = hindsight._PORT_HEALTH_GRACE_ENV
+_ENV = importlib.import_module("plugins.memory.hindsight.embedded")._PORT_HEALTH_GRACE_ENV
 
 
 @pytest.fixture(autouse=True)

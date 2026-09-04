@@ -214,8 +214,10 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 4. runtimePeerPrefix + runtime_id → namespaced peer, with sha256 collision escalation
 5. raw sanitized runtime_id      → fallback peer
 6. peerName                      → no runtime ID at all (CLI/TUI)
-7. session-key fallback          → no config either
+7. neither                       → session init fails with a one-time notice; no peer is minted
 ```
+
+Step 7 used to derive a peer from the session key (`user-default-<dir>`). That put a desktop or CLI session with no `peerName` on a phantom peer per directory, so its turns and memory never reached the operator's own peer (#93326). Set `peerName` (`hermes honcho peer --user <name>`) or run under a gateway that supplies a user ID.
 
 **Why no `pinAiPeer`?** The AI peer is already pinned by construction — `aiPeer` is the only AI-side identity setting and the resolver never overrides it. Only the user-side peer has the runtime-vs-config tension that `pinUserPeer` resolves.
 

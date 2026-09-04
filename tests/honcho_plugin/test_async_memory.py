@@ -21,6 +21,7 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
+from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
 
 
 # ---------------------------------------------------------------------------
@@ -519,20 +520,17 @@ class TestMemoryFileMigrationOwnerGate:
         assert uploaded is False
         assert honcho_session.upload_file.call_count == 0
 
-    def test_no_declared_owner_single_operator_migrates(self, tmp_path, make_manager):
-        """No peerName and no runtime identity is the plain CLI install —
-        the only person who exists is the operator the files describe."""
+    def test_no_declared_owner_without_identity_has_no_session_to_migrate(self, tmp_path, make_manager):
+        """No peerName and no runtime identity: the resolver refuses to name a peer
+        (#93326), so no session exists for the owner gate and nothing is uploaded."""
         mgr = make_manager(write_frequency="turn")
-        session, honcho_session = _prime_migration_session(mgr, "cli:test", "cli-test")
-        mgr._peers_cache[session.user_peer_id] = MagicMock()
-        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
-
         (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
 
-        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+        with pytest.raises(HonchoPeerUnresolvedError):
+            _prime_migration_session(mgr, "cli:test", "cli-test")
 
-        assert uploaded is True
-        assert honcho_session.upload_file.call_count == 1
+        assert mgr.migrate_memory_files("cli:test", str(tmp_path)) is False
+        assert make_manager.client.session.return_value.upload_file.call_count == 0
 
     def test_aliased_owner_identity_migrates(self, tmp_path, make_manager):
         """An alias mapping the owner's platform ID onto peerName makes that

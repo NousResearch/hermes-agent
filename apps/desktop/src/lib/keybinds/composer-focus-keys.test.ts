@@ -177,6 +177,21 @@ describe('composerFocusKeysAllowed', () => {
     expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: button }), 'type')).toBe(true)
   })
 
+  it('leaves Space with focused controls, including keyboard reorder handles', () => {
+    const button = document.createElement('button')
+    const handle = document.createElement('span')
+    handle.setAttribute('role', 'button')
+    handle.tabIndex = 0
+    document.body.append(button, handle)
+
+    for (const target of [button, handle]) {
+      expect(composerFocusKeysAllowed(keydown({ key: ' ', code: 'Space', target }), 'type')).toBe(false)
+      expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target }), 'type')).toBe(true)
+    }
+
+    expect(composerFocusKeysAllowed(keydown({ key: ' ', code: 'Space', target: document.body }), 'type')).toBe(true)
+  })
+
   it('refuses when a dialog is open', () => {
     const dialog = document.createElement('div')
     dialog.setAttribute('role', 'dialog')

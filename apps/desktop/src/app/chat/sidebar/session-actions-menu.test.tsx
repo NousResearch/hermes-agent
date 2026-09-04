@@ -1,7 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useSensor, useSensors } from '@dnd-kit/core'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ReorderKeyboardSensor } from '@/lib/reorder-keyboard-sensor'
+
+import { SidebarRowGrab, SidebarRowShell } from './chrome'
+import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
@@ -122,7 +127,74 @@ function renderMenu() {
   )
 }
 
+function SortableRenameRow() {
+  const { ref, dragHandleProps } = useSortableBindings('s1')
+
+  return (
+    <SidebarRowShell
+      actions={
+        <SessionActionsMenu sessionId="s1" title="My session">
+          <button aria-label="Session actions" type="button">
+            ⋮
+          </button>
+        </SessionActionsMenu>
+      }
+      ref={ref}
+      {...dragHandleProps}
+    >
+      <SidebarRowGrab ariaLabel="Reorder session" dragHandleProps={dragHandleProps}>
+        <span>My session</span>
+      </SidebarRowGrab>
+    </SidebarRowShell>
+  )
+}
+
+function SortableRenameList() {
+  const sensors = useSensors(useSensor(ReorderKeyboardSensor))
+
+  return (
+    <ReorderableList ids={['s1']} onReorder={() => {}} sensors={sensors}>
+      <SortableRenameRow />
+    </ReorderableList>
+  )
+}
+
 describe('SessionActionsMenu', () => {
+  it('leaves Space in the focused rename input instead of starting a row reorder', async () => {
+    render(<SortableRenameList />)
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /rename/i }))
+    const input = within(await screen.findByRole('dialog')).getByRole('textbox')
+    await waitFor(() => expect(input.ownerDocument.activeElement).toBe(input))
+
+    const space = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true })
+    fireEvent(input, space)
+    // Let a mistakenly activated sensor attach its document listener, then
+    // cancel it even on failure so it cannot leak into the next test.
+    await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    fireEvent.keyDown(input.ownerDocument, { key: 'Escape', code: 'Escape' })
+
+    expect(space.defaultPrevented).toBe(false)
+  })
+
+  it('still starts keyboard reordering from the focused grab handle and row', async () => {
+    const { container } = render(<SortableRenameList />)
+    const handle = screen.getByRole('button', { name: 'Reorder session' })
+    const row = container.querySelector<HTMLElement>('[aria-roledescription="sortable"]')!
+
+    for (const activator of [handle, row]) {
+      activator.focus()
+      fireEvent.keyDown(activator, { key: ' ', code: 'Space' })
+      expect(activator.getAttribute('aria-pressed')).toBe('true')
+      await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+      fireEvent.keyDown(activator.ownerDocument, { key: 'Escape', code: 'Escape' })
+      expect(activator.getAttribute('aria-pressed')).not.toBe('true')
+    }
+  })
+
   it('opens the dropdown on click without a tooltip on the kebab', async () => {
     renderMenu()
 

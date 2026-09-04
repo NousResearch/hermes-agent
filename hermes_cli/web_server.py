@@ -8162,6 +8162,17 @@ def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple
     except Exception:
         return "", name
 
+    prev_clean = (prev_provider or "").strip().lower()
+    norm_prev = normalize_provider(prev_clean)
+    # Multi-vendor proxy/custom providers (litellm, custom, openai_compatible, custom:<name>)
+    # multiplex vendor-prefixed slugs through their own endpoint. Never switch them away.
+    if (
+        prev_clean in ("litellm", "custom", "openai_compatible")
+        or norm_prev in ("litellm", "custom", "openai_compatible")
+        or norm_prev.startswith("custom:")
+    ):
+        return "", name
+
     try:
         detected = detect_provider_for_model(name, prev_provider)
     except Exception:
@@ -8217,39 +8228,31 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
     model_val = config.get("model")
     if (isinstance(model_val, str) and model_val) or ctx_sent:
-        # Read the current disk config to recover model subkeys
+        # Read the raw on-disk config to recover model subkeys and check if model actually changed
         try:
-            disk_config = load_config()
+            from hermes_cli.config import read_raw_config
+            disk_config = read_raw_config()
             disk_model = disk_config.get("model")
             if isinstance(disk_model, dict):
-                if isinstance(model_val, str) and model_val:
-                    prev_default = str(disk_model.get("default") or "").strip()
-                    prev_provider = str(disk_model.get("provider") or "").strip()
-                    # When the model name actually changed, re-detect which
-                    # provider serves it. The Config-page Model field is a flat
-                    # string with no provider info, so without this a user who
-                    # picks an OpenRouter model while their default provider is
-                    # ollama-local keeps the stale provider and 404s. Only fires
-                    # on a real model change so saving unrelated config fields
-                    # never overwrites an explicit provider.
-                    if model_val != prev_default and prev_provider:
+                prev_default = str(disk_model.get("default") or disk_model.get("name") or "").strip()
+                prev_provider = str(disk_model.get("provider") or "").strip()
+                model_str = model_val.strip() if isinstance(model_val, str) else ""
+                model_changed = bool(model_str and model_str != prev_default)
+
+                if model_changed:
+                    if prev_provider:
                         new_provider, resolved_model = _infer_provider_on_model_change(
-                            model_val, prev_provider
+                            model_str, prev_provider
                         )
                         if new_provider and new_provider.strip().lower() != prev_provider.lower():
-                            # Route through the canonical assignment chokepoints so
-                            # the model is normalized for the new provider and stale
-                            # base_url/api_mode/api_key are cleared on the switch
-                            # (and preserved on a same-provider re-pick).
                             norm_provider, norm_model = _normalize_main_model_assignment(
                                 new_provider, resolved_model
                             )
                             disk_model = _apply_main_model_assignment(
                                 disk_model, norm_provider, norm_model
                             )
-                            model_val = norm_model
-                    # Preserve all subkeys, update default with the new value
-                    disk_model["default"] = model_val
+                            model_str = norm_model
+                    disk_model["default"] = model_str
                 # Write context_length into the model dict (0 = remove/auto),
                 # but only when the payload actually carried the key.
                 if ctx_sent:
@@ -8257,7 +8260,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                         disk_model["context_length"] = ctx_override
                     else:
                         disk_model.pop("context_length", None)
-                config["model"] = disk_model
+                if model_changed or ctx_sent:
+                    config["model"] = disk_model
+                else:
+                    config.pop("model", None)
             # Model was previously a bare string (or absent) — upgrade to a
             # dict if the user is setting a context_length override.
             elif ctx_sent and ctx_override > 0:
@@ -8271,8 +8277,16 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                     "default": default,
                     "context_length": ctx_override,
                 }
+            elif isinstance(model_val, str) and model_val:
+                raw_str = disk_model.strip() if isinstance(disk_model, str) else ""
+                if model_val.strip() != raw_str:
+                    config["model"] = model_val
+                else:
+                    config.pop("model", None)
+            else:
+                config.pop("model", None)
         except Exception:
-            pass  # can't read disk config — just use the string form
+            _log.debug("could not read disk config for model denormalization", exc_info=True)
     return config
 
 

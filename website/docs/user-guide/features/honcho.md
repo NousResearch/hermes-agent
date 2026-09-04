@@ -143,7 +143,7 @@ Directory-based strategies and manual `sessions` mappings use the logical sessio
 
 Messaging gateways keep their stable per-chat session key regardless of strategy or title. For other sessions, `per-session` identity takes priority, followed by a manual directory mapping, an explicit title, and the configured strategy.
 
-Automatically generated Hermes titles (`derived` or `llm`) are display metadata and do not override `sessionStrategy`. An explicit user title remains an intentional session-name override for non-gateway, non-`per-session` sessions without a manual mapping.
+Automatically generated Hermes titles (`derived` or `llm`), including lineage titles for Desktop branches, are display metadata and do not override `sessionStrategy`. An explicit user title remains an intentional session-name override for non-gateway, non-`per-session` sessions without a manual mapping.
 
 Sessions created before title provenance was recorded retain legacy behavior: because an old automatic title cannot be distinguished from an old user title, a title with no source is treated as an explicit override.
 

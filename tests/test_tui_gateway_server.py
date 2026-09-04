@@ -15729,8 +15729,9 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
         def append_messages_batch(self, session_id, messages, **kwargs):
             seen["messages"] = list(messages)
 
-        def set_session_title(self, key, title):
+        def set_auto_title(self, key, title, *, source):
             seen["title"] = title
+            seen["title_source"] = source
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -15773,6 +15774,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("parent") == "20260823_084113_6de211"
     assert seen.get("branched_from") == "20260823_084113_6de211"
     assert seen.get("title") == "My Parent Session #2"
+    assert seen.get("title_source") == "derived"
 
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.

@@ -6,6 +6,7 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 
 import contextlib
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -22,6 +23,11 @@ from hermes_state_common import (
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
+
+# Natural-language expansion is dependency-free and shipped with this module.
+# Keep the low-level FTS API strict by default; conversational callers opt in
+# via ``natural_language=True`` (see SessionSearchMixin.search_messages).
+import hermes_state_nl_expansion as _nle
 
 # Characters FTS5's query grammar rejects outside a quoted phrase (anything missing
 # reaches MATCH raw and raises -> zero results). ``%`` is deliberately excluded: the
@@ -164,6 +170,33 @@ def _search_filter_clauses(
 
 class SessionSearchMixin:
     """See module docstring — mixin for SessionDB (Search cluster)."""
+
+    # Shared, bounded expansion cache.  NLSupport itself is dependency-free;
+    # a single instance avoids per-query allocation without retaining an unbounded
+    # record of user-entered queries.
+    _nl_support = _nle.NLSupport()
+
+    @staticmethod
+    def _log_nl_fallback(*, route: str, language: str, elapsed_ms: float, rows: int, chars: int) -> None:
+        """Emit one privacy-safe NL fallback event when explicitly enabled."""
+        if os.getenv("HERMES_SEARCH_NL_ROUTE_LOG", "").lower() not in {"1", "true", "yes"}:
+            return
+        logger.info(
+            "session search NL fallback: path=%s language=%s elapsed=%.0fms rows=%s chars=%s",
+            route, language, elapsed_ms, rows, chars,
+        )
+
+    @staticmethod
+    def _nl_eligible(query: str) -> bool:
+        """True only for plain conversational text, never FTS5 syntax.
+
+        ``search_messages`` is also a low-level API.  Explicit quotes, wildcard,
+        boolean and proximity operators are part of its public FTS5 contract and
+        must not be widened by a natural-language fallback.
+        """
+        if not query or any(char in query for char in ('"', '*')):
+            return False
+        return not re.search(r"\b(?:AND|OR|NOT|NEAR)\b", query, re.IGNORECASE)
 
     _SEARCH_MESSAGE_RESULT_FIELDS = (
         "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "session_started", "context"
@@ -1001,36 +1034,61 @@ class SessionSearchMixin:
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        natural_language: bool = False,
     ) -> List[Dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
-        path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
+        path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call).
+
+        ``natural_language`` opts conversational callers into a bounded, zero-result
+        FTS5 expansion fallback. It defaults to ``False`` so the explicit FTS5 syntax
+        (quoted phrases, boolean/proximity operators, wildcards) stays a stable low-level
+        API contract; only the ``session_search`` tool turns it on."""
         started = time.time()
         rows = None
+        search_route: Dict[str, str] = {}
         try:
             rows = self._search_messages_impl(
                 query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
-                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields)
+                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields,
+                natural_language=natural_language, search_route=search_route)
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
             if elapsed_ms >= env_float("HERMES_SEARCH_SLOW_MS", 1000.0):
-                logger.info("slow session search: path=%s elapsed=%.0fms rows=%s query=%r",
-                            self._describe_search_path(query), elapsed_ms, len(rows) if rows is not None else "err",
-                            query[: 200])
+                route = search_route.get("path", self._describe_search_path(query))
+                # Search text may contain user data. Keep production telemetry
+                # aggregate-friendly by default; operators can explicitly opt into
+                # query-text diagnostics for a short troubleshooting window.
+                log_query = os.getenv("HERMES_SEARCH_LOG_QUERY", "").lower() in {"1", "true", "yes"}
+                if log_query:
+                    logger.info("slow session search: path=%s elapsed=%.0fms rows=%s chars=%s query=%r",
+                                route, elapsed_ms, len(rows) if rows is not None else "err", len(query), query[:200])
+                else:
+                    logger.info("slow session search: path=%s elapsed=%.0fms rows=%s chars=%s",
+                                route, elapsed_ms, len(rows) if rows is not None else "err", len(query))
 
     def _search_messages_impl(
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        natural_language: bool = False, search_route: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """FTS5 search across session messages (keywords, ``"phrases"``, AND/OR/NOT, ``prefix*``).
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
         projection. ``sort``: None = BM25 rank; "newest"/"oldest" = timestamp then rank (the
         CJK LIKE fallback ignores it). Rewound rows (``active=0, compacted=0``) are excluded
-        by default; compaction-archived rows ARE included; ``include_inactive`` = every row."""
+        by default; compaction-archived rows ARE included; ``include_inactive`` = every row.
+
+        ``natural_language`` enables a bounded zero-result NL expansion fallback for
+        conversational callers; ``search_route`` records which route produced the final
+        rows so the wrapper can attribute slow-search telemetry accurately."""
         result_fields = self._search_message_fields(fields)
         if not query or not query.strip():
             return []
+        # Keep the caller's text for NL eligibility. Sanitization may insert
+        # protective quotes around punctuation (for example a French hyphen),
+        # which must not be mistaken for an explicit FTS phrase chosen by the caller.
+        raw_nl_query = query
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
@@ -1091,7 +1149,35 @@ class SessionSearchMixin:
         # tokens). Gated on a miss so hits keep their ranking ("cat" may then match
         # "concatenate"). Skipped for role='tool' (both indexes exclude tool rows).
         if not matches and not is_cjk and not (bool(role_filter) and "tool" in role_filter):
-            fb_query = _quote_fts_tokens(query.strip('"').strip())
+            # ── NL expansion: stopwords + light morphology ──
+            # A natural-language question usually fails plain FTS5 twice:
+            # AND-between-tokens across messages and inflected word forms. Try
+            # prefixed AND first, then OR only in the explicit conversational
+            # mode. Message-level FTS may store the terms of a user question in
+            # adjacent turns, where strict AND cannot recall the session. This
+            # remains a zero-result fallback; explicit FTS5 syntax never enters
+            # this branch and the selected route is logged.
+            expanded = None
+            if natural_language and self._nl_eligible(raw_nl_query):
+                expanded = self._nl_support.expand_nl_query(raw_nl_query)
+            if expanded:
+                for _nl_key in ("and", "or"):
+                    _nl_started = time.perf_counter()
+                    _nl_matches = self._match_rows("messages_fts", expanded[_nl_key], **route)
+                    if _nl_matches:
+                        matches = _nl_matches
+                        _nl_route = f"nl_fts_{_nl_key}"
+                        if search_route is not None:
+                            search_route["path"] = _nl_route
+                        self._log_nl_fallback(
+                            route=_nl_route, language=expanded["language"],
+                            elapsed_ms=(time.perf_counter() - _nl_started) * 1000.0,
+                            rows=len(_nl_matches), chars=len(raw_nl_query),
+                        )
+                        break
+                # The substring-capable indexes below get the stopword-stripped
+                # query so they don't trip over function words either.
+            fb_query = _quote_fts_tokens((expanded["bare"] if expanded else query).strip('"').strip())
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ────── When the bigram index is
             # available it serves EVERY CJK query shape the legacy code split between trigram (>=3
             # chars/token) and LIKE full scans (1-2 char tokens) — the whole point of the index (PR #65544).

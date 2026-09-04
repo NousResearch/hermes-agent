@@ -94,10 +94,10 @@ class _MinimalProvider(MemoryProvider):
 
 def test_manager_fans_out_to_all_providers():
     mm = MemoryManager()
-    # Only one external provider is allowed; use the builtin slot for p1.
+    # Only one external provider is allowed; use the trusted builtin slot for p1.
     p1 = _RecordingProvider(name="builtin")
     p2 = _RecordingProvider(name="hindsight")
-    mm.add_provider(p1)
+    mm.add_provider(p1, is_builtin=True)
     mm.add_provider(p2)
 
     mm.on_session_switch("new-sid", parent_session_id="old-sid", reset=False, reason="resume")
@@ -125,7 +125,7 @@ def test_manager_isolates_provider_failures():
     # (builtin slot) with a good external one.
     broken = _Broken(name="builtin")
     good = _RecordingProvider(name="good")
-    mm.add_provider(broken)
+    mm.add_provider(broken, is_builtin=True)
     mm.add_provider(good)
 
     # Must not raise — exceptions in one provider are swallowed + logged

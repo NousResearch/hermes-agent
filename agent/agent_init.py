@@ -1271,7 +1271,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
+                    agent._memory_manager.add_provider(_mp, is_builtin=False)
                 elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""

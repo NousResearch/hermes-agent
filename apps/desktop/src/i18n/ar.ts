@@ -578,6 +578,7 @@ export const ar = defineLocale({
       'security.allowPrivateUrls': 'السماح بالروابط الخاصة',
       'browser.allowPrivateUrls': 'روابط المتصفح الخاصة',
       'browser.autoLocalForPrivateUrls': 'متصفح محلي للروابط الخاصة',
+      'browser.realProfileBrowser': 'متصفح الملف الشخصي الحقيقي',
       'checkpoints.enabled': 'نقاط حفظ الملفات',
       'checkpoints.maxSnapshots': 'حد نقاط الحفظ',
       'voice.recordKey': 'اختصار الصوت',
@@ -638,6 +639,8 @@ export const ar = defineLocale({
       'display.personality': 'أسلوب المساعد الافتراضي للجلسات الجديدة.',
       'display.showReasoning': 'يعرض أقسام التفكير عندما توفرها الخلفية.',
       timezone: 'تستخدم عندما يحتاج Hermes إلى سياق الوقت المحلي. اتركها فارغة لاستخدام منطقة النظام.',
+      'browser.realProfileBrowser':
+        'اختر متصفح Chromium الذي تريد نسخ ملفه الشخصي. اتركه فارغاً لاستخدام متصفح النظام الافتراضي؛ لن يخمّن Hermes متصفحاً آخر مثبتاً.',
       'agent.imageInputMode': 'يتحكم في طريقة إرسال مرفقات الصور إلى النموذج.',
       'agent.maxTurns': 'الحد الأعلى لدورات استدعاء الأدوات قبل أن يوقف Hermes التشغيل.',
       'terminal.cwd': 'مجلد المشروع الافتراضي لعمل الأدوات والطرفية.',

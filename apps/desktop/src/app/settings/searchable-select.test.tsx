@@ -127,4 +127,18 @@ describe('ConfigField searchable routing', () => {
 
     expect(onChange).toHaveBeenCalledWith('')
   })
+
+  it('labels an empty real-profile browser pin as the system default', () => {
+    render(
+      <ConfigField
+        enumOptions={['', 'chrome', 'edge', 'brave', 'chromium']}
+        onChange={vi.fn()}
+        schema={{ type: 'string' }}
+        schemaKey="browser.real_profile_browser"
+        value=""
+      />
+    )
+
+    expect(screen.getByRole('combobox').textContent).toContain('System default')
+  })
 })

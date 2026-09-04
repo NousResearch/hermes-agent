@@ -13709,7 +13709,7 @@ def main():
         description=(
             "Helpers for real-profile browsing (browser.use_real_profile). "
             "close-profile terminates the browser process tree holding your "
-            "default profile so Hermes can copy it — DESTRUCTIVE (unsaved tabs "
+            "selected profile so Hermes can copy it — DESTRUCTIVE (unsaved tabs "
             "in that browser are lost). The agent runs this only after you "
             "approve closing the browser."
         ),
@@ -13722,24 +13722,36 @@ def main():
     )
     browser_close.add_argument(
         "--browser",
-        help="Override detected default browser (chrome/edge/brave/brave-origin/chromium)",
+        help="Override configured/OS-default browser (chrome/edge/brave/brave-origin/chromium)",
     )
 
     def _dispatch_browser(_args):
         from hermes_cli.browser_connect import (
             UNSUPPORTED_CHANNEL,
             close_browser_holding_profile,
-            detect_default_chromium,
             real_profile_data_dir,
+            resolve_real_profile_browser,
         )
 
         action = getattr(_args, "browser_action", None)
         if action != "close-profile":
             browser_parser.print_help()
             return 2
-        browser = getattr(_args, "browser", None) or detect_default_chromium()
+        browser = getattr(_args, "browser", None)
+        resolve_error = None
+        if not browser:
+            browser, resolve_error = resolve_real_profile_browser()
+        if resolve_error:
+            print(f"✗ {resolve_error}", file=sys.stderr)
+            return 1
         if not browser or browser == UNSUPPORTED_CHANNEL:
-            print("✗ No supported Chromium default browser detected.", file=sys.stderr)
+            print(
+                "✗ No supported Chromium default browser detected. Set "
+                "browser.real_profile_browser to chrome, edge, brave, brave-origin, "
+                "or chromium "
+                "to pin one without changing your OS default.",
+                file=sys.stderr,
+            )
             return 1
         src = real_profile_data_dir(browser)
         if not src:

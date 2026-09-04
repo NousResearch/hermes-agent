@@ -664,7 +664,7 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     """Point the harness at the user's real-profile copy-browser when consented.
 
     With ``browser.use_real_profile`` on, local browsing must mean the user's
-    default Chromium with their logins — a browser Hermes launches on a
+    selected Chromium profile with their logins — a browser Hermes launches on a
     SNAPSHOT of their real profile (see hermes_cli.browser_connect). Two ways
     in:
 

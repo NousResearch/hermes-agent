@@ -380,6 +380,13 @@ export function enumOptionsFor(
     return undefined
   }
 
+  // This is a closed, security-sensitive selector. Preserve the runtime's
+  // fail-closed contract instead of appending a malformed current value as if
+  // it were another supported browser choice.
+  if (key === 'browser.real_profile_browser') {
+    return opts
+  }
+
   const current = asText(value)
 
   return current && !opts.includes(current) ? [...opts, current] : opts

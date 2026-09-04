@@ -151,7 +151,9 @@ export function ConfigField({
                   ? c.none
                   : schemaKey === 'memory.provider'
                     ? c.builtinOnly
-                    : c.noneParen}
+                    : schemaKey === 'browser.real_profile_browser'
+                      ? c.systemDefault
+                      : c.noneParen}
             </SelectItem>
           ))}
         </SelectContent>

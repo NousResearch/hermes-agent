@@ -168,9 +168,19 @@ as *you*, with your existing logins and cookies:
 # ~/.hermes/config.yaml
 browser:
   use_real_profile: true
+  # Optional explicit pin: chrome | edge | brave | brave-origin | chromium
+  # Leave empty to follow the OS default browser.
+  real_profile_browser: chrome
 ```
 
-When enabled, Hermes copies your default browser's **active** profile — the one
+`browser.real_profile_browser` is an explicit choice, not an installed-browser
+fallback. Use it when you want Hermes to snapshot Chrome, Edge, Brave, Brave
+Origin, or Chromium while keeping Firefox or Safari as your OS default. Values are
+case-insensitive and whitespace is ignored. An empty value follows the OS
+default; an invalid value fails closed and lists the allowed values. Hermes never
+silently chooses the first installed Chromium browser.
+
+When enabled, Hermes copies the selected browser's **active** profile — the one
 you actually browse (`Local State → profile.last_used`), with its cookies, saved
 logins, and preferences — into a managed snapshot under
 `~/.hermes/browser-profile/<browser>/`, then launches your **real browser
@@ -235,9 +245,10 @@ losing unsaved tabs), then retries. If the profile is still locked after that
 to fully quit the browser — it won't loop or kill again on its own.
 :::
 
-- **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium (whichever is your OS
-  default). A non-Chromium default (e.g. Firefox) fails closed with a clear
-  message rather than guessing.
+- **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium. With an empty
+  `browser.real_profile_browser`, Hermes follows the OS default. A non-Chromium
+  default (e.g. Firefox) fails closed unless you explicitly pin one of the
+  supported browsers; Hermes never guesses.
 - **Works on any backend.** On a local backend it's automatic once the toggle
   is on. Under a **cloud** browser backend, the agent can still open a
   real-profile local session on demand via the `browser_exec` tool's `local`
@@ -247,8 +258,10 @@ to fully quit the browser — it won't loop or kill again on its own.
   boundary. A page the agent visits runs with your real logins, so only enable
   it when you want the agent acting as you. Off by default.
 - **Desktop:** toggle it in **Capabilities → Tools → Browser → Use My Real
-  Browser Profile** (the switch sits above the backend options), or in
-  Settings → Config under the `browser` section.
+  Browser Profile** (the switch sits above the backend options). The toggle and
+  optional **Real Profile Browser** selector are also in Settings → Config under
+  the `browser` section; **System default** leaves
+  `browser.real_profile_browser` empty.
 
 ### Camofox local mode
 

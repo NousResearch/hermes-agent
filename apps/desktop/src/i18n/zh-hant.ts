@@ -529,7 +529,8 @@ export const zhHant = defineLocale({
       },
       browser: {
         allowPrivateUrls: '瀏覽器私有 URL',
-        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器'
+        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器',
+        realProfileBrowser: '真實設定檔瀏覽器'
       },
       checkpoints: {
         enabled: '檔案檢查點',
@@ -651,6 +652,10 @@ export const zhHant = defineLocale({
         repoScanExcludePaths: '探索程式碼儲存庫時略過這些資料夾及其子目錄。'
       },
       timezone: 'Hermes 需要本機時間上下文時使用。留空則使用系統時區。',
+      browser: {
+        realProfileBrowser:
+          '選擇要複製設定檔的 Chromium 瀏覽器。留空則使用作業系統預設瀏覽器；Hermes 不會猜測其他已安裝的瀏覽器。'
+      },
       agent: {
         imageInputMode: '控制圖片附件如何傳送給模型。',
         maxTurns: 'Hermes 停止一次執行前的工具呼叫輪次上限。'

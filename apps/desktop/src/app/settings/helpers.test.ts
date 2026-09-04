@@ -187,6 +187,28 @@ describe('settings helpers', () => {
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
 
+    it('renders an explicit real-profile browser pin with an OS-default option', () => {
+      expect(enumOptionsFor('browser.real_profile_browser', '', config)).toEqual([
+        '',
+        'chrome',
+        'edge',
+        'brave',
+        'brave-origin',
+        'chromium'
+      ])
+    })
+
+    it('does not offer an invalid current real-profile browser pin', () => {
+      expect(enumOptionsFor('browser.real_profile_browser', 'firefox', config)).toEqual([
+        '',
+        'chrome',
+        'edge',
+        'brave',
+        'brave-origin',
+        'chromium'
+      ])
+    })
+
     it('renders a dropdown for the TTS provider including xAI (Grok)', () => {
       const opts = enumOptionsFor('tts.provider', 'edge', config)
       expect(opts).toBeDefined()

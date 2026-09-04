@@ -703,7 +703,8 @@ export const zh: Translations = {
       },
       browser: {
         allowPrivateUrls: '浏览器私有 URL',
-        autoLocalForPrivateUrls: '私有 URL 使用本地浏览器'
+        autoLocalForPrivateUrls: '私有 URL 使用本地浏览器',
+        realProfileBrowser: '真实配置文件浏览器'
       },
       checkpoints: {
         enabled: '文件检查点',
@@ -825,6 +826,10 @@ export const zh: Translations = {
         repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'
       },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
+      browser: {
+        realProfileBrowser:
+          '选择要复制配置文件的 Chromium 浏览器。留空则使用操作系统默认浏览器；Hermes 不会猜测其他已安装的浏览器。'
+      },
       agent: {
         imageInputMode: '控制图片附件如何发送给模型。',
         maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。'

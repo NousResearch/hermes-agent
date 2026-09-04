@@ -631,20 +631,27 @@ DEFAULT_CONFIG = {
         # Consent to browse with the user's REAL logins for local browsing.
         # When true, local browsing (the Browser Use CLI, or the built-in
         # browser tools) runs on a Hermes-managed SNAPSHOT of the user's
-        # ACTIVE default-Chromium profile (Local State -> profile.last_used) —
+        # ACTIVE selected-Chromium profile (Local State -> profile.last_used) —
         # its cookies, logins and preferences copied in and re-synced when a
-        # fresh session launches — driven by Hermes' packaged Chromium. Only
+        # fresh session launches — driven by the selected browser's executable. Only
         # the active profile is copied. The snapshot is a non-default dir, so it
         # sidesteps Chrome 136+'s block on debugging the default profile and
         # never contends with the user's running browser. Turning this back off
         # deletes the snapshot store (~/.hermes/browser-profile/) so copied
-        # credentials don't outlive consent. Only Chromium-family default
-        # browsers are supported (Chrome, Edge, Brave, Brave Origin, Chromium); a non-Chromium
-        # default (e.g. Firefox) fails closed with a clear message. Default
-        # false. Also gates the browser_exec ``local`` argument, which forces a
-        # real-profile local session even under a cloud browser backend. Toggle
-        # in the desktop Settings → Browser section.
+        # credentials don't outlive consent. Only Chromium-family browsers are
+        # supported (Chrome, Edge, Brave, Brave Origin, Chromium); an explicit
+        # browser pin selects one, while an empty pin follows the OS default and
+        # fails closed if that is non-Chromium. Default false. Also gates the browser_exec ``local``
+        # argument, which forces a real-profile local session even under a cloud
+        # browser backend. Toggle in the desktop Capabilities → Tools → Browser
+        # section or configure it in Settings → Config → browser.
         "use_real_profile": False,
+        # Explicitly pin the Chromium-family profile Hermes snapshots. Empty
+        # follows the OS default. This is never a silent "first installed
+        # Chromium wins" fallback: non-empty means the user chose that browser.
+        # Allowed values: chrome, edge, brave, brave-origin, chromium
+        # (case-insensitive).
+        "real_profile_browser": "",
         # When real-profile browsing needs the browser closed (Windows: a
         # running Chrome/Edge/Brave locks its cookie DB deny-all, so it must be
         # fully quit before its profile can be copied), arm the "offer to close

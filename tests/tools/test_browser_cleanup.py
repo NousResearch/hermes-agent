@@ -1,6 +1,6 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class TestScreenshotPathRecovery:
@@ -65,6 +65,34 @@ class TestBrowserCleanup:
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
 
+
+    def test_cleanup_all_reaps_only_owned_real_profile_browser(self):
+        browser_tool = self.browser_tool
+        owned_chrome = Mock()
+        owned_chrome.poll.return_value = None
+        unrelated_chrome = Mock()
+
+        with (
+            patch.object(browser_tool, "_active_sessions", {}),
+            patch.object(browser_tool, "_real_profile_chrome_procs", [owned_chrome]),
+            patch.object(
+                browser_tool,
+                "_real_profile_cdp_cache",
+                {"cdp": "http://127.0.0.1:41000"},
+            ),
+            patch.object(browser_tool, "_agent_browser_close_session") as close,
+            patch("tools.browser_supervisor.SUPERVISOR_REGISTRY.stop_all"),
+        ):
+            browser_tool.cleanup_all_browsers()
+
+            close.assert_called_once_with(browser_tool._REAL_PROFILE_SESSION)
+            owned_chrome.terminate.assert_called_once_with()
+            owned_chrome.wait.assert_called_once_with(timeout=5)
+            owned_chrome.kill.assert_not_called()
+            assert browser_tool._real_profile_chrome_procs == []
+
+        unrelated_chrome.terminate.assert_not_called()
+        unrelated_chrome.kill.assert_not_called()
 
     def test_emergency_cleanup_clears_all_tracking_state(self):
         browser_tool = self.browser_tool

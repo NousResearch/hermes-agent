@@ -547,7 +547,8 @@ export const ja = defineLocale({
       },
       browser: {
         allowPrivateUrls: 'ブラウザーのプライベート URL',
-        autoLocalForPrivateUrls: 'プライベート URL にはローカルブラウザーを使用'
+        autoLocalForPrivateUrls: 'プライベート URL にはローカルブラウザーを使用',
+        realProfileBrowser: '実プロファイルのブラウザー'
       },
       checkpoints: {
         enabled: 'ファイルチェックポイント',
@@ -670,6 +671,10 @@ export const ja = defineLocale({
       },
       timezone:
         'Hermes がローカル時刻のコンテキストを必要とするときに使用します。空欄ならシステムのタイムゾーンを使います。',
+      browser: {
+        realProfileBrowser:
+          'コピーするプロファイルの Chromium ブラウザーを選びます。空欄なら OS のデフォルトを使用し、Hermes が別のインストール済みブラウザーを推測することはありません。'
+      },
       agent: {
         imageInputMode: '画像添付をモデルへ送る方法を制御します。',
         maxTurns: 'Hermes が 1 回の実行を停止するまでのツール呼び出しターン上限です。'

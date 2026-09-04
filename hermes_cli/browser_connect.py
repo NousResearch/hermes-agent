@@ -101,14 +101,13 @@ _LINUX_INSTALL_PATHS = tuple(path for _, paths in _LINUX_BROWSER_GROUPS for path
 
 
 # ---------------------------------------------------------------------------
-# Real-profile (default Chromium) resolution
+# Real-profile Chromium resolution
 #
 # Used by the browser tool's ``browser.use_real_profile`` consent path: when a
-# local Chromium is launched, point agent-browser at the user's REAL default
-# browser profile (``--profile <user-data-dir>`` + ``--executable-path``) so
-# their live logins/cookies are available. Only Chromium-family browsers are
-# supported; a non-Chromium default (Firefox, Safari) resolves to None and the
-# caller fails closed with a clear message.
+# local Chromium is launched, point agent-browser at the user's selected real
+# browser profile so their live logins/cookies are available. The explicit
+# config pin wins; otherwise the OS default is used. Only Chromium-family
+# browsers are supported, and neither path guesses among installed browsers.
 # ---------------------------------------------------------------------------
 
 # Canonical Chromium browser keys we support for real-profile driving.
@@ -491,6 +490,68 @@ def detect_default_chromium(system: str | None = None) -> str | None:
     if system == "Darwin":
         return _detect_default_darwin()
     return _detect_default_linux()
+
+
+def _read_real_profile_config_uncached() -> dict | None:
+    """Read config.yaml without defaults/cache; None means malformed/unreadable."""
+    try:
+        from hermes_cli.config import fast_safe_load, get_config_path
+
+        with open(get_config_path(), encoding="utf-8") as fh:
+            raw = fh.read()
+        if not raw.strip():
+            return {}
+        cfg = fast_safe_load(raw)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.debug("could not read browser.real_profile_browser: %s", e)
+        return None
+    return cfg if isinstance(cfg, dict) else None
+
+
+def configured_real_profile_browser() -> str | None:
+    """Return the normalized pin, or None for malformed browser config.
+
+    The config is deliberately read on every call. This choice is adjacent to
+    real-profile consent, so a long-lived Hermes process must observe an edit
+    without relying on a process-lifetime config cache.
+    """
+    cfg = _read_real_profile_config_uncached()
+    if cfg is None:
+        return None
+    browser_cfg = cfg.get("browser", {})
+    if not isinstance(browser_cfg, dict):
+        return None
+    configured = browser_cfg.get("real_profile_browser", "")
+    if not isinstance(configured, str):
+        return None
+    return configured.strip().lower()
+
+
+def resolve_real_profile_browser() -> tuple[str | None, str | None]:
+    """Resolve an explicit browser pin, then the OS default, fail-closed.
+
+    An empty pin preserves the existing default-browser detection behavior. A
+    non-empty pin is the user's explicit browser choice; invalid values never
+    fall through to detection or an installed-browser guess.
+    """
+    configured = configured_real_profile_browser()
+    if configured is None:
+        allowed = ", ".join(_CHROMIUM_BROWSERS)
+        return None, (
+            "Invalid browser.real_profile_browser configuration. "
+            f"Allowed values: {allowed} (or empty to follow the OS default)."
+        )
+    if not configured:
+        return detect_default_chromium(), None
+    if configured not in _CHROMIUM_BROWSERS:
+        allowed = ", ".join(_CHROMIUM_BROWSERS)
+        return None, (
+            f"Invalid browser.real_profile_browser value {configured!r}. "
+            f"Allowed values: {allowed} (or empty to follow the OS default)."
+        )
+    return configured, None
 
 
 # ---------------------------------------------------------------------------

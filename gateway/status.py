@@ -864,27 +864,45 @@ def _running_pid_cache_signature(
     return tuple(parts)
 
 
-def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
-    """Delete a stale gateway PID file (and its sibling lock metadata).
+def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> bool:
+    """Delete stale PID metadata only while owning the runtime lock.
 
-    Called from ``get_running_pid()`` after the runtime lock has already been
-    confirmed inactive, so the on-disk metadata is known to belong to a dead
-    process.  Unlike ``remove_pid_file()`` (which defensively refuses to delete
-    a PID file whose ``pid`` field differs from ``os.getpid()`` to protect
-    ``--replace`` handoffs), this path force-unlinks both files so the next
-    startup sees a clean slate.
+    A prior lock probe is not authority to unlink later: a new gateway can
+    acquire the lock and publish its PID between those two operations.  Claim
+    the same lock inode again and keep it held through PID cleanup so a new
+    owner either wins first (and cleanup does nothing) or waits for cleanup to
+    finish.  The lock path itself is a stable rendezvous file and is never
+    removed here; the next owner overwrites its metadata after acquiring it.
+
+    Returns ``True`` only when cleanup held the lock.  ``False`` means a live
+    or concurrently starting gateway may own it, so callers must not remove
+    either identity file based on their earlier observation.
     """
     if not cleanup_stale:
-        return
-    _clear_running_pid_cache()
+        return False
+    lock_path = _get_gateway_lock_path(pid_path)
     try:
-        pid_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+        handle = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        return False
+    lock_acquired = False
     try:
-        _get_gateway_lock_path(pid_path).unlink(missing_ok=True)
-    except Exception:
-        pass
+        lock_acquired = _try_acquire_file_lock(handle)
+        if not lock_acquired:
+            return False
+        _clear_running_pid_cache()
+        try:
+            pid_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+    finally:
+        if lock_acquired:
+            _release_file_lock(handle)
+        try:
+            handle.close()
+        except OSError:
+            pass
 
 
 def _write_gateway_lock_record(handle) -> None:
@@ -2479,8 +2497,15 @@ def get_running_pid(
             runtime_pid = get_runtime_status_running_pid()
             if runtime_pid is not None:
                 return runtime_pid
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-        return None
+        if not cleanup_stale:
+            return None
+        if _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=True):
+            return None
+        # Another gateway may have acquired the lock after the first probe.
+        # Re-read it once and, if active now, validate the new owner's records
+        # below.  Ambiguous/inaccessible state stays non-destructive.
+        if not is_gateway_runtime_lock_active(resolved_lock_path):
+            return None
 
     primary_record = _read_pid_record(resolved_pid_path)
     fallback_record = _read_gateway_lock_record(resolved_lock_path)
@@ -2504,7 +2529,9 @@ def get_running_pid(
         if _record_matches_live_gateway_pid(record, pid):
             return pid
 
-    _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+    # An owned lock is authoritative even while its owner is between writing
+    # the lock record and the O_EXCL PID record.  Never unlink either path from
+    # a read-side metadata failure while the lock is active.
     if pid_path is None:
         runtime_pid = get_runtime_status_running_pid()
         if runtime_pid is not None:

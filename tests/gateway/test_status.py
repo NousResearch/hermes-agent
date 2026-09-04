@@ -134,6 +134,114 @@ class TestGatewayPidState:
         finally:
             status.release_gateway_runtime_lock()
 
+    def test_stale_pid_cleanup_keeps_lock_rendezvous(self, tmp_path, monkeypatch):
+        """Stale PID cleanup must not unlink the path future owners lock."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        stale_record = {
+            "pid": 99999,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(stale_record), encoding="utf-8")
+        lock_path.write_text(json.dumps(stale_record), encoding="utf-8")
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: False)
+
+        assert status.get_running_pid(pid_path) is None
+        assert not pid_path.exists()
+        assert lock_path.exists()
+        assert status.is_gateway_runtime_lock_active(lock_path) is False
+
+    def test_stale_probe_cannot_unlink_a_new_gateway_identity(
+        self, tmp_path, monkeypatch
+    ):
+        """Cleanup must re-claim the lock after an inactive observation.
+
+        This deterministically reproduces the startup race: the reader first
+        observes an inactive lock, then a gateway acquires that same path and
+        publishes its PID before the reader reaches stale cleanup.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("stale", encoding="utf-8")
+        real_lock_probe = status.is_gateway_runtime_lock_active
+        probes = 0
+        process = None
+
+        def stale_then_current(path=None):
+            import subprocess
+
+            nonlocal probes, process
+            probes += 1
+            if probes == 1:
+                script = """
+import os, sys
+os.environ['HERMES_HOME'] = sys.argv[1]
+from gateway import status
+sys.argv = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']
+assert status.acquire_gateway_runtime_lock()
+status.write_pid_file()
+print(os.getpid(), flush=True)
+sys.stdin.readline()
+status.remove_pid_file()
+status.release_gateway_runtime_lock()
+"""
+                process = subprocess.Popen(
+                    [sys.executable, "-c", script, str(tmp_path)],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+                assert int(process.stdout.readline()) == process.pid
+                return False
+            return real_lock_probe(path)
+
+        monkeypatch.setattr(
+            status,
+            "is_gateway_runtime_lock_active",
+            stale_then_current,
+        )
+        # The child command is intentionally a tiny Python fixture rather than
+        # a real gateway command; persisted metadata remains authoritative for
+        # this lock-cleanup contract.
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: None)
+
+        try:
+            assert status.get_running_pid(pid_path) == process.pid
+            assert pid_path.exists()
+            assert lock_path.exists()
+            assert json.loads(pid_path.read_text(encoding="utf-8"))["pid"] == process.pid
+            assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == process.pid
+        finally:
+            if process is not None and process.poll() is None:
+                process.stdin.write("stop\n")
+                process.stdin.flush()
+                process.wait(timeout=5)
+
+    def test_active_lock_with_incomplete_metadata_is_never_unlinked(
+        self, tmp_path, monkeypatch
+    ):
+        """A reader may land between lock acquisition and PID publication."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            handle = status._gateway_lock_handle
+            handle.seek(0)
+            handle.truncate()
+            handle.flush()
+
+            assert status.get_running_pid(pid_path) is None
+            assert lock_path.exists()
+            assert status.is_gateway_runtime_lock_active(lock_path) is True
+        finally:
+            status.release_gateway_runtime_lock()
+
     def test_gateway_identity_files_use_process_home_not_context_override(
         self, tmp_path, monkeypatch
     ):

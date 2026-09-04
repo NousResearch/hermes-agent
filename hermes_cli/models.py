@@ -5766,8 +5766,19 @@ def ollama_model_supports_thinking(
     if not server_url:
         return None
 
-    bare_model = _strip_ollama_cloud_suffix((model or "").strip())
-    if not bare_model:
+    # Try the model id as configured FIRST, then the :cloud-stripped form.
+    # A local Ollama serving a Cloud model registers it under the full tag, so
+    # asking for the bare name makes the daemon look up "<model>:latest" and
+    # answer 404 — which used to be indistinguishable from "no thinking cap"
+    # and silently suppressed reasoning for every glm-*/kimi-*:cloud model.
+    # The stripped form stays in the list because models.dev-sourced ids can
+    # carry a :cloud suffix the server itself does not know.
+    requested = (model or "").strip()
+    candidates = []
+    for name in (requested, _strip_ollama_cloud_suffix(requested)):
+        if name and name not in candidates:
+            candidates.append(name)
+    if not candidates:
         return None
 
     token = str(api_key or "").strip()
@@ -5775,12 +5786,13 @@ def ollama_model_supports_thinking(
 
     try:
         with httpx.Client(timeout=timeout, headers=headers) as client:
-            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
-            if resp.status_code != 200:
-                return None
-            caps = resp.json().get("capabilities")
-            if isinstance(caps, list):
-                return "thinking" in caps
+            for name in candidates:
+                resp = client.post(f"{server_url}/api/show", json={"name": name})
+                if resp.status_code != 200:
+                    continue
+                caps = resp.json().get("capabilities")
+                if isinstance(caps, list):
+                    return "thinking" in caps
     except Exception:
         return None
     return None

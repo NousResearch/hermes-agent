@@ -1365,7 +1365,9 @@ def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_pat
     assert sorted(p.name for p in (desktop_dir / "release").iterdir()) == [_packaged_exe_rel().parts[0]]
 
 
-def test_swap_staged_desktop_app_releases_lock_acquired_during_pack(tmp_path, monkeypatch):
+def test_swap_staged_desktop_app_releases_lock_acquired_during_pack(
+    tmp_path, monkeypatch, caplog
+):
     """A desktop relaunched during the long pack is stopped at promotion time."""
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
@@ -1400,6 +1402,7 @@ def test_swap_staged_desktop_app_releases_lock_acquired_during_pack(tmp_path, mo
 
     assert promoted == live_exe
     assert live_exe.read_text(encoding="utf-8") == "new"
+    assert "staged app promotion (pid 1234)" in caplog.text
 
 
 def test_swap_staged_desktop_app_without_staged_exe_keeps_live_app(tmp_path):

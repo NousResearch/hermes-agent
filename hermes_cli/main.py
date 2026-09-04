@@ -7118,7 +7118,12 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         if live_root.exists():
             # The app can relaunch while the staged pack is being built. Clear
             # that fresh Windows executable lock at the promotion boundary.
-            _stop_desktop_processes_locking_build(desktop_dir)
+            stopped = _stop_desktop_processes_locking_build(desktop_dir)
+            if stopped:
+                logger.info(
+                    "stopped desktop processes before staged app promotion (pid %s)",
+                    ", ".join(map(str, stopped)),
+                )
             os.rename(live_root, previous)
             moved_aside = True
         try:

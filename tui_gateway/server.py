@@ -331,6 +331,7 @@ _LONG_HANDLERS = frozenset(
         # scale on cold disks — keep them off the WS reader thread.
         "profiles.configure",
         "profiles.create",
+        "profiles.delete",
         "profiles.describe",
         "profiles.get_asset",
         "profiles.list",

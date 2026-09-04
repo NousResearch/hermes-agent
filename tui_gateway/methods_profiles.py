@@ -1163,5 +1163,31 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5066, str(e))
 
 
+@method("profiles.delete")
+def _(rid, params: dict) -> dict:
+    """Delete one profile for an explicit, already-approved rollback.
+
+    This RPC is intentionally confirmation-gated and returns no filesystem
+    paths. Fleet Graph uses it only to compensate profiles it created during a
+    starter-pack install whose graph commit failed.
+    """
+    if params.get("confirm") is not True:
+        return _err(rid, 4019, "profiles.delete requires confirm=true")
+    name = params.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return _err(rid, 4063, "name required")
+    try:
+        from hermes_cli.profiles import delete_profile
+
+        delete_profile(name.strip(), yes=True)
+        return _ok(rid, {"ok": True, "name": name.strip(), "deleted": True})
+    except FileNotFoundError:
+        return _err(rid, 4064, f"profile '{name.strip()}' not found")
+    except ValueError:
+        return _err(rid, 4065, "invalid profile")
+    except Exception:
+        return _err(rid, 5067, "profile deletion failed")
+
+
 def register(server) -> None:
     _registry.install(server)

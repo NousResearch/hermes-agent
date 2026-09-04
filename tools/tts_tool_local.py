@@ -12,7 +12,7 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
 
@@ -22,6 +22,24 @@ DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 _NEUTTS_SAMPLES = Path(__file__).parent / "neutts_samples"
+
+# --- Paragraph-pause support (issue #103103) ---
+PARAGRAPH_MARKER = "\u200B¶\u200B"
+
+
+def _split_paragraphs(text: str) -> List[str]:
+    """Split text on the zero-width-space paragraph marker, stripping whitespace around each."""
+    if PARAGRAPH_MARKER not in text:
+        return [text.strip()] if text.strip() else []
+    return [para.strip() for para in text.split(PARAGRAPH_MARKER) if para.strip()]
+
+
+def _generate_silence_pcm(duration_ms: int, sample_rate: int, channels: int = 1) -> bytes:
+    """Return 16-bit PCM data for *duration_ms* milliseconds of silence."""
+    import numpy as np
+    frames = int(sample_rate * duration_ms / 1000.0)
+    silence = np.zeros((frames, channels), dtype=np.int16)
+    return silence.tobytes()
 
 # --- Bounded model caches ---
 # Each entry is a whole loaded model (tens of MB); unbounded, one would be pinned per distinct
@@ -58,20 +76,72 @@ def _run_helper(cmd: list, timeout: int) -> subprocess.CompletedProcess:
 
 # --- NeuTTS (subprocess via tools/neutts_synth.py so the ~500MB model exits after use) ---
 def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    import wave
+    import tempfile
     neutts_config = tts_config.get("neutts") or {}
+    paragraphs = _split_paragraphs(text)
+    pause_ms = neutts_config.get("paragraph_pause_ms", 0)
+    ref_audio = neutts_config.get("ref_audio", "") or str(_NEUTTS_SAMPLES / "jo.wav")
+    ref_text = neutts_config.get("ref_text", "") or str(_NEUTTS_SAMPLES / "jo.txt")
+    model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
+    device = neutts_config.get("device", "cpu")
     wav_path = _wav_sidecar_path(output_path)
-    cmd = [
-        sys.executable, str(Path(__file__).parent / "neutts_synth.py"),
-        "--text", text,
-        "--out", wav_path,
-        "--ref-audio", neutts_config.get("ref_audio", "") or str(_NEUTTS_SAMPLES / "jo.wav"),
-        "--ref-text", neutts_config.get("ref_text", "") or str(_NEUTTS_SAMPLES / "jo.txt"),
-        "--model", neutts_config.get("model", "neuphonic/neutts-air-q4-gguf"),
-        "--device", neutts_config.get("device", "cpu")]
-    result = _run_helper(cmd, 120)
-    if result.returncode != 0:  # the synth script reports success lines as "OK:" on stderr too
-        error_lines = [l for l in result.stderr.strip().splitlines() if not l.startswith("OK:")]
-        raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
+    if len(paragraphs) > 1 and pause_ms > 0:
+        # Multi-paragraph: synthesize each, concatenate with silence
+        tmp_wavs: List[str] = []
+        try:
+            for para_text in paragraphs:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp_path = tmp.name
+                    tmp_wavs.append(tmp_path)
+                cmd = [
+                    sys.executable, str(Path(__file__).parent / "neutts_synth.py"),
+                    "--text", para_text,
+                    "--out", tmp_path,
+                    "--ref-audio", ref_audio,
+                    "--ref-text", ref_text,
+                    "--model", model,
+                    "--device", device]
+                result = _run_helper(cmd, 120)
+                if result.returncode != 0:
+                    error_lines = [l for l in result.stderr.strip().splitlines() if not l.startswith("OK:")]
+                    raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
+            # Concatenate paragraph WAVs with silence
+            all_frames = []
+            sample_rate = None
+            for i, tmp_wav in enumerate(tmp_wavs):
+                with wave.open(tmp_wav, "rb") as r:
+                    if sample_rate is None:
+                        sample_rate = r.getframerate()
+                    all_frames.append(r.readframes(r.getnframes()))
+                if i < len(tmp_wavs) - 1:
+                    all_frames.append(_generate_silence_pcm(pause_ms, sample_rate, 1))
+            assert sample_rate is not None, "No paragraphs synthesized"
+            with wave.open(wav_path, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(b"".join(all_frames))
+        finally:
+            for tmp_wav in tmp_wavs:
+                try:
+                    Path(tmp_wav).unlink()
+                except Exception:
+                    pass
+    else:
+        # Single paragraph or no pause: legacy behavior
+        cmd = [
+            sys.executable, str(Path(__file__).parent / "neutts_synth.py"),
+            "--text", text,
+            "--out", wav_path,
+            "--ref-audio", ref_audio,
+            "--ref-text", ref_text,
+            "--model", model,
+            "--device", device]
+        result = _run_helper(cmd, 120)
+        if result.returncode != 0:
+            error_lines = [l for l in result.stderr.strip().splitlines() if not l.startswith("OK:")]
+            raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
     return _finalize_wav_output(wav_path, output_path)
 
 
@@ -158,12 +228,43 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
                 speaker_id=speaker_id)
         except ImportError:
             logger.warning("[Piper] SynthesisConfig not available in this piper-tts version — advanced knobs ignored")
+    # Paragraph-pause logic: if the text contains the marker and paragraph_pause_ms is set,
+    # synthesize each paragraph and insert silence between them.
+    paragraphs = _split_paragraphs(text)
+    pause_ms = piper_config.get("paragraph_pause_ms", 0)
     wav_path = _wav_sidecar_path(output_path)
-    with wave.open(wav_path, "wb") as wav_file:
-        if syn_config is not None:
-            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
-        else:
-            voice.synthesize_wav(text, wav_file)
+    if len(paragraphs) > 1 and pause_ms > 0:
+        # Multi-paragraph synthesis: build one PCM buffer, then write it
+        import io
+        all_frames = []
+        sample_rate = voice.config.sample_rate  # Piper voice config has sample_rate
+        for i, para_text in enumerate(paragraphs):
+            # Synthesize paragraph into a memory buffer
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as tmp_wav:
+                if syn_config is not None:
+                    voice.synthesize_wav(para_text, tmp_wav, syn_config=syn_config)
+                else:
+                    voice.synthesize_wav(para_text, tmp_wav)
+            buf.seek(0)
+            with wave.open(buf, "rb") as r:
+                all_frames.append(r.readframes(r.getnframes()))
+            # Insert silence between paragraphs (but not after the last one)
+            if i < len(paragraphs) - 1:
+                all_frames.append(_generate_silence_pcm(pause_ms, sample_rate, 1))
+        # Write the concatenated audio
+        with wave.open(wav_path, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(b"".join(all_frames))
+    else:
+        # Single paragraph or no pause configured: legacy behavior
+        with wave.open(wav_path, "wb") as wav_file:
+            if syn_config is not None:
+                voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+            else:
+                voice.synthesize_wav(text, wav_file)
     return _finalize_wav_output(wav_path, output_path)
 
 
@@ -185,10 +286,31 @@ def _load_kittentts_model_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, D
 
 def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     model, kt_config = _load_kittentts_model_for_config(tts_config)
-    audio = model.generate(  # numpy array at 24kHz
-        text, voice=kt_config.get("voice", DEFAULT_KITTENTTS_VOICE),
-        speed=kt_config.get("speed", 1.0), clean_text=kt_config.get("clean_text", True))
-    import soundfile as sf
-    wav_path = _wav_sidecar_path(output_path)
-    sf.write(wav_path, audio, 24000)
+    paragraphs = _split_paragraphs(text)
+    pause_ms = kt_config.get("paragraph_pause_ms", 0)
+    if len(paragraphs) > 1 and pause_ms > 0:
+        # Multi-paragraph: synthesize each, concatenate with silence
+        import numpy as np
+        import soundfile as sf
+        sample_rate = 24000
+        all_audio = []
+        for i, para_text in enumerate(paragraphs):
+            para_audio = model.generate(
+                para_text, voice=kt_config.get("voice", DEFAULT_KITTENTTS_VOICE),
+                speed=kt_config.get("speed", 1.0), clean_text=kt_config.get("clean_text", True))
+            all_audio.append(para_audio)
+            if i < len(paragraphs) - 1:
+                silence_frames = int(sample_rate * pause_ms / 1000.0)
+                all_audio.append(np.zeros(silence_frames, dtype=para_audio.dtype))
+        audio = np.concatenate(all_audio)
+        wav_path = _wav_sidecar_path(output_path)
+        sf.write(wav_path, audio, sample_rate)
+    else:
+        # Single paragraph or no pause: legacy behavior
+        audio = model.generate(
+            text, voice=kt_config.get("voice", DEFAULT_KITTENTTS_VOICE),
+            speed=kt_config.get("speed", 1.0), clean_text=kt_config.get("clean_text", True))
+        import soundfile as sf
+        wav_path = _wav_sidecar_path(output_path)
+        sf.write(wav_path, audio, 24000)
     return _finalize_wav_output(wav_path, output_path)

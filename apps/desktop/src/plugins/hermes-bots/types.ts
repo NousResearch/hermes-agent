@@ -167,6 +167,10 @@ export interface GroupMessageAuthor {
    *  the reader labelled that connection. Absent when the source never
    *  reported one. */
   gateway?: string
+  /** Relay provenance for a user entry written on the user's behalf by an
+   *  agent in another session (`hermes group send --as "Pax via Discord"`).
+   *  The pane still renders the speaker as "You"; logs/mobile surface it. */
+  via?: string
 }
 
 export interface GroupMessage {

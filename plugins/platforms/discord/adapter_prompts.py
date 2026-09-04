@@ -270,4 +270,3 @@ class DiscordPromptsMixin:
             )
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_choice_picker")
-

@@ -396,4 +396,3 @@ class MatrixInboundMixin:
             except Exception as exc:  # pragma: no cover — defensive
                 _adapter.logger.debug("Matrix: background read receipt failed: %s", exc)
         _adapter.asyncio.ensure_future(_send())
-

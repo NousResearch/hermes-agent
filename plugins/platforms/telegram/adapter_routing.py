@@ -897,4 +897,3 @@ class TelegramRoutingMixin:
         return _adapter.dataclasses.replace(
             event, text=self._telegram_group_observe_attributed_text(event),
             source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
-

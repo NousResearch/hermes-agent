@@ -919,4 +919,3 @@ class TelegramInboundMixin:
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None),
             timestamp=message.date)
-

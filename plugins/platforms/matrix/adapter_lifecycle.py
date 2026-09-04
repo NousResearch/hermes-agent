@@ -536,4 +536,3 @@ class MatrixLifecycleMixin:
             for result in results:
                 if isinstance(result, Exception):
                     _adapter.logger.warning("Matrix: event handler failed during sync dispatch: %s", result)
-

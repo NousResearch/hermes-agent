@@ -497,4 +497,3 @@ class DiscordInboundMixin:
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
-

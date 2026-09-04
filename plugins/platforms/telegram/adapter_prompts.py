@@ -815,4 +815,3 @@ class TelegramPromptsMixin:
         # Sticky state verbs keep the keyboard so further actions can stack; one-shots strip it (can't fire twice).
         with _adapter.contextlib.suppress(Exception):
             await query.edit_message_text(text=appended, **({} if is_state_verb else {"reply_markup": None}))
-

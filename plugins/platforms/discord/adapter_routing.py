@@ -703,4 +703,3 @@ class DiscordRoutingMixin:
                 self.name, parent_chat_id, fallback_error,
             )
             return None
-

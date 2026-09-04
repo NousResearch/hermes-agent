@@ -1613,4 +1613,3 @@ class TelegramLifecycleMixin:
         self._app = None
         self._bot = None
         _adapter.logger.info("[%s] Disconnected from Telegram", self.name)
-

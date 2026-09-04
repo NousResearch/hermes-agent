@@ -1156,4 +1156,3 @@ class TelegramDeliveryMixin:
         kwargs.update(self._thread_kwargs_for_send(
             chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=reply_to_mode))
         return await self._send_message_with_thread_fallback(**kwargs)
-

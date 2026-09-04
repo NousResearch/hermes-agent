@@ -591,4 +591,3 @@ class DiscordRecoveryMixin:
                 (now, status, scanned, missed, dispatched, error, scan_id),
             )
         self._with_discord_recovery_db(_op)
-

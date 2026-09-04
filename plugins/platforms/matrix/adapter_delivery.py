@@ -341,4 +341,3 @@ class MatrixDeliveryMixin:
         return await self._upload_and_send(
             room_id, p.read_bytes(), fname, _adapter.mimetypes.guess_type(fname)[0] or "application/octet-stream", msgtype,
             caption, reply_to, metadata, is_voice, voice_metadata)
-

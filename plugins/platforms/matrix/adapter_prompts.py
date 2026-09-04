@@ -323,4 +323,3 @@ class MatrixPromptsMixin:
                 _adapter.logger.debug("Matrix: redacted model picker reaction %s (%s)", emoji, evt_id)
             except Exception as exc:
                 _adapter.logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
-

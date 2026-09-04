@@ -653,4 +653,3 @@ class DiscordVoiceMixin:
                 _adapter.os.unlink(wav_path)
             except OSError:
                 pass
-

@@ -686,11 +686,13 @@ class CompressionCommitFence:
             self.set_total_ceiling_seconds(total_ceiling_seconds)
 
     def set_total_ceiling_seconds(self, seconds: float) -> None:
-        """Arm the wall-clock deadline shared by the host and worker."""
+        """Arm the wall-clock and no-progress clocks for a new attempt."""
         seconds = float(seconds)
         if seconds <= 0:
             raise ValueError("total compression ceiling must be positive")
-        self._deadline = time.monotonic() + seconds
+        now = time.monotonic()
+        self._last_progress = now
+        self._deadline = now + seconds
 
     def touch_progress(self) -> None:
         """Record forward progress (e.g. a streamed summary token arriving).
@@ -1491,21 +1493,14 @@ def run_compress_context_with_progress_timeout(
             return messages, ""
         return worker(worker_fence)
 
-    # Bare pool workers start with an empty ContextVar map; propagate the
-    # parent conversation/approval context into the worker.  Build the wrapper
-    # before arming the timeout: callback capture performs lazy imports on its
-    # first use, and that host-side setup must not consume the worker budget.
-    contextual_worker = propagate_context_to_thread(_fence_gated_worker)
-
-    # Start the timeout budget only after one-time lazy imports and executor
-    # initialization.  Charging that host-side setup can expire tiny budgets
-    # before the submitted worker is even allowed to start (notably on the
-    # first Windows invocation).  Submission/queue time remains inside the
-    # budget so a saturated executor is still bounded.
-    wait_started = time.monotonic()
-    fence.set_total_ceiling_seconds(ceiling)
+    # Capture the parent context before the attempt clocks start: this helper
+    # can lazily import approval plumbing, which is setup work rather than
+    # summary-model time. Every failure after admission must release the slot.
     try:
-        future = executor.submit(contextual_worker, fence)
+        wrapped_worker = propagate_context_to_thread(_fence_gated_worker)
+        wait_started = time.monotonic()
+        fence.set_total_ceiling_seconds(ceiling)
+        future = executor.submit(wrapped_worker, fence)
     except BaseException:
         _release_compression_admission()
         raise

@@ -141,6 +141,9 @@ class TestWorkerTeardownOnCeiling:
 
         def fast_worker(_fence: CompressionCommitFence):
             worker_started.set()
+            # Stay inside a freshly armed idle budget, but long enough to prove
+            # the pre-capture timestamp is not still charged to this attempt.
+            time.sleep(0.05)
             return compressed, "compressed"
 
         msgs, prompt = run_compress_context_with_progress_timeout(
@@ -156,6 +159,44 @@ class TestWorkerTeardownOnCeiling:
         assert worker_started.is_set()
         assert msgs is compressed
         assert prompt == "compressed"
+
+    def test_parent_context_capture_failure_releases_admission(self, monkeypatch):
+        """A setup failure before Future creation must release admission."""
+        import agent.conversation_compression as compression
+        from tools import thread_context
+
+        balance = 0
+
+        def admit():
+            nonlocal balance
+            balance += 1
+            return True
+
+        def release():
+            nonlocal balance
+            balance -= 1
+
+        def fail_capture(_target):
+            raise RuntimeError("context capture failed")
+
+        monkeypatch.setattr(compression, "_try_admit_compression_job", admit)
+        monkeypatch.setattr(compression, "_release_compression_admission", release)
+        monkeypatch.setattr(
+            thread_context,
+            "propagate_context_to_thread",
+            fail_capture,
+        )
+
+        with pytest.raises(RuntimeError, match="context capture failed"):
+            run_compress_context_with_progress_timeout(
+                worker=lambda _fence: ([], ""),
+                messages=[],
+                system_prompt_fallback="fallback",
+                idle_timeout_seconds=1.0,
+                total_ceiling_seconds=1.0,
+            )
+
+        assert balance == 0
 
     def test_uninterruptible_worker_is_orphaned_with_lease_retained(self):
         """A worker stuck in an uninterruptible provider call is orphaned:

@@ -92,6 +92,8 @@ Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That
 
 ```bash
 hermes curator status         # last run, counts, pinned list, LRU top 5
+hermes curator audit          # report near-duplicate skill candidates (read-only)
+hermes curator audit --json   # same report as JSON
 hermes curator run            # trigger a run now (blocks until done). Prune-only unless curator.consolidate: true
 hermes curator run --consolidate # force the LLM consolidation pass on for this run, overriding the config default
 hermes curator run --background  # fire-and-forget: start the run in a background thread
@@ -117,6 +119,50 @@ hermes curator ledger --skill <name> --limit 50  # filter/paginate ledger entrie
 hermes curator rollback <entry-id>  # undo a single mutation from the ledger
 hermes curator purge [--days N] [--dry-run]  # delete archived skills older than the TTL (explicit only)
 ```
+
+## Duplicate audit
+
+The consolidation pass is LLM-driven and off by default, so a registry can quietly
+accumulate skills that do the same thing under different names. `hermes curator audit`
+answers that narrower question locally — no model call, no network, and nothing is
+written to the skill library:
+
+```bash
+hermes curator audit
+```
+
+```text
+Duplicate candidates:
+
+  High confidence (1):
+
+    ai-voice-cloning <-> cosyvoice2-voice-cloning
+      Signals:
+        - identical normalized body hash
+        - high normalized-name overlap (0.67)
+      Ownership:
+        - ai-voice-cloning: agent
+        - cosyvoice2-voice-cloning: agent
+
+  Note: lexical candidates for human review, not merge decisions.
+```
+
+`hermes curator status` prints just the counts, so bloat shows up without you having to
+diff directories by hand.
+
+The signals are lexical: matching names, distinctive headings, descriptions, and a hash
+of the normalized body. Headings that are common across your registry — the SKILL.md
+section scaffold, or a template a family of skills shares — are discounted, because a
+heading everyone has identifies no one. Two skills can still share all of that and do
+different things, which is why the output is a shortlist for you to read rather than a
+merge plan. Nothing is merged or archived on the strength of this report; use
+`hermes curator archive <skill>` once you've decided.
+
+Pairs are reported on their own and never chained into clusters. If A resembles B and B
+resembles C, that does not make A and C duplicates — collapsing them into one group is
+how a cleanup quietly removes an unrelated skill.
+
+Archived skills are not scanned; restoring one brings it back into the audit.
 
 ## Backups and rollback
 

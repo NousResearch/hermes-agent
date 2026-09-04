@@ -78,6 +78,43 @@ def test_yaml_values_are_projected_without_secret_egress(profile_root):
     assert "yaml-secret-sentinel" not in repr(effective)
 
 
+def test_explicit_named_profile_reads_own_yaml_and_restores_scope(profile_root):
+    worker = profile_root / "profiles" / "worker"
+    _write_config(
+        profile_root,
+        "platforms:\n"
+        "  webhook:\n"
+        "    enabled: false\n"
+        "    extra:\n"
+        "      host: default.example\n"
+        "      port: 8101\n",
+    )
+    _write_config(
+        worker,
+        "platforms:\n"
+        "  webhook:\n"
+        "    enabled: true\n"
+        "    extra:\n"
+        "      host: worker.example\n"
+        "      port: 8102\n",
+    )
+
+    worker_effective = resolve_effective_webhook_config("worker")
+    default_effective = resolve_effective_webhook_config()
+
+    assert worker_effective.profile == "worker"
+    assert worker_effective.enabled is True
+    assert worker_effective.host == "worker.example"
+    assert worker_effective.port == 8102
+    assert worker_effective.routes_path == worker / "webhook_subscriptions.json"
+
+    assert default_effective.profile == "default"
+    assert default_effective.enabled is False
+    assert default_effective.host == "default.example"
+    assert default_effective.port == 8101
+    assert default_effective.routes_path == profile_root / "webhook_subscriptions.json"
+
+
 def test_process_environment_is_the_runtime_and_cli_override(profile_root, monkeypatch):
     monkeypatch.setenv("WEBHOOK_ENABLED", "true")
     monkeypatch.setenv("WEBHOOK_HOST", "env.example")

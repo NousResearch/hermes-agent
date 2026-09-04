@@ -7,12 +7,17 @@ management consumers do not reconstruct a second precedence chain.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal, Mapping, Optional
+from typing import Callable, Iterator, Literal, Mapping, Optional
 
 from agent.secret_scope import current_secret_scope
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 
 
 WebhookSource = Literal["default", "yaml", "env", "profile"]
@@ -135,14 +140,47 @@ def apply_webhook_env_overrides(
     platform_config.extra[_SOURCE_MAP_KEY] = dict(sources)
 
 
-def resolve_effective_webhook_config() -> EffectiveWebhookConfig:
-    """Read the active profile through the canonical gateway config loader.
+@contextmanager
+def _profile_config_scope(profile: str) -> Iterator[None]:
+    """Temporarily bind a management read to one existing profile home.
 
-    Callers resolving a multiplexed secondary profile must enter that
-    profile's existing runtime scope first.  The resolver intentionally has no
-    ambient ``profile=`` selector: coordinates do not authorize borrowing a
-    sibling profile's environment.
+    The override is context-local, so concurrent profile reads cannot mutate
+    process-global ``os.environ``. The previous scope is restored even when
+    configuration loading fails.
     """
+    from hermes_cli.profiles import (
+        get_profile_dir,
+        normalize_profile_name,
+        profile_exists,
+        validate_profile_name,
+    )
+
+    normalized = normalize_profile_name(profile)
+    validate_profile_name(normalized)
+    if normalized != "default" and not profile_exists(normalized):
+        raise FileNotFoundError(f"Profile {normalized!r} does not exist")
+
+    token = set_hermes_home_override(get_profile_dir(normalized))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def resolve_effective_webhook_config(
+    profile: str | None = None,
+) -> EffectiveWebhookConfig:
+    """Read effective webhook settings for the active or named profile.
+
+    Runtime callers normally resolve the already-active scope. Management
+    callers may name an existing profile; that read is bound through Hermes'
+    context-local home override and the previous scope is restored before
+    returning. No process-global environment mutation is used.
+    """
+    if profile is not None:
+        with _profile_config_scope(profile):
+            return resolve_effective_webhook_config()
+
     from gateway.config import Platform, load_gateway_config
     from hermes_cli.profiles import get_active_profile_name
 

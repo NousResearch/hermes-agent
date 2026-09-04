@@ -60,19 +60,20 @@ def test_receipt_capacity_never_evicts_recent_successes_for_replay(
 @pytest.mark.asyncio
 async def test_native_fallback_guard_is_opt_in_and_context_local(consumer):
     _state, _runner, adapter = consumer
-    result = await BasePlatformAdapter.send_document(
-        adapter, "chat", "/not-a-real-file", file_name="visible.txt"
+    adapter.fallback = True
+    result = await adapter.send_document(
+        chat_id="chat", file_path="/not-a-real-file", file_name="visible.txt"
     )
     assert result.success is True
     before = len(adapter.notices)
     with require_native_document():
         with pytest.raises(NativeDocumentFallback):
-            await BasePlatformAdapter.send_document(
-                adapter, "chat", "/not-a-real-file", file_name="visible.txt"
+            await adapter.send_document(
+                chat_id="chat", file_path="/not-a-real-file", file_name="visible.txt"
             )
     assert len(adapter.notices) == before
     assert (
-        await BasePlatformAdapter.send_document(adapter, "chat", "/not-a-real-file")
+        await adapter.send_document(chat_id="chat", file_path="/not-a-real-file")
     ).success
 
 

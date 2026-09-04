@@ -12,7 +12,7 @@ import pytest
 from gateway.choice_picker import ChoicePage, ChoiceProgress
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.group_chat_slash import GroupChatSlashCommandsMixin
-from gateway.native_document_guard import mark_native_document_guard
+from gateway.native_document_guard import check_document_fallback, mark_native_document_guard
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -69,6 +69,7 @@ class NativeAdapter:
         if self.release is not None:
             await self.release.wait()
         if self.fallback:
+            check_document_fallback()
             return await BasePlatformAdapter.send_document(
                 self, chat_id, file_path, file_name=file_name
             )

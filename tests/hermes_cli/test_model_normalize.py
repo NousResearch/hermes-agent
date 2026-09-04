@@ -187,3 +187,63 @@ class TestIssue78796NvidiaPrefixRepair:
             == "anthropic/claude-sonnet-4.6"
         )
 
+
+# ── Regression: issue #93980 ───────────────────────────────────────────
+
+class TestIssue93980ForeignVendorPrefixOnBareNameProviders:
+    """A foreign ``vendor/`` prefix must be stripped for ollama-cloud.
+
+    ``z-ai/glm-5.2`` is the *OpenRouter* spelling of GLM; ollama.com serves
+    the bare ``glm-5.2``.  The prefix used to survive to the endpoint and
+    return HTTP 404 ``model "z-ai/glm-5.2" not found``, which the goal judge
+    then reported as a transport failure and auto-paused the goal on.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("z-ai/glm-5.2", "glm-5.2"),
+        ("moonshotai/kimi-k2.5", "kimi-k2.5"),
+        ("qwen/qwen3-max", "qwen3-max"),
+    ])
+    def test_foreign_vendor_prefix_is_stripped(self, model, expected):
+        assert normalize_model_for_provider(model, "ollama-cloud") == expected
+
+    @pytest.mark.parametrize("model", [
+        "glm-5.2",
+        "kimi-k2.5",
+        "some-local-finetune-v2",
+    ])
+    def test_bare_names_pass_through(self, model):
+        assert normalize_model_for_provider(model, "ollama-cloud") == model
+
+    def test_dots_are_preserved(self):
+        """The strip must not disturb dot-bearing version tags."""
+        assert normalize_model_for_provider("z-ai/glm-5.2", "ollama-cloud") == "glm-5.2"
+
+    @pytest.mark.parametrize("model", [
+        "/glm-5.2",
+        "z-ai/",
+    ])
+    def test_malformed_ids_are_left_alone(self, model):
+        """An empty side is not a vendor prefix -- don't invent an id."""
+        assert normalize_model_for_provider(model, "ollama-cloud") == model
+
+    def test_custom_still_preserves_a_foreign_prefix(self):
+        """``custom`` is excluded from the strip on purpose: ``ollama/`` may be
+        the routing prefix a LiteLLM-style proxy fronting the endpoint needs."""
+        assert (
+            normalize_model_for_provider("ollama/glm-5.2", "custom")
+            == "ollama/glm-5.2"
+        )
+
+    def test_aggregator_spelling_is_still_produced_for_openrouter(self):
+        """The two spellings must keep coexisting -- the bug is a user
+        bouncing between openrouter and ollama-cloud with one config."""
+        assert (
+            normalize_model_for_provider("glm-5.2", "openrouter") == "z-ai/glm-5.2"
+        )
+
+    def test_lowercase_providers_still_lowercase_after_strip(self):
+        """Regression guard: the ``_LOWERCASE_MODEL_PROVIDERS`` step runs after
+        the new strip, not instead of it."""
+        assert normalize_model_for_provider("MiMo-V2.5-Pro", "xiaomi") == "mimo-v2.5-pro"
+

@@ -110,6 +110,20 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "xai",
 })
 
+# Bare-name providers that never serve aggregator-style ``vendor/model`` ids,
+# so a *foreign* vendor prefix is a copy-paste artifact rather than routing
+# information and must be stripped.  ollama.com serves the bare ``glm-5.2``;
+# the OpenRouter spelling ``z-ai/glm-5.2`` reaches it verbatim and returns
+# HTTP 404 ``model "z-ai/glm-5.2" not found`` (#93980).
+#
+# Deliberately a narrow subset of ``_MATCHING_PREFIX_STRIP_PROVIDERS`` rather
+# than a blanket rule over it: ``custom`` in particular MUST keep a foreign
+# prefix, because ``ollama/glm-5.2`` may be the routing prefix a LiteLLM-style
+# proxy fronting the endpoint requires (see ``_strip_matching_provider_prefix``).
+_FOREIGN_VENDOR_STRIP_PROVIDERS: frozenset[str] = frozenset({
+    "ollama-cloud",
+})
+
 # Providers whose API serves ``vendor/model`` ids but whose endpoint can also
 # front arbitrary self-hosted models, so a bare name cannot be prefixed
 # blindly. A bare id is repaired only when the curated catalogue for that
@@ -286,6 +300,27 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     if normalized_prefix and normalized_prefix == normalized_target:
         return remainder.strip()
     return model_name
+
+
+def _strip_any_vendor_prefix(model_name: str) -> str:
+    """Strip any leading ``vendor/`` segment, matching or not.
+
+    For providers in ``_FOREIGN_VENDOR_STRIP_PROVIDERS`` the API serves bare
+    ids only, so a vendor segment is an aggregator spelling the endpoint will
+    404 on -- ``z-ai/glm-5.2`` (the OpenRouter form of GLM) instead of the
+    ``glm-5.2`` ollama.com actually serves.  Mirrors the OpenCode
+    flat-namespace handling in ``normalize_model_for_provider``.
+
+    A malformed id with an empty side (``/model``, ``vendor/``) is left
+    untouched, the same guard ``_strip_matching_provider_prefix`` applies.
+    """
+    if "/" not in model_name:
+        return model_name
+
+    prefix, remainder = model_name.split("/", 1)
+    if not prefix.strip() or not remainder.strip():
+        return model_name
+    return remainder.strip()
 
 
 def detect_vendor(model_name: str) -> Optional[str]:
@@ -486,6 +521,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
         >>> normalize_model_for_provider("MiMo-V2.5-Pro", "xiaomi")
         'mimo-v2.5-pro'
+
+        >>> normalize_model_for_provider("z-ai/glm-5.2", "ollama-cloud")
+        'glm-5.2'
     """
     name = (model_input or "").strip()
     if not name:
@@ -559,6 +597,11 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
+        # Bare-name-only providers additionally shed a foreign vendor slug:
+        # an aggregator spelling like ``z-ai/glm-5.2`` 404s on ollama.com,
+        # which serves ``glm-5.2``.  Not applied to ``custom`` (#93980).
+        if provider in _FOREIGN_VENDOR_STRIP_PROVIDERS:
+            name = _strip_any_vendor_prefix(name)
         result = _strip_matching_provider_prefix(name, provider)
         # Some providers require lowercase model IDs (e.g. Xiaomi's API
         # rejects "MiMo-V2.5-Pro" but accepts "mimo-v2.5-pro").

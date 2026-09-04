@@ -1315,7 +1315,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self._ready_event, self._bot_task,
                 timeout=None if ready_timeout <= 0 else ready_timeout,
             )
-            self._running = True
+            # _mark_connected() clears a prior fatal stamp; a bare ``_running = True`` left a transient
+            # startup failure reported as ``fatal`` for the life of the process (#102554).
+            self._mark_connected()
             self._start_liveness_probe()
             # Plugin-registered native handlers (discord.py Bot — add_listener()/event hooks).
             self._wire_plugin_handlers(self._client)

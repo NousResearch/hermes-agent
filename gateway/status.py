@@ -1123,15 +1123,19 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     try:
         handle = open(resolved_lock_path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock file from a previous launchd Background
-        # session that ran as root.  The parent directory owner can unlink
-        # files even when they don't own them, so remove the stale lock
-        # and report inactive — the new process will create a fresh one.
-        try:
-            resolved_lock_path.unlink()
-        except OSError:
-            pass
-        return False
+        # This is a read-only query -- both actual callers (cron.py's
+        # gateway liveness check, gateway_windows.py's status display) only
+        # inspect, never acquire. A PermissionError here means some OTHER
+        # process (possibly root, e.g. a systemd --system-managed gateway)
+        # holds a lock file we cannot even open -- not proof it's stale.
+        # Unlinking it would delete a live gateway's lock and misreport it
+        # as not running (issue #96639). The one legitimate stale-lock case
+        # this used to unlink (a leftover root-owned file from a prior
+        # macOS launchd Background session) is still handled correctly and
+        # independently by acquire_gateway_runtime_lock()'s own
+        # unlink-and-retry, which runs when the gateway itself is the one
+        # actually trying to start and take ownership.
+        return True
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)

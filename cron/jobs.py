@@ -1687,15 +1687,33 @@ def record_ticker_error(message: str) -> None:
 
     The ticker thread lives inside the gateway process; ``hermes cron
     status``/``list`` run in a separate process and previously could only
-    infer "ticks may be failing" from marker staleness, with no clue WHY.
+    infer ``ticks may be failing`` from marker staleness, with no clue WHY.
     A root-owned ``jobs.json`` (#68483) failed every tick for ~14h with the
     reason visible only in the gateway's errors.log. Writing the last error
     next to the heartbeat markers gives the CLI something concrete to show.
 
-    Best-effort: a write failure must never disrupt the tick loop.
+    Best‑effort: a write failure must never disrupt the tick loop.
     """
     store = _current_cron_store()
     path = store.cron_dir / "ticker_last_error"
+    # First, run the shared redactor to strip known secret patterns.
+    # ``force=True`` guarantees redaction even if the global config disables
+    # it, and ``redact_url_credentials=True`` also masks credentials in URLs.
+    import re
+    try:
+        from agent.redact import redact_sensitive_text
+        sanitized = redact_sensitive_text(message, force=True, redact_url_credentials=True)
+    except Exception:
+        # If the redactor itself fails, fall back to the raw message.
+        sanitized = message
+    # Apply an additional custom regex layer for any remaining API‑key‑like
+    # tokens that the central redactor might have missed.
+    sanitized = re.sub(
+        r"(?i)(api[\s_-]?key|token|bearer|secret)[\s=:]+[A-Za-z0-9\-\._]{8,}",
+        r"\\1=***",
+        sanitized,
+    )
+    sanitized = sanitized.strip()
     try:
         ensure_dirs()
         fd, tmp_path = tempfile.mkstemp(
@@ -1703,7 +1721,7 @@ def record_ticker_error(message: str) -> None:
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(f"{time.time()}\n{message.strip()}\n")
+                f.write(f"{time.time()}\n{sanitized}\n")
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, path)
@@ -1714,6 +1732,7 @@ def record_ticker_error(message: str) -> None:
                 pass
             raise
     except Exception:
+        # Swallow any I/O errors – the ticker must keep running.
         pass
 
 

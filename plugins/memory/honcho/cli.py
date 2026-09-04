@@ -175,15 +175,17 @@ def _default_block_and_key(cfg: dict) -> tuple[dict, bool]:
     return cfg_get(cfg, "hosts", HOST, default={}), bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
 
 
-def _resolve_api_key(cfg: dict, block: dict | None = None) -> str:
+def _resolve_api_key(cfg: dict, block: dict | None = None, *, env: bool = True) -> str:
     """API key for ``block`` (default: the active host's block), host -> root -> env. A self-hosted
-    http(s) or host:port ``baseUrl`` without a key yields "local" so credential guards accept it."""
+    http(s) or host:port ``baseUrl`` without a key yields "local" so credential guards accept it.
+    ``env=False`` counts only what is on disk: a write that enables a block must not rely on a variable
+    that can vanish from the next process."""
     block = _host_block(cfg, _host_key()) if block is None else block
-    key = block.get("apiKey") or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    key = (block.get("apiKey") or cfg.get("apiKey", "") or (os.environ.get("HONCHO_API_KEY", "") if env else ""))
     if key:
         return key
     base_url = (block.get("baseUrl") or block.get("base_url") or cfg.get("baseUrl") or cfg.get("base_url")
-                or os.environ.get("HONCHO_BASE_URL", "") or "").strip()
+                or (os.environ.get("HONCHO_BASE_URL", "") if env else "") or "").strip()
     if not base_url:
         return key
     from urllib.parse import urlparse
@@ -281,7 +283,7 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     # workspace is shared so all profiles see the same context.
     new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST)
     # The default host's apiKey is not inherited; the block stays unenabled until this profile signs in.
-    if _resolve_api_key(cfg, new_block):
+    if _resolve_api_key(cfg, new_block, env=False):
         new_block["enabled"] = default_block.get("enabled", True)
     cfg.setdefault("hosts", {})[new_host] = new_block
     _write_config(cfg)
@@ -345,7 +347,7 @@ def cmd_enable(args) -> None:
     host = _host_key()
     label = _label(host)
     block = cfg.setdefault("hosts", {}).setdefault(host, {})
-    if not _resolve_api_key(cfg, block):
+    if not _resolve_api_key(cfg, block, env=False):
         return print(f"  {label}{_no_credential_hint(host)}\n")
     if block.get("enabled") is True:
         return print(f"  {label}Honcho is already enabled.\n")

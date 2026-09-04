@@ -897,11 +897,22 @@ class TestEnabledRequiresACredential:
         assert honcho_cli.clone_honcho_for_profile("dreamer") is True
         assert written["cfg"]["hosts"]["hermes_dreamer"]["enabled"] is True
 
-    def test_clone_with_env_key_is_enabled(self, monkeypatch, tmp_path):
-        honcho_cli, written = self._env(monkeypatch, tmp_path, self._oauth_default())
-        monkeypatch.setenv("HONCHO_API_KEY", "hch-v3-env")
+    def test_env_key_alone_does_not_enable_a_clone(self, monkeypatch, tmp_path):
+        """A variable can vanish from the next process; only what is on disk counts at write time."""
+        cfg = {"hosts": {"hermes": {"workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        monkeypatch.setenv("HONCHO_API_KEY", "hch-v3-from-env")
         assert honcho_cli.clone_honcho_for_profile("dreamer") is True
-        assert written["cfg"]["hosts"]["hermes_dreamer"]["enabled"] is True
+        assert "enabled" not in written["cfg"]["hosts"]["hermes_dreamer"]
+
+    def test_enable_refuses_with_only_an_env_key(self, monkeypatch, tmp_path, capsys):
+        from types import SimpleNamespace
+        cfg = {"hosts": {"hermes_dreamer": {"workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        monkeypatch.setenv("HONCHO_API_KEY", "hch-v3-from-env")
+        honcho_cli.cmd_enable(SimpleNamespace())
+        assert written == {}
+        assert "setup" in capsys.readouterr().out
 
 
     def test_clone_with_self_hosted_url_is_enabled(self, monkeypatch, tmp_path):

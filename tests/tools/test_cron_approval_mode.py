@@ -479,3 +479,34 @@ class TestCronWithGatewayOrigin:
         finally:
             clear_session_vars(tokens)
 
+    def test_cron_deny_ignores_gateway_interactive_and_ask_env_leaks(self, monkeypatch):
+        """A gateway-hosted cron fire must use cron_mode even when the gateway
+        process exports its interactive/ask markers.
+
+        Production regression: a citation command containing quoted text
+        ``hermes update`` was smart-approved because HERMES_INTERACTIVE=1 and
+        HERMES_EXEC_ASK=1 skipped the cron-deny branch.
+        """
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+        tokens = set_session_vars(
+            platform="telegram", chat_id="123", cron_session="1"
+        )
+        try:
+            from unittest.mock import patch as mock_patch
+            with mock_patch("tools.approval._smart_approve") as smart:
+                result = check_all_command_guards(
+                    "printf %s 'hermes update'", "local"
+                )
+            assert result["approved"] is False
+            assert "cron_mode" in result["message"]
+            smart.assert_not_called()
+        finally:
+            clear_session_vars(tokens)

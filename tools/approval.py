@@ -4800,6 +4800,18 @@ def check_all_command_guards(command: str, env_type: str,
         # either here) — ignore it so single_query_mode actually takes effect.
         is_ask = False
 
+    # Cron jobs also run inside the long-lived gateway process, which may export
+    # HERMES_INTERACTIVE=1 and HERMES_EXEC_ASK=1 for attended turns. Those are
+    # process-wide host markers, not permissions for this unattended fire. If
+    # they leak through here, the cron skips its deterministic cron_mode branch
+    # and can reach smart or human approval with nobody present (#production
+    # regression: quoted ``hermes update`` evidence was smart-approved). Cron
+    # context owns the decision exactly as single-query context does above.
+    if _is_cron_approval_context():
+        is_cli = False
+        is_gateway = False
+        is_ask = False
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:

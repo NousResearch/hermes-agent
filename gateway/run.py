@@ -6306,18 +6306,6 @@ class TurnRunner:
                         logger.debug("Reusing cached agent for session %s", ctx.session_key)
                         reused_cached_agent = True
 
-        # Lock released — refresh the fallback chain from disk for the
-        # reused agent OUTSIDE the cache lock (config.yaml read is disk
-        # I/O; the idle-sweep watcher contends on this lock and stalls
-        # Discord heartbeats — same reasoning as #52197).  A chain
-        # configured after this agent was cached (or after gateway start)
-        # must reach the next turn (#60955).  Per-session turn
-        # serialization (_running_agents) keeps this safe post-lock.
-        if reused_cached_agent and agent is not None:
-            self._runner._apply_fallback_chain_to_agent(
-                agent, self._runner._refresh_fallback_model(),
-            )
-
         # Lock released — now schedule cleanup of any cross-process-evicted
         # agent on a daemon thread so memory-provider shutdown / socket
         # teardown never blocks the gateway event loop or the cache lock
@@ -6371,7 +6359,8 @@ class TurnRunner:
                 thread_id=ctx.source.thread_id,
                 gateway_session_key=ctx.session_key,
                 session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
-                # Reload from disk — do not reuse the startup snapshot (#60955).
+                # Preserve the load-bearing per-turn config reload. Router
+                # alternates are merged immediately after construction.
                 fallback_model=self._runner._refresh_fallback_model(),
                 skip_context_files=skip_context_files,
                 # Keep the persona even with minimal context: soul identity is
@@ -6390,6 +6379,26 @@ class TurnRunner:
                     )
                     self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
+
+        # Apply router-selected alternates after construction while retaining
+        # the existing cooldown guard for cached agents and live fallbacks.
+        self._runner._apply_fallback_chain_to_agent(
+            agent,
+            self._runner._merge_turn_fallback_chain(
+                turn_route.get("_model_router_failover_chain"),
+                self._runner._refresh_fallback_model(),
+            ),
+        )
+
+        # Bind provider/model health at the actual API outcome boundary. The
+        # callbacks receive classifier metadata only (never prompt/error text).
+        try:
+            from agent.model_router.health import bind_agent_health
+
+            bind_agent_health(agent, turn_route.get("_model_router_health"))
+        except Exception:
+            agent._router_health_callback = None
+            agent._router_health_store = None
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
@@ -9170,13 +9179,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 staged_cfg = dict(router_cfg)
                 staged_cfg["candidates"] = resolved_items
                 staged = pipeline_from_config(staged_cfg)
+                routing_request = RoutingRequest(
+                    prompt_text=user_message,
+                    session_id=session_id,
+                    estimated_input_tokens=max(
+                        0, -(-len(str(user_message or "")) // 4)
+                    ),
+                )
                 if staged is not None:
                     decision = staged.route(
-                        RoutingRequest(
-                            prompt_text=user_message,
-                            session_id=session_id,
-                            estimated_input_tokens=max(0, len(str(user_message or "")) // 4),
-                        ),
+                        routing_request,
                         current_model=model,
                         mode=mode,
                     )
@@ -9190,7 +9202,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "stage": getattr(decision, "stage", "legacy"),
                     "turn_type": getattr(decision, "turn_type", "unknown"),
                     "routing_latency_ms": getattr(decision, "routing_latency_ms", 0.0),
+                    "features": dict(getattr(decision, "features", {}) or {}),
                 }
+                if staged is not None:
+                    # Internal-only boundary adapter. The health object and
+                    # failover entries never enter logs/telemetry/user output.
+                    route["_model_router_health"] = staged.health
+                    if mode == "auto":
+                        failovers = staged.failover_candidates(
+                            routing_request,
+                            decision.selected_model,
+                        )
+                        router_chain = []
+                        for profile in failovers:
+                            candidate_runtime = runtimes.get(profile.id) or {}
+                            entry = {
+                                "provider": str(
+                                    candidate_runtime.get("provider")
+                                    or profile.provider
+                                ),
+                                "model": profile.id,
+                                "_router_retryable_only": True,
+                            }
+                            if candidate_runtime.get("base_url"):
+                                entry["base_url"] = candidate_runtime["base_url"]
+                            if candidate_runtime.get("api_mode"):
+                                entry["api_mode"] = candidate_runtime["api_mode"]
+                            router_chain.append(entry)
+                        route["_model_router_failover_chain"] = router_chain
                 logger.info(
                     "Model router decision: mode=%s current=%s selected=%s reason=%s",
                     mode, model, decision.selected_model,
@@ -11093,6 +11132,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return self._fallback_model
         self._fallback_model = get_fallback_chain(cfg) or None
         return self._fallback_model
+
+    @staticmethod
+    def _merge_turn_fallback_chain(
+        router_chain: list | None,
+        configured_chain: list | None,
+    ) -> list | None:
+        """Combine bounded router alternates with the user's fallback policy.
+
+        Router entries carry an internal retryable-only marker. Existing user
+        fallback behavior remains unchanged and duplicate provider/model pairs
+        are removed without retaining credentials in router-owned metadata.
+        """
+        configured = [
+            entry for entry in list(configured_chain or [])
+            if isinstance(entry, dict)
+        ]
+        configured_keys = {
+            (
+                str(entry.get("provider") or "").strip().lower(),
+                str(entry.get("model") or "").strip(),
+            )
+            for entry in configured
+        }
+        # If a router alternate duplicates a user entry, retain the user's
+        # unmarked policy (including its established broader failover rules).
+        ordered = [
+            entry for entry in list(router_chain or [])
+            if isinstance(entry, dict)
+            and (
+                str(entry.get("provider") or "").strip().lower(),
+                str(entry.get("model") or "").strip(),
+            ) not in configured_keys
+        ] + configured
+        merged = []
+        seen = set()
+        for entry in ordered:
+            provider = str(entry.get("provider") or "").strip().lower()
+            model = str(entry.get("model") or "").strip()
+            if not provider or not model or (provider, model) in seen:
+                continue
+            seen.add((provider, model))
+            merged.append(dict(entry))
+        return merged or None
 
     @staticmethod
     def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
@@ -25669,7 +25751,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                prompt, model, runtime_kwargs, session_id=task_id
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -25717,9 +25801,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                self._apply_fallback_chain_to_agent(
+                    agent,
+                    self._merge_turn_fallback_chain(
+                        turn_route.get("_model_router_failover_chain"),
+                        self._refresh_fallback_model(),
+                    ),
+                )
+                try:
+                    from agent.model_router.health import bind_agent_health
+
+                    bind_agent_health(
+                        agent, turn_route.get("_model_router_health")
+                    )
+                except Exception:
+                    agent._router_health_callback = None
+                    agent._router_health_store = None
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,

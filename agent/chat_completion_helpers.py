@@ -2702,6 +2702,27 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     return str(value or reason or "provider failure").replace("_", " ")
 
 
+_ROUTER_STREAM_FAILOVER_REASONS = frozenset(
+    {
+        FailoverReason.rate_limit,
+        FailoverReason.upstream_rate_limit,
+        FailoverReason.overloaded,
+        FailoverReason.server_error,
+        FailoverReason.timeout,
+        FailoverReason.unknown,
+    }
+)
+
+
+def router_stream_fallback_allowed(
+    entry: dict, reason: "FailoverReason | None"
+) -> bool:
+    """Router-owned alternates are infrastructure-failure retries only."""
+    if not entry.get("_router_retryable_only"):
+        return True
+    return reason in _ROUTER_STREAM_FAILOVER_REASONS
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -2714,6 +2735,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    pending_reason = getattr(agent, "_fallback_activation_reason", None)
+    agent._fallback_activation_reason = None
+    if reason is None and pending_reason is not None:
+        reason = pending_reason
+
     if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
@@ -2755,6 +2781,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
+    if not router_stream_fallback_allowed(fb, reason):
+        logger.debug(
+            "Router stream fallback skip: failure reason %s is not retryable infrastructure",
+            getattr(reason, "value", reason),
+        )
+        return agent._try_activate_fallback(reason)
+    if fb.get("_router_retryable_only"):
+        health = getattr(agent, "_router_health_store", None)
+        if health is not None:
+            try:
+                if not health.claim_dispatch(
+                    str(fb.get("provider") or ""),
+                    str(fb.get("model") or ""),
+                ):
+                    logger.debug("Router stream fallback circuit unavailable")
+                    return agent._try_activate_fallback(reason)
+            except Exception:
+                # Health is advisory and deliberately fails open.
+                pass
     fb_key = _fallback_entry_key(fb)
     unavailable = getattr(agent, "_unavailable_fallback_keys", None)
     if unavailable is None:

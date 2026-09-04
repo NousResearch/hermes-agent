@@ -18,6 +18,7 @@ def safe_default(
     *,
     safe_tier: str = TIER_ECONOMICAL,
     safety_margin: float = DEFAULT_SAFETY_MARGIN,
+    min_output_tokens: int = 0,
 ) -> Optional[ModelProfile]:
     """Pick the deterministic safe model, or None when nothing is viable."""
     estimated = request.estimated_tokens() if request else 0
@@ -27,7 +28,9 @@ def safe_default(
             return False
         if not request:
             return True
-        return model_fits_context(model, estimated, safety_margin)
+        return model_fits_context(
+            model, estimated, safety_margin, min_output_tokens
+        )
 
     ordered = sorted(models, key=lambda m: m.id)
     for model in ordered:

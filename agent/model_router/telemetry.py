@@ -8,6 +8,7 @@ Bounded to the newest ~10k rows. Failure-safe: telemetry never breaks routing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -17,6 +18,8 @@ from pathlib import Path
 from .types import RoutingDecision, RoutingRequest
 
 MAX_ROWS = 10_000
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS routing_history (
@@ -49,6 +52,13 @@ def prompt_hash(text: str) -> str:
     return f"{h:x}"
 
 
+def _candidate_score(candidate) -> float:
+    """Return the final score for either pipeline candidate representation."""
+    if hasattr(candidate, "composite_score"):
+        return candidate.composite_score
+    return candidate.score
+
+
 class RouterTelemetry:
     """SQLite-backed routing decision log. Thread-safe, failure-safe."""
 
@@ -61,8 +71,13 @@ class RouterTelemetry:
             with self._connect() as conn:
                 conn.executescript(_SCHEMA)
             os.chmod(self._db_path, 0o600)
-        except Exception:
+        except Exception as exc:
             self._available = False
+            logger.warning(
+                "Model router telemetry initialization failed: db=%s error_type=%s",
+                self._db_path,
+                type(exc).__name__,
+            )
 
     @property
     def available(self) -> bool:
@@ -78,8 +93,12 @@ class RouterTelemetry:
             return
         try:
             candidates = [
-                {"model": c.model_id, "score": round(c.score, 4), "rejected": c.rejected_reason}
-                for c in decision.candidates
+                {
+                    "model": candidate.model_id,
+                    "score": round(_candidate_score(candidate), 4),
+                    "rejected": candidate.rejected_reason,
+                }
+                for candidate in decision.candidates
             ]
             with self._lock, self._connect() as conn:
                 conn.execute(
@@ -109,8 +128,15 @@ class RouterTelemetry:
                     " (SELECT id FROM routing_history ORDER BY id DESC LIMIT ?)",
                     (MAX_ROWS,),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Model router telemetry write failed: db=%s mode=%s stage=%s "
+                "error_type=%s",
+                self._db_path,
+                mode,
+                decision.stage,
+                type(exc).__name__,
+            )
 
     def history(self, *, limit: int = 20, session_id: str = "") -> list:
         if not self._available:

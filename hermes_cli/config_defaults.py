@@ -23,6 +23,21 @@ DEFAULT_CONFIG = {
         "loop_escalation": {"threshold": 3},
         "session_pin": {"enabled": True, "dwell_turns": 3, "switch_margin": 0.25},
         "safe_tier": "economical",
+        # Reserve a small generation floor inside the existing context safety
+        # margin so routing never selects an input-only fit with no answer room.
+        "output_headroom": {"min_output_tokens": 256},
+        # Provider/model circuits count retryable infrastructure failures only.
+        # State is bounded and stored beside router telemetry under HERMES_HOME.
+        "health": {
+            "enabled": True,
+            "failure_threshold": 3,
+            "reset_timeout_seconds": 30,
+            "half_open_successes": 2,
+            "max_entries": 256,
+        },
+        # Auto-mode gateway turns may use Hermes' existing provider retry loop
+        # for a bounded eligible alternate. Off/suggest never add alternates.
+        "stream_failover": {"enabled": True, "max_alternates": 1},
         "local_zero": {"enabled": False, "endpoints": [], "model": None, "timeout_ms": 1500},
         "hydra": {"enabled": True, "embeddings": False},
         "telemetry": {"enabled": True, "db_path": None},

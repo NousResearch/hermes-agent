@@ -31,10 +31,14 @@ CREATE TABLE IF NOT EXISTS session_pins (
 class RouterStateStore:
     """SQLite-backed session pin store. Thread-safe, failure-safe."""
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, *, read_only: bool = False):
         self._db_path = str(db_path)
+        self._read_only = bool(read_only)
         self._lock = threading.Lock()
         self._available = True
+        if self._read_only:
+            self._available = Path(self._db_path).is_file()
+            return
         try:
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as conn:
@@ -48,6 +52,9 @@ class RouterStateStore:
         return self._available
 
     def _connect(self) -> sqlite3.Connection:
+        if self._read_only:
+            uri = Path(self._db_path).resolve().as_uri() + "?mode=ro"
+            return sqlite3.connect(uri, uri=True, timeout=5)
         conn = sqlite3.connect(self._db_path, timeout=5)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
@@ -78,7 +85,7 @@ class RouterStateStore:
         )
 
     def save_pin(self, pin: SessionPin) -> None:
-        if not self._available or not pin.session_id:
+        if self._read_only or not self._available or not pin.session_id:
             return
         try:
             with self._lock, self._connect() as conn:
@@ -107,7 +114,7 @@ class RouterStateStore:
             pass
 
     def clear_pin(self, session_id: str) -> None:
-        if not self._available or not session_id:
+        if self._read_only or not self._available or not session_id:
             return
         try:
             with self._lock, self._connect() as conn:

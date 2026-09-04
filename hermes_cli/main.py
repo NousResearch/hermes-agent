@@ -13664,6 +13664,21 @@ def main():
     history_parser.add_argument("--limit", type=int, default=20)
     history_parser.add_argument("--session", default="")
     router_subparsers.add_parser("stats", help="Show routing counts and average latency")
+    explain_parser = router_subparsers.add_parser(
+        "explain",
+        help="Explain a routing decision without calling a model",
+    )
+    explain_parser.add_argument("prompt", nargs="?", default="")
+    explain_parser.add_argument("--current-model", default="")
+    explain_parser.add_argument("--session", default="")
+    explain_parser.add_argument("--estimated-input-tokens", type=int, default=None)
+    explain_parser.add_argument("--has-images", action="store_true")
+    explain_parser.add_argument(
+        "--turn-type",
+        choices=("tool_result", "planning", "subagent", "main_loop", "unknown"),
+        default=None,
+    )
+    explain_parser.add_argument("--force-model", default=None)
     router_parser.set_defaults(func=cmd_router, router_action="status")
 
     # =========================================================================

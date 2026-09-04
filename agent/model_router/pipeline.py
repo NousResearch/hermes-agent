@@ -22,6 +22,7 @@ probe, speculative prewarm, planning delegate — are explicit non-goals):
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -29,14 +30,15 @@ from typing import Optional
 
 from . import hydra
 from .context_fit import (
+    DEFAULT_MIN_OUTPUT_TOKENS,
     DEFAULT_SAFETY_MARGIN,
     filter_fleet_by_context_fit,
-    model_fits_context,
     resolve_context_overflow_fallback,
     select_lowest_cost_model,
 )
 from .envelope import classify_turn_envelope
 from .escalation import evaluate_loop_escalation
+from .health import HealthConfig
 from .local_zero import LocalZeroConfig, ping_local_services
 from .low_intensity import DEFAULT_HIGH_THRESHOLD, DEFAULT_LOW_THRESHOLD, score_low_intensity
 from .pinning import FlipFlopGuard, PIN_BREAK_OVERFLOW, evaluate_pin
@@ -46,6 +48,7 @@ from .triage import VERDICT_COMPLEX, VERDICT_TRIVIAL, triage
 from .types import (
     PIN_REASON_AUTO,
     PIN_REASON_LOOP_ESCALATION,
+    CandidateScore,
     ModelProfile,
     RoutingDecision,
     RoutingRequest,
@@ -59,6 +62,8 @@ from .types import (
 MODE_OFF = "off"
 MODE_SUGGEST = "suggest"
 MODE_AUTO = "auto"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,10 @@ class RouterConfig:
     local_zero: LocalZeroConfig = LocalZeroConfig()
     hydra_enabled: bool = True
     flip_flop_threshold: int = 3
+    min_output_tokens: int = DEFAULT_MIN_OUTPUT_TOKENS
+    health: HealthConfig = HealthConfig()
+    stream_failover_enabled: bool = True
+    stream_failover_max_alternates: int = 1
 
 
 def _redact_error(error: BaseException, prompt_text: str) -> str:
@@ -88,21 +97,44 @@ def _redact_error(error: BaseException, prompt_text: str) -> str:
 class RouterPipeline:
     """Ordered early-exit routing pipeline over an explicit candidate fleet."""
 
-    def __init__(self, fleet, config: RouterConfig = RouterConfig(), state=None, telemetry=None):
+    def __init__(
+        self,
+        fleet,
+        config: RouterConfig = RouterConfig(),
+        state=None,
+        telemetry=None,
+        health=None,
+    ):
         self._fleet = tuple(fleet)
         self._config = config
         self._state = state
         self._telemetry = telemetry
+        self._health = health
         self._flip_flop = FlipFlopGuard(config.flip_flop_threshold)
 
     @property
     def fleet(self):
         return self._fleet
 
+    @property
+    def health(self):
+        return self._health
+
     # ─── Public entry ────────────────────────────────────────────────────────
 
-    def route(self, request: RoutingRequest, *, current_model: str, mode: str = MODE_OFF) -> RoutingDecision:
-        """Choose at most one model for a turn. Modes: off, suggest, auto."""
+    def route(
+        self,
+        request: RoutingRequest,
+        *,
+        current_model: str,
+        mode: str = MODE_OFF,
+        dry_run: bool = False,
+    ) -> RoutingDecision:
+        """Choose at most one model for a turn. Modes: off, suggest, auto.
+
+        ``dry_run`` executes the same stages while suppressing pin, health,
+        flip-flop, and telemetry writes; it powers ``hermes router explain``.
+        """
         if mode not in {MODE_OFF, MODE_SUGGEST, MODE_AUTO}:
             mode = MODE_OFF
         start = time.monotonic()
@@ -111,7 +143,38 @@ class RouterPipeline:
             return RoutingDecision(current_model, "disabled", "routing_disabled", explanation="routing disabled")
 
         try:
-            decision = self._run_pipeline(request, current_model)
+            health_excluded: set[str] = set()
+            while True:
+                decision = self._run_pipeline(
+                    request,
+                    current_model,
+                    health_excluded=health_excluded,
+                    mutate_state=not dry_run,
+                )
+                if (
+                    dry_run
+                    or mode != MODE_AUTO
+                    or self._health is None
+                    or decision.stage in {"fallback", "pipeline_error", "force_model"}
+                ):
+                    break
+                selected = next(
+                    (model for model in self._fleet if model.id == decision.selected_model),
+                    None,
+                )
+                if selected is None or self._health.claim_dispatch(
+                    selected.provider, selected.id
+                ):
+                    break
+                health_excluded.add(selected.id)
+                if len(health_excluded) >= len(self._fleet):
+                    decision = self._decide_named(
+                        current_model,
+                        "fallback",
+                        "health_probe_busy",
+                        request,
+                    )
+                    break
         except Exception as exc:  # belt-and-braces; stages already guard
             decision = self._fallback_decision(
                 request, current_model, "pipeline_error", _redact_error(exc, request.prompt_text)
@@ -134,41 +197,126 @@ class RouterPipeline:
 
         # Pin bookkeeping only applies to turns that will actually run on the
         # selected model (auto mode).
-        if mode == MODE_AUTO and self._state is not None and self._config.pin_enabled:
+        if (
+            not dry_run
+            and mode == MODE_AUTO
+            and self._state is not None
+            and self._config.pin_enabled
+        ):
             self._update_pin(request, decision)
 
-        if self._telemetry is not None:
-            self._telemetry.record(request, decision, mode=mode, session_id=request.session_id)
+        if not dry_run and self._telemetry is not None:
+            try:
+                self._telemetry.record(
+                    request,
+                    decision,
+                    mode=mode,
+                    session_id=request.session_id,
+                )
+            except Exception as exc:
+                # Telemetry is never a routing gate. Avoid logging the exception
+                # message because third-party recorders may include prompt text.
+                logger.warning(
+                    "Model router telemetry write failed: mode=%s stage=%s error_type=%s",
+                    mode,
+                    decision.stage,
+                    type(exc).__name__,
+                )
         return decision
 
     # ─── Pipeline ────────────────────────────────────────────────────────────
 
-    def _run_pipeline(self, request: RoutingRequest, current_model: str) -> RoutingDecision:
+    def _run_pipeline(
+        self,
+        request: RoutingRequest,
+        current_model: str,
+        *,
+        health_excluded: set[str] | None = None,
+        mutate_state: bool = True,
+    ) -> RoutingDecision:
         turn_type = request.turn_type or (
             classify_turn_envelope(request.messages) if request.messages else "main_loop"
         )
         request = replace(request, turn_type=turn_type)
         cfg = self._config
+        basic_features = {
+            "estimated_input_tokens": request.estimated_tokens(),
+            "min_output_tokens": cfg.min_output_tokens,
+            "has_images": bool(request.has_images),
+        }
 
-        # 1. force_model — explicit override short-circuits routing.
+        # 1. force_model — explicit operator override short-circuits gates.
         if request.force_model_id:
             for model in self._fleet:
                 if model.id == request.force_model_id:
-                    return self._decide(model, "force_model", "operator_override", request)
-            # Forced model outside the fleet: retain current, never guess.
-            return self._decide_named(current_model, "force_model", "forced_model_not_in_fleet", request)
+                    return self._decide(
+                        model,
+                        "force_model",
+                        "operator_override",
+                        request,
+                        features=basic_features,
+                    )
+            return self._decide_named(
+                current_model,
+                "force_model",
+                "forced_model_not_in_fleet",
+                request,
+                features=basic_features,
+            )
 
-        pin = self._state.load_pin(request.session_id) if (self._state and cfg.pin_enabled) else None
+        # Compute candidate eligibility before an early escalation decision so
+        # every automatic target (including a frontier escalation) reserves
+        # context plus output headroom and respects an open health circuit.
+        fit = filter_fleet_by_context_fit(
+            self._fleet,
+            request,
+            cfg.context_safety_margin,
+            cfg.min_output_tokens,
+        )
+        excluded = health_excluded or set()
+        health_rejected = []
+        eligible = []
+        for profile in fit.effective_fleet:
+            unavailable = profile.id in excluded
+            if not unavailable and self._health is not None:
+                unavailable = not self._health.is_available(profile.provider, profile.id)
+            if unavailable:
+                health_rejected.append(
+                    CandidateScore(profile.id, rejected_reason="health_circuit_open")
+                )
+            else:
+                eligible.append(profile)
+        fleet = tuple(eligible)
+        all_rejected = tuple(fit.rejected) + tuple(health_rejected)
+        rejected_notes = tuple(
+            f"{candidate.model_id}: {candidate.rejected_reason}"
+            for candidate in all_rejected
+        )
 
-        # 2. loop_escalation — repeated tool failures escalate to frontier.
+        pin = self._state.load_pin(request.session_id) if (
+            self._state and cfg.pin_enabled
+        ) else None
+
+        # 2. loop_escalation — repeated tool failures escalate to an eligible frontier.
         if pin is not None:
-            result = self._stage("loop_escalation", evaluate_loop_escalation, pin, request, self._fleet, cfg.loop_escalation_threshold)
+            result = self._stage(
+                "loop_escalation",
+                evaluate_loop_escalation,
+                pin,
+                request,
+                fleet,
+                cfg.loop_escalation_threshold,
+            )
             if result is not None:
-                if result.updated_pin is not None and self._state is not None:
+                if (
+                    mutate_state
+                    and result.updated_pin is not None
+                    and self._state is not None
+                ):
                     self._state.save_pin(result.updated_pin)
                     pin = result.updated_pin
                 if result.should_escalate and result.escalation_target is not None:
-                    if self._state is not None:
+                    if mutate_state and self._state is not None:
                         self._state.save_pin(replace(
                             pin,
                             pinned_model_id=result.escalation_target.id,
@@ -176,54 +324,91 @@ class RouterPipeline:
                             turns_held=0,
                             updated_at=time.time(),
                         ))
-                    return self._decide(result.escalation_target, "loop_escalation", result.reason, request, pinned=True)
+                    return self._decide(
+                        result.escalation_target,
+                        "loop_escalation",
+                        result.reason,
+                        request,
+                        pinned=True,
+                        rejected=rejected_notes,
+                        features=basic_features,
+                    )
 
-        # 3. context_fit — narrow the fleet (never decides).
-        fit = filter_fleet_by_context_fit(self._fleet, request, cfg.context_safety_margin)
-        fleet = fit.effective_fleet or self._fleet if not request.force_model_id else self._fleet
-        rejected_notes = tuple(f"{c.model_id}: {c.rejected_reason}" for c in fit.rejected)
-
-        # Flip-flop guard: a tier-pinned session stays on its pinned tier when possible.
+        # 3. context_fit and health have narrowed ``fleet`` but never decide.
         guard_tier = self._flip_flop.is_tier_pinned(request.session_id)
         if guard_tier:
-            tier_fleet = tuple(m for m in fleet if m.tier == guard_tier)
+            tier_fleet = tuple(model for model in fleet if model.tier == guard_tier)
             if tier_fleet:
                 fleet = tier_fleet
 
-        # Shared analysis for downstream stages.
         triage_result = triage(request.prompt_text)
         requirements = hydra.build_requirement_vector(request, triage_result)
-
-        def hydra_pick(candidates):
-            result = hydra.hydra_match(candidates, requirements, request, cfg.frugality)
-            return result
+        low = score_low_intensity(
+            request,
+            triage_result,
+            requirements.magnitude,
+            high_threshold=cfg.low_intensity_high,
+            low_threshold=cfg.low_intensity_low,
+        )
+        features = {
+            **basic_features,
+            "low_intensity_score": low.score,
+            "triage": {
+                "verdict": triage_result.verdict,
+                "reason": triage_result.reason_code,
+            },
+            "requirements": {
+                "reasoning": requirements.reasoning,
+                "code_gen": requirements.code_gen,
+                "tool_use": requirements.tool_use,
+            },
+        }
+        mo = hydra.hydra_match(fleet, requirements, request, cfg.frugality)
+        candidates = mo.candidates + tuple(
+            # Keep eligibility rejections visible beside scored candidates.
+            # Multi-objective candidates already include unhealthy/capability rejects.
+            CandidateScore(
+                candidate.model_id,
+                rejected_reason=candidate.rejected_reason,
+                shortfall=candidate.shortfall,
+            )
+            for candidate in all_rejected
+        )
 
         # 4. low_intensity — cheap adequate pick for low-intensity turns.
-        low = score_low_intensity(
-            request, triage_result, requirements.magnitude,
-            high_threshold=cfg.low_intensity_high, low_threshold=cfg.low_intensity_low,
-        )
         if low.is_high:
-            economical = [m for m in fleet if m.tier == TIER_ECONOMICAL]
+            economical = [model for model in fleet if model.tier == TIER_ECONOMICAL]
             pick = select_lowest_cost_model(economical)
             if pick is not None:
-                return self._decide(pick, "low_intensity", "low_intensity_gate", request, rejected=rejected_notes,
-                                    features={"low_intensity_score": low.score})
+                return self._decide(
+                    pick,
+                    "low_intensity",
+                    "low_intensity_gate",
+                    request,
+                    rejected=rejected_notes,
+                    candidates=candidates,
+                    features=features,
+                )
 
         # 5. session_pin — valid pin holds unless a break condition fires.
         if pin is not None:
-            pinned_model = next((m for m in self._fleet if m.id == pin.pinned_model_id), None)
-            active_pinned = next((m for m in fleet if m.id == pin.pinned_model_id), None)
-            mo = hydra_pick(fleet)
-            best_alt = None
-            best_alt_score = 0.0
-            pinned_score = 0.0
-            if mo.selected is not None:
-                best_alt = next((m for m in fleet if m.id == mo.selected.model_id), None)
-                best_alt_score = mo.selected.composite_score
-            for scored in mo.candidates:
-                if scored.model_id == pin.pinned_model_id:
-                    pinned_score = scored.composite_score
+            active_pinned = next(
+                (model for model in fleet if model.id == pin.pinned_model_id),
+                None,
+            )
+            best_alt = next(
+                (model for model in fleet if mo.selected and model.id == mo.selected.model_id),
+                None,
+            )
+            best_alt_score = mo.selected.composite_score if mo.selected else 0.0
+            pinned_score = next(
+                (
+                    scored.composite_score
+                    for scored in mo.candidates
+                    if scored.model_id == pin.pinned_model_id
+                ),
+                0.0,
+            )
             evaluation = evaluate_pin(
                 pin,
                 active_pinned,
@@ -238,62 +423,220 @@ class RouterPipeline:
                 warm_prefix_tokens=request.estimated_tokens(),
             )
             if evaluation.hold and active_pinned is not None:
-                return self._decide(active_pinned, "session_pin", "pin_hold", request, pinned=True, rejected=rejected_notes)
+                return self._decide(
+                    active_pinned,
+                    "session_pin",
+                    "pin_hold",
+                    request,
+                    pinned=True,
+                    rejected=rejected_notes,
+                    candidates=candidates,
+                    features=features,
+                )
             if evaluation.switch_to is not None and evaluation.reason != PIN_BREAK_OVERFLOW:
-                return self._decide(evaluation.switch_to, "session_pin", evaluation.reason, request, rejected=rejected_notes)
-            # Overflow break: fall through to the overflow stage below with the pin cleared.
-            if self._state is not None:
+                return self._decide(
+                    evaluation.switch_to,
+                    "session_pin",
+                    evaluation.reason,
+                    request,
+                    rejected=rejected_notes,
+                    candidates=candidates,
+                    features=features,
+                )
+            if mutate_state and self._state is not None:
                 self._state.clear_pin(request.session_id)
             pin = None
 
         # 6. triage — fast paths.
         if triage_result.verdict == VERDICT_COMPLEX:
-            frontier = [m for m in fleet if m.tier == TIER_FRONTIER and m.healthy]
+            frontier = [
+                model for model in fleet
+                if model.tier == TIER_FRONTIER and model.healthy
+            ]
             if frontier:
-                pick = sorted(frontier, key=lambda m: (-m.quality, m.id))[0]
-                return self._decide(pick, "triage", triage_result.reason_code, request, rejected=rejected_notes)
+                pick = sorted(frontier, key=lambda model: (-model.quality, model.id))[0]
+                return self._decide(
+                    pick,
+                    "triage",
+                    triage_result.reason_code,
+                    request,
+                    rejected=rejected_notes,
+                    candidates=candidates,
+                    features=features,
+                )
 
         # 7. local_zero — opt-in local inference for trivial/low-intensity turns.
-        if cfg.local_zero.enabled and (triage_result.verdict == VERDICT_TRIVIAL or low.is_high):
+        if cfg.local_zero.enabled and (
+            triage_result.verdict == VERDICT_TRIVIAL or low.is_high
+        ):
             local_model = next(
-                (m for m in fleet if m.tier == TIER_LOCAL and m.healthy and (not cfg.local_zero.model or m.id == cfg.local_zero.model)),
+                (
+                    model for model in fleet
+                    if model.tier == TIER_LOCAL
+                    and model.healthy
+                    and (not cfg.local_zero.model or model.id == cfg.local_zero.model)
+                ),
                 None,
             )
-            if local_model is not None and self._stage("local_zero_ping", ping_local_services, cfg.local_zero):
-                return self._decide(local_model, "local_zero", "local_ready", request, rejected=rejected_notes)
+            if local_model is not None and self._stage(
+                "local_zero_ping", ping_local_services, cfg.local_zero
+            ):
+                return self._decide(
+                    local_model,
+                    "local_zero",
+                    "local_ready",
+                    request,
+                    rejected=rejected_notes,
+                    candidates=candidates,
+                    features=features,
+                )
 
         # 8. triage_cloud_fallback — trivial turns not claimed locally.
         if triage_result.verdict == VERDICT_TRIVIAL:
-            economical = [m for m in fleet if m.tier == TIER_ECONOMICAL]
+            economical = [model for model in fleet if model.tier == TIER_ECONOMICAL]
             pick = select_lowest_cost_model(economical)
             if pick is not None:
-                return self._decide(pick, "triage_cloud_fallback", triage_result.reason_code, request, rejected=rejected_notes)
+                return self._decide(
+                    pick,
+                    "triage_cloud_fallback",
+                    triage_result.reason_code,
+                    request,
+                    rejected=rejected_notes,
+                    candidates=candidates,
+                    features=features,
+                )
 
         # 9. hydra_match — requirement vector + multi-objective selection.
-        if cfg.hydra_enabled:
-            mo = hydra_pick(fleet)
-            if mo.selected is not None:
-                pick = next(m for m in fleet if m.id == mo.selected.model_id)
-                decision = self._decide(pick, "hydra_match", "multi_objective", request, rejected=rejected_notes,
-                                        candidates=mo.candidates)
+        if cfg.hydra_enabled and mo.selected is not None:
+            pick = next(model for model in fleet if model.id == mo.selected.model_id)
+            decision = self._decide(
+                pick,
+                "hydra_match",
+                "multi_objective",
+                request,
+                rejected=rejected_notes,
+                candidates=candidates,
+                features=features,
+            )
+            if mutate_state:
                 self._flip_flop.observe_tier(request.session_id, pick.tier)
-                return decision
+            return decision
 
-        # 10. safe_default — first healthy safe-tier model (context-fit aware).
-        pick = safe_default(fleet, request, safe_tier=cfg.safe_tier, safety_margin=cfg.context_safety_margin)
+        # 10. safe_default — context, headroom, and health aware.
+        pick = safe_default(
+            fleet,
+            request,
+            safe_tier=cfg.safe_tier,
+            safety_margin=cfg.context_safety_margin,
+            min_output_tokens=cfg.min_output_tokens,
+        )
         if pick is not None:
-            return self._decide(pick, "safe_default", "safe_tier_default", request, rejected=rejected_notes)
+            return self._decide(
+                pick,
+                "safe_default",
+                "safe_tier_default",
+                request,
+                rejected=rejected_notes,
+                candidates=candidates,
+                features=features,
+            )
 
-        # 11. context_overflow — largest-fit model when nothing else decided.
+        # 11. context_overflow — try a larger healthy circuit without ever
+        # dispatching a model that still lacks the required output floor.
         if fit.rejected:
+            overflow_fleet = tuple(
+                model for model in self._fleet
+                if model.id not in excluded
+                and (
+                    self._health is None
+                    or self._health.is_available(model.provider, model.id)
+                )
+            )
             overflow = resolve_context_overflow_fallback(
-                self._fleet, request.estimated_tokens(),
-                preferred_provider=None, safety_margin=cfg.context_safety_margin,
+                overflow_fleet,
+                request.estimated_tokens(),
+                preferred_provider=None,
+                safety_margin=cfg.context_safety_margin,
+                min_output_tokens=cfg.min_output_tokens,
             )
             if overflow.kind == "selected" and overflow.model is not None:
-                return self._decide(overflow.model, "context_overflow", overflow.reason_code, request, rejected=rejected_notes)
+                return self._decide(
+                    overflow.model,
+                    "context_overflow",
+                    overflow.reason_code,
+                    request,
+                    rejected=rejected_notes,
+                    candidates=candidates,
+                    features=features,
+                )
 
-        return self._decide_named(current_model, "fallback", "no_candidate_eligible", request, rejected=rejected_notes)
+        return self._decide_named(
+            current_model,
+            "fallback",
+            "no_candidate_eligible",
+            request,
+            rejected=rejected_notes,
+            candidates=candidates,
+            features=features,
+        )
+
+    def failover_candidates(
+        self,
+        request: RoutingRequest,
+        selected_model: str,
+        *,
+        limit: int | None = None,
+    ) -> tuple[ModelProfile, ...]:
+        """Return deterministic, currently eligible stream-failover targets.
+
+        This is selection only: it performs no health probe claim and no state,
+        telemetry, pin, or network mutation. The gateway passes these targets
+        to Hermes' existing provider-failure retry loop.
+        """
+        if not self._config.stream_failover_enabled:
+            return ()
+        cap = self._config.stream_failover_max_alternates if limit is None else limit
+        cap = max(0, int(cap))
+        if cap == 0:
+            return ()
+        fit = filter_fleet_by_context_fit(
+            self._fleet,
+            request,
+            self._config.context_safety_margin,
+            self._config.min_output_tokens,
+        )
+        fleet = tuple(
+            model for model in fit.effective_fleet
+            if model.id != selected_model
+            and model.healthy
+            and (
+                self._health is None
+                or self._health.is_available(model.provider, model.id)
+            )
+        )
+        triage_result = triage(request.prompt_text)
+        requirements = hydra.build_requirement_vector(request, triage_result)
+        scored = hydra.hydra_match(
+            fleet, requirements, request, self._config.frugality
+        )
+        score_by_id = {
+            candidate.model_id: candidate.composite_score
+            for candidate in scored.candidates
+            if candidate.rejected_reason is None
+        }
+        selected = next(
+            (model for model in self._fleet if model.id == selected_model),
+            None,
+        )
+        viable = [model for model in fleet if model.id in score_by_id]
+        viable.sort(
+            key=lambda model: (
+                0 if selected is not None and model.tier == selected.tier else 1,
+                -score_by_id[model.id],
+                model.id,
+            )
+        )
+        return tuple(viable[:cap])
 
     # ─── Stage guard ─────────────────────────────────────────────────────────
 
@@ -320,20 +663,43 @@ class RouterPipeline:
             features=features or {},
         )
 
-    def _decide_named(self, model_id: str, stage: str, reason: str, request: RoutingRequest, *, rejected: tuple = ()) -> RoutingDecision:
+    def _decide_named(
+        self,
+        model_id: str,
+        stage: str,
+        reason: str,
+        request: RoutingRequest,
+        *,
+        rejected: tuple = (),
+        candidates: tuple = (),
+        features: dict | None = None,
+    ) -> RoutingDecision:
         return RoutingDecision(
             selected_model=model_id,
             stage=stage,
             reason_code=reason,
             explanation=f"stage={stage} reason={reason}",
             rejected=rejected,
+            candidates=candidates,
             turn_type=request.turn_type or "unknown",
+            features=features or {},
         )
 
     def _fallback_decision(self, request: RoutingRequest, current_model: str, stage: str, error: str) -> RoutingDecision:
         pick = None
         try:
-            pick = safe_default(self._fleet, request, safe_tier=self._config.safe_tier)
+            eligible = tuple(
+                model for model in self._fleet
+                if self._health is None
+                or self._health.is_available(model.provider, model.id)
+            )
+            pick = safe_default(
+                eligible,
+                request,
+                safe_tier=self._config.safe_tier,
+                safety_margin=self._config.context_safety_margin,
+                min_output_tokens=self._config.min_output_tokens,
+            )
         except Exception:
             pick = None
         selected = pick.id if pick is not None else current_model
@@ -409,6 +775,9 @@ def router_config_from_dict(cfg: dict) -> RouterConfig:
     pin = cfg.get("session_pin") or {}
     local = cfg.get("local_zero") or {}
     hydra_cfg = cfg.get("hydra") or {}
+    headroom = cfg.get("output_headroom") or {}
+    health = cfg.get("health") or {}
+    stream_failover = cfg.get("stream_failover") or {}
     return RouterConfig(
         frugality=FrugalityWeights(
             lambda_cost=float(frugality.get("lambda_cost", 0.5)),
@@ -420,6 +789,9 @@ def router_config_from_dict(cfg: dict) -> RouterConfig:
         dwell_turns=max(0, int(pin.get("dwell_turns", 3))),
         switch_margin=float(pin.get("switch_margin", 0.25)),
         safe_tier=normalize_tier(cfg.get("safe_tier"), default=TIER_ECONOMICAL),
+        context_safety_margin=max(
+            0.0, min(1.0, float(cfg.get("context_safety_margin", DEFAULT_SAFETY_MARGIN)))
+        ),
         local_zero=LocalZeroConfig(
             enabled=bool(local.get("enabled", False)),
             endpoints=tuple(local.get("endpoints") or ()),
@@ -427,6 +799,22 @@ def router_config_from_dict(cfg: dict) -> RouterConfig:
             timeout_ms=int(local.get("timeout_ms", 1500)),
         ),
         hydra_enabled=bool(hydra_cfg.get("enabled", True)),
+        min_output_tokens=max(
+            0, int(headroom.get("min_output_tokens", DEFAULT_MIN_OUTPUT_TOKENS))
+        ),
+        health=HealthConfig(
+            enabled=bool(health.get("enabled", True)),
+            failure_threshold=max(1, int(health.get("failure_threshold", 3))),
+            reset_timeout_seconds=max(
+                0.0, float(health.get("reset_timeout_seconds", 30.0))
+            ),
+            half_open_successes=max(1, int(health.get("half_open_successes", 2))),
+            max_entries=max(1, min(4096, int(health.get("max_entries", 256)))),
+        ),
+        stream_failover_enabled=bool(stream_failover.get("enabled", True)),
+        stream_failover_max_alternates=max(
+            0, min(8, int(stream_failover.get("max_alternates", 1)))
+        ),
     )
 
 
@@ -441,7 +829,12 @@ def default_db_path(hermes_home=None) -> Path:
     return Path(hermes_home) / "state" / "model_router" / "router.db"
 
 
-def pipeline_from_config(router_cfg: dict, *, hermes_home=None) -> Optional["RouterPipeline"]:
+def pipeline_from_config(
+    router_cfg: dict,
+    *,
+    hermes_home=None,
+    read_only: bool = False,
+) -> Optional["RouterPipeline"]:
     """Build a pipeline from the model_router config section.
 
     Returns None when no usable candidates exist. State and telemetry are
@@ -463,19 +856,35 @@ def pipeline_from_config(router_cfg: dict, *, hermes_home=None) -> Optional["Rou
 
     state = None
     telemetry = None
+    health = None
     if config.pin_enabled:
         try:
             from .state import RouterStateStore
-            store = RouterStateStore(db_path)
+            store = RouterStateStore(db_path, read_only=read_only)
             state = store if store.available else None
         except Exception:
             state = None
-    if bool(telemetry_cfg.get("enabled", True)):
+    if not read_only and bool(telemetry_cfg.get("enabled", True)):
         try:
             from .telemetry import RouterTelemetry
             recorder = RouterTelemetry(db_path)
             telemetry = recorder if recorder.available else None
         except Exception:
             telemetry = None
+    if config.health.enabled:
+        try:
+            from .health import RouterHealthStore
+            health_store = RouterHealthStore(
+                db_path, config.health, read_only=read_only
+            )
+            health = health_store if health_store.available else None
+        except Exception:
+            health = None
 
-    return RouterPipeline(profiles, config, state=state, telemetry=telemetry)
+    return RouterPipeline(
+        profiles,
+        config,
+        state=state,
+        telemetry=telemetry,
+        health=health,
+    )

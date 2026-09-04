@@ -17,11 +17,16 @@ from .types import (
 )
 
 CONTEXT_FIT_EXCEEDED = "context_fit_exceeded"
+OUTPUT_HEADROOM_EXCEEDED = "output_headroom_exceeded"
 CONTEXT_OVERFLOW_SAME_PROVIDER_FALLBACK = "context_overflow_same_provider_fallback"
 CONTEXT_OVERFLOW_FRONTIER_FALLBACK = "context_overflow_frontier_fallback"
 CONTEXT_OVERFLOW_NO_FIT = "context_overflow_no_fit"
 
 DEFAULT_SAFETY_MARGIN = 0.9
+# Pi's delegation floor is intentionally small: it prevents a candidate whose
+# input exactly fills the context window from being selected without reserving
+# a large, provider-specific generation budget.
+DEFAULT_MIN_OUTPUT_TOKENS = 256
 
 
 @dataclass(frozen=True)
@@ -37,11 +42,21 @@ class ContextOverflowResult:
     reason_code: str
 
 
-def model_fits_context(profile: ModelProfile, estimated_input_tokens: int, safety_margin: float = DEFAULT_SAFETY_MARGIN) -> bool:
+def model_fits_context(
+    profile: ModelProfile,
+    estimated_input_tokens: int,
+    safety_margin: float = DEFAULT_SAFETY_MARGIN,
+    min_output_tokens: int = 0,
+) -> bool:
+    """Whether input plus the requested output floor fits the safe window.
+
+    ``min_output_tokens=0`` preserves the historical context-only predicate
+    for callers outside the router pipeline. Unknown windows remain eligible.
+    """
     if not profile.context_window:
         return True  # unknown window → retained
     effective_limit = int(profile.context_window * safety_margin)
-    return estimated_input_tokens <= effective_limit
+    return estimated_input_tokens + max(0, int(min_output_tokens)) <= effective_limit
 
 
 def select_largest_window_model(candidates) -> Optional[ModelProfile]:
@@ -71,6 +86,7 @@ def resolve_context_overflow_fallback(
     estimated_input_tokens: int,
     preferred_provider: Optional[str] = None,
     safety_margin: float = DEFAULT_SAFETY_MARGIN,
+    min_output_tokens: int = 0,
 ) -> ContextOverflowResult:
     """Escalate when economical/pinned models cannot fit context.
 
@@ -78,7 +94,9 @@ def resolve_context_overflow_fallback(
     2. Cheapest frontier model that fits
     3. Structured no-fit (never dispatch undersized)
     """
-    fits = lambda m: model_fits_context(m, estimated_input_tokens, safety_margin)
+    fits = lambda m: model_fits_context(
+        m, estimated_input_tokens, safety_margin, min_output_tokens
+    )
 
     if preferred_provider:
         same_provider = [m for m in fleet if m.provider == preferred_provider and fits(m)]
@@ -98,6 +116,7 @@ def filter_fleet_by_context_fit(
     fleet,
     request: RoutingRequest,
     safety_margin: float = DEFAULT_SAFETY_MARGIN,
+    min_output_tokens: int = 0,
 ) -> ContextFitFilterResult:
     """Remove fleet entries whose window cannot fit the estimated input.
 
@@ -110,17 +129,22 @@ def filter_fleet_by_context_fit(
     estimated = request.estimated_tokens()
     effective = []
     rejected = []
+    output_floor = max(0, int(min_output_tokens))
     for profile in fleet:
-        if model_fits_context(profile, estimated, safety_margin):
+        if model_fits_context(profile, estimated, safety_margin, output_floor):
             effective.append(profile)
             continue
         effective_limit = int(profile.context_window * safety_margin)
+        input_fits = estimated <= effective_limit
+        required = estimated + output_floor
         rejected.append(
             CandidateScore(
                 model_id=profile.id,
                 score=0.0,
-                shortfall=float(estimated - effective_limit),
-                rejected_reason=CONTEXT_FIT_EXCEEDED,
+                shortfall=float(max(0, required - effective_limit)),
+                rejected_reason=(
+                    OUTPUT_HEADROOM_EXCEEDED if input_fits else CONTEXT_FIT_EXCEEDED
+                ),
             )
         )
     return ContextFitFilterResult(tuple(effective), tuple(rejected))

@@ -37,6 +37,14 @@ from .types import (
     TIER_LOCAL,
     normalize_tier,
 )
+from .health import (
+    HealthConfig,
+    HealthOutcome,
+    HealthSnapshot,
+    RouterHealthStore,
+    bind_agent_health,
+    classify_health_outcome,
+)
 from .pipeline import (
     MODE_AUTO,
     MODE_OFF,
@@ -62,6 +70,12 @@ __all__ = [
     "RoutingDecision",
     "RoutingRequest",
     "SessionPin",
+    "HealthConfig",
+    "HealthOutcome",
+    "HealthSnapshot",
+    "RouterHealthStore",
+    "bind_agent_health",
+    "classify_health_outcome",
     "RouterConfig",
     "RouterPipeline",
     "pipeline_from_config",

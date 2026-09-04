@@ -3322,6 +3322,20 @@ class AIAgent:
             }
         )
 
+    def _record_router_health_success(self) -> None:
+        """Notify the gateway's optional router-health adapter of API success."""
+        callback = getattr(self, "_router_health_callback", None)
+        if callback is None:
+            return
+        try:
+            callback(
+                success=True,
+                provider=self.provider,
+                model=self.model,
+            )
+        except Exception:
+            pass
+
     def _invoke_api_request_error_hook(
         self,
         *,
@@ -3339,6 +3353,24 @@ class AIAgent:
         retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
+        # The gateway adapter consumes classifier metadata only. Deliberately
+        # omit ``error_message`` and request data so health state stays
+        # privacy-safe even when a provider body echoes prompt content.
+        health_callback = getattr(self, "_router_health_callback", None)
+        if health_callback is not None:
+            try:
+                health_callback(
+                    success=False,
+                    provider=self.provider,
+                    model=self.model,
+                    status_code=status_code,
+                    retryable=retryable,
+                    reason=reason,
+                    error_type=error_type,
+                )
+            except Exception:
+                pass
+
         # Lazy module import (not from-import) so tests can replace lifecycle
         # dispatch at this call site. After first call the import is a
         # ``sys.modules`` dict lookup, so retries don't repay any real cost.

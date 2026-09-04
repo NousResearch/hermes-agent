@@ -307,6 +307,16 @@ _SPECS = [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
+    _cmd("reopen", [
+        _TASK_IDS,
+        _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),
+        _arg("--landing", choices=sorted(kb._REOPEN_LANDINGS), default="ready",
+             help="Where the reopened task lands: 'blocked' (verify/scratch-gate veto — waits for an "
+                  "operator, sticky to the dispatcher), 'todo' (re-queued behind dependencies), or "
+                  "'ready' (back in the pool now; default)."),
+        _arg("--kind", choices=sorted(kb.VALID_BLOCK_KINDS),
+             help="Typed block kind when --landing blocked (default: needs_input). Ignored otherwise."),
+    ], help="Undo a completion: reopen a done task (done -> blocked/todo/ready)"),
     _cmd("request-review", [
         _TASK_ID,
         _arg("--summary", help="What was implemented and how it was verified — shown to the reviewer."),

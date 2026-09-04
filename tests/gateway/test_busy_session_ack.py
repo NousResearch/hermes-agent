@@ -263,6 +263,68 @@ class TestBusySessionAck:
         assert "Steered" in content
         assert "Queued" not in content
 
+    @pytest.mark.asyncio
+    async def test_steer_mode_injects_image_paths_for_vision(self, monkeypatch):
+        """A busy image follow-up steers the current run instead of queueing."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="(attachment)")
+        event.message_type = MessageType.PHOTO
+        event.media_urls = ["/tmp/photon-label.heic"]
+        event.media_types = ["image/heic"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        steer_text = agent.steer.call_args.args[0]
+        assert "vision_analyze" in steer_text
+        assert "/tmp/photon-label.heic" in steer_text
+        assert "resend" in steer_text
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "Steered" in content
+        assert "Queued" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_keeps_mixed_media_queued(self, monkeypatch):
+        """A mixed image/document event retains normal queued processing."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="compare these")
+        event.message_type = MessageType.PHOTO
+        event.media_urls = ["/tmp/photo.png", "/tmp/notes.pdf"]
+        event.media_types = ["image/png", "application/pdf"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        assert adapter._pending_messages[sk] is event
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "Queued" in content
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
@@ -469,5 +531,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 

@@ -14,6 +14,28 @@ import {
 } from '@/lib/media'
 import { $connection } from '@/store/session'
 
+type MediaImageResolver = (path: string) => Promise<string>
+
+// Resolver identity is an authority boundary, not just an alternate transport.
+// Weak keys do not retain disposed document loaders; the dimension cache stays bounded.
+const resolverIds = new WeakMap<MediaImageResolver, number>()
+let nextResolverId = 0
+
+function resolverKey(resolveSrc?: MediaImageResolver) {
+  if (!resolveSrc) {
+    return ''
+  }
+
+  let id = resolverIds.get(resolveSrc)
+
+  if (id === undefined) {
+    id = ++nextResolverId
+    resolverIds.set(resolveSrc, id)
+  }
+
+  return `resolver:${id}:`
+}
+
 /** Keep a frame for one source/owner for its mounted lifetime. Hints are not
  * intrinsic dimensions: a cold image is contained in that frame, not allowed
  * to resize it at decode. The next mount can use the measured dimensions.
@@ -26,7 +48,7 @@ export function useMediaImage(
   path: string,
   fallbackRatio: number,
   intrinsic?: MediaImageDimensions,
-  { preservePendingFrame = false }: { preservePendingFrame?: boolean } = {}
+  { preservePendingFrame = false, resolveSrc }: { preservePendingFrame?: boolean; resolveSrc?: MediaImageResolver } = {}
 ) {
   const connection = useStore($connection)
   const scope = useComposerScope()
@@ -38,8 +60,9 @@ export function useMediaImage(
     [scope.connectionId, scope.profile, connectionId, profile]
   )
 
-  const key = mediaImageKey(path, connection, owner)
-  const ownerKey = mediaImageKey('', connection, owner)
+  const authority = resolverKey(resolveSrc)
+  const key = authority + mediaImageKey(path, connection, owner)
+  const ownerKey = authority + mediaImageKey('', connection, owner)
 
   const initialState = () => {
     const dimensions = intrinsic ?? getMediaImageDimensions(key)
@@ -58,7 +81,7 @@ export function useMediaImage(
               aspectRatio: ratio,
               width: `min(calc(var(--image-preview-height) * ${ratio}), var(--image-preview-max-width), 100%${dimensions ? `, ${dimensions.width}px` : ''})`
             } satisfies CSSProperties),
-      src: path && isInlineMediaSrc(path) ? path : '',
+      src: path && !resolveSrc && isInlineMediaSrc(path) ? path : '',
       loaded: false,
       failed: false
     }
@@ -82,8 +105,9 @@ export function useMediaImage(
   useEffect(() => {
     let cancelled = false
 
-    if (path && !isInlineMediaSrc(path)) {
-      void resolveMediaDisplaySrc(path, owner).then(
+    if (path && (resolveSrc || !isInlineMediaSrc(path))) {
+      // A scoped resolver must never retry via the unscoped media transport.
+      void (resolveSrc ? resolveSrc(path) : resolveMediaDisplaySrc(path, owner)).then(
         src => {
           if (!cancelled) {
             if (!src) {
@@ -105,7 +129,7 @@ export function useMediaImage(
     return () => {
       cancelled = true
     }
-  }, [key, path, owner])
+  }, [key, path, owner, resolveSrc])
 
   return {
     ...state,

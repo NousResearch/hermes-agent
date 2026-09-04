@@ -116,14 +116,37 @@ export async function createRemoteDir(path: string): Promise<string> {
   return result.path || path
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
+export async function readDesktopFileDataUrl(
+  path: string,
+  relativeToFile?: string,
+  maxBytes?: number
+): Promise<string> {
+  let dataUrl: string
+
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileDataUrl(path)
+    if (relativeToFile) {
+      dataUrl = await bridge().readFileDataUrl(path, relativeToFile, maxBytes)
+    } else if (maxBytes !== undefined) {
+      dataUrl = await bridge().readFileDataUrl(path, undefined, maxBytes)
+    } else {
+      dataUrl = await bridge().readFileDataUrl(path)
+    }
+  } else {
+    const relativeScope = relativeToFile ? `&relative_to_file=${encodeURIComponent(relativeToFile)}` : ''
+    const byteLimit = maxBytes ? `&max_bytes=${encodeURIComponent(Math.floor(maxBytes))}` : ''
+
+    const result = await remoteFsApi<string | { dataUrl?: string }>(
+      `${fsPath('read-data-url', path)}${relativeScope}${byteLimit}`
+    )
+
+    dataUrl = typeof result === 'string' ? result : result.dataUrl || ''
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  if (!dataUrl) {
+    throw new Error('Filesystem bridge returned an empty data URL')
+  }
 
-  return typeof result === 'string' ? result : result.dataUrl || ''
+  return dataUrl
 }
 
 /**

@@ -244,6 +244,7 @@ import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  boundedDataUrlReadMaxBytes,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
@@ -17505,11 +17506,14 @@ ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
   }
 })
 
-ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
+ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath, relativeToFile, requestedMaxBytes) => {
+  const configuredMaxBytes = dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb)
+
   return readFileDataUrlForIpc(filePath, {
-    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
+    maxBytes: boundedDataUrlReadMaxBytes(requestedMaxBytes, configuredMaxBytes),
     mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'File preview' })),
-    purpose: 'File preview'
+    purpose: 'File preview',
+    relativeToFile
   })
 })
 

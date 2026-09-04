@@ -3046,6 +3046,13 @@ def _(rid, params: dict) -> dict:
         if ack.get("type") in {"control.error", "error"}:
             return _err(rid, 4009, str(ack.get("message") or "compute-host compress failed"))
         _apply_compute_host_metadata_mirror(session, ack)
+        # Mirror the compressed message history from the compute host so the
+        # serving process's session history stays in sync. The host returns the
+        # full compressed transcript in ack["messages"].
+        if isinstance(ack.get("messages"), list):
+            with session["history_lock"]:
+                session["history"] = _history_to_messages(ack["messages"])
+                session["history_version"] = int(session.get("history_version", 0)) + 1
         host_result = ack.get("result")
         if isinstance(host_result, dict):
             # The host owns the isolated session's agent/history, so preserve

@@ -166,7 +166,7 @@ def test_picker_lists_vertex_when_credentials_present(monkeypatch):
     vertex_rows = [r for r in rows if r.get("slug") == "vertex"]
     assert vertex_rows, "vertex row missing from picker despite credentials"
     models = vertex_rows[0].get("models") or []
-    assert "claude-fable-5" in models
+    assert "claude-fable-5-1" in models
 
 
 def test_picker_hides_vertex_without_credentials(monkeypatch):

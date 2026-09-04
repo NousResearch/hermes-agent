@@ -81,6 +81,7 @@ def _custom_provider_ssl_context(base_url: str):
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5.1",             ""),
     ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-5",                ""),
     ("anthropic/claude-opus-5-fast",           "2x price, higher output speed"),
@@ -258,6 +259,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5.1",
         "anthropic/claude-fable-5",
         "anthropic/claude-opus-5",
         "anthropic/claude-opus-4.8",
@@ -442,6 +444,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-fable-5-1",
         "claude-fable-5",
         "claude-sonnet-5",
         "claude-opus-4-8",
@@ -642,7 +645,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # re-validated live 2026-08-15; gemini-3.8-flash added 2026-09-03 (global only).
     "vertex": [
         "claude-opus-5",
-        "claude-fable-5",
+        "claude-fable-5-1",
         "claude-sonnet-5",
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash",

@@ -101,6 +101,7 @@ _DEFAULT_PROVIDER_MODELS = {
         "google/gemini-3-flash-preview",
         "google/gemini-2.5-pro", "google/gemini-2.5-flash",
         "claude-opus-4-1@20250805", "claude-sonnet-5",
+        "claude-fable-5-1",
         "claude-haiku-4-5@20251001", "zai-org/glm-5.2-maas", "zai-org/glm-5-maas",
         "moonshotai/kimi-k2-thinking-maas", "xai/grok-4.6", "xai/grok-4.1-fast-reasoning",
     ],

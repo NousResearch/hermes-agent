@@ -201,3 +201,105 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+_KIMI_USAGES_PAYLOAD = {
+    "user": {"userId": "u1", "membership": {"level": "LEVEL_STANDARD"}},
+    "usage": {
+        "limit": "100",
+        "used": "40",
+        "remaining": "60",
+        "resetTime": "2026-08-04T11:05:18Z",
+    },
+    "limits": [
+        {
+            "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+            "detail": {
+                "limit": "100",
+                "used": "25",
+                "remaining": "75",
+                "resetTime": "2026-07-28T16:05:18Z",
+            },
+        }
+    ],
+    "parallel": {"limit": "30"},
+}
+
+
+def _patch_kimi(monkeypatch, payload=_KIMI_USAGES_PAYLOAD):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "kimi-coding",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "api_key": "sk-test",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _RoutingClient(
+            {"https://api.kimi.com/coding/v1/usages": payload}
+        ),
+    )
+
+
+def test_fetch_account_usage_kimi_renders_weekly_and_five_hour_windows(monkeypatch):
+    _patch_kimi(monkeypatch)
+
+    snapshot = fetch_account_usage("kimi-coding")
+
+    assert snapshot is not None
+    assert snapshot.provider == "kimi-coding"
+    assert snapshot.plan == "Standard"
+    labels = [w.label for w in snapshot.windows]
+    assert labels == ["Current week", "Current 5h"]
+    weekly, five_hour = snapshot.windows
+    assert weekly.used_percent == 40.0
+    assert weekly.reset_at == datetime(2026, 8, 4, 11, 5, 18, tzinfo=timezone.utc)
+    assert five_hour.used_percent == 25.0
+    assert five_hour.reset_at == datetime(2026, 7, 28, 16, 5, 18, tzinfo=timezone.utc)
+    assert "Parallel requests: up to 30" in snapshot.details
+    rendered = render_account_usage_lines(snapshot)
+    assert any("Current week: 60% remaining (40% used)" in line for line in rendered)
+    assert any("Current 5h: 75% remaining (25% used)" in line for line in rendered)
+
+
+def test_fetch_account_usage_kimi_provider_aliases(monkeypatch):
+    for alias in ("kimi", "kimi-code", "moonshot"):
+        _patch_kimi(monkeypatch)
+        snapshot = fetch_account_usage(alias)
+        assert snapshot is not None, alias
+        assert snapshot.provider == "kimi-coding"
+
+
+def test_fetch_account_usage_kimi_without_token_returns_none(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "kimi-coding",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "api_key": "",
+        },
+    )
+
+    assert fetch_account_usage("kimi-coding") is None
+
+
+def test_fetch_account_usage_kimi_handles_malformed_numbers(monkeypatch):
+    _patch_kimi(
+        monkeypatch,
+        payload={
+            "usage": {"limit": "nope", "used": "1", "resetTime": None},
+            "limits": [
+                {
+                    "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                    "detail": {"limit": "100", "used": "10", "resetTime": "2026-07-28T16:05:18Z"},
+                }
+            ],
+        },
+    )
+
+    snapshot = fetch_account_usage("kimi-coding")
+
+    assert snapshot is not None
+    assert [w.label for w in snapshot.windows] == ["Current 5h"]

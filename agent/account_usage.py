@@ -75,7 +75,13 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 def _format_reset(dt: Optional[datetime]) -> str:
     if not dt:
         return "unknown"
-    local_dt = dt.astimezone()
+    try:
+        from hermes_time import get_timezone
+
+        tz = get_timezone()
+    except Exception:
+        tz = None
+    local_dt = dt.astimezone(tz) if tz is not None else dt.astimezone()
     delta = dt - _utc_now()
     total_seconds = int(delta.total_seconds())
     if total_seconds <= 0:
@@ -881,6 +887,145 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+KIMI_CODING_PROVIDERS = {"kimi-coding", "kimi-code", "kimi", "moonshot", "moonshot-cn"}
+KIMI_DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1"
+
+
+def _kimi_window_label(window: dict[str, Any]) -> str:
+    duration = window.get("duration")
+    unit = str(window.get("timeUnit") or "").strip().upper()
+    try:
+        value = int(str(duration))
+    except (TypeError, ValueError):
+        return "Rate limit window"
+    if unit.endswith("MINUTE"):
+        if value % (7 * 24 * 60) == 0:
+            return f"Current {value // (7 * 24 * 60)}w"
+        if value % (24 * 60) == 0:
+            return f"Current {value // (24 * 60)}d"
+        if value % 60 == 0:
+            return f"Current {value // 60}h"
+        return f"Current {value}m"
+    if unit.endswith("HOUR"):
+        if value % (7 * 24) == 0:
+            return f"Current {value // (7 * 24)}w"
+        if value % 24 == 0:
+            return f"Current {value // 24}d"
+        return f"Current {value}h"
+    if unit.endswith("DAY"):
+        if value % 7 == 0:
+            return f"Current {value // 7}w"
+        return f"Current {value}d"
+    return "Rate limit window"
+
+
+def _kimi_usage_percent(bucket: dict[str, Any]) -> Optional[float]:
+    try:
+        limit = float(str(bucket.get("limit")))
+    except (TypeError, ValueError):
+        return None
+    used_raw = bucket.get("used")
+    if used_raw is None:
+        # The coding /usages API omits `used` for untouched buckets (zero
+        # consumption); derive it from `remaining` so those windows still
+        # render instead of vanishing from the account-limits board.
+        remaining_raw = bucket.get("remaining")
+        if remaining_raw is None:
+            return None
+        try:
+            used = limit - float(str(remaining_raw))
+        except (TypeError, ValueError):
+            return None
+    else:
+        try:
+            used = float(str(used_raw))
+        except (TypeError, ValueError):
+            return None
+    if limit <= 0 or used < 0:
+        return None
+    return (used / limit) * 100
+
+
+def _fetch_kimi_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    runtime = resolve_runtime_provider(
+        requested="kimi-coding",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    normalized = str(runtime.get("base_url", "") or "").rstrip("/") or KIMI_DEFAULT_BASE_URL
+    if not normalized.endswith("/v1"):
+        normalized = f"{normalized}/v1"
+    usages_url = f"{normalized}/usages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(usages_url, headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+
+    windows: list[AccountUsageWindow] = []
+    top = payload.get("usage") or {}
+    if isinstance(top, dict) and top:
+        percent = _kimi_usage_percent(top)
+        if percent is not None:
+            windows.append(
+                AccountUsageWindow(
+                    label="Current week",
+                    used_percent=percent,
+                    reset_at=_parse_dt(top.get("resetTime")),
+                )
+            )
+    limits = payload.get("limits") or []
+    if isinstance(limits, list):
+        for entry in limits:
+            if not isinstance(entry, dict):
+                continue
+            window = entry.get("window") or {}
+            detail = entry.get("detail") or {}
+            if not isinstance(detail, dict) or not detail:
+                continue
+            percent = _kimi_usage_percent(detail)
+            if percent is None:
+                continue
+            windows.append(
+                AccountUsageWindow(
+                    label=_kimi_window_label(window if isinstance(window, dict) else {}),
+                    used_percent=percent,
+                    reset_at=_parse_dt(detail.get("resetTime")),
+                )
+            )
+
+    details: list[str] = []
+    parallel = payload.get("parallel") or {}
+    if isinstance(parallel, dict):
+        limit = parallel.get("limit")
+        if _is_finite_num(limit) or (isinstance(limit, str) and limit.strip().isdigit()):
+            details.append(f"Parallel requests: up to {limit}")
+
+    plan: Optional[str] = None
+    user = payload.get("user") or {}
+    if isinstance(user, dict):
+        membership = user.get("membership") or {}
+        if isinstance(membership, dict):
+            level = str(membership.get("level") or "").strip()
+            if level:
+                plan = _title_case_slug(level.removeprefix("LEVEL_").lower())
+
+    return AccountUsageSnapshot(
+        provider="kimi-coding",
+        source="usages_api",
+        fetched_at=_utc_now(),
+        plan=plan,
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -897,6 +1042,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized in KIMI_CODING_PROVIDERS:
+            return _fetch_kimi_account_usage(base_url, api_key)
     except Exception:
         return None
     return None

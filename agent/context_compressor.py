@@ -1737,9 +1737,22 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
     def _resolve_context_length(self) -> int:
         """Resolve and cache the model's context length on first access."""
         if self._resolved_context_length is None:
+            # Thread per-model custom-provider overrides through this path:
+            # every other resolution site (startup, /model switch, gateway
+            # /info) passes the compatible list, but this deferred call did
+            # not — so providers.*.models.*.context_length was silently
+            # skipped here and the catalog value won (#15779 family).
+            _cp = None
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+
+                _cp = get_compatible_custom_providers()
+            except Exception:
+                _cp = None
             self._resolved_context_length = get_model_context_length(
                 self.model, base_url=self.base_url, api_key=self.api_key,
                 config_context_length=self._config_context_length, provider=self.provider,
+                custom_providers=_cp,
             )
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
             self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)

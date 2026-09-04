@@ -3365,6 +3365,59 @@ def resolve_max_cost_hard_ceiling() -> float:
     return _resolve_cost_key("max_cost_hard_ceiling", 1.50)
 
 
+def _profile_skills_dir(profile: Optional[str]) -> Path:
+    """Where a profile's skills actually live.
+
+    A profile sees ONLY its own ``skills/`` directory — root's are invisible to
+    it (``tools/skills_tool.py:148-159`` and ``tools/skill_ledger.py:192-193``
+    both return ``get_hermes_home()/"skills"`` with no parent walk, and the
+    dispatcher sets ``HERMES_HOME=<profiles/x>`` per worker).
+    """
+    home = Path(os.path.expanduser("~/.hermes"))
+    name = (profile or "").strip()
+    if not name or name in ("default", "root"):
+        return home / "skills"
+    return home / "profiles" / name / "skills"
+
+
+def missing_skills_for(profile: Optional[str], skills) -> list[str]:
+    """Names in ``skills`` that the profile cannot load. Fail-open.
+
+    **2026-09-05.** Skills were validated NOWHERE — not at creation, not at
+    dispatch. ``Unknown skill(s): X`` is raised inside the spawned worker at
+    agent init (``cli.py:8976`` / ``hermes_cli/oneshot.py:80``), after the card
+    is claimed, the workspace built and the PID forked; the dispatcher sees only
+    ``exit_code 1``. Six cards burned exactly two runs each that way
+    (t_7f4ea155, t_0ec6abcf, t_867e31c9, t_03e5426e, t_8c40251d, t_34e858c9),
+    and `switch` still has no ``sdlc-review`` — which the review lane injects
+    unconditionally — so the failure is armed today.
+
+    Cheap: a filesystem walk, no Hermes import, no subprocess, ~ms. Returns []
+    (allow) whenever the answer is uncertain: no skills requested, no skills
+    directory, unreadable tree. A dispatch gate must never invent a blocker.
+    """
+    wanted = [s for s in (skills or []) if s]
+    if not wanted:
+        return []
+    root = _profile_skills_dir(profile)
+    try:
+        if not root.is_dir():
+            return []
+        have: set[str] = set()
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+            if "SKILL.md" in filenames:
+                have.add(os.path.basename(dirpath))
+            for d in dirnames:  # a symlinked skill dir is a real candidate
+                p = Path(dirpath) / d
+                if p.is_symlink() and (p / "SKILL.md").exists():
+                    have.add(d)
+    except Exception:
+        return []
+    if not have:
+        return []
+    return [s for s in wanted if s not in have]
+
+
 def effective_max_cost(max_cost: Optional[float]) -> Optional[float]:
     """Apply the WeRoll cost policy to a cap supplied at card creation.
 
@@ -11814,6 +11867,31 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # Skill pre-flight (2026-09-05): a skill the assignee cannot load
+        # raises `Unknown skill(s)` INSIDE the spawned worker at agent init and
+        # exits 1, so the card burns its whole retry budget on two identical
+        # crashes and the dispatcher only ever sees exit_code 1. Six cards were
+        # lost that way. Block once, typed, naming the skill — the escalator
+        # routes `capability` to someone who can install it (invariant 5:
+        # Agent Smith alone manages skills). Fail-open by construction.
+        _missing_skills = missing_skills_for(claimed.assignee, claimed.skills)
+        if _missing_skills:
+            block_task(
+                conn, claimed.id,
+                reason=(
+                    "Unknown skill(s) for profile "
+                    f"{claimed.assignee!r}: {', '.join(_missing_skills)}. "
+                    "Blocked BEFORE spawn — the worker would have crashed at "
+                    "agent init with exit 1, twice, with no diagnosis on the "
+                    "board. Install the skill into "
+                    f"~/.hermes/{'skills' if (claimed.assignee or 'default') in ('default','root') else 'profiles/' + str(claimed.assignee) + '/skills'}/"
+                    " (a profile cannot see root's skills), or re-author the "
+                    "card without it."
+                ),
+                kind="capability",
+            )
+            result.auto_blocked.append(claimed.id)
+            continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -11963,6 +12041,31 @@ def _dispatch_once_locked(
         claimed.skills = list(
             dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
         )
+        # Skill pre-flight (2026-09-05): a skill the assignee cannot load
+        # raises `Unknown skill(s)` INSIDE the spawned worker at agent init and
+        # exits 1, so the card burns its whole retry budget on two identical
+        # crashes and the dispatcher only ever sees exit_code 1. Six cards were
+        # lost that way. Block once, typed, naming the skill — the escalator
+        # routes `capability` to someone who can install it (invariant 5:
+        # Agent Smith alone manages skills). Fail-open by construction.
+        _missing_skills = missing_skills_for(claimed.assignee, claimed.skills)
+        if _missing_skills:
+            block_task(
+                conn, claimed.id,
+                reason=(
+                    "Unknown skill(s) for profile "
+                    f"{claimed.assignee!r}: {', '.join(_missing_skills)}. "
+                    "Blocked BEFORE spawn — the worker would have crashed at "
+                    "agent init with exit 1, twice, with no diagnosis on the "
+                    "board. Install the skill into "
+                    f"~/.hermes/{'skills' if (claimed.assignee or 'default') in ('default','root') else 'profiles/' + str(claimed.assignee) + '/skills'}/"
+                    " (a profile cannot see root's skills), or re-author the "
+                    "card without it."
+                ),
+                kind="capability",
+            )
+            result.auto_blocked.append(claimed.id)
+            continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect

@@ -220,3 +220,89 @@ def matches_name_filter(tool_name: str, patterns: set[str]) -> bool:
 _UTILITY_CAPABILITY_ATTRS = {
     "list_resources": "resources", "read_resource": "resources",
     "list_prompts": "prompts", "get_prompt": "prompts"}
+
+
+def _patch_mcp_boolean_property_schemas() -> None:
+    """Accept JSON Schema boolean sub-schemas under tool ``properties``.
+
+    JSON Schema 2020-12 allows ``true``/``false`` anywhere a schema is expected
+    (draft 2020-12 §4.3.2). The mcp 2.0.0 generated 2025-11-25 wire models
+    typed ``InputSchema.properties`` / ``OutputSchema.properties`` as
+    ``dict[str, dict[str, Any]]``, so one tool advertising
+    ``"properties": {"refresh": true}`` fails ``ListToolsResult`` validation
+    and Hermes parks the entire MCP server (#101669).
+
+    Upstream fixed this in mcp 2.1.0 (modelcontextprotocol/python-sdk#3354) by
+    widening the value type to ``dict[str, dict[str, Any] | bool]``. Hermes
+    still pins ``mcp==2.0.0``; apply the same widening at import time when the
+    installed SDK still has the strict annotation. No-op on mcp>=2.1.0.
+    """
+    try:
+        import mcp_types._v2025_11_25 as v25
+    except ImportError:
+        return
+
+    from typing import Any
+
+    widened = dict[str, dict[str, Any] | bool] | None
+    patched = False
+    for model_name in ("InputSchema", "OutputSchema"):
+        model = getattr(v25, model_name, None)
+        if model is None:
+            continue
+        field = model.model_fields.get("properties")
+        if field is None:
+            continue
+        # Already accepts bool (mcp>=2.1.0) — leave alone.
+        if "bool" in str(field.annotation):
+            continue
+        field.annotation = widened
+        patched = True
+        try:
+            model.model_rebuild(force=True)
+        except Exception:
+            logger.debug(
+                "MCP boolean-schema compat: failed to rebuild %s",
+                model_name,
+                exc_info=True,
+            )
+            return
+
+    if not patched:
+        return
+
+    # Nested models embed InputSchema/OutputSchema — rebuild consumers so the
+    # widened field is used during ListToolsResult validation.
+    for model_name in ("Tool", "ListToolsResult"):
+        model = getattr(v25, model_name, None)
+        if model is None:
+            continue
+        try:
+            model.model_rebuild(force=True)
+        except Exception:
+            logger.debug(
+                "MCP boolean-schema compat: failed to rebuild %s",
+                model_name,
+                exc_info=True,
+            )
+            return
+
+    # mcp_types.methods caches TypeAdapters on the class object; a warm cache
+    # from before the rebuild would keep rejecting boolean schemas.
+    try:
+        import mcp_types.methods as mcp_methods
+
+        cache_clear = getattr(getattr(mcp_methods, "_adapter", None), "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
+    except Exception:
+        logger.debug(
+            "MCP boolean-schema compat: failed to clear methods._adapter cache",
+            exc_info=True,
+        )
+        return
+
+    logger.debug(
+        "MCP boolean-schema compat: widened 2025-11-25 InputSchema/"
+        "OutputSchema.properties to accept JSON Schema boolean sub-schemas"
+    )

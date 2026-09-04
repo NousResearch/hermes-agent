@@ -303,6 +303,42 @@ class TestRunSingleChildSchemaValidation:
         assert entry["schema_valid"] is False
         assert entry["status"] == "failed"
 
+    def test_initial_guardrail_halt_skips_schema_retry(self):
+        """A hard halt on the first schema-bound turn is already terminal;
+        invalid halt prose must not trigger the bounded correction turn."""
+        child = _StubChild(
+            [
+                {
+                    "final_response": (
+                        "I stopped retrying web_search because it hit the "
+                        "tool-call guardrail (loop_web_search_cap)."
+                    ),
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                    "guardrail": {
+                        "action": "block",
+                        "code": "loop_web_search_cap",
+                        "message": "Blocked runaway search loop.",
+                        "tool_name": "web_search",
+                        "count": 10,
+                    },
+                }
+            ]
+        )
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        entry = _run(child)
+
+        assert len(child.calls) == 1
+        assert entry.get("schema_retries", 0) == 0
+        assert entry["status"] == "failed"
+        assert entry["exit_reason"] == "guardrail_halt"
+        assert entry["failure_reason"] == "guardrail_halt"
+        assert entry["guardrail"]["code"] == "loop_web_search_cap"
+        assert "message" not in entry["guardrail"]
+
     def test_retry_side_guardrail_halt_is_terminal_failure(self):
         """A schema retry that hits a hard guardrail must not inherit success
         fields from the first turn or trigger another retry."""

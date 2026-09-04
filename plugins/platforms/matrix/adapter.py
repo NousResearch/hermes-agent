@@ -61,6 +61,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard)
 from gateway.platforms.helpers import ThreadParticipationTracker
+from .choice_picker import MatrixChoicePickerPrompt
 
 logger = logging.getLogger(__name__)
 
@@ -832,7 +833,7 @@ class MatrixAdapter(
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
+        self._choice_picker_prompts_by_event: Dict[str, MatrixChoicePickerPrompt] = {}
         self._allowed_user_ids: Set[str] = _csv_set(os.getenv("MATRIX_ALLOWED_USERS", ""))
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []

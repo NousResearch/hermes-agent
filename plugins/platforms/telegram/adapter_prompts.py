@@ -158,31 +158,42 @@ class TelegramPromptsMixin:
             "send_model_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
             reply_to_mode=self._reply_to_mode)
 
+    supports_choice_pages = True
+    choice_pages_edit_in_place = True
+
     async def send_choice_picker(
-        self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Flat inline-keyboard picker (one tap → one value) for /reasoning, /fast, etc. Each choice dict:
-        ``{"value": str, "label": str, "is_current": bool}``."""
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a flat inline-keyboard choice picker (one tap → one value).
+
+        Generic single-level companion to ``send_model_picker`` used by
+        `/reasoning`, `/fast`, and any future finite-choice command. Each
+        choice dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
         from . import adapter as _adapter
+        from . import choice_picker as _choice_picker
 
-        def build():
-            buttons = []
-            for i, choice in enumerate(choices):
-                label = str(choice.get("label") or choice.get("value") or "")
-                if choice.get("is_current"):
-                    label = f"✓ {label}"
-                buttons.append(_adapter.InlineKeyboardButton(label, callback_data=f"cp:{i}"))
-            if not buttons:
-                return _adapter.SendResult(success=False, error="No choices")
-            keyboard = _adapter.InlineKeyboardMarkup(self._rows_of_two(buttons))
-
-            def _remember(msg):
-                self._choice_picker_state[str(chat_id)] = {
-                    "msg_id": msg.message_id, "choices": choices, "session_key": session_key, "on_choice_selected": on_choice_selected}
-            return self.format_message(title), keyboard, _remember
-        return await self._send_prompt(
-            "send_choice_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
-            reply_to_mode=self._reply_to_mode)
+        return await _choice_picker.send_choice_picker(
+            self,
+            chat_id,
+            title,
+            choices,
+            session_key,
+            on_choice_selected,
+            metadata,
+            inline_keyboard_button=_adapter.InlineKeyboardButton,
+            inline_keyboard_markup=_adapter.InlineKeyboardMarkup,
+            parse_mode=_adapter.ParseMode,
+            normalize_chat_id=_adapter.normalize_telegram_chat_id,
+            redact_error=_adapter._redact_telegram_error_text,
+            logger=_adapter.logger,
+        )
 
     async def _edit_result_text(self, query, result_text: str) -> None:
         """Replace a picker message with ``result_text`` (MarkdownV2, then plain, then give up), keyboard removed."""
@@ -194,34 +205,23 @@ class TelegramPromptsMixin:
             with _adapter.contextlib.suppress(Exception):
                 await query.edit_message_text(text=result_text, parse_mode=None, reply_markup=None)
 
-    async def _handle_choice_picker_callback(self, query, data: str, chat_id: str) -> None:
+    async def _handle_choice_picker_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
         """Handle choice picker button taps (cp:<index>)."""
         from . import adapter as _adapter
+        from . import choice_picker as _choice_picker
 
-        state = self._choice_picker_state.get(chat_id)
-        if not state:
-            await query.answer(text="Picker expired — run the command again.")
-            return
-        # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
-        if not await self._callback_authorized(query, self._callback_ctx(query), "⛔ You are not authorized to change this setting."):
-            return
-        try:
-            choice = state["choices"][int(data[3:])]
-        except (ValueError, IndexError):
-            await query.answer(text="Invalid selection.")
-            return
-        callback = state.get("on_choice_selected")
-        if not callback:
-            await query.answer(text="Picker expired.")
-            return
-        try:
-            result_text = await callback(chat_id, str(choice.get("value") or ""))
-        except Exception as exc:
-            _adapter.logger.error("Choice picker selection failed: %s", exc)
-            result_text = f"Error applying selection: {exc}"
-        await self._edit_result_text(query, result_text)
-        await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        await _choice_picker.handle_choice_picker_callback(
+            self,
+            query,
+            data,
+            chat_id,
+            parse_mode=_adapter.ParseMode,
+            logger=_adapter.logger,
+            inline_keyboard_button=_adapter.InlineKeyboardButton,
+            inline_keyboard_markup=_adapter.InlineKeyboardMarkup,
+        )
 
     @staticmethod
     def _provider_button(p: dict) -> "InlineKeyboardButton":

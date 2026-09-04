@@ -411,57 +411,16 @@ def define_discord_view_classes():
                 except Exception:
                     pass
 
-    class ChoicePickerView(_HermesView):
-        """Flat single-select picker for finite-choice commands (/reasoning, /fast); 2-minute timeout."""
+    from .choice_picker import define_choice_picker_view
 
-        def __init__(self, choices: list, on_choice_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=120)
-            self.choices = list(choices)[:_adapter._DISCORD_SELECT_MAX_OPTIONS]
-            self.on_choice_selected = on_choice_selected
-            options = []
-            for choice in self.choices:
-                label = str(choice.get("label") or choice.get("value") or "")
-                options.append(
-                    _adapter.discord.SelectOption(
-                        label=_adapter._truncate_discord_component_text(label, _adapter._DISCORD_SELECT_FIELD_LIMIT),
-                        value=str(choice.get("value") or ""),
-                        description="current" if choice.get("is_current") else None,
-                    )
-                )
-            select = _adapter.discord.ui.Select(placeholder="Choose an option...", options=options)
-            select.callback = self._on_select
-            self.add_item(select)
-
-        async def _on_select(self, interaction: discord.Interaction):
-            if not self._check_auth(interaction):
-                await interaction.response.send_message("⛔ You are not authorized to change this setting.", ephemeral=True)
-                return
-            if self.resolved:
-                await interaction.response.defer()
-                return
-            self.resolved = True
-            value = interaction.data.get("values", [""])[0]
-            try:
-                result_text = await self.on_choice_selected(str(interaction.channel_id), value)
-            except Exception as exc:
-                _adapter.logger.error("Choice picker selection failed: %s", exc)
-                result_text = f"Error applying selection: {exc}"
-            embed = _adapter.discord.Embed(description=result_text, color=_adapter.discord.Color.green())
-            self.clear_items()
-            self.stop()
-            await interaction.response.edit_message(embed=embed, view=self)
-
-        async def on_timeout(self):
-            if self.resolved:
-                return
-            msg = self._message
-            if msg is not None:
-                try:
-                    embed = _adapter.discord.Embed(description="⏱ Selection expired — no change made.", color=_adapter.discord.Color.greyple())
-                    self.clear_items()
-                    await msg.edit(embed=embed, view=self)
-                except Exception:
-                    pass
+    ChoicePickerView = define_choice_picker_view(
+        discord_sdk=_adapter.discord,
+        component_check_auth=_adapter._component_check_auth,
+        truncate_component_text=_adapter._truncate_discord_component_text,
+        logger=_adapter.logger,
+        max_options=_adapter._DISCORD_SELECT_MAX_OPTIONS,
+        field_limit=_adapter._DISCORD_SELECT_FIELD_LIMIT,
+    )
 
     class ClarifyChoiceView(_HermesView):
         """One button per clarify choice (max 24) plus ``✏️ Other``. A numeric click resolves the

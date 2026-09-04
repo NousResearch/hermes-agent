@@ -251,22 +251,37 @@ class DiscordPromptsMixin:
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_model_picker")
 
+    supports_choice_pages = True
+    choice_pages_edit_in_place = True
+
     async def send_choice_picker(
-        self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Flat select-menu picker (one selection → one value) for `/reasoning`, `/fast`,
-        etc. Each choice: ``{"value": str, "label": str, "is_current": bool}``."""
-        from . import adapter as _adapter
+        """Send a flat select-menu choice picker (one selection → one value).
 
-        def _build(_channel):
-            embed = _adapter.discord.Embed(
-                title="⚙ " + (title.splitlines()[0] if title else "Choose an option"),
-                description="\n".join(title.splitlines()[1:]) or None, color=_adapter.discord.Color.blue(),
-            )
-            view = _adapter.ChoicePickerView(
-                choices=choices, on_choice_selected=on_choice_selected,
-                allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
-            )
-            return {"embed": embed, "view": view}, view
-        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_choice_picker")
+        Generic single-level companion to ``send_model_picker`` used by
+        `/reasoning`, `/fast`, and any future finite-choice command. Each
+        choice dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        from . import adapter as _adapter
+        from . import choice_picker as _choice_picker
+
+        return await _choice_picker.send_choice_picker(
+            self,
+            chat_id,
+            title,
+            choices,
+            session_key,
+            on_choice_selected,
+            metadata,
+            discord_sdk=_adapter.discord,
+            discord_available=_adapter.DISCORD_AVAILABLE,
+            view_class=getattr(_adapter, "ChoicePickerView", None),
+            logger=_adapter.logger,
+        )

@@ -112,29 +112,30 @@ class MatrixPromptsMixin:
                 on_selected=on_selected, requester_user_id=requester, expires_at=expires_at),
             registry, choices, label)
 
-    async def send_choice_picker(
-        self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Reaction-based choice picker (/reasoning, /fast); choice = {value, label, is_current}."""
-        from . import adapter as _adapter
+    supports_choice_pages = True
+    choice_pages_edit_in_place = False
 
-        if not self._client:
-            return _adapter.SendResult(success=False, error="Not connected")
-        emoji_choices: dict[str, str] = {}
-        lines = [title, ""]
-        for emoji, choice in zip(_adapter._MATRIX_CHOICE_PICKER_REACTIONS, choices):
-            value = str(choice.get("value") or "")
-            label = str(choice.get("label") or value)
-            if choice.get("is_current"):
-                label = f"{label} ← current"
-            emoji_choices[emoji] = value
-            lines.append(f"{emoji} {label}")
-        if not emoji_choices:
-            return _adapter.SendResult(success=False, error="No choices")
-        lines += ["", "React to choose."]
-        return await self._send_picker(
-            chat_id, lines, emoji_choices, session_key, on_choice_selected, metadata,
-            self._choice_picker_prompts_by_event, "choice picker")
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Matrix reaction-based choice picker (/reasoning, /fast).
+
+        Generic single-level companion to ``send_model_picker``. Each choice
+        dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        from . import adapter as _adapter
+        from . import choice_picker as _choice_picker
+
+        return await _choice_picker.send_choice_picker(
+            self, chat_id, title, choices, session_key, on_choice_selected,
+            metadata, _adapter._MATRIX_CHOICE_PICKER_REACTIONS,
+        )
 
     async def _on_reaction(self, event: Any) -> None:
         from . import adapter as _adapter
@@ -159,10 +160,10 @@ class MatrixPromptsMixin:
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
         _adapter.logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
-        for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
-                        self._handle_choice_picker_reaction):
+        for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
                 return
+        await self._handle_choice_picker_reaction(room_id, reacts_to, key, sender, event_id=event_id)
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,
@@ -217,13 +218,19 @@ class MatrixPromptsMixin:
             "That reaction is not one of the available model choices.", self._expire_matrix_model_picker_prompt,
             ("switch model", "switch model"), redact_bot_reactions=True)
 
-    async def _handle_choice_picker_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
+    async def _handle_choice_picker_reaction(
+        self, room_id: str, reacts_to: str, key: str, sender: str, *, event_id: str = ""
+    ) -> bool:
         """Apply a choice-picker reaction. True if the reaction targeted a pending picker."""
-        async def _expire(_room_id, target_event_id, _prompt):
-            self._choice_picker_prompts_by_event.pop(target_event_id, None)
-        return await self._handle_picker_reaction(
-            self._choice_picker_prompts_by_event, room_id, reacts_to, key, sender, "choice picker",
-            "That reaction is not one of the available choices.", _expire, ("apply choice", "apply selection"))
+        from . import adapter as _adapter
+        from .choice_picker import handle_choice_reaction
+
+        if reacts_to not in self._choice_picker_prompts_by_event:
+            return False
+        await handle_choice_reaction(
+            self, room_id, reacts_to, sender, key, event_id, _adapter._MATRIX_CHOICE_PICKER_REACTIONS
+        )
+        return True
 
     async def _handle_picker_reaction(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,

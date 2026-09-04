@@ -440,7 +440,9 @@ class MatrixLifecycleMixin:
 
     async def disconnect(self) -> None:
         from . import adapter as _adapter
+        from .choice_picker import cancel_choice_pages
 
+        cancel_choice_pages(self)
         self._closing = True
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()

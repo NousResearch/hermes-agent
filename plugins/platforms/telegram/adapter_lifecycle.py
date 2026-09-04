@@ -1550,9 +1550,11 @@ class TelegramLifecycleMixin:
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
-        # Mark disconnected first so the drop guard short-circuits any flush that wins the race.
         from . import adapter as _adapter
+        from .choice_picker import cancel_choice_pages
 
+        cancel_choice_pages(self)
+        # Mark disconnected first so the drop guard short-circuits any flush that wins the race.
         self._mark_disconnected()
         self._polling_teardown_started = True
         self._polling_progress_accepting = False

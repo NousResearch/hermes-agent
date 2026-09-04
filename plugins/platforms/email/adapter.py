@@ -3,6 +3,7 @@ receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in 
 
 import asyncio
 import email as email_lib
+from datetime import date
 from contextlib import contextmanager, suppress
 import imaplib
 import logging
@@ -52,6 +53,15 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+_CRON_DELIVERY_SUBJECT_RE = re.compile(r"^Cronjob Response:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _standalone_subject(message: str, delivery_date: str | None = None) -> str:
+    """Choose a fresh, dated subject for an independently delivered cron run."""
+    match = _CRON_DELIVERY_SUBJECT_RE.search(message)
+    if not match:
+        return "Hermes Agent"
+    return f"{match.group(1)} — {delivery_date or date.today().isoformat()}"
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -652,10 +662,14 @@ class EmailAdapter(BasePlatformAdapter):
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        is_cron_delivery = _CRON_DELIVERY_SUBJECT_RE.search(body) is not None
+        if is_cron_delivery:
+            subject, original_msg_id = _standalone_subject(body), None
+        else:
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
+            original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
@@ -758,7 +772,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", address), ("To", chat_id), ("Subject", _standalone_subject(message)), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

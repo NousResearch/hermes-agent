@@ -833,6 +833,39 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
 
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    })
+    def test_cron_delivery_uses_a_dated_non_reply_subject(self):
+        """Standalone scheduled reports must not collapse into one email thread."""
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send as email_send
+        from plugins.platforms.email.adapter import _standalone_subject
+
+        content = "Cronjob Response: Daily Hermes log health check\nbody"
+        self.assertEqual(
+            _standalone_subject(content, "2026-09-04"),
+            "Daily Hermes log health check — 2026-09-04",
+        )
+        with patch("plugins.platforms.email.adapter._open_smtp") as open_smtp:
+            server = MagicMock()
+            open_smtp.return_value = server
+            result = asyncio.run(
+                email_send(
+                    SimpleNamespace(extra={"address": "hermes@test.com", "smtp_host": "smtp.test.com"}),
+                    "user@test.com",
+                    content,
+                )
+            )
+        self.assertTrue(result["success"])
+        sent = server.send_message.call_args.args[0]
+        self.assertRegex(sent["Subject"], r"^Daily Hermes log health check — \d{4}-\d{2}-\d{2}$")
+        self.assertNotIn("In-Reply-To", sent)
+
 
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""

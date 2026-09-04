@@ -1,0 +1,47 @@
+# XcodeGen spec — generates HermesAgent.xcodeproj from the Swift sources.
+#   brew install xcodegen && cd apps/ios && xcodegen generate && open HermesAgent.xcodeproj
+name: HermesAgent
+options:
+  bundleIdPrefix: com.hermes.agent
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""              # set your Apple Developer team id
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  HermesAgent:
+    type: application
+    platform: iOS
+    sources:
+      - path: HermesAgent
+    info:
+      path: HermesAgent/Info.plist
+      properties:
+        CFBundleDisplayName: Hermes
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Allow connecting to self-hosted gateways over plain HTTP / local IPs.
+        # Production deployments should front the gateway with HTTPS and tighten this.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: >-
+          Hermes connects to your self-hosted agent gateway on your local network.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hermes.agent.ios
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"

@@ -1670,6 +1670,22 @@ def _compression_deferred_result(
     }
 
 
+def _record_kanban_context_recovery_exhausted(agent, messages) -> None:
+    """Best-effort terminal fallback for a Kanban stop continuation."""
+    try:
+        from agent.kanban_stop import record_context_recovery_exhausted
+
+        record_context_recovery_exhausted(
+            messages=messages,
+            attempts=getattr(agent, "_kanban_stop_nudges", 0),
+        )
+    except Exception:
+        logger.debug(
+            "kanban context-recovery terminalization failed",
+            exc_info=True,
+        )
+
+
 def _provider_overflow_exhausted_result(
     agent,
     messages: List[Dict],
@@ -2088,6 +2104,10 @@ def run_conversation(
     agent._last_compaction_in_place = False
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
+    # The gateway and goal loop reuse an agent across user turns.  A terminal
+    # nudge authorizes fallback only for the turn that issued it; carrying the
+    # count forward could let an unrelated later overflow block the Kanban run.
+    agent._kanban_stop_nudges = 0
     begin_fast_mode_turn(agent, conversation_history)
 
     # Adopt any ~/.hermes/.env credential/base-url edits made since the last
@@ -5908,6 +5928,7 @@ def run_conversation(
                         f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
                         f"auto-compaction disabled — not compressing."
                     )
+                    _record_kanban_context_recovery_exhausted(agent, messages)
                     agent._persist_session(messages, conversation_history)
                     _final_response = (
                         "Context overflow and auto-compaction is disabled "
@@ -6236,6 +6257,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error("%s413 compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
+                        _record_kanban_context_recovery_exhausted(agent, messages)
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Request payload too large: max compression attempts ({max_compression_attempts}) reached."
                         return {
@@ -6349,6 +6371,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Payload too large and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error("%s413 payload too large. Cannot compress further.", agent.log_prefix)
+                        _record_kanban_context_recovery_exhausted(agent, messages)
                         agent._persist_session(messages, conversation_history)
                         _final_response = "Request payload too large (413). Cannot compress further."
                         return {
@@ -6591,6 +6614,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error("%sContext compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
+                        _record_kanban_context_recovery_exhausted(agent, messages)
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
                         return {
@@ -6697,6 +6721,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                         logger.error("%sContext length exceeded: %s tokens. Cannot compress further.", agent.log_prefix, f"{new_tokens:,}")
+                        _record_kanban_context_recovery_exhausted(agent, messages)
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further."
                         return {

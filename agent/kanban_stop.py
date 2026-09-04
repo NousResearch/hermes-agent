@@ -13,6 +13,7 @@ loop continues instead of exiting.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Iterable, Optional
 
@@ -20,6 +21,8 @@ from typing import Any, Iterable, Optional
 _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
 
 _DEFAULT_MAX_ATTEMPTS = 2
+
+logger = logging.getLogger(__name__)
 
 
 def kanban_stop_nudge_enabled() -> bool:
@@ -101,8 +104,81 @@ def build_kanban_stop_nudge(
     )
 
 
+def record_context_recovery_exhausted(
+    *,
+    messages: Iterable[dict] | None = None,
+    attempts: int = 0,
+) -> bool:
+    """Run-fenced diagnostic block after a stop continuation exhausts context.
+
+    This fallback never infers completion from assistant prose. It only prevents
+    a dispatcher-owned worker run from disappearing as an opaque dead PID after
+    the runtime already issued a terminal-tool continuation. A valid run id is
+    mandatory so a reclaimed worker cannot mutate its successor.
+    """
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    if (
+        attempts <= 0
+        or not is_dispatcher_owned_worker_context()
+        or not kanban_stop_nudge_enabled()
+    ):
+        return False
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if not task_id or not raw_run_id:
+        return False
+    try:
+        run_id = int(raw_run_id)
+    except ValueError:
+        logger.warning("invalid HERMES_KANBAN_RUN_ID=%r", raw_run_id)
+        return False
+
+    session_id = (os.environ.get("HERMES_SESSION_ID") or "").strip() or "unavailable"
+    workspace = (os.environ.get("HERMES_KANBAN_WORKSPACE") or "").strip() or "unavailable"
+    reason = (
+        "Runtime diagnostic: the Kanban terminal-tool continuation exhausted "
+        "context overflow recovery before an explicit kanban_complete or "
+        "kanban_block call could be committed. No completion was inferred from "
+        "assistant prose. "
+        f"Evidence handles: task={task_id}; run={run_id}; session={session_id}; "
+        f"workspace={workspace}. "
+        "Clearing gate: inspect the preserved task workspace/session evidence, "
+        "resume or re-run with enough context for the terminal turn, and commit "
+        "an explicit kanban_complete or kanban_block transition."
+    )
+
+    try:
+        from agent.redact import redact_sensitive_text
+        from hermes_cli import kanban_db as kb
+
+        conn = kb.connect()
+        try:
+            return kb.block_task(
+                conn,
+                task_id,
+                reason=redact_sensitive_text(reason, force=True),
+                # Goal-mode workers already permit needs_input as a genuine
+                # external stop. Use the same lifecycle ownership instead of
+                # creating a runtime-only escape around the completion judge.
+                kind="needs_input",
+                expected_run_id=run_id,
+            )
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "Failed to record context-recovery diagnostic block for task %s run %s",
+            task_id,
+            run_id,
+            exc_info=True,
+        )
+        return False
+
+
 __all__ = [
     "build_kanban_stop_nudge",
     "kanban_stop_nudge_enabled",
+    "record_context_recovery_exhausted",
     "session_called_kanban_terminal",
 ]

@@ -1332,6 +1332,266 @@ class TestToolResultPreflightCompression:
         assert result["completed"] is True
 
 
+def test_kanban_stop_nudge_context_overflow_records_diagnostic_block(
+    agent, monkeypatch, tmp_path,
+):
+    """A finished worker must not vanish when its stop continuation overflows."""
+    from hermes_cli import kanban_db as kb
+
+    db_path = tmp_path / "kanban.db"
+    conn = kb.connect(db_path=db_path)
+    try:
+        task_id = kb.create_task(
+            conn,
+            title="preserve terminal state",
+            assignee="worker",
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="worker:fixture")
+        assert claimed is not None
+        run_id = claimed.current_run_id
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.delenv("HERMES_KANBAN_STOP_NUDGE", raising=False)
+
+    tool_calls = [
+        {
+            "id": f"call-{index}",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": "{}"},
+        }
+        for index in range(200)
+    ]
+    history = [
+        {"role": "user", "content": "do the substantive work"},
+        {"role": "assistant", "content": "", "tool_calls": tool_calls},
+        *[
+            {
+                "role": "tool",
+                "name": "web_search",
+                "tool_call_id": f"call-{index}",
+                "content": "evidence saved",
+            }
+            for index in range(200)
+        ],
+    ]
+    assert len(history) == 202
+
+    stop = _mock_response(
+        content="Review finished; durable evidence is in the task workspace.",
+        finish_reason="stop",
+    )
+    overflow = Exception("Your input exceeds the context window of this model")
+    overflow.status_code = 400
+    agent.client.chat.completions.create.side_effect = [stop, overflow, overflow]
+    agent.max_compression_attempts = 1
+    original_context_length = agent.context_compressor.context_length
+
+    def _compress_preserving_guard(messages, *_args, **_kwargs):
+        return list(messages[-6:]), "compressed prompt"
+
+    with (
+        patch.object(agent, "_compress_context", side_effect=_compress_preserving_guard),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(
+            "finish and terminalize the task",
+            conversation_history=history,
+        )
+
+    assert result["failed"] is True
+    assert result["compression_exhausted"] is True
+    assert agent.context_compressor.context_length == original_context_length
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+        assert task.status == "blocked"
+        assert run.id == run_id
+        assert run.outcome == "blocked"
+        assert "context overflow" in (run.summary or "").lower()
+        assert "clearing gate" in (run.summary or "").lower()
+        assert not any(
+            event.kind == "completed" for event in kb.list_events(conn, task_id)
+        )
+    finally:
+        conn.close()
+
+
+def test_kanban_stop_nudge_overflow_with_compaction_disabled_still_blocks(
+    agent, monkeypatch, tmp_path,
+):
+    """Every terminal generic-overflow return honors the Kanban fallback."""
+    from hermes_cli import kanban_db as kb
+
+    db_path = tmp_path / "kanban.db"
+    conn = kb.connect(db_path=db_path)
+    try:
+        task_id = kb.create_task(conn, title="disabled compaction", assignee="worker")
+        claimed = kb.claim_task(conn, task_id, claimer="worker:fixture")
+        assert claimed is not None
+        run_id = claimed.current_run_id
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    agent.compression_enabled = False
+    stop = _mock_response(content="work finished", finish_reason="stop")
+    overflow = Exception("Your input exceeds the context window of this model")
+    overflow.status_code = 400
+    agent.client.chat.completions.create.side_effect = [stop, overflow]
+
+    with (
+        patch.object(agent, "_compress_context") as compress,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("finish and terminalize")
+
+    assert result["compaction_disabled"] is True
+    compress.assert_not_called()
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, task_id).status == "blocked"
+        assert kb.latest_run(conn, task_id).outcome == "blocked"
+    finally:
+        conn.close()
+
+
+def _claimed_kanban_task_for_overflow(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    db_path = tmp_path / "kanban.db"
+    conn = kb.connect(db_path=db_path)
+    try:
+        task_id = kb.create_task(conn, title="payload recovery", assignee="worker")
+        claimed = kb.claim_task(conn, task_id, claimer="worker:fixture")
+        assert claimed is not None
+        run_id = claimed.current_run_id
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.delenv("HERMES_KANBAN_STOP_NUDGE", raising=False)
+    return kb, db_path, task_id, run_id
+
+
+def test_kanban_stop_nudge_count_resets_before_unrelated_new_turn_overflow(
+    agent, monkeypatch, tmp_path,
+):
+    """A cached worker cannot reuse a prior turn's terminal-nudge authority."""
+    kb, db_path, task_id, run_id = _claimed_kanban_task_for_overflow(
+        monkeypatch, tmp_path,
+    )
+    agent._kanban_stop_nudges = 2
+    agent.compression_enabled = False
+    overflow = Exception("Your input exceeds the context window of this model")
+    overflow.status_code = 400
+    agent.client.chat.completions.create.side_effect = [overflow]
+
+    with (
+        patch.object(agent, "_compress_context") as compress,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("new unrelated turn")
+
+    assert result["compaction_disabled"] is True
+    assert agent._kanban_stop_nudges == 0
+    compress.assert_not_called()
+    conn = kb.connect(db_path=db_path)
+    try:
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+        assert task.status == "running"
+        assert run.id == run_id
+        assert run.outcome is None
+    finally:
+        conn.close()
+
+
+def test_kanban_stop_nudge_413_attempt_exhaustion_records_diagnostic_block(
+    agent, monkeypatch, tmp_path,
+):
+    """A post-nudge 413 retry ceiling must terminalize the owned run."""
+    kb, db_path, task_id, run_id = _claimed_kanban_task_for_overflow(
+        monkeypatch, tmp_path,
+    )
+    stop = _mock_response(content="work finished", finish_reason="stop")
+    payload_error = _make_413_error()
+    agent.client.chat.completions.create.side_effect = [
+        stop,
+        payload_error,
+        payload_error,
+    ]
+    agent.max_compression_attempts = 1
+
+    def _reduce(messages, *_args, **_kwargs):
+        return list(messages[-2:]), "compressed prompt"
+
+    with (
+        patch.object(agent, "_compress_context", side_effect=_reduce),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("finish and terminalize")
+
+    assert result["compression_exhausted"] is True
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, task_id).status == "blocked"
+        run = kb.latest_run(conn, task_id)
+        assert run.id == run_id
+        assert run.outcome == "blocked"
+    finally:
+        conn.close()
+
+
+def test_kanban_stop_nudge_irreducible_413_records_diagnostic_block(
+    agent, monkeypatch, tmp_path,
+):
+    """An irreducible post-nudge 413 must not strand the owned run."""
+    kb, db_path, task_id, run_id = _claimed_kanban_task_for_overflow(
+        monkeypatch, tmp_path,
+    )
+    stop = _mock_response(content="work finished", finish_reason="stop")
+    agent.client.chat.completions.create.side_effect = [stop, _make_413_error()]
+
+    def _no_reduction(messages, *_args, **_kwargs):
+        return list(messages), "compressed prompt"
+
+    with (
+        patch.object(agent, "_compress_context", side_effect=_no_reduction),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("finish and terminalize")
+
+    assert result["compression_exhausted"] is True
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, task_id).status == "blocked"
+        run = kb.latest_run(conn, task_id)
+        assert run.id == run_id
+        assert run.outcome == "blocked"
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Disabled auto-compaction on overflow (port of anomalyco/opencode#30749)
 # ---------------------------------------------------------------------------

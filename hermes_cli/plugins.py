@@ -171,6 +171,9 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Confirmed outbound Telegram cron text delivery. Observers receive the
+    # execution and Telegram message identifiers, never message content.
+    "gateway_message_delivered",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
@@ -1928,7 +1931,8 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
-        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        if hook_name != "gateway_message_delivered":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:

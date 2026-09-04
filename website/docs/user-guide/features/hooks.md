@@ -392,6 +392,7 @@ def register(ctx):
 | [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
+| [`gateway_message_delivered`](#gateway_message_delivered) | A live Telegram cron text message is confirmed delivered | ignored |
 | [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
 | [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
@@ -1058,6 +1059,24 @@ def buffer_or_rewrite(event, **kwargs):
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
 ```
+
+---
+
+### `gateway_message_delivered`
+
+Fires after the live Telegram adapter confirms a successful generated cron text message. It does not fire for standalone sends, media-only responses, failed runs, or non-Telegram delivery.
+
+```python
+def on_cron_delivery(source, execution_id, job_id, platform, chat_id,
+                     thread_id, message_id, **kwargs):
+    assert source == "cron"
+    print(execution_id, chat_id, message_id)
+
+def register(ctx):
+    ctx.register_hook("gateway_message_delivered", on_cron_delivery)
+```
+
+The payload contains `source`, `execution_id`, `job_id`, `platform`, `chat_id`, `thread_id`, and the Telegram-confirmed `message_id`. It has no message text or Telegram client object. Callback failures do not affect delivery.
 
 ---
 

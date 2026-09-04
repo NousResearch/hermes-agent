@@ -1387,6 +1387,41 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _emit_gateway_message_delivered(
+    job: dict,
+    *,
+    platform: str,
+    chat_id: Any,
+    thread_id: Any,
+    message_id: Any,
+) -> None:
+    """Emit the confirmed Telegram cron-delivery observer, best-effort."""
+    platform = str(platform).lower()
+    if platform != "telegram" or message_id in (None, ""):
+        return
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+
+        if not has_hook("gateway_message_delivered"):
+            return
+        execution_id = job.get("execution_id")
+        job_id = job.get("id")
+        if not execution_id or not job_id or chat_id is None:
+            return
+        invoke_hook(
+            "gateway_message_delivered",
+            source="cron",
+            execution_id=str(execution_id),
+            job_id=str(job_id),
+            platform=platform,
+            chat_id=str(chat_id),
+            thread_id=str(thread_id) if thread_id is not None else None,
+            message_id=str(message_id),
+        )
+    except Exception:
+        logger.debug("gateway_message_delivered hook failed", exc_info=True)
+
+
 def _is_channel_dm_topic(
     runtime_adapter: Any,
     chat_id: Any,
@@ -1454,6 +1489,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
+    emit_gateway_message_delivered = bool(job.get("_gateway_message_delivered_hook"))
     targets = _resolve_delivery_targets(job)
     if not targets:
         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
@@ -1779,6 +1815,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
+                delivered_message_id = None
+                delivered_thread_id = thread_id
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
@@ -1876,9 +1914,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             if isinstance(send_result, dict):
                                 send_success = bool(send_result.get("success", False))
                                 send_raw_response = send_result.get("raw_response")
+                                delivered_message_id = send_result.get("message_id")
                             else:
                                 send_success = _confirm_adapter_delivery(send_result)
                                 send_raw_response = getattr(send_result, "raw_response", None)
+                                delivered_message_id = getattr(send_result, "message_id", None)
 
                             if not send_success:
                                 if isinstance(send_result, dict):
@@ -1909,12 +1949,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 and send_raw_response.get("thread_fallback")
                             ):
                                 requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
+                                delivered_thread_id = None
                                 msg = (
                                     f"configured thread_id {requested_thread_id} for "
                                     f"{platform_name}:{chat_id} was not found; delivered without thread_id"
                                 )
                                 logger.warning("Job '%s': %s", job["id"], msg)
                                 delivery_errors.append(msg)
+                            elif isinstance(send_raw_response, dict):
+                                actual_thread_id = send_raw_response.get(
+                                    "requested_thread_id"
+                                )
+                                if actual_thread_id is not None:
+                                    delivered_thread_id = str(actual_thread_id)
 
                 # Send extracted media files as native attachments via the live
                 # adapter, using the same DM-topic-aware routing as the text send
@@ -1955,6 +2002,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    if emit_gateway_message_delivered and text_to_send:
+                        _emit_gateway_message_delivered(
+                            job,
+                            platform=platform_name,
+                            chat_id=chat_id,
+                            thread_id=delivered_thread_id,
+                            message_id=delivered_message_id,
+                        )
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
                     if opened_thread_id and not thread_seeded:
@@ -3853,6 +3908,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     execution_id = job.get("execution_id")
     if not execution_id:
         execution_id = create_execution(job["id"], source="direct")["id"]
+    delivery_job = dict(job, execution_id=execution_id)
+    delivery_job.pop("_gateway_message_delivered_hook", None)
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -3963,7 +4020,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
             if should_deliver:
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    if success:
+                        from gateway.platforms.base import BasePlatformAdapter
+
+                        _, generated_text = BasePlatformAdapter.extract_media(deliver_content)
+                        if (generated_text or "").strip():
+                            delivery_job["_gateway_message_delivered_hook"] = True
+                    delivery_error = _deliver_result(
+                        delivery_job, deliver_content, adapters=adapters, loop=loop
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)

@@ -1015,6 +1015,17 @@ group_sessions_per_user: true
 # global model configured in the ``model:`` section above, and an explicit
 # session /model override always wins over a route.
 #
+# Client-tools bridge: let OpenAI-compatible clients (Raycast AI
+# Extensions, Open WebUI function calling, ...) declare executable tools on
+# /v1/chat/completions.  The agent can request a client tool; the decision
+# is returned as a standard tool_calls response and the CLIENT executes it.
+# Hermes never runs client tools.  Enabled by default; set false to disable.
+#
+#   platforms:
+#     api_server:
+#       extra:
+#         client_tools: false
+
 # Configure via the ``platforms.api_server.extra.model_routes`` gateway
 # config block:
 #

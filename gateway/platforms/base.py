@@ -752,7 +752,7 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     try:
         parsed = urlsplit(raw)
     except Exception:
-        return raw[:max_len]
+        return "<invalid-url>"[:max_len]
 
     if parsed.scheme and parsed.netloc:
         # Strip potential embedded credentials (user:pass@host).
@@ -765,7 +765,7 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
         else:
             safe = base
     else:
-        safe = raw
+        safe = "<invalid-url>"
 
     if len(safe) <= max_len:
         return safe

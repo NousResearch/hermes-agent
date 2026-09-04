@@ -228,6 +228,7 @@ from gateway.platforms.base import (
     cache_video_from_bytes_async,
     cache_document_from_bytes,
     resolve_proxy_url,
+    safe_url_for_log,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
@@ -4774,7 +4775,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     },
                 )
             elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+                logger.info(
+                    "[%s] Proxy detected; passing explicitly to HTTPXRequest: %s",
+                    self.name,
+                    safe_url_for_log(proxy_url),
+                )
                 request = HTTPXRequest(
                     **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
                 )

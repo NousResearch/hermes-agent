@@ -419,6 +419,15 @@ def test_status_output_contains_required_fields(delivery_env):
         assert f"{label}:" in output
 
 
+def test_pid_alive_uses_cross_platform_probe(monkeypatch):
+    import gateway.status
+
+    seen = []
+    monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: seen.append(pid) or True)
+    assert FeatureDeliveryRunner._pid_alive(4242) is True
+    assert seen == [4242]
+
+
 def test_ordinary_kanban_task_is_rejected_without_mutation(delivery_env):
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="ordinary")

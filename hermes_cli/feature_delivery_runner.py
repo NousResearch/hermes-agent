@@ -1591,7 +1591,8 @@ class FeatureDeliveryRunner:
         if pid == os.getpid():
             return True
         try:
-            os.kill(pid, 0)
-        except OSError:
+            from gateway.status import _pid_exists
+
+            return bool(_pid_exists(pid))
+        except Exception:
             return False
-        return True

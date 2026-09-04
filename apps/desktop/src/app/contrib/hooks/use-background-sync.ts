@@ -301,25 +301,73 @@ interface LiveSessionStatusResponse {
 // so an unscoped reap would dark out every other profile's running rows.
 const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
 
-// Renderer-wide keyboard warmth, tracked at module scope like the live-runtime
-// bookkeeping above: any keydown anywhere in the window marks activity, and a
-// burst stays warm for TYPING_BURST_QUIET_MS after the last key. IME
-// composition still emits keydown (keyCode 229), so one listener covers both.
+// Renderer-wide text-input warmth, tracked at module scope like the live-runtime
+// bookkeeping above. Key and input events keep a burst warm, while an active
+// IME composition holds the refresh unconditionally: Windows text services do
+// not guarantee a keydown for every composition/input update.
 let lastRendererInputAt = 0
+let rendererCompositionActive = false
+let rendererInputTrackerMounts = 0
 
-/** Record renderer-wide keyboard activity (wired to a capture-phase window
- *  keydown listener by useBackgroundSync). */
+/** Record renderer-wide text-input activity (wired to capture-phase window
+ *  keydown, beforeinput, input, and composition listeners by useBackgroundSync). */
 export function noteRendererKeyboardActivity(nowMs = Date.now()): void {
   lastRendererInputAt = nowMs
+}
+
+function noteRendererKeyboardEvent(event: KeyboardEvent, nowMs = Date.now()): void {
+  // Chromium may drop compositionend while this renderer remains focused. A
+  // later ordinary key is trustworthy recovery evidence; legacy IMEs report
+  // active composition through keyCode/which 229 even when isComposing is false.
+  rendererCompositionActive = event.isComposing || event.keyCode === 229 || event.which === 229
+  lastRendererInputAt = nowMs
+}
+
+function noteRendererInputEvent(event: InputEvent, nowMs = Date.now()): void {
+  // insertFromComposition is authoritative commit evidence even when Chromium
+  // leaves isComposing true, so it starts the normal quiet window.
+  if (event.inputType === 'insertFromComposition') {
+    rendererCompositionActive = false
+    lastRendererInputAt = nowMs
+
+    return
+  }
+
+  rendererCompositionActive =
+    event.isComposing || event.inputType === 'insertCompositionText' || event.inputType === 'deleteCompositionText'
+  lastRendererInputAt = nowMs
+}
+
+function noteRendererCompositionStart(nowMs = Date.now()): void {
+  rendererCompositionActive = true
+  lastRendererInputAt = nowMs
+}
+
+function noteRendererCompositionEnd(nowMs = Date.now()): void {
+  if (!rendererCompositionActive) {
+    return
+  }
+
+  rendererCompositionActive = false
+  lastRendererInputAt = nowMs
+}
+
+function releaseRendererInputActivity(): void {
+  rendererCompositionActive = false
+  lastRendererInputAt = Number.NEGATIVE_INFINITY
 }
 
 /** True while a typing burst is still warm enough to hold the heavy list
  *  refresh (see TYPING_BURST_QUIET_MS). */
 export function isTypingBurstActive(nowMs = Date.now()): boolean {
-  return nowMs - lastRendererInputAt < TYPING_BURST_QUIET_MS
+  return rendererCompositionActive || nowMs - lastRendererInputAt < TYPING_BURST_QUIET_MS
 }
 
 function remainingTypingQuietMs(nowMs: number): number {
+  if (rendererCompositionActive) {
+    return TYPING_BURST_QUIET_MS
+  }
+
   return Math.max(0, TYPING_BURST_QUIET_MS - (nowMs - lastRendererInputAt))
 }
 
@@ -327,6 +375,7 @@ function remainingTypingQuietMs(nowMs: number): number {
  *  resetLiveRuntimeTracking). */
 export function resetTypingActivityTracking(): void {
   lastRendererInputAt = 0
+  rendererCompositionActive = false
 }
 
 /** Restore sidebar liveness after a renderer/backend reconnect. Stream events
@@ -771,16 +820,43 @@ export function useBackgroundSync({
     updateSessionState
   ])
 
-  // Keyboard warmth for the deferral above: capture phase on window. Any
-  // keydown in this renderer (composer, modal, settings) counts — conservative
-  // on purpose. Pure timestamp write, no React state.
+  // Text-input warmth for the deferral above: capture phase on window. Keep IME
+  // composition active even when the platform emits no keydown, and count
+  // beforeinput/input for accessibility and Windows text-service paths.
   useEffect(() => {
-    const markInput = (): void => noteRendererKeyboardActivity()
+    const markKeyboardInput = (event: KeyboardEvent): void => noteRendererKeyboardEvent(event)
+    const markTextInput = (event: InputEvent): void => noteRendererInputEvent(event)
+    const markCompositionStart = (): void => noteRendererCompositionStart()
+    const markCompositionUpdate = (): void => noteRendererCompositionStart()
+    const markCompositionEnd = (): void => noteRendererCompositionEnd()
+    const releaseInputActivity = (): void => releaseRendererInputActivity()
 
-    window.addEventListener('keydown', markInput, true)
+    rendererInputTrackerMounts += 1
+
+    window.addEventListener('keydown', markKeyboardInput, true)
+    window.addEventListener('beforeinput', markTextInput, true)
+    window.addEventListener('input', markTextInput, true)
+    window.addEventListener('compositionstart', markCompositionStart, true)
+    window.addEventListener('compositionupdate', markCompositionUpdate, true)
+    window.addEventListener('compositionend', markCompositionEnd, true)
+    // Window blur does not bubble, so non-capture observes only the renderer
+    // losing focus — not ordinary focus moves between controls inside it.
+    window.addEventListener('blur', releaseInputActivity)
 
     return () => {
-      window.removeEventListener('keydown', markInput, true)
+      window.removeEventListener('keydown', markKeyboardInput, true)
+      window.removeEventListener('beforeinput', markTextInput, true)
+      window.removeEventListener('input', markTextInput, true)
+      window.removeEventListener('compositionstart', markCompositionStart, true)
+      window.removeEventListener('compositionupdate', markCompositionUpdate, true)
+      window.removeEventListener('compositionend', markCompositionEnd, true)
+      window.removeEventListener('blur', releaseInputActivity)
+
+      rendererInputTrackerMounts = Math.max(0, rendererInputTrackerMounts - 1)
+
+      if (rendererInputTrackerMounts === 0) {
+        resetTypingActivityTracking()
+      }
     }
   }, [])
 

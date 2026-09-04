@@ -37,22 +37,51 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_kanban_detect_cache():
-    """`_detect_environment` memoizes per process; kanban is context-dependent."""
+    """Keep context-dependent Kanban detection and authority test-local."""
+    from agent import delegation_context as dc
     import agent.skill_utils as su
 
+    authority = dc._DISPATCHER_AUTHORITY.set(False)
+    delegated = dc._DELEGATED_CHILD_CONTEXT.set(False)
+    non_dispatcher = dc._NON_DISPATCHER_OWNED_CONTEXT.set(False)
+    veto = dc._NON_DISPATCHER_VETO.set(False)
     su._ENV_DETECT_CACHE.pop("kanban", None)
-    yield
-    su._ENV_DETECT_CACHE.pop("kanban", None)
+    try:
+        yield
+    finally:
+        su._ENV_DETECT_CACHE.pop("kanban", None)
+        dc._NON_DISPATCHER_VETO.reset(veto)
+        dc._NON_DISPATCHER_OWNED_CONTEXT.reset(non_dispatcher)
+        dc._DELEGATED_CHILD_CONTEXT.reset(delegated)
+        dc._DISPATCHER_AUTHORITY.reset(authority)
 
 
 @pytest.fixture()
 def worker_env(monkeypatch):
-    """Simulate running inside a dispatcher-spawned kanban worker."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker_real_task")
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/ws")
+    """Simulate a worker after its one-shot dispatcher bootstrap succeeds."""
+    from agent import delegation_context as dc
+
+    task_id = "t_worker_real_task"
+    workspace = "/tmp/ws"
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", workspace)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
     monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock-abc")
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "team-alpha")
+    proof, nonce = dc._dispatcher_ownership_proof(task_id)
+    monkeypatch.setenv(
+        dc.DISPATCHER_OWNERSHIP_BOOTSTRAP_ENV,
+        f"{proof}.{nonce}",
+    )
+    token = dc.bootstrap_dispatcher_authority(
+        task_id=task_id,
+        workspace=workspace,
+    )
+    try:
+        yield
+    finally:
+        dc.exit_dispatcher_authority(token)
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +89,12 @@ def worker_env(monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestDispatcherOwnedPredicate:
-    def test_default_is_dispatcher_owned(self):
+    def test_default_without_bootstrap_is_not_dispatcher_owned(self):
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
-        assert is_dispatcher_owned_worker_context() is True
+        assert is_dispatcher_owned_worker_context() is False
 
-    def test_false_inside_non_dispatcher_context(self):
+    def test_false_inside_non_dispatcher_context(self, worker_env):
         from agent.delegation_context import (
             is_dispatcher_owned_worker_context,
             non_dispatcher_owned_context,
@@ -75,7 +104,7 @@ class TestDispatcherOwnedPredicate:
             assert is_dispatcher_owned_worker_context() is False
         assert is_dispatcher_owned_worker_context() is True
 
-    def test_token_form_restores(self):
+    def test_token_form_restores(self, worker_env):
         from agent.delegation_context import (
             enter_non_dispatcher_owned_context,
             exit_non_dispatcher_owned_context,
@@ -87,7 +116,7 @@ class TestDispatcherOwnedPredicate:
         exit_non_dispatcher_owned_context(token)
         assert is_dispatcher_owned_worker_context() is True
 
-    def test_nesting_restores_outer_value(self):
+    def test_nesting_restores_outer_value(self, worker_env):
         from agent.delegation_context import (
             is_dispatcher_owned_worker_context,
             non_dispatcher_owned_context,
@@ -110,11 +139,9 @@ class TestDispatcherOwnedPredicate:
             dc._DELEGATED_CHILD_CONTEXT.reset(token)
 
     def test_thread_isolation(self, worker_env):
-        """A ContextVar set in one thread must not leak into a sibling thread.
+        """A cron veto in one copied context cannot corrupt a worker sibling."""
+        import contextvars
 
-        This is the property an os.environ clear cannot provide, and the reason
-        concurrent cron jobs can't corrupt each other.
-        """
         from agent.delegation_context import (
             is_dispatcher_owned_worker_context,
             non_dispatcher_owned_context,
@@ -122,6 +149,8 @@ class TestDispatcherOwnedPredicate:
 
         seen = {}
         release = threading.Event()
+        job_context = contextvars.copy_context()
+        sibling_context = contextvars.copy_context()
 
         def sibling():
             seen["sibling"] = is_dispatcher_owned_worker_context()
@@ -130,17 +159,19 @@ class TestDispatcherOwnedPredicate:
         def job():
             with non_dispatcher_owned_context():
                 seen["job"] = is_dispatcher_owned_worker_context()
-                t = threading.Thread(target=sibling)
-                t.start()
+                thread = threading.Thread(
+                    target=lambda: sibling_context.run(sibling)
+                )
+                thread.start()
                 release.wait(5)
-                t.join(5)
+                thread.join(5)
 
-        t = threading.Thread(target=job)
-        t.start()
-        t.join(5)
+        thread = threading.Thread(target=lambda: job_context.run(job))
+        thread.start()
+        thread.join(5)
 
-        assert seen["job"] is False, "job thread must be marked non-dispatcher"
-        assert seen["sibling"] is True, "sibling thread must be unaffected"
+        assert seen["job"] is False, "job context must be non-dispatcher"
+        assert seen["sibling"] is True, "worker sibling context must stay owned"
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +247,7 @@ class TestRunJobKanbanIsolation:
         import sys
 
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         class FakeAgent:
@@ -254,7 +286,7 @@ class TestRunJobKanbanIsolation:
         monkeypatch.setattr(
             sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi"
         )
-        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched_delivery, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(
             sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None
@@ -274,6 +306,7 @@ class TestRunJobKanbanIsolation:
 
     def test_agent_runs_as_non_dispatcher(self, monkeypatch, worker_env):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
@@ -287,6 +320,7 @@ class TestRunJobKanbanIsolation:
         """The whole point of the ContextVar: os.environ must not be mutated, so
         the worker's claim heartbeat and the gateway watchers keep working."""
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
@@ -309,6 +343,7 @@ class TestRunJobKanbanIsolation:
 
     def test_context_reset_after_job(self, monkeypatch, worker_env):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         observed: dict = {}
@@ -319,6 +354,7 @@ class TestRunJobKanbanIsolation:
 
     def test_context_reset_even_when_job_raises(self, monkeypatch, worker_env):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         class ExplodingAgent:
@@ -348,6 +384,7 @@ class TestRunJobKanbanIsolation:
         restore this permanently destroyed the worker's identity; a ContextVar is
         per-thread and cannot."""
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
@@ -385,10 +422,10 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
 
     Fails loudly if a new dispatcher var is added without registering it.
     """
-    import hermes_cli.kanban_db as kanban_db
+    import hermes_cli.kanban_db_dispatch as kanban_db_dispatch
     from agent.delegation_context import KANBAN_ENV_KEYS
 
-    source = ast.parse(open(kanban_db.__file__, encoding="utf-8").read())
+    source = ast.parse(open(kanban_db_dispatch.__file__, encoding="utf-8").read())
     spawn = next(
         node for node in ast.walk(source)
         if isinstance(node, ast.FunctionDef) and node.name == "_default_spawn"
@@ -438,11 +475,6 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
         "HERMES_KANBAN_BRANCH",
         "HERMES_KANBAN_GOAL_MODE",
         "HERMES_KANBAN_GOAL_MAX_TURNS",
-        # One-shot dispatcher ownership proof: consumed (removed from env) at
-        # worker bootstrap, never inherited by child subprocesses. Not part of
-        # KANBAN_ENV_KEYS because scrub_kanban_env must not strip it from a
-        # delegated-child env where it no longer exists anyway.
-        "HERMES_KANBAN_WORKER_OWNERSHIP",
     }
     uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only
     assert not uncovered, (

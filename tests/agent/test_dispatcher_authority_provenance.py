@@ -148,3 +148,20 @@ def test_terminal_tool_gate_defaults_closed(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TERMINAL_RUNTIME", "{}")
     # No bootstrap ever ran in this (fresh) context.
     assert terminal_tool._kanban_runtime_context_allowed() is False
+
+
+def test_present_runtime_without_authority_refuses_profile_docker_fallback(
+    monkeypatch,
+):
+    """Inherited runtime env cannot degrade into lower-authority Docker config."""
+    from tools import terminal_tool
+
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_inherited")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/ws")
+    monkeypatch.setenv("HERMES_KANBAN_TERMINAL_RUNTIME", "{}")
+
+    with pytest.raises(RuntimeError, match="without dispatcher authority"):
+        terminal_tool._load_kanban_runtime([])
+    with pytest.raises(RuntimeError, match="without dispatcher authority"):
+        terminal_tool._resolve_container_task_id(None)

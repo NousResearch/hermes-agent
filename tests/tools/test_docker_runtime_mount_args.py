@@ -49,10 +49,14 @@ def test_runtime_mount_args_reject_duplicate_targets():
         ["--mount=type=bind,src=/opt/data,dst=/host-data"],
         ["-v", "/var/run/docker.sock:/var/run/docker.sock"],
         ["-v=/var/run/docker.sock:/var/run/docker.sock"],
+        ["-v/var/run/docker.sock:/var/run/docker.sock"],
+        ["-itv/opt/data:/host-data"],
         ["--volume", "/opt/data:/host-data"],
         ["--volume=/opt/data:/host-data"],
         ["--volumes-from", "other-container"],
         ["--volumes-from=other-container"],
+        ["--tmpfs", "/workspace:rw"],
+        ["--tmpfs=/workspace:rw"],
     ],
 )
 def test_runtime_mounts_reject_mount_capable_extra_args_before_docker(
@@ -62,7 +66,7 @@ def test_runtime_mounts_reject_mount_capable_extra_args_before_docker(
         pytest.fail("Docker availability/probe must not run before mount-arg rejection")
 
     monkeypatch.setattr(docker_env, "_ensure_docker_available", must_not_reach_docker)
-    with pytest.raises(ValueError, match="task-scoped runtime mounts"):
+    with pytest.raises(ValueError, match="mount-capable docker_extra_args"):
         docker_env.DockerEnvironment(
             image="python:3.11",
             runtime_mounts=[
@@ -78,7 +82,14 @@ def test_runtime_mounts_reject_mount_capable_extra_args_before_docker(
 
 
 def test_runtime_mounts_preserve_non_mounting_extra_args():
-    benign = ["--hostname=kanban-worker", "--read-only"]
+    benign = [
+        "--hostname=kanban-worker",
+        "--read-only",
+        "-w",
+        "/var/workspace",
+        "-e",
+        "ENV=value",
+    ]
     normalized = _normalize_docker_extra_args(benign)
     assert normalized == benign
     assert _mount_capable_extra_args(normalized) == []
@@ -119,6 +130,15 @@ def _stub_runtime_docker_constructor(monkeypatch, tmp_path, *, remote: bool):
     )
     monkeypatch.setattr(
         docker_env,
+        "_readonly_skill_mount_args",
+        lambda: [
+            "-v", f"{credential}:/root/.auth.json:ro",
+            "-v", f"{skills}:/opt/hermes/skills:ro",
+            "-v", f"{cache}:/opt/hermes/cache",
+        ],
+    )
+    monkeypatch.setattr(
+        docker_env,
         "_egress_proxy_args_for_docker",
         lambda: (
             ["-v", f"{ca}:/etc/ssl/certs/hermes-egress-ca.crt:ro"],
@@ -139,7 +159,7 @@ def _stub_runtime_docker_constructor(monkeypatch, tmp_path, *, remote: bool):
         calls.append(list(cmd))
         return Result()
 
-    monkeypatch.setattr(docker_env.subprocess, "run", fake_run)
+    monkeypatch.setattr(docker_env, "run_capture", fake_run)
 
     class RemoteSelector:
         cli_args = ("--host", "ssh://docker@example.com")
@@ -160,12 +180,20 @@ def test_runtime_final_docker_argv_has_only_dispatcher_host_binds(
     if not remote:
         (tmp_path / "task").mkdir()
 
+    profile_data = tmp_path / "profile-data"
+    host_cwd = tmp_path / "host-cwd"
+    profile_data.mkdir()
+    host_cwd.mkdir()
+
     env = docker_env.DockerEnvironment(
         image="python:3.11",
         cwd="/workspace",
         task_id="kbt-runtime",
         persistent_filesystem=True,
         persist_across_processes=False,
+        volumes=[f"{profile_data}:/profile-data"],
+        host_cwd=str(host_cwd),
+        auto_mount_cwd=True,
         endpoint_selector=selector,
         runtime_mounts=[
             {
@@ -185,6 +213,8 @@ def test_runtime_final_docker_argv_has_only_dispatcher_host_binds(
     assert run_cmd.count("--mount") == 1
     assert expected_mount in run_cmd
     assert "-v" not in run_cmd
+    assert str(profile_data) not in joined
+    assert str(host_cwd) not in joined
     assert str(credential) not in joined
     assert str(skills) not in joined
     assert str(cache) not in joined

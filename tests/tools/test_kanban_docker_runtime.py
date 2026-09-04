@@ -111,6 +111,7 @@ def test_preterminal_file_tool_relative_path_uses_runtime_workspace(
     monkeypatch, tmp_path
 ):
     from tools import file_tools
+    from tools import file_tools_paths
 
     ws = tmp_path / "project" / "task"
     ws.mkdir(parents=True)
@@ -118,10 +119,28 @@ def test_preterminal_file_tool_relative_path_uses_runtime_workspace(
     # This is the host-form value the dispatcher exports. Before the first
     # terminal call it must not win over the runtime's container cwd.
     monkeypatch.setenv("TERMINAL_CWD", str(ws.resolve()))
-    monkeypatch.setattr(file_tools, "_terminal_env_type_for_task", lambda _task: "docker")
+    monkeypatch.setattr(
+        file_tools_paths, "_terminal_env_type_for_task", lambda _task: "docker"
+    )
 
     resolved = file_tools._resolve_path_for_task("canary.txt", "default")
     assert str(resolved) == "/workspace/canary.txt"
+
+
+def test_preterminal_local_worker_keeps_host_workspace_path(monkeypatch, tmp_path):
+    from tools import file_tools
+    from tools import file_tools_paths
+
+    ws = tmp_path / "project" / "task"
+    ws.mkdir(parents=True)
+    _pin_kanban_worker(monkeypatch, ws, task_id="t_local_file_path")
+    monkeypatch.setenv("TERMINAL_CWD", str(ws.resolve()))
+    monkeypatch.setattr(
+        file_tools_paths, "_terminal_env_type_for_task", lambda _task: "local"
+    )
+
+    resolved = file_tools._resolve_path_for_task("canary.txt", "default")
+    assert resolved == (ws / "canary.txt").resolve()
 
 
 def test_runtime_gets_unique_container_key(monkeypatch, tmp_path):
@@ -152,6 +171,7 @@ def test_runtime_gets_unique_container_key(monkeypatch, tmp_path):
 
 def test_runtime_container_never_cross_process_reuses(monkeypatch, tmp_path):
     from tools import terminal_tool
+    from tools import terminal_tool_backends
 
     ws = tmp_path / "task"
     ws.mkdir()
@@ -168,16 +188,17 @@ def test_runtime_container_never_cross_process_reuses(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(terminal_tool, "_DockerEnvironment", FakeDockerEnv)
-    monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
+    monkeypatch.setattr(
+        terminal_tool_backends, "_DockerEnvironment", FakeDockerEnv
+    )
 
     task_key = terminal_tool._resolve_container_task_id(None)
-    env = terminal_tool._create_environment(
+    env = terminal_tool_backends._create_environment(
         env_type="docker",
         image=cfg["docker_image"],
         cwd=cfg["cwd"],
         timeout=60,
-        container_config=terminal_tool._container_config_from_config(cfg),
+        container_config=terminal_tool_backends._container_config_from_config(cfg),
         task_id=task_key,
         host_cwd=cfg["host_cwd"],
     )
@@ -243,6 +264,7 @@ def test_profile_docker_extra_mounts_reach_constructor_and_fail_before_docker(
     monkeypatch, tmp_path
 ):
     from tools import terminal_tool
+    from tools import terminal_tool_backends
     from tools.environments import docker as docker_env
 
     ws = tmp_path / "project" / "task"
@@ -265,19 +287,20 @@ def test_profile_docker_extra_mounts_reach_constructor_and_fail_before_docker(
     # Docker construction where runtime_mounts are known to be authoritative.
     assert cfg["docker_extra_args"] == attacks
 
-    def must_not_reach_docker():
+    def must_not_reach_docker(*_args, **_kwargs):
         pytest.fail("Docker availability/probe must not run before mount-arg rejection")
 
-    monkeypatch.setattr(docker_env, "_ensure_docker_available", must_not_reach_docker)
-    monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
+    monkeypatch.setattr(
+        docker_env, "_ensure_docker_available", must_not_reach_docker
+    )
 
-    with pytest.raises(ValueError, match="task-scoped runtime mounts"):
-        terminal_tool._create_environment(
+    with pytest.raises(ValueError, match="mount-capable docker_extra_args"):
+        terminal_tool_backends._create_environment(
             env_type="docker",
             image=cfg["docker_image"],
             cwd=cfg["cwd"],
             timeout=60,
-            container_config=terminal_tool._container_config_from_config(cfg),
+            container_config=terminal_tool_backends._container_config_from_config(cfg),
             task_id=terminal_tool._resolve_container_task_id(None),
             host_cwd=cfg["host_cwd"],
         )

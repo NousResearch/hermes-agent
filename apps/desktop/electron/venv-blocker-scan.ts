@@ -45,7 +45,10 @@ export type ScanOutcome =
 // Constants
 // ---------------------------------------------------------------------------
 
-const SCAN_TIMEOUT_MS = 15000
+// A Windows process table can take longer than 15 seconds to inspect on busy
+// hosts. Keep a watchdog for genuinely wedged probes, but leave enough headroom
+// for the scanner's conservative fallback checks.
+const SCAN_TIMEOUT_MS = 60000
 const SCAN_MODULE = 'hermes_cli._scan_venv_blockers'
 
 // ---------------------------------------------------------------------------
@@ -204,7 +207,7 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
 
 /**
  * Run the venv-blocker scan subprocess.  Async so the Electron main-process
- * event loop is never blocked by the psutil process scan (up to 15s on a
+ * event loop is never blocked by the psutil process scan (tens of seconds on a
  * loaded Windows box).  Accepts optional overrides for testing (dependency
  * injection).
  */
@@ -233,6 +236,13 @@ export async function scanVenvBlockers(
 
     stdout = String((proc as any).stdout ?? '')
   } catch (err: any) {
+    if (err?.killed === true) {
+      return {
+        kind: 'probe-failure',
+        error: `timed out after ${SCAN_TIMEOUT_MS / 1000} seconds`
+      }
+    }
+
     const diag = [`exit code ${err.status ?? err.code ?? -1}`]
 
     if (err.stderr) {
@@ -298,10 +308,15 @@ export function formatBlockerMessage(result: VenvBlockerScanResult): string {
 /**
  * Build a probe-failure error message.
  */
-export function formatProbeFailedMessage(): string {
+export function formatProbeFailedMessage(error?: string): string {
+  const timeoutDetail = error?.startsWith('timed out after')
+    ? `\n\nThe verification scan ${error}; no blocking process was confirmed.`
+    : ''
+
   return (
-    'Update aborted: Desktop could not verify the Hermes installation is free.\n' +
-    '\n' +
+    'Update aborted: Desktop could not verify the Hermes installation is free.' +
+    timeoutDetail +
+    '\n\n' +
     'Close other Hermes windows and terminals, then retry.  If the problem\n' +
     'persists, run `hermes update` in a terminal for detailed diagnostics.'
   )

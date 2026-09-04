@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nModo actual: `{mode}`\\n\\nElige una opción:"
     choice_fast:           "fast — Priority Processing activado"
     choice_normal:         "normal — procesamiento estándar"
+    choice_auto:           "auto — rápido en los primeros segundos de cada turno"
+    choice_cold:           "cold — rápido solo en el primer turno de una sesión"
 
   footer:
     status:                "📎 Pie de ejecución: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
@@ -266,6 +268,7 @@ gateway:
     matrix_cross_room_success: "⚠️ Reanudación entre salas: **{title}** reanudada dentro de la sala de Matrix **{room}**.\nLos próximos mensajes en esta sala usarán esa transcripción hasta `/reset` u otro `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "No se encontraron sesiones con nombre.\nUsa `/title Mi sesión` para nombrar la sesión actual y luego `/resume Mi sesión` para volver a ella."
+    all_requires_admin: "_Nota: `--all` (listado entre chats) requiere un administrador configurado; se muestran solo las sesiones de este chat._"
     list_header:           "📋 **Sesiones con nombre**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"

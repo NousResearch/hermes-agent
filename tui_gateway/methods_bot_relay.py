@@ -25,11 +25,11 @@ def _relay_root() -> Path:
     return home.parent.parent if home.parent.name == "profiles" else home
 
 
-def _run_delivery(profile: str, tmp: str) -> subprocess.CompletedProcess:
+def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess.CompletedProcess:
     from tools.bot_relay import local_delivery_command
     return subprocess.run(
         local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS)
+        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=env)
 
 
 @method("bot_relay.roster.sync")
@@ -102,6 +102,11 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         def _detail(p) -> str:
             return (p.stderr or p.stdout or "").strip()[-500:]
 
+        # The Desktop forwards the envelope's sender fields; the turn's author labels memory only
+        # and grants nothing. Absent fields leave the turn unattributed, as before.
+        from tools.bot_relay import delivery_env, delivery_turn_author
+        turn_env = delivery_env(delivery_turn_author(params.get("from_profile"), params.get("from_handle")))
+
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -113,7 +118,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             # turn timeout below — doubled when the retry policy grants one bounded re-run — so clients
             # calling bot_relay.deliver must tolerate ~1320s before assuming failure. See #93091.
             with acquire_turn_lock(root, resolved):
-                proc = _run(resolved, tmp)
+                proc = _run(resolved, tmp, turn_env)
                 if proc.returncode != 0:
                     # Retry policy: transient classes re-run the SAME session once; context_overflow
                     # too — the retried turn's pre-API compaction pass compacts the over-threshold
@@ -122,7 +127,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
                     from tools.bot_failure_reasons import (
                         RETRY_NONE, classify_agent_error, retry_action)
                     if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
-                        proc = _run(resolved, tmp)
+                        proc = _run(resolved, tmp, turn_env)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)

@@ -348,6 +348,40 @@ def test_heal_is_idempotent_and_logs_once(fleet, caplog):
     assert sum("consolidated forked" in r.message for r in caplog.records) == 1
 
 
+def test_clean_mark_is_not_fooled_by_a_metadata_preserving_replace(fleet):
+    """The clean-mark cache is keyed on content digest, not mtime: a tool
+    that replaces a profile's auth.json bytes while preserving its mtime
+    (dotfile sync, backup/restore, rsync -a) must not leave a just-restored
+    fork sitting unhealed forever because the mark still says 'clean'."""
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    kid = _fork(fleet, "kid")
+    fleet["use"](kid)
+    # First call heals the existing fork; second finds nothing left to do
+    # and records the clean mark (mirrors test_heal_is_idempotent_and_logs_once).
+    assert heal_forked_single_use_oauth_grants("anthropic") is not None
+    assert fleet["rows"](kid) is None
+    assert heal_forked_single_use_oauth_grants("anthropic") is None
+
+    kid_auth = kid / "auth.json"
+    marked_stat = kid_auth.stat()
+
+    # External metadata-preserving replace: a fork reappears in kid's
+    # auth.json (e.g. a backup taken before this profile was healed gets
+    # restored), but the file's mtime is set back to the exact value the
+    # clean mark observed.
+    root_store = json.loads((fleet["root"] / "auth.json").read_text())
+    kid_auth.write_text(json.dumps(root_store))
+    os.utime(kid_auth, ns=(marked_stat.st_atime_ns, marked_stat.st_mtime_ns))
+    assert kid_auth.stat().st_mtime_ns == marked_stat.st_mtime_ns  # sanity
+
+    # Bytes changed (a real fork is back) even though mtime didn't — the
+    # digest-keyed mark must miss and the fork must be detected and healed,
+    # not silently left forked because the stale mark said "clean".
+    assert heal_forked_single_use_oauth_grants("anthropic") is not None
+    assert fleet["rows"](kid) is None
+
+
 def test_heal_never_deletes_the_only_surviving_copy(fleet):
     """Root lost its grant (user ran `hermes auth remove` at root); the profile's
     copy is the only one left — and an independent second account stays put."""

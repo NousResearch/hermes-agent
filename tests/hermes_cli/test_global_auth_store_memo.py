@@ -3,10 +3,16 @@
 read_credential_pool() -> load_pool() runs _load_global_auth_store() once per
 provider row in the /model picker, and the global-store JSON read + parse
 cost ~60-100us+ per call even when nothing changed. The memo keyed on the
-global auth file's path+mtime makes repeat reads a dict lookup. The store
-only changes when the user authenticates at global scope (writes always go
-through _save_auth_store, which touches the file), so the mtime key keeps
-the memo freshness-correct.
+global auth file's path+content-digest makes repeat reads a dict lookup.
+
+Keyed on content digest rather than mtime: a (path, mtime_ns) signature is
+the right idiom for a config cache, but this one guards credential
+identity, and an external metadata-preserving copy of auth.json (dotfile
+sync, backup/restore) can replace the file's bytes while restoring its
+original mtime — a stat-only key would serve stale (or entirely different)
+global credentials indefinitely. See the fix that applied the same
+stat-vs-digest correction to the Vertex SA credential cache
+(agent/vertex_adapter.py._read_sa_file) for the reasoning this mirrors.
 """
 
 from __future__ import annotations
@@ -81,8 +87,8 @@ class TestLoadGlobalAuthStoreMemo:
         )
         assert first.get("providers", {}).get("openai") == {"api_key": "sk-x"}
 
-    def test_mtime_change_re_reads_once(self, tmp_path, monkeypatch):
-        """A store file change on disk invalidates the memo."""
+    def test_content_change_re_reads_once(self, tmp_path, monkeypatch):
+        """A store file content change on disk invalidates the memo."""
         global_path = _make_global_store(tmp_path)
         monkeypatch.setattr(
             auth_mod, "_global_auth_file_path", lambda: global_path
@@ -99,10 +105,47 @@ class TestLoadGlobalAuthStoreMemo:
         auth_mod._load_global_auth_store()
         assert reads["n"] == 1
 
-        # Bump the file mtime -> memo invalidates -> re-read once.
-        os.utime(global_path, (1_700_000_000, 1_700_000_000))
-        auth_mod._load_global_auth_store()
-        assert reads["n"] == 2, "mtime change must force exactly one re-read"
+        # Real content change (a fresh auth write) -> memo invalidates -> one re-read.
+        global_path.write_text(
+            json.dumps({"version": 1, "providers": {"openai": {"api_key": "sk-NEW"}}}),
+            encoding="utf-8",
+        )
+        second = auth_mod._load_global_auth_store()
+        assert reads["n"] == 2, "content change must force exactly one re-read"
+        assert second.get("providers", {}).get("openai") == {"api_key": "sk-NEW"}
+
+    def test_metadata_preserving_replace_is_not_served_stale(self, tmp_path, monkeypatch):
+        """A content change that PRESERVES the original mtime (e.g. rsync -a,
+        a dotfile-sync tool, or a backup/restore that restores timestamps)
+        must still invalidate the memo — a (path, mtime_ns) key would miss
+        this indefinitely and keep serving the old global credentials."""
+        global_path = _make_global_store(tmp_path)
+        monkeypatch.setattr(
+            auth_mod, "_global_auth_file_path", lambda: global_path
+        )
+
+        first = auth_mod._load_global_auth_store()
+        assert first.get("providers", {}).get("openai") == {"api_key": "sk-x"}
+        original_stat = global_path.stat()
+
+        # Replace the content, then restore the ORIGINAL mtime/atime exactly
+        # — simulates a metadata-preserving external copy landing different
+        # bytes at the same path with the same stat signature.
+        global_path.write_text(
+            json.dumps({"version": 1, "providers": {"openai": {"api_key": "sk-DIFFERENT"}}}),
+            encoding="utf-8",
+        )
+        os.utime(
+            global_path,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+        )
+        assert global_path.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+        second = auth_mod._load_global_auth_store()
+        assert second.get("providers", {}).get("openai") == {"api_key": "sk-DIFFERENT"}, (
+            "memo served stale credentials after a metadata-preserving "
+            "content replace — the cache key did not detect the change"
+        )
 
     def test_absent_global_store_returns_empty_without_error(self, tmp_path, monkeypatch):
         """No global fallback (classic mode) returns {} and stays cheap."""

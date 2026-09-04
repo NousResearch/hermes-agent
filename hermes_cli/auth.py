@@ -1197,14 +1197,21 @@ def _load_global_auth_store() -> Dict[str, Any]:
     Returns an empty dict when no global fallback exists (classic mode,
     or the global auth.json is absent). Never raises on missing file.
 
-    Memoised keyed on the global auth file's path + mtime (same pattern as
-    ``_nous_auth_status_cache``): read_credential_pool() -> load_pool() runs
-    this once per provider row in the /model picker, and the path resolution
-    (``_global_auth_file_path()`` -> ``get_default_hermes_root()``) + JSON
-    parse cost ~105us+ per call even when nothing changed. The global
-    store only changes when the user authenticates at global scope (writes
-    always go through _save_auth_store, which touches the file), so the mtime
-    key keeps the memo freshness-correct. Callers must treat the returned
+    Memoised keyed on the global auth file's path + content digest (same
+    pattern as ``_nous_auth_status_cache`` for the TTL idea, and the same
+    stat-vs-digest fix already applied to the Vertex SA credential cache —
+    see ``agent/vertex_adapter.py._read_sa_file``): read_credential_pool() ->
+    load_pool() runs this once per provider row in the /model picker, and the
+    path resolution (``_global_auth_file_path()`` -> ``get_default_hermes_root()``)
+    + JSON parse cost ~105us+ per call even when nothing changed. A
+    (path, mtime_ns) signature is the right idiom for a config cache, but
+    this one guards credential identity: an external metadata-preserving
+    copy of auth.json (dotfile sync, backup/restore) can replace the file's
+    bytes while restoring its original mtime, which a stat-only key would
+    never detect — the cache would keep serving stale (or entirely
+    different) global credentials indefinitely. Hashing the content closes
+    that gap at the cost of one extra read on a cache PROBE, which is noise
+    next to the JSON parse it's memoising. Callers must treat the returned
     store as read-only (all current callers do — .get / dict() / list()
     copies only).
     """
@@ -1215,13 +1222,13 @@ def _load_global_auth_store() -> Dict[str, Any]:
         return {}
     try:
         resolved_path = str(global_path.resolve(strict=False))
-        mtime_ns = global_path.stat().st_mtime_ns
-        cache_key: Optional[Tuple[str, int]] = (resolved_path, mtime_ns)
+        digest = hashlib.sha256(global_path.read_bytes()).hexdigest()
+        cache_key: Optional[Tuple[str, str]] = (resolved_path, digest)
     except Exception:
         cache_key = None
     if cache_key is not None and _global_auth_store_cache is not None:
-        cached_path, cached_mtime, cached_store = _global_auth_store_cache
-        if cached_path == cache_key[0] and cached_mtime == cache_key[1]:
+        cached_path, cached_digest, cached_store = _global_auth_store_cache
+        if cached_path == cache_key[0] and cached_digest == cache_key[1]:
             return cached_store
     if os.environ.get("PYTEST_CURRENT_TEST"):
         real_home_env = os.environ.get("HOME", "")
@@ -1863,9 +1870,17 @@ _OAUTH_TOKEN_FIELDS = (
 )
 
 _oauth_heal_notices: List[str] = []
-# provider -> (profile auth.json path, auth.json mtime_ns, singleton mtime_ns)
-# of the last store verified fork-free; lets load_pool() skip the locked scan.
-_oauth_heal_clean_marks: Dict[str, Tuple[str, Optional[int], Optional[int]]] = {}
+# provider -> (profile auth.json path, auth.json content digest, singleton
+# content digest) of the last store verified fork-free; lets load_pool() skip
+# the locked scan. Content-digest-keyed, not mtime-keyed: this cache guards
+# whether a credential fork needs healing, and an external metadata-preserving
+# copy (dotfile sync, backup/restore) can replace a forked auth.json's bytes
+# while restoring its original mtime, which a stat-only key would never
+# detect — the mark would keep saying "clean" and the auto-heal (whose whole
+# purpose is fixing exactly this kind of forked grant) would never re-scan
+# (same class of bug as _global_auth_store_cache above and the Vertex SA
+# credential cache — see agent/vertex_adapter.py's _read_sa_file).
+_oauth_heal_clean_marks: Dict[str, Tuple[str, Optional[str], Optional[str]]] = {}
 
 
 def consume_oauth_heal_notices() -> List[str]:
@@ -2027,14 +2042,15 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
 
     # Hot-path short-circuit: load_pool() runs per model call. Once this
     # profile's store was verified clean for *provider_id*, skip the locked
-    # read-modify-write until the profile's own files change (mtime key).
-    def _stamp(p: Optional[Path]) -> Optional[int]:
+    # read-modify-write until the profile's own files change (content-digest
+    # key — see the type comment above for why not mtime).
+    def _digest(p: Optional[Path]) -> Optional[str]:
         try:
-            return p.stat().st_mtime_ns if p is not None else None
+            return hashlib.sha256(p.read_bytes()).hexdigest() if p is not None else None
         except OSError:
             return None
 
-    fingerprint = (str(profile_path), _stamp(profile_path), _stamp(profile_singleton))
+    fingerprint = (str(profile_path), _digest(profile_path), _digest(profile_singleton))
     if _oauth_heal_clean_marks.get(provider_id) == fingerprint:
         return None
     if fingerprint[1] is None and fingerprint[2] is None:
@@ -7514,10 +7530,15 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
 _nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
 
-# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store).
+# content-digest-keyed memo for _load_global_auth_store(): (path, sha256, store).
 # Same invalidation contract as _nous_auth_status_cache — the global auth
-# file changes only when a global-scope auth write touches it.
-_global_auth_store_cache: Optional[Tuple[str, int, Dict[str, Any]]] = None
+# file changes only when a global-scope auth write touches it. Keyed on
+# content hash rather than mtime: this cache guards credential identity, and
+# an external metadata-preserving copy (dotfile sync, backup/restore) can
+# replace the file's bytes while restoring its mtime, which a stat-only key
+# would miss indefinitely (same class of bug fixed for the Vertex SA
+# credential cache — see agent/vertex_adapter.py's _read_sa_file).
+_global_auth_store_cache: Optional[Tuple[str, str, Dict[str, Any]]] = None
 
 
 def _auth_file_cache_key() -> Tuple[str, Optional[float]]:

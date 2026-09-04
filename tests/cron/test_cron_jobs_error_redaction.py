@@ -12,7 +12,6 @@ the write, not after.
 import pytest
 
 from cron.jobs import (
-    JOBS_FILE,
     _MAX_PERSISTED_ERROR_CHARS,
     _sanitize_persisted_error,
     create_job,
@@ -87,6 +86,7 @@ class TestMarkJobRunRedactsLastError:
         assert _KEY_ID not in stored["last_error"]
         assert "Key limit exceeded" in stored["last_error"]
 
+        from cron.jobs import JOBS_FILE
         raw = JOBS_FILE.read_text(encoding="utf-8")
         assert _KEY_ID not in raw
 
@@ -97,6 +97,7 @@ class TestMarkJobRunRedactsLastError:
 
         stored = get_job(job["id"])
         assert _SK_OR not in stored["last_error"]
+        from cron.jobs import JOBS_FILE
         raw = JOBS_FILE.read_text(encoding="utf-8")
         assert _SK_OR not in raw
 
@@ -117,6 +118,7 @@ class TestMarkJobRunRedactsLastError:
 
         stored = get_job(job["id"])
         assert _KEY_ID not in stored["last_delivery_error"]
+        from cron.jobs import JOBS_FILE
         raw = JOBS_FILE.read_text(encoding="utf-8")
         assert _KEY_ID not in raw
 
@@ -136,6 +138,7 @@ class TestUpdateJobRedactsDeliveryError:
         job = create_job(prompt="watch prices", schedule="every 1h")
         updated = update_job(job["id"], {"last_delivery_error": _OPENROUTER_ERROR})
         assert _KEY_ID not in updated["last_delivery_error"]
+        from cron.jobs import JOBS_FILE
         raw = JOBS_FILE.read_text(encoding="utf-8")
         assert _KEY_ID not in raw
 

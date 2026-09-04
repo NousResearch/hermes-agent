@@ -375,6 +375,73 @@ def _normalize_anthropic_model_name(model: str) -> str:
 _MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
 
 
+# Anthropic publishes each model under two interchangeable ids: a dated
+# snapshot (``claude-haiku-4-5-20251001`` — what the API echoes back and what
+# lands in the session row) and its undated family alias
+# (``claude-haiku-4-5``).  They are the same model billed at the same rates.
+_ANTHROPIC_SNAPSHOT_SUFFIX = re.compile(r"-\d{8}$")
+
+
+def _pricing_rates(entry: PricingEntry) -> tuple:
+    """The rate-bearing fields of an entry, for equivalence checks.
+
+    Deliberately excludes provenance (``source_url``, ``pricing_version``,
+    ``fetched_at``) so two snapshots added from different doc revisions still
+    compare equal when they bill identically.
+    """
+    return (
+        entry.input_cost_per_million,
+        entry.output_cost_per_million,
+        entry.cache_read_cost_per_million,
+        entry.cache_write_cost_per_million,
+        entry.request_cost,
+        entry.tier_threshold_tokens,
+        entry.input_cost_per_million_above,
+        entry.output_cost_per_million_above,
+        entry.cache_read_cost_per_million_above,
+    )
+
+
+def _lookup_anthropic_snapshot_alias(model: str) -> Optional[PricingEntry]:
+    """Resolve an Anthropic id against the table's other spelling of itself.
+
+    The table is inconsistent about which form it carries — some entries are
+    dated (``claude-3-5-haiku-20241022``), some undated (``claude-haiku-4-5``)
+    — so whether a caller's id resolved depended on which spelling happened
+    to get added, not on anything the caller controls (#101145).  Both
+    directions are resolved:
+
+      - dated id -> undated family entry (strip the suffix, one dict hit)
+      - undated id -> its dated snapshot entry (the table keys older models
+        by the dated form only)
+
+    This is a *resolution* fallback, not a guess: the two ids name the same
+    model at the same price.  It never substitutes a different model's card —
+    an id whose counterpart is absent from the table still returns ``None``,
+    so unknown models stay unknown (see #101068 on why nearest-model
+    fallbacks are dangerous).  An undated id that collapses several dated
+    snapshots is resolved only when they all bill identically; otherwise it
+    is genuinely ambiguous and stays unpriced.
+    """
+    family = _ANTHROPIC_SNAPSHOT_SUFFIX.sub("", model)
+    if family != model:
+        return _OFFICIAL_DOCS_PRICING.get(("anthropic", family))
+
+    # Undated id: find the dated snapshot(s) that collapse onto it.  Only
+    # reached once the exact lookups have missed, so it never runs on the
+    # hot path.
+    match: Optional[PricingEntry] = None
+    for (provider, key), entry in _OFFICIAL_DOCS_PRICING.items():
+        if provider != "anthropic" or key == model:
+            continue
+        if _ANTHROPIC_SNAPSHOT_SUFFIX.sub("", key) != model:
+            continue
+        if match is not None and _pricing_rates(match) != _pricing_rates(entry):
+            return None
+        match = entry
+    return match
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
@@ -382,7 +449,19 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
         return entry
     normalize = _MODEL_NORMALIZERS.get(route.provider)
     normalized = normalize(model) if normalize else model
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
+    if normalized != model:
+        entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+        if entry:
+            return entry
+    # A dated Anthropic snapshot id and its undated family alias are the same
+    # model at the same price; resolve whichever spelling the table carries
+    # (#101145). Checked after the normalized-name lookup above so dot
+    # notation (opus-4.7 -> opus-4-7) is folded in first.
+    if route.provider == "anthropic":
+        entry = _lookup_anthropic_snapshot_alias(normalized)
+        if entry:
+            return entry
+    return None
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:

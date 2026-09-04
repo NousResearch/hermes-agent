@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
+    _ANTHROPIC_SNAPSHOT_SUFFIX,
+    _OFFICIAL_DOCS_PRICING,
     CanonicalUsage,
+    PricingEntry,
     format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
@@ -909,3 +912,126 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_anthropic_dated_snapshot_resolves_to_undated_family_entry():
+    """A dated Anthropic snapshot id must price as its undated family entry.
+
+    The dated form is what the API echoes back and what gets persisted to the
+    session row, so it is the form that actually has to resolve. Before this
+    fix it missed ``_OFFICIAL_DOCS_PRICING`` entirely and the session booked
+    ``estimated_cost_usd = 0.0`` with no exception and no warning (#101145).
+    """
+    family = get_pricing_entry("claude-haiku-4-5", provider="anthropic")
+    assert family is not None
+
+    dated = get_pricing_entry("claude-haiku-4-5-20251001", provider="anthropic")
+    assert dated is not None
+    assert dated.input_cost_per_million == family.input_cost_per_million
+    assert dated.output_cost_per_million == family.output_cost_per_million
+    assert dated.cache_read_cost_per_million == family.cache_read_cost_per_million
+    assert dated.cache_write_cost_per_million == family.cache_write_cost_per_million
+
+
+def test_anthropic_undated_family_resolves_to_dated_snapshot_entry():
+    """The mirror direction: rows the table happens to key by the dated id
+    must also resolve when the caller passes the undated family alias.
+
+    Both spellings are accepted by the Anthropic API, so which one resolves
+    must not depend on which form a contributor happened to add.
+    """
+    snapshot = get_pricing_entry("claude-3-5-haiku-20241022", provider="anthropic")
+    assert snapshot is not None
+
+    family = get_pricing_entry("claude-3-5-haiku", provider="anthropic")
+    assert family is not None
+    assert family.input_cost_per_million == snapshot.input_cost_per_million
+    assert family.output_cost_per_million == snapshot.output_cost_per_million
+
+
+def test_every_anthropic_row_resolves_under_both_spellings():
+    """Drift guard: for every Anthropic row, the *other* spelling of its id
+    resolves to the same rates.
+
+    The table is inconsistent about which form it carries — some rows dated
+    (``claude-3-opus-20240229``), some undated (``claude-sonnet-5``) — and
+    this asserts that inconsistency can no longer be observed by a caller.
+    """
+    rows = [m for (p, m) in _OFFICIAL_DOCS_PRICING if p == "anthropic"]
+    assert rows, "expected Anthropic rows in the official-docs snapshot"
+
+    for model in rows:
+        stripped = _ANTHROPIC_SNAPSHOT_SUFFIX.sub("", model)
+        # Dated rows are probed by their family; undated rows by a synthetic
+        # snapshot id, which is the shape the API actually returns.
+        other = stripped if stripped != model else f"{model}-20250101"
+
+        ref = get_pricing_entry(model, provider="anthropic")
+        alt = get_pricing_entry(other, provider="anthropic")
+        assert ref is not None, model
+        assert alt is not None, f"{other} (alternate spelling of {model})"
+        assert alt.input_cost_per_million == ref.input_cost_per_million, other
+        assert alt.output_cost_per_million == ref.output_cost_per_million, other
+
+
+def test_anthropic_snapshot_alias_never_substitutes_a_different_model():
+    """The fallback resolves an id to *itself*, never to a neighbouring model.
+
+    Substituting a nearest-model card produces a plausible figure that is
+    wrong by a constant multiple, so an id whose counterpart is absent from
+    the table must still return ``None`` (#101068).
+    """
+    # Unknown models stay unknown in both spellings.
+    assert get_pricing_entry("claude-imaginary-9-9", provider="anthropic") is None
+    assert get_pricing_entry("claude-imaginary-9-9-20250101", provider="anthropic") is None
+
+    # A version suffix is not a date suffix: opus-4-5 must not collapse onto
+    # the opus-4 row, whose rates are 3x different.
+    opus_4 = get_pricing_entry("claude-opus-4", provider="anthropic")
+    opus_4_5 = get_pricing_entry("claude-opus-4-5", provider="anthropic")
+    assert opus_4 is not None and opus_4_5 is not None
+    assert opus_4.input_cost_per_million != opus_4_5.input_cost_per_million
+
+
+def test_anthropic_ambiguous_family_stays_unpriced(monkeypatch):
+    """An undated id covering several dated snapshots resolves only when they
+    bill identically; differing rates make it genuinely ambiguous."""
+    a = ("anthropic", "claude-testfam-1-20240101")
+    b = ("anthropic", "claude-testfam-1-20250202")
+    monkeypatch.setitem(
+        _OFFICIAL_DOCS_PRICING, a,
+        PricingEntry(input_cost_per_million=Decimal("1"), output_cost_per_million=Decimal("2")),
+    )
+    monkeypatch.setitem(
+        _OFFICIAL_DOCS_PRICING, b,
+        PricingEntry(input_cost_per_million=Decimal("9"), output_cost_per_million=Decimal("9")),
+    )
+    assert get_pricing_entry("claude-testfam-1", provider="anthropic") is None
+
+    # Same rates under both snapshots: unambiguous, so it resolves.
+    monkeypatch.setitem(
+        _OFFICIAL_DOCS_PRICING, b,
+        PricingEntry(input_cost_per_million=Decimal("1"), output_cost_per_million=Decimal("2")),
+    )
+    resolved = get_pricing_entry("claude-testfam-1", provider="anthropic")
+    assert resolved is not None
+    assert resolved.input_cost_per_million == Decimal("1")
+
+
+def test_anthropic_dated_snapshot_session_estimates_cost_not_zero():
+    """The user-visible symptom: a session pinned to a dated snapshot id
+    reported ``$0.00`` instead of its real spend (#101145)."""
+    usage = SimpleNamespace(
+        input_tokens=12000,
+        output_tokens=3000,
+        cache_read_input_tokens=40000,
+        cache_creation_input_tokens=5000,
+    )
+    canonical = normalize_usage(usage, provider="anthropic", api_mode="anthropic_messages")
+
+    result = estimate_usage_cost(
+        "claude-haiku-4-5-20251001", canonical, provider="anthropic"
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert result.amount_usd > Decimal("0")

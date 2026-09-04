@@ -3315,13 +3315,42 @@ def run_doctor(args):
                 from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
                 reset_honcho_client()
                 try:
-                    get_honcho_client(hcfg)
+                    # Constructing the SDK client performs no network I/O, so
+                    # a client-only check reported OK regardless of reachability
+                    # or credentials: against a self-hosted Honcho with a dead
+                    # base_url, the client still built and the previous "Honcho
+                    # connection failed" branch was unreachable for connectivity
+                    # problems (#86126). ``_ensure_workspace`` is the
+                    # authenticated get-or-create call the SDK runs before every
+                    # workspace-scoped operation, so exercising it here proves
+                    # both reachability AND credentials end to end.
+                    client = get_honcho_client(hcfg)
+                    client._ensure_workspace()
                     check_ok(
                         "Honcho connected",
                         f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}",
                     )
                 except Exception as _e:
-                    _fail_and_issue("Honcho connection failed", str(_e), f"Honcho unreachable: {_e}", issues)
+                    _status = getattr(_e, "status", 0)
+                    _code = getattr(_e, "code", "")
+                    if _status in (401, 403):
+                        _fail_and_issue(
+                            "Honcho connection failed",
+                            f"server reachable, but it rejected these credentials ({_status}): {_e}",
+                            f"Honcho unreachable: {_e}",
+                            issues,
+                        )
+                    elif _code in ("connection_error", "timeout"):
+                        _fail_and_issue(
+                            "Honcho connection failed",
+                            f"could not reach the Honcho server: {_e}",
+                            f"Honcho unreachable: {_e}",
+                            issues,
+                        )
+                    else:
+                        _fail_and_issue(
+                            "Honcho connection failed", str(_e), f"Honcho unreachable: {_e}", issues
+                        )
         except ImportError:
             _fail_and_issue(
                 "honcho-ai not installed",

@@ -6,6 +6,7 @@
 // fall back to English while new keys remain type-checked.
 
 import type { TipId } from '@/lib/tips/catalog'
+import type { CronReasoningEffortOption } from '@/types/hermes'
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
 
@@ -1884,6 +1885,8 @@ export interface Translations {
     deliverNeedsHomeChannel: string
     modelLabel: string
     modelDefault: string
+    reasoningLabel: string
+    reasoningLabels: Record<CronReasoningEffortOption, string>
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string

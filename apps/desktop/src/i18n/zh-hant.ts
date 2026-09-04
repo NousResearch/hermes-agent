@@ -1830,6 +1830,18 @@ export const zhHant = defineLocale({
     deliverNeedsHomeChannel: '請先設定主頻道',
     modelLabel: '模型',
     modelDefault: '預設（全域模型）',
+    reasoningLabel: '推理強度',
+    reasoningLabels: {
+      inherit: '繼承模型/全域設定',
+      none: '關閉',
+      minimal: '最小',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '超高',
+      max: '最大',
+      ultra: '極致'
+    },
     customScheduleLabel: '自訂排程',
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表達式，或類似「每小時」「工作日上午 9 點」的短語。',

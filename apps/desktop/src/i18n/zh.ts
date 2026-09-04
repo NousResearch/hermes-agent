@@ -2397,6 +2397,18 @@ export const zh: Translations = {
     deliverNeedsHomeChannel: '请先设置主频道',
     modelLabel: '模型',
     modelDefault: '默认（全局模型）',
+    reasoningLabel: '推理强度',
+    reasoningLabels: {
+      inherit: '继承模型/全局设置',
+      none: '关闭',
+      minimal: '最小',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '超高',
+      max: '最大',
+      ultra: '极致'
+    },
     customScheduleLabel: '自定义排程',
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表达式，或类似"每小时""工作日上午 9 点"的短语。',

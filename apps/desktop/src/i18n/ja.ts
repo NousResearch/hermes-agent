@@ -1905,6 +1905,18 @@ export const ja = defineLocale({
     deliverNeedsHomeChannel: '先にホームチャンネルを設定してください',
     modelLabel: 'モデル',
     modelDefault: 'デフォルト（グローバルモデル）',
+    reasoningLabel: '推論強度',
+    reasoningLabels: {
+      inherit: 'モデル/グローバル設定を継承',
+      none: 'オフ',
+      minimal: '最小',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '特高',
+      max: '最大',
+      ultra: 'ウルトラ'
+    },
     customScheduleLabel: 'カスタムスケジュール',
     customPlaceholder: '0 9 * * * または weekdays at 9am',
     customHint: 'Cron 式、または「every hour」「weekdays at 9am」のようなフレーズ。',

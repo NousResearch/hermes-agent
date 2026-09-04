@@ -7,12 +7,16 @@ flat/global fields, which win over defaults.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import hashlib
 import ipaddress
 import json
 import logging
 import os
+import threading as _threading
+import time
+import weakref
 # --- per-identity client cache ------------------------------------------- One slot per client identity,
 # replacing the single process-wide slot that pinned the first profile's workspace and bearer for every
 # later profile in multi-profile processes (#69123 multiplexed gateway, #74065 dashboard). The legacy names
@@ -22,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
+from agent.memory_provider import spawn_context_thread as _spawn_context_thread
 from agent.secret_scope import get_secret
 from hermes_cli.profiles import _get_default_hermes_home
 from hermes_constants import get_hermes_home
@@ -506,6 +511,62 @@ class HonchoClientConfig:
         return self.workspace_id
 
 
+# Threads the plugin spawned, keyed by the provider or manager that owns them: shutdown joins its own
+# threads with one budget and never waits on another agent's work in the same gateway process.
+_plugin_threads: "weakref.WeakKeyDictionary[Any, weakref.WeakSet]" = weakref.WeakKeyDictionary()
+_plugin_threads_lock = _threading.Lock()
+
+
+def spawn_context_thread(
+    target, *, name: str, daemon: bool = True, args: tuple = (), owner: Any = None,
+) -> "_threading.Thread":
+    """agent.memory_provider.spawn_context_thread plus an ``owner``: the thread is registered so
+    join_plugin_threads can wait on exactly the threads this provider or manager spawned."""
+    thread = _spawn_context_thread(target, name=name, daemon=daemon, args=args)
+    if owner is not None:
+        with _plugin_threads_lock:
+            _plugin_threads.setdefault(owner, weakref.WeakSet()).add(thread)
+    return thread
+
+
+def join_plugin_threads(owners, timeout: float) -> list[str]:
+    """Join every live thread spawned for ``owners`` within one shared ``timeout``. Returns the names
+    of the threads still running when the budget ran out."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    me = _threading.current_thread()
+    with _plugin_threads_lock:
+        threads = [t for owner in owners if owner is not None
+                   for t in list(_plugin_threads.get(owner, ())) if t.is_alive() and t is not me]
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    return [t.name for t in threads if t.is_alive()]
+
+
+def close_honcho_clients() -> None:
+    """Close the HTTP pool of every cached client and drop the slots. Process exit only: one client
+    serves every manager with the same identity, so a per-agent shutdown must never call this."""
+    with _client_slots_lock:
+        slots = list(_client_slots.values())
+        _client_slots.clear()
+    for slot in slots:
+        close = getattr(getattr(slot.peek(), "_http", None), "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
+
+
+_exit_close_registered = False
+
+
+def _register_exit_close() -> None:
+    global _exit_close_registered
+    with _client_slots_lock:
+        if _exit_close_registered:
+            return
+        _exit_close_registered = True
+    atexit.register(close_honcho_clients)
+
+
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """Get or create the Honcho client for this config's identity. Clients are cached PER
     IDENTITY (host, workspace, provenance paths, credential fingerprint, timeout) so
@@ -583,6 +644,7 @@ def _build_client(config: HonchoClientConfig) -> "Honcho":
         # strip a trailing version segment from any base_url to avoid "/v3/v3/...".
         import re
         kwargs["base_url"] = re.sub(r"/v\d+/*$", "", base_url).rstrip("/")
+    _register_exit_close()
     return Honcho(**kwargs)
 
 

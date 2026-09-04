@@ -360,6 +360,7 @@ Use `{{` and `}}` for literal braces.
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
+| `skip_markdown_strip` | `false` | When `true`, the input text is passed to the command verbatim (Markdown left intact). For providers that consume raw markup themselves, e.g. SSML or Markdown-aware engines; with the default `false`, Markdown formatting is stripped so it isn't read aloud. |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
 | `warm_command` / `release_command` | unset | Shell commands run when a surface toggles speech output on / when the last lease across surfaces is released — e.g. `curl -s localhost:5002/load?model={model}` to preload a local TTS server, and its `unload` counterpart. Best-effort and non-blocking: run in the background with the same `timeout`, `env_passthrough` and `{voice}` / `{model}` / `{speed}` placeholders as `command`; output is discarded and failures are only logged at debug. |
 

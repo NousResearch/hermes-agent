@@ -180,6 +180,66 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
+def _worker_completion_evidence(
+    task_id: str,
+    *,
+    run_started_at: Optional[int] = None,
+) -> tuple[bool, Optional[dict]]:
+    """Return whether code evidence is required and its trusted receipt.
+
+    The verification ledger is populated by terminal execution, not by the
+    worker's completion prose. Non-code workspaces report ``not_applicable``
+    and retain the existing completion path.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return False, None
+    # At this point we know HERMES_KANBAN_TASK == task_id, so this IS a
+    # dispatcher-owned worker call on its own task.  Missing or unparseable
+    # identity variables are NOT a signal that evidence is not applicable;
+    # they are a signal that the environment is malformed.  Falling back to
+    # (False, None) here would be a fail-open transition at exactly the
+    # boundary this gate is meant to harden.  Return (True, None) instead:
+    # "evidence required, but we cannot build a receipt" — which causes
+    # complete_task to reject the transition.
+    session_id = os.environ.get("HERMES_SESSION_ID")
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    run_id = _worker_run_id(task_id)
+    if not session_id or not workspace or run_id is None:
+        return True, None
+    try:
+        from agent.verification_evidence import verification_status
+
+        status = verification_status(session_id=session_id, cwd=workspace)
+    except Exception:
+        # A verifier read failure is uncertainty, not evidence of absence.
+        return True, None
+    if status.get("status") == "not_applicable":
+        return False, None
+    event = status.get("evidence")
+    if status.get("status") != "passed" or not isinstance(event, dict):
+        return True, None
+    created_at = event.get("created_at")
+    if run_started_at is not None:
+        try:
+            from datetime import datetime
+
+            event_time = datetime.fromisoformat(str(created_at)).timestamp()
+        except (TypeError, ValueError):
+            return True, None
+        if event_time < run_started_at:
+            return True, None
+    return True, {
+        "receipt_id": event.get("id"),
+        "source": f"verification_evidence:{event.get('kind', 'unknown')}",
+        "status": "passed",
+        "task_id": task_id,
+        "run_id": run_id,
+        "session_id": status.get("session_id") or session_id,
+        "root": status.get("root") or workspace,
+        "created_at": created_at,
+    }
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -779,12 +839,22 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and keep this task alive."
                 )
 
+            active_run = kb.latest_run(conn, tid)
+            evidence_required, completion_evidence = _worker_completion_evidence(
+                tid,
+                run_started_at=(
+                    active_run.started_at if active_run and active_run.status == "running"
+                    else None
+                ),
+            )
             try:
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    require_completion_evidence=evidence_required,
+                    completion_evidence=completion_evidence,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -812,6 +882,12 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"Retry kanban_complete with the same summary/metadata "
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
+                )
+            except kb.CompletionEvidenceError as evidence_err:
+                return tool_error(
+                    f"kanban_complete blocked: {evidence_err}. Your task is "
+                    "still in-flight. Run the repository's required verification "
+                    "after the latest edit, then retry kanban_complete."
                 )
             if not ok:
                 return tool_error(

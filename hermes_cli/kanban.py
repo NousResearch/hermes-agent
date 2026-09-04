@@ -1052,6 +1052,28 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_repair.add_argument("--json", action="store_true",
                           help="Emit the repair report as JSON")
 
+    # --- delegation-status ---
+    p_delegation_status = sub.add_parser(
+        "delegation-status",
+        help="Read a background delegation's durable state from state.db",
+        description=(
+            "Reads the async_delegations table in state.db directly, "
+            "bypassing any in-memory or LLM self-report. Use this to "
+            "mechanically verify what actually happened to a background "
+            "delegation, independently of what the child subagent claims.\n\n"
+            "Exit codes: 0=found, 1=not found, 2=error."
+        ),
+    )
+    p_delegation_status.add_argument(
+        "delegation_id",
+        metavar="<delegation-id>",
+        help="The delegation_id to look up",
+    )
+    p_delegation_status.add_argument(
+        "--json", action="store_true",
+        help="Emit the full row as JSON (default: human-readable summary)",
+    )
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -1189,6 +1211,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "delegation-status": _cmd_delegation_status,
         }
         handler = handlers.get(action)
         if not handler:
@@ -3385,6 +3408,69 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     )
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+    return 0
+
+
+def _cmd_delegation_status(args: argparse.Namespace) -> int:
+    """Read a background delegation's durable state from state.db.
+
+    Reads async_delegations directly, bypassing all LLM self-report
+    and in-memory state. Exit 0=found, 1=not found, 2=error.
+    """
+    try:
+        from tools.async_delegation import query_delegation_status
+    except ImportError as exc:
+        print(f"kanban delegation-status: cannot import async_delegation: {exc}",
+              file=sys.stderr)
+        return 2
+
+    delegation_id = args.delegation_id
+    use_json = getattr(args, "json", False)
+
+    try:
+        row = query_delegation_status(delegation_id)
+    except Exception as exc:
+        # The observer raises a typed read error. Keep this boundary defensive:
+        # import/schema/runtime failures are verifier errors, never "not found".
+        if use_json:
+            import json
+            print(json.dumps({
+                "found": False,
+                "delegation_id": delegation_id,
+                "error": str(exc),
+            }))
+        else:
+            print(f"delegation-status: cannot read state.db: {exc}", file=sys.stderr)
+        return 2
+    if row is None:
+        if use_json:
+            import json
+            print(json.dumps({"found": False, "delegation_id": delegation_id}))
+        else:
+            print(f"delegation-status: {delegation_id!r} not found in state.db",
+                  file=sys.stderr)
+        return 1
+
+    if use_json:
+        import json
+        print(json.dumps(row, default=str))
+    else:
+        state = row.get("state", "?")
+        completed = row.get("completed_at")
+        result = row.get("result") or {}
+        summary = result.get("summary") if isinstance(result, dict) else None
+        status_line = result.get("status") if isinstance(result, dict) else None
+        print(f"delegation_id : {delegation_id}")
+        print(f"state         : {state}")
+        if completed:
+            import datetime
+            ts = datetime.datetime.fromtimestamp(completed).isoformat()
+            print(f"completed_at  : {ts}")
+        if status_line:
+            print(f"result.status : {status_line}")
+        if summary:
+            first_line = str(summary).strip().splitlines()[0][:200]
+            print(f"result.summary: {first_line}")
     return 0
 
 

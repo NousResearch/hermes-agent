@@ -47,6 +47,10 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.delegation_status import (
+    DelegationStatusReadError,
+    query_delegation_status as _query_delegation_status,
+)
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -122,7 +126,24 @@ _monitor_stop = threading.Event()
 
 
 def _db_path():
+    if _db_path_override is not None:
+        from pathlib import Path
+        return Path(_db_path_override)
     return get_hermes_home() / "state.db"
+
+
+# Test-only override for the state.db path (set via _set_state_db_path_for_tests).
+_db_path_override: Optional[str] = None
+
+
+def _set_state_db_path_for_tests(path: Optional[str]) -> None:
+    """Test-only: override the state.db path used by durable reads.
+
+    Pass ``None`` to restore the default HERMES_HOME-based path.
+    Must be called before any query_delegation_status call in the test.
+    """
+    global _db_path_override
+    _db_path_override = path
 
 
 def _connect() -> sqlite3.Connection:
@@ -1443,6 +1464,11 @@ def _children_activity_from_token(token: Any, now: float) -> Optional[List]:
         else:
             out.append(None)
     return out
+
+
+def query_delegation_status(delegation_id: str) -> Optional[Dict[str, Any]]:
+    """Read one durable delegation via the bounded read-only observer."""
+    return _query_delegation_status(delegation_id, db_path=_db_path())
 
 
 def list_async_delegations() -> List[Dict[str, Any]]:

@@ -5360,6 +5360,18 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class CompletionEvidenceError(ValueError):
+    """Raised when a required independent completion receipt is invalid."""
+
+    def __init__(self, *, task_id: str, reason: str):
+        self.task_id = task_id
+        self.reason = reason
+        super().__init__(
+            f"completion blocked for task {task_id!r}: independent evidence "
+            f"is required ({reason})"
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5369,6 +5381,8 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    require_completion_evidence: bool = False,
+    completion_evidence: Optional[Mapping[str, Any]] = None,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
@@ -5402,6 +5416,12 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    When ``require_completion_evidence`` is true, ``completion_evidence``
+    must carry a passed terminal-verification receipt bound to this exact
+    ``task_id`` and ``expected_run_id``. Rejections are audited without
+    copying worker prose into the event. The worker tool enables this gate
+    for code workspaces and leaves non-code/manual completion compatible.
     """
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
@@ -5435,6 +5455,47 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # A worker's summary is a claim, never acceptance proof. Code-workspace
+    # callers can require a receipt captured by the terminal verification
+    # ledger. The trusted tool wrapper binds that receipt to this exact task
+    # and dispatcher run; stale evidence from an earlier retry fails closed.
+    verified_completion_evidence: Optional[dict[str, Any]] = None
+    if require_completion_evidence:
+        evidence = dict(completion_evidence or {})
+        if evidence.get("receipt_id") is None:
+            evidence_reason = "missing_receipt"
+        elif evidence.get("status") != "passed":
+            evidence_reason = "not_passed"
+        elif evidence.get("task_id") != task_id:
+            evidence_reason = "task_mismatch"
+        elif expected_run_id is None or evidence.get("run_id") != int(expected_run_id):
+            evidence_reason = "run_mismatch"
+        elif evidence.get("source", "").split(":", 1)[0] != "verification_evidence":
+            evidence_reason = "untrusted_source"
+        else:
+            evidence_reason = None
+        if evidence_reason is not None:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "completion_blocked_missing_evidence",
+                    {
+                        "reason": evidence_reason,
+                        "receipt_id": evidence.get("receipt_id"),
+                        "evidence_run_id": evidence.get("run_id"),
+                        "expected_run_id": expected_run_id,
+                    },
+                )
+            raise CompletionEvidenceError(task_id=task_id, reason=evidence_reason)
+        verified_completion_evidence = {
+            key: evidence.get(key)
+            for key in (
+                "receipt_id", "source", "status", "task_id", "run_id",
+                "session_id", "root", "created_at",
+            )
+        }
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
@@ -5539,6 +5600,8 @@ def complete_task(
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
+        if verified_completion_evidence is not None:
+            completed_payload["completion_evidence"] = verified_completion_evidence
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         # Carry artifact paths in the event payload so the gateway

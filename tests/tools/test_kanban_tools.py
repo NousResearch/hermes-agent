@@ -111,8 +111,21 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert tenant_ids == [c]
 
 
-def test_complete_happy_path(worker_env):
+def test_complete_happy_path(monkeypatch, worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    # Set up identity vars and mock verifier as not_applicable (no-code workspace).
+    with kb.connect() as conn:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-happy")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "not_applicable"},
+    )
+
     out = kt._handle_complete({
         "summary": "got the thing done",
         "metadata": {"files": 2},
@@ -121,23 +134,240 @@ def test_complete_happy_path(worker_env):
     assert d["ok"] is True
     assert d["task_id"] == worker_env
     # Verify via kernel
-    from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        # metadata is stamped with worker_session_id by _stamp_worker_session_metadata
+        assert run.metadata.get("files") == 2
     finally:
         conn.close()
 
 
-def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
+def test_worker_completion_evidence_is_bound_to_current_task_and_run(
+    monkeypatch, worker_env, tmp_path,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {
+            "status": "passed",
+            "root": str(tmp_path),
+            "session_id": "session-1",
+            "evidence": {
+                "id": 73,
+                "kind": "test",
+                "created_at": "2100-01-01T00:00:00+00:00",
+            },
+        },
+    )
+
+    required, evidence = kt._worker_completion_evidence(
+        worker_env, run_started_at=run_id,
+    )
+
+    assert required is True
+    assert evidence == {
+        "receipt_id": 73,
+        "source": "verification_evidence:test",
+        "status": "passed",
+        "task_id": worker_env,
+        "run_id": run_id,
+        "session_id": "session-1",
+        "root": str(tmp_path),
+        "created_at": "2100-01-01T00:00:00+00:00",
+    }
+
+
+def test_stale_worker_verification_requires_evidence_but_returns_no_receipt(
+    monkeypatch, worker_env, tmp_path,
+):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "stale", "evidence": {"id": 72}},
+    )
+
+    assert kt._worker_completion_evidence(worker_env) == (True, None)
+
+
+def test_receipt_from_before_current_run_is_rejected(monkeypatch, worker_env, tmp_path):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {
+            "status": "passed",
+            "evidence": {
+                "id": 72,
+                "kind": "test",
+                "created_at": "2000-01-01T00:00:00+00:00",
+            },
+        },
+    )
+
+    assert kt._worker_completion_evidence(
+        worker_env, run_started_at=2_000_000_000,
+    ) == (True, None)
+
+
+# ---------------------------------------------------------------------------
+# Regression: fail-open dispatcher identity (#102390, third review blocker)
+#
+# When HERMES_KANBAN_TASK matches the task (so we know this is a
+# dispatcher-owned worker call) but any of HERMES_SESSION_ID,
+# HERMES_KANBAN_WORKSPACE, or HERMES_KANBAN_RUN_ID is missing or
+# unparseable, _worker_completion_evidence must return (True, None) --
+# "evidence required, no receipt" -- NOT (False, None).  Returning
+# (False, None) is a fail-open transition that bypasses the completion
+# evidence gate entirely.
+#
+# Each test below also drives _handle_complete to confirm the task
+# cannot actually transition to done through the missing-identity path.
+# ---------------------------------------------------------------------------
+
+def test_missing_session_id_requires_evidence_no_receipt(
+    monkeypatch, worker_env, tmp_path,
+):
+    """Missing HERMES_SESSION_ID must NOT silently fall back to the
+    legacy (no-evidence-required) completion path."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    # Provide workspace + run_id but omit SESSION_ID
+    with kb.connect() as conn:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+
+    required, receipt = kt._worker_completion_evidence(worker_env)
+    assert required is True, (
+        "Missing HERMES_SESSION_ID must set require=True (not silently "
+        "fall open to require=False)"
+    )
+    assert receipt is None
+
+    # End-to-end: kanban_complete must NOT transition the task to done.
+    out = json.loads(kt._handle_complete({"summary": "should be blocked"}))
+    assert out.get("error"), (
+        f"kanban_complete must be rejected when HERMES_SESSION_ID is "
+        f"missing, got: {out}"
+    )
+    with kb.connect() as conn:
+        assert kb.get_task(conn, worker_env).status != "done", (
+            "Task must NOT be done after kanban_complete with missing session id"
+        )
+
+
+def test_missing_workspace_requires_evidence_no_receipt(
+    monkeypatch, worker_env, tmp_path,
+):
+    """Missing HERMES_KANBAN_WORKSPACE must NOT silently fall back to the
+    legacy (no-evidence-required) completion path."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    # Provide session_id + run_id but omit WORKSPACE
+    with kb.connect() as conn:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-missing-workspace")
+    monkeypatch.delenv("HERMES_KANBAN_WORKSPACE", raising=False)
+
+    required, receipt = kt._worker_completion_evidence(worker_env)
+    assert required is True, (
+        "Missing HERMES_KANBAN_WORKSPACE must set require=True (not "
+        "silently fall open to require=False)"
+    )
+    assert receipt is None
+
+    # End-to-end: kanban_complete must NOT transition the task to done.
+    out = json.loads(kt._handle_complete({"summary": "should be blocked"}))
+    assert out.get("error"), (
+        f"kanban_complete must be rejected when HERMES_KANBAN_WORKSPACE is "
+        f"missing, got: {out}"
+    )
+    with kb.connect() as conn:
+        assert kb.get_task(conn, worker_env).status != "done", (
+            "Task must NOT be done after kanban_complete with missing workspace"
+        )
+
+
+def test_missing_invalid_run_id_requires_evidence_no_receipt(
+    monkeypatch, worker_env, tmp_path,
+):
+    """Missing or non-integer HERMES_KANBAN_RUN_ID must NOT silently fall
+    back to the legacy (no-evidence-required) completion path."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-bad-run-id")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+
+    # Case 1: RUN_ID entirely absent
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    required, receipt = kt._worker_completion_evidence(worker_env)
+    assert required is True, (
+        "Absent HERMES_KANBAN_RUN_ID must set require=True (not silently "
+        "fall open to require=False)"
+    )
+    assert receipt is None
+
+    # Case 2: RUN_ID present but non-integer (unparseable)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "not-an-integer")
+    required, receipt = kt._worker_completion_evidence(worker_env)
+    assert required is True, (
+        "Unparseable HERMES_KANBAN_RUN_ID must set require=True (not "
+        "silently fall open to require=False)"
+    )
+    assert receipt is None
+
+    # End-to-end: kanban_complete must NOT transition the task to done
+    # (test with the invalid run_id still set so the env is partial).
+    out = json.loads(kt._handle_complete({"summary": "should be blocked"}))
+    assert out.get("error"), (
+        f"kanban_complete must be rejected when HERMES_KANBAN_RUN_ID is "
+        f"missing/invalid, got: {out}"
+    )
+    with kb.connect() as conn:
+        assert kb.get_task(conn, worker_env).status != "done", (
+            "Task must NOT be done after kanban_complete with missing/invalid run id"
+        )
+
+
+def test_complete_retry_with_empty_created_cards_succeeds(monkeypatch, worker_env, tmp_path):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the
     task. Regression for #22923."""
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    # Set up identity vars and mock verifier as not_applicable (no-code workspace).
+    with kb.connect() as conn:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-retry")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "not_applicable"},
+    )
 
     # Hit the gate first.
     rejected = json.loads(kt._handle_complete({
@@ -487,11 +717,23 @@ def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_worker_lifecycle_through_tools(worker_env):
+def test_worker_lifecycle_through_tools(monkeypatch, worker_env, tmp_path):
     """Drive the full claim -> heartbeat -> comment -> complete lifecycle
     exclusively through the tools, then verify the DB state matches what
     the dispatcher/notifier expect."""
+    from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    # Set up identity vars and mock verifier as not_applicable (no-code workspace).
+    with kb.connect() as conn:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-lifecycle")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "not_applicable"},
+    )
 
     # 1. show — worker orientation
     show = json.loads(kt._handle_show({}))
@@ -530,7 +772,8 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
+        # metadata is stamped with worker_session_id by _stamp_worker_session_metadata
+        assert run.metadata.get("child_task") == child_out["task_id"]
         # Child is todo (parent just finished, but recompute_ready may
         # have promoted it — complete_task runs recompute internally).
         child = kb.get_task(conn, child_out["task_id"])

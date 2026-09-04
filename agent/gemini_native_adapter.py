@@ -923,11 +923,18 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+            # Slot key must be STABLE for the life of one call.  Gemini
+            # re-delivers functionCall parts when the turn's thought
+            # signatures are attached, so a signature entering the key
+            # mid-stream spawns a phantom second slot that re-emits the
+            # full args — the consumer appends them and the arguments
+            # arrive glued as "{...}{...}" (#102787).  Identity is
+            # (part_index, name); thought_signature stays out of the key
+            # and still rides to the consumer via extra_content below.
             call_key = json.dumps(
                 {
                     "part_index": part_index,
                     "name": name,
-                    "thought_signature": thought_signature,
                 },
                 sort_keys=True,
             )

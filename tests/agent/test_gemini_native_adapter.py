@@ -675,3 +675,68 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+def test_stream_signature_attach_keeps_parallel_call_slots():
+    """#102787: a thoughtSignature arriving on an already-open functionCall
+    part must NOT create a new slot.
+
+    Gemini re-delivers functionCall parts once the turn's thought signatures
+    are attached. The slot key previously included the signature, so the
+    signatureless chunk and the signed chunk mapped to two different slots;
+    the new slot re-emitted the FULL args (prefix dedup is per-slot), and
+    the consumer appended them to the original call ->
+    '{"a":1}{"b":2}' glued into one arguments string, which the sanitizer
+    then collapses to '{}' and the tool runs with empty args.
+    """
+    from agent.gemini_native_adapter import translate_stream_event
+
+    def event(parts, finish=None):
+        cand = {"content": {"parts": parts}}
+        if finish:
+            cand["finishReason"] = finish
+        return {"candidates": [cand]}
+
+    def fcall(name, args, sig=None, fid=None):
+        fcall_obj = {"name": name, "args": args}
+        if fid:
+            fcall_obj["id"] = fid
+        part = {"functionCall": fcall_obj}
+        if sig is not None:
+            part["thoughtSignature"] = sig
+        return part
+
+    slots: dict = {}
+    by_id: dict = {}
+    order: list = []
+
+    def feed(ev):
+        for chunk in translate_stream_event(event(ev) if isinstance(ev, list) else ev,
+                                            "gemini-flash-latest", slots):
+            delta = chunk.choices[0].delta
+            if delta and delta.tool_calls:
+                for tcd in delta.tool_calls:
+                    entry = by_id.setdefault(tcd.id, {"name": "", "args": ""})
+                    if tcd.id not in order:
+                        order.append(tcd.id)
+                    if tcd.function.name:
+                        entry["name"] = tcd.function.name
+                    entry["args"] += tcd.function.arguments or ""
+
+    # Turn 1: two parallel calls, no signatures yet.
+    feed([fcall("read_file", {"path": "a.json"}, fid="fc_0"),
+          fcall("read_file", {"path": "b.json"}, fid="fc_1")])
+    # Turn 2: SAME parts re-delivered with signatures attached (the API
+    # stamps them at turn close).
+    feed(event([fcall("read_file", {"path": "a.json"}, sig="SIG_A", fid="fc_0"),
+                fcall("read_file", {"path": "b.json"}, sig="SIG_B", fid="fc_1")],
+               finish="STOP"))
+
+    # Exactly two logical calls — no phantom slot when the signature lands.
+    assert len(order) == 2, f"signature re-delivery spawned extra calls: {order}"
+    # Each accumulated arguments string must parse on its own.
+    for cid, entry in by_id.items():
+        json.loads(entry["args"])
+    assert by_id[order[0]]["args"] == '{"path": "a.json"}'
+    assert by_id[order[1]]["args"] == '{"path": "b.json"}'
+    assert not any("}{" in e["args"] for e in by_id.values())

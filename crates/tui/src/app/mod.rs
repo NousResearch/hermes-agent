@@ -34,7 +34,9 @@ use commands::*;
 mod keys;
 pub(crate) use keys::*;
 
-pub(crate) const PLACEHOLDER: &str = "Message Hermes…";
+pub(crate) fn idle_placeholder() -> &'static str {
+    crate::ui::copy::idle_placeholder()
+}
 pub(crate) const TITLE: &str = " ⚕ ";
 const ANIM_TICK_MS: u64 = 50;
 const IDLE_TICK_MS: u64 = 500;
@@ -129,7 +131,7 @@ pub async fn run(
                                 &mut textarea,
                                 true,
                                 false,
-                                "enter queues the next message",
+                                crate::ui::copy::BUSY_PLACEHOLDER,
                             );
                         }
                     }
@@ -339,7 +341,7 @@ pub(crate) enum LoopControl {
 
 pub(crate) fn styled_textarea(streaming: bool) -> TextArea<'static> {
     let mut textarea = TextArea::default();
-    textarea.set_placeholder_text(PLACEHOLDER);
+    textarea.set_placeholder_text(idle_placeholder());
     textarea.set_style(
         Style::default()
             .fg(Theme::text_primary())
@@ -353,9 +355,9 @@ pub(crate) fn styled_textarea(streaming: bool) -> TextArea<'static> {
         streaming,
         false,
         if streaming {
-            "type to steer this turn"
+            crate::ui::copy::BUSY_PLACEHOLDER
         } else {
-            PLACEHOLDER
+            idle_placeholder()
         },
     );
     set_cursor_blink(&mut textarea, true);
@@ -370,15 +372,11 @@ pub(crate) fn composer_placeholder(s: &AppState) -> String {
     } else if s.pending_secret.is_some() {
         "enter submit · esc cancel".into()
     } else if s.is_generating {
-        match s.busy_mode {
-            BusyMode::Queue => "enter queues the next message".into(),
-            BusyMode::Steer => "type to steer this turn".into(),
-            BusyMode::Interrupt => "enter interrupts and sends".into(),
-        }
+        crate::ui::copy::BUSY_PLACEHOLDER.into()
     } else if !s.prompt_queue.is_empty() {
         format!("{} queued · enter send now", s.prompt_queue.len())
     } else {
-        PLACEHOLDER.into()
+        idle_placeholder().into()
     }
 }
 
@@ -1095,11 +1093,11 @@ mod tests {
         let mut s = AppState::new();
         s.is_generating = true;
         s.busy_mode = BusyMode::Queue;
-        assert_eq!(composer_placeholder(&s), "enter queues the next message");
+        assert_eq!(composer_placeholder(&s), crate::ui::copy::BUSY_PLACEHOLDER);
         s.busy_mode = BusyMode::Steer;
-        assert_eq!(composer_placeholder(&s), "type to steer this turn");
+        assert_eq!(composer_placeholder(&s), crate::ui::copy::BUSY_PLACEHOLDER);
         s.busy_mode = BusyMode::Interrupt;
-        assert_eq!(composer_placeholder(&s), "enter interrupts and sends");
+        assert_eq!(composer_placeholder(&s), crate::ui::copy::BUSY_PLACEHOLDER);
     }
 
     #[test]

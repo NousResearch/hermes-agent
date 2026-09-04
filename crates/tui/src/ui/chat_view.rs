@@ -547,7 +547,6 @@ fn push_reasoning(
 ) {
     let time = clock(msg.timestamp);
     let beats = thought_beats(&msg.content);
-    let n = beats.len();
     let expanded = state.thought_expanded(&msg.id);
     let header_style = if msg.is_streaming && !expanded {
         Style::default().fg(Theme::brand_gold())
@@ -558,22 +557,14 @@ fn push_reasoning(
     } else {
         Style::default().fg(Theme::text_muted())
     };
-    let mut header = if msg.is_streaming && !expanded {
-        format!("  {spin}  Thinking{dots}")
+    let header = if msg.is_streaming && !expanded {
+        format!("  {spin}  Thinking")
     } else if expanded {
-        format!("  ▾  thought · {n}")
+        "  ▾ Thinking".to_string()
     } else {
-        format!("  ▸  thought · {n}")
+        "  ▸ Thinking".to_string()
     };
-    if !expanded && !msg.is_streaming {
-        if let Some(last) = beats.last() {
-            let room = col_width
-                .saturating_sub(header.width() + 1 + time.width() + super::rhythm::GUTTER)
-                .max(8);
-            header.push_str("   ");
-            header.push_str(&crate::tips::ellipsize(last, room));
-        }
-    }
+    let _ = dots;
     lines.push(timed_line(
         vec![Span::styled(header, header_style)],
         &time,
@@ -987,7 +978,7 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(blob.contains("thought"));
+        assert!(blob.contains("Thinking"));
         assert!(blob.contains('▸'));
         assert!(!blob.contains("Planning steps"));
         assert!(!blob.contains("**"));
@@ -1032,7 +1023,7 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(blob.contains("Run cargo test"));
+        assert!(blob.contains("Terminal(\"cargo test"));
         assert!(!blob.contains("108 passed"));
         assert_eq!(cache.blocks[0].click_id.as_deref(), Some("term"));
         let mut live = messages.clone();

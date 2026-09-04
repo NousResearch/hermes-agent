@@ -1,5 +1,4 @@
 use chrono::{DateTime, Local};
-use unicode_width::UnicodeWidthStr;
 
 use crate::state::{ChatMessage, MessageRole, TaskItem, TaskStatus};
 
@@ -90,92 +89,20 @@ pub fn cluster_label(reads: usize, searches: usize) -> String {
 pub fn tool_headline(name: &str, content: &str, status: &str) -> String {
     let running = is_running(status);
     let failed = status.starts_with("failed");
-    let n = name.to_ascii_lowercase();
-    let mut line = match tool_kind(name) {
-        ToolKind::Edit => {
-            let file = first_path(content).unwrap_or_else(|| short_name(name));
-            let (plus, minus) = diff_stats(content);
-            if plus > 0 || minus > 0 {
-                format!("Edit {file} +{plus}/-{minus}")
-            } else {
-                format!("Edit {file}")
-            }
-        }
-        ToolKind::Run => {
-            let cmd = run_command(content);
-            if cmd.is_empty() {
-                format!("Run {}", short_name(name))
-            } else {
-                format!("Run {}", crate::tips::ellipsize(&cmd, 42))
-            }
-        }
-        ToolKind::Read => {
-            let file = first_path(content).unwrap_or_else(|| short_name(name));
-            format!("Read {file}")
-        }
-        ToolKind::Search => {
-            let q = json_str(content, &["pattern", "query", "glob", "q"])
-                .or_else(|| Some(one_line(content, 40)).filter(|s| !s.is_empty()));
-            match q {
-                Some(q) => format!("Searched {}", crate::tips::ellipsize(&q, 40)),
-                None => format!("Search {}", short_name(name)),
-            }
-        }
-        ToolKind::Todo => {
-            let n = todos_from_content(content).len();
-            if n == 0 {
-                "Todo".into()
-            } else {
-                format!("Todo  {n}")
-            }
-        }
-        ToolKind::Other => other_headline(&n, content),
-    };
+    let preview = super::copy::tool_preview(name, content);
+    let mut line = super::copy::format_tool_call(name, &preview);
     if let Some(dur) = status_duration(status) {
-        line.push_str("  ·  ");
+        line.push_str(" (");
         line.push_str(dur);
+        line.push(')');
+    }
+    if !running {
+        line.push(' ');
+        line.push(if failed { '✗' } else { '✓' });
     }
     line.chars()
-        .take(if running || failed { 72 } else { 80 })
+        .take(if running || failed { 72 } else { 88 })
         .collect()
-}
-
-fn other_headline(name: &str, content: &str) -> String {
-    if name.contains("skill") {
-        let skill = json_str(content, &["name", "skill", "path", "file"])
-            .map(|p| basename(&p))
-            .unwrap_or_else(|| short_name(name));
-        return format!("Skill {skill}");
-    }
-    if name.contains("web")
-        || name.contains("extract")
-        || name.contains("fetch")
-        || name.contains("browser")
-    {
-        let verb = if name.contains("extract") {
-            "Extract"
-        } else if name.contains("search") {
-            "Search"
-        } else if name.contains("browser") {
-            "Browse"
-        } else {
-            "Fetch"
-        };
-        if let Some(url) = json_str(content, &["url", "uri", "href", "link"]) {
-            return format!("{verb} {}", crate::tips::ellipsize(&hostish(&url), 42));
-        }
-        return verb.to_string();
-    }
-    let extra = json_str(
-        content,
-        &["path", "file", "query", "pattern", "url", "target", "name"],
-    )
-    .map(|s| crate::tips::ellipsize(&basename_or(&s), 40))
-    .or_else(|| Some(one_line(content, 40)).filter(|s| !s.is_empty()));
-    match extra {
-        Some(extra) => format!("{}  {extra}", short_name(name)),
-        None => short_name(name),
-    }
 }
 
 fn status_duration(status: &str) -> Option<&str> {
@@ -285,23 +212,6 @@ fn clean_token(tok: &str) -> String {
         .trim_end_matches(['"', ',', '}'])
         .trim()
         .to_string()
-}
-
-fn hostish(url: &str) -> String {
-    let rest = url
-        .split("://")
-        .nth(1)
-        .unwrap_or(url)
-        .trim_start_matches("www.");
-    rest.split('/').next().unwrap_or(url).to_string()
-}
-
-fn basename_or(s: &str) -> String {
-    if looks_like_path(s) || s.contains("://") {
-        basename(s)
-    } else {
-        s.to_string()
-    }
 }
 
 pub fn edit_patch(content: &str, output: &str) -> String {
@@ -442,10 +352,6 @@ fn basename(path: &str) -> String {
         .unwrap_or(path)
         .trim()
         .to_string()
-}
-
-fn short_name(name: &str) -> String {
-    name.rsplit(['/', ':']).next().unwrap_or(name).to_string()
 }
 
 pub fn todos_from_content(content: &str) -> Vec<TaskItem> {
@@ -707,25 +613,6 @@ pub fn run_output_style(line: &str) -> ratatui::style::Color {
     }
 }
 
-fn one_line(s: &str, max: usize) -> String {
-    let t = s.lines().next().unwrap_or("").trim();
-    if t.starts_with('{') || t.starts_with('[') {
-        return String::new();
-    }
-    if t.width() <= max {
-        return t.to_string();
-    }
-    let mut out = String::new();
-    for c in t.chars() {
-        if out.width() + 1 >= max {
-            break;
-        }
-        out.push(c);
-    }
-    out.push('…');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,7 +661,7 @@ mod tests {
         assert_eq!(tool_kind("skill_view"), ToolKind::Other);
         assert_eq!(
             tool_headline("skill_view", r#"{"path":"docs/SKILL.md"}"#, "completed"),
-            "Skill SKILL.md"
+            "Skill View(\"SKILL.md\") ✓"
         );
         assert_eq!(
             first_path(r#"{"path":"/tmp/docs/SKILL.md""#).as_deref(),
@@ -786,7 +673,7 @@ mod tests {
                 r#"{"url":"https://www.example.com/x"}"#,
                 "completed · 1.2s"
             ),
-            "Extract example.com  ·  1.2s"
+            "Web Extract(\"https://www.example.com/x\") (1.2s) ✓"
         );
     }
 
@@ -833,7 +720,7 @@ mod tests {
             "src/ui/queue.rs\n+foo\n+bar\n-old",
             "completed",
         );
-        assert_eq!(line, "Edit queue.rs +2/-1");
+        assert_eq!(line, "Search Replace(\"queue.rs\") ✓");
         let patch = edit_patch(
             r#"{"path":"src/ui/footer.rs","old_string":"a","new_string":"b"}"#,
             "",
@@ -860,7 +747,10 @@ mod tests {
         assert_eq!(todos.len(), 2);
         assert_eq!(todos[0].title, "Inspect repository");
         assert_eq!(todos[0].status, TaskStatus::InProgress);
-        assert_eq!(tool_headline("todo_write", raw, "completed"), "Todo  2");
+        assert_eq!(
+            tool_headline("todo_write", raw, "completed"),
+            "Todo Write ✓"
+        );
         let nested = r#"{"todos":[{"content":"Inspect repository","status":"in_progress"},{"content":"Ship","status":"pending"}]}"#;
         let todos = todos_from_content(nested);
         assert_eq!(todos.len(), 2);

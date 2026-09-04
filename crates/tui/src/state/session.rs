@@ -163,27 +163,16 @@ impl AppState {
         format!("{}…", self.live_status())
     }
 
-    /// Claude-style wait copy: Thinking / Reading / Running / Writing / …
+    /// Ink FaceTicker copy: rotating wait verb, or `compacting`.
     pub fn live_status(&self) -> String {
         if self.metrics.is_compacting {
-            return "Compacting".into();
+            return "compacting".into();
         }
         if self.pending_approval.is_some() {
             return "Waiting for approval".into();
         }
         if self.pending_secret.is_some() || self.pending_clarify.is_some() {
             return "Waiting for input".into();
-        }
-        if let Some(msg) = self.last_running_tool() {
-            return tool_live_status(msg);
-        }
-        if self
-            .messages
-            .iter()
-            .rev()
-            .any(|m| m.role == MessageRole::Assistant && m.is_streaming)
-        {
-            return "Writing".into();
         }
         wait_status_label(&self.metrics.activity)
     }

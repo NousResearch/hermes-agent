@@ -3,6 +3,7 @@ pub mod brand;
 pub mod chat_view;
 pub mod complete;
 pub mod context;
+pub mod copy;
 pub mod diff;
 pub mod dock;
 pub mod files;

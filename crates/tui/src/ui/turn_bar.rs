@@ -132,11 +132,12 @@ fn render_compact(frame: &mut Frame, area: Rect, state: &AppState, frame_count: 
 fn render_status(frame: &mut Frame, area: Rect, state: &AppState, frame_count: u64) {
     let spin = super::motion::spinner_for(state.indicator, frame_count);
     let elapsed = state.elapsed_secs();
-    let label = format!(
-        "{}{}",
-        turn_label(state).trim_end_matches('.'),
-        super::rhythm::ellipsis(frame_count)
-    );
+    let raw = turn_label(state);
+    let label = if raw.ends_with('…') || raw.ends_with("...") {
+        raw
+    } else {
+        format!("{raw}…")
+    };
     let width = area.width as usize;
     let tokens = token_chip(state);
     let right = if tokens.is_empty() {
@@ -304,11 +305,11 @@ pub fn fmt_duration(secs: f64) -> String {
     } else if secs < 3600.0 {
         let m = secs as u64 / 60;
         let s = secs as u64 % 60;
-        format!("{m}m{s:02}s")
+        format!("{m}m {s}s")
     } else {
         let h = secs as u64 / 3600;
         let m = (secs as u64 % 3600) / 60;
-        format!("{h}h{m:02}m")
+        format!("{h}h {m}m")
     }
 }
 
@@ -354,9 +355,9 @@ mod tests {
     fn duration_formats() {
         assert_eq!(fmt_duration(0.3), "0.3s");
         assert_eq!(fmt_duration(12.0), "12s");
-        assert_eq!(fmt_duration(386.0), "6m26s");
-        assert_eq!(fmt_duration(503.0), "8m23s");
-        assert_eq!(fmt_duration(3600.0 * 23.0 + 54.0 * 60.0), "23h54m");
+        assert_eq!(fmt_duration(386.0), "6m 26s");
+        assert_eq!(fmt_duration(503.0), "8m 23s");
+        assert_eq!(fmt_duration(3600.0 * 23.0 + 54.0 * 60.0), "23h 54m");
     }
 
     #[test]
@@ -364,7 +365,7 @@ mod tests {
         let mut s = AppState::new();
         s.is_generating = true;
         s.metrics.activity = "thinking".into();
-        assert_eq!(turn_label(&s), "Thinking");
+        assert_eq!(turn_label(&s), "thinking");
         s.messages.push(crate::state::ChatMessage {
             id: "t".into(),
             role: crate::state::MessageRole::Tool {
@@ -377,7 +378,7 @@ mod tests {
             timestamp: chrono::Local::now(),
             is_streaming: false,
         });
-        assert_eq!(turn_label(&s), "Running cargo test");
+        assert_eq!(turn_label(&s), "thinking");
         s.messages.clear();
         s.messages.push(crate::state::ChatMessage {
             id: "a".into(),
@@ -387,7 +388,7 @@ mod tests {
             timestamp: chrono::Local::now(),
             is_streaming: true,
         });
-        assert_eq!(turn_label(&s), "Writing");
+        assert_eq!(turn_label(&s), "thinking");
     }
 
     #[test]
@@ -418,15 +419,15 @@ mod tests {
         let mut s = AppState::new();
         s.is_generating = true;
         s.metrics.activity = "mulling".into();
-        assert_eq!(turn_label(&s), "Mulling");
+        assert_eq!(turn_label(&s), "mulling");
         assert_eq!(s.turn_detail(), None);
         assert_eq!(TurnBar::height(&s), 1);
         s.metrics.activity = "thinking".into();
-        assert_eq!(turn_label(&s), "Thinking");
+        assert_eq!(turn_label(&s), "thinking");
         assert_eq!(s.turn_detail(), None);
         assert_eq!(TurnBar::height(&s), 1);
         s.metrics.activity = "contemplating".into();
-        assert_eq!(turn_label(&s), "Contemplating");
+        assert_eq!(turn_label(&s), "contemplating");
         assert_eq!(s.turn_detail(), None);
     }
 

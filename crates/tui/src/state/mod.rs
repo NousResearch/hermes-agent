@@ -807,20 +807,12 @@ pub fn is_wait_activity(act: &str) -> bool {
     wait_activity_stem(act).is_some()
 }
 
-/// Title-case wait verb for the turn bar (`mulling` → `Mulling`).
+/// Ink FaceTicker verb (`mulling`, `thinking`, `compacting`). Lowercase.
 pub fn wait_status_label(act: &str) -> String {
     match wait_activity_stem(act) {
-        Some("writing") => "Writing".into(),
-        Some(verb) => title_case_word(verb),
-        None => "Thinking".into(),
-    }
-}
-
-fn title_case_word(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => "Thinking".into(),
+        Some("writing") => "writing".into(),
+        Some(verb) => verb.to_string(),
+        None => "thinking".into(),
     }
 }
 
@@ -1149,13 +1141,13 @@ mod tests {
             is_streaming: false,
         });
         let busy = s.tab_title();
-        assert!(busy.starts_with("Reading app.rs…"), "{busy}");
+        assert!(busy.starts_with("thinking…"), "{busy}");
         assert!(busy.contains("ship the tui"));
         assert!(busy.ends_with("hermes"));
 
         s.messages.clear();
         let think = s.tab_title();
-        assert!(think.starts_with("Thinking…"), "{think}");
+        assert!(think.starts_with("thinking…"), "{think}");
 
         s.pending_approval = Some(ApprovalRequest {
             description: "run".into(),
@@ -1219,8 +1211,8 @@ mod tests {
         assert!(is_wait_activity("mulling"));
         assert!(is_wait_activity("Thinking..."));
         assert!(!is_wait_activity("◆ Security Advisories"));
-        assert_eq!(wait_status_label("mulling"), "Mulling");
-        assert_eq!(wait_status_label("thinking"), "Thinking");
+        assert_eq!(wait_status_label("mulling"), "mulling");
+        assert_eq!(wait_status_label("thinking"), "thinking");
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { ImageLightbox } from '@/components/chat/zoomable-image'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
@@ -231,30 +232,31 @@ function GalleryTile({
   title: string
 }) {
   return (
-    <button
-      className={cn('relative block size-full cursor-zoom-in overflow-hidden bg-muted/55', className)}
-      onClick={onOpen}
-      title={title}
-      type="button"
-    >
-      <img
-        alt={address}
-        className="size-full object-cover transition-opacity hover:opacity-90"
-        loading="lazy"
-        onError={onError}
-        referrerPolicy="no-referrer"
-        src={src}
-      />
-      {more > 0 && (
-        <span
-          className={cn(
-            TEXT_CLASS,
-            'absolute inset-0 grid place-items-center bg-background/55 font-medium tabular-nums text-foreground backdrop-blur-[2px]'
-          )}
-        >
-          +{more}
-        </span>
-      )}
-    </button>
+    <Tip label={title}>
+      <button
+        className={cn('relative block size-full cursor-zoom-in overflow-hidden bg-muted/55', className)}
+        onClick={onOpen}
+        type="button"
+      >
+        <img
+          alt={address}
+          className="size-full object-cover transition-opacity hover:opacity-90"
+          loading="lazy"
+          onError={onError}
+          referrerPolicy="no-referrer"
+          src={src}
+        />
+        {more > 0 && (
+          <span
+            className={cn(
+              TEXT_CLASS,
+              'absolute inset-0 grid place-items-center bg-background/55 font-medium tabular-nums text-foreground backdrop-blur-[2px]'
+            )}
+          >
+            +{more}
+          </span>
+        )}
+      </button>
+    </Tip>
   )
 }

@@ -177,6 +177,47 @@ def _enforce_worker_task_ownership(tid: str) -> None:
             f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
 
 
+def _enforce_claim_run_identity(kb: Any, conn: Any, tid: str) -> None:
+    """Claim-scoped calls need run identity, not just profile identity.
+
+    A full agent context that carries NO dispatcher run env (no
+    ``HERMES_KANBAN_TASK``/``HERMES_KANBAN_RUN_ID``) is not an orchestrator
+    when it targets a task that is currently claimed by a live run: profile
+    identity alone must never authorize terminating someone else's claim.
+    Incident class: a bot-mode self-DM spawned a second full agent context
+    of the same profile with no run record; that fork passed the ownership
+    guard above (it looks like an "orchestrator"), fell through the
+    ``expected_run_id=None`` CAS as unconditional, and terminated the LIVE
+    claimant's run mid-flight.
+
+    Rules:
+      * caller scoped to the same task (worker on its own task) — allowed;
+        the DB-layer ``expected_run_id`` CAS stays the exact identity check.
+      * task has no active ``current_run_id`` — nothing to protect.
+      * caller has no run identity for this task while a run IS active —
+        refused: claim-scoped lifecycle tools may not terminate a claim they
+        hold no run record for. kanban_comment remains the report channel.
+      * board/probe failure — fail-open (return): the guard must never strand
+        a live worker on an infra error (same rule as the judge gate).
+    """
+    if _worker_run_id(tid) is not None:
+        return  # caller holds its own run identity for this task
+    try:
+        active_run_id = kb._current_run_id(conn, tid)
+    except Exception:
+        return  # fail-open: never strand a live worker on a probe error
+    if not active_run_id:
+        return  # nothing claimed — orchestrator routing stays legal
+    raise _Reject(
+        f"{tid} is currently claimed by run #{active_run_id}, and this session "
+        f"holds no run identity for it. Claim-scoped lifecycle tools "
+        f"(kanban_complete/kanban_block/kanban_request_review/"
+        f"kanban_request_changes) refuse to terminate another run's claim — "
+        f"operating a claimed task with no dispatcher run record usually means "
+        f"a second agent context was spawned for this profile. Report via "
+        f"kanban_comment instead.")
+
+
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
     resolution, task-scope ownership. Returns the task id."""
@@ -557,6 +598,7 @@ def _handle_complete(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
+        _enforce_claim_run_identity(kb, conn, tid)
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
@@ -600,6 +642,7 @@ def _handle_block(args: dict, **kw) -> str:
         _require_text(args, "reason", "reason is required — explain what input you need"))
     kind = args.get("kind")
     with _board(args.get("board")) as (kb, conn):
+        _enforce_claim_run_identity(kb, conn, tid)
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
         # The goal loop treats ANY blocked status as terminal, so kanban_block
@@ -639,6 +682,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     with _board(args.get("board")) as (kb, conn):
+        _enforce_claim_run_identity(kb, conn, tid)
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
@@ -655,6 +699,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
     reason = _redact(
         _require_text(args, "reason", "reason is required — describe the changes needed"))
     with _board(args.get("board")) as (kb, conn):
+        _enforce_claim_run_identity(kb, conn, tid)
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")

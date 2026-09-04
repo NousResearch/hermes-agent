@@ -2637,11 +2637,12 @@ def _run_single_child(
           ``error``) or a summary-less/invalid terminal state.
 
     ``exit_reason`` ∈ {``"completed"``, ``"max_iterations"``, ``"interrupted"``,
-    ``"error"``}:
+    ``"guardrail_halt"``, ``"error"``}:
         * ``"completed"``       — normal finish.
         * ``"max_iterations"``  — genuine per-child iteration-budget exhaustion
           (``completed=False`` with no failure fields).
         * ``"interrupted"``     — interrupted by the parent.
+        * ``"guardrail_halt"``  — a hard tool guardrail stopped the child turn.
         * ``"error"``           — provider rejection / terminal failure; NOT
           budget exhaustion (this is the case #97655 fixed).
 
@@ -3196,6 +3197,12 @@ def _run_single_child(
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
 
+        _initial_guardrail = result.get("guardrail")
+        _initial_hard_guardrail = (
+            isinstance(_initial_guardrail, dict)
+            and _initial_guardrail.get("action") in {"block", "halt"}
+        )
+
         # T1-24: structured-output contract validation + ONE bounded retry.
         # Runs only when a schema was attached at dispatch; schema-less
         # delegations take none of these branches and their result entry
@@ -3220,6 +3227,7 @@ def _run_single_child(
                 not _schema_valid
                 and _first_text.strip()
                 and not result.get("interrupted", False)
+                and not _initial_hard_guardrail
             ):
                 # Exactly one retry turn, carrying the validation errors
                 # verbatim (no schema re-paste — the child already holds
@@ -3242,6 +3250,20 @@ def _run_single_child(
                     _retry_text = _retry_result.get("final_response") or ""
                     if _retry_text.strip():
                         result["final_response"] = _retry_text
+                    # The retry is the terminal child turn. Carry all fields
+                    # that drive honest completion classification; otherwise a
+                    # retry-side guardrail/error/interruption is mislabeled
+                    # from the stale first-turn state.
+                    for _terminal_key in (
+                        "completed",
+                        "interrupted",
+                        "failed",
+                        "error",
+                        "failure_reason",
+                        "guardrail",
+                    ):
+                        if _terminal_key in _retry_result:
+                            result[_terminal_key] = _retry_result[_terminal_key]
                     try:
                         result["api_calls"] = int(
                             result.get("api_calls", 0) or 0
@@ -3256,6 +3278,23 @@ def _run_single_child(
                     _schema_valid, _schema_errors = validate_output(
                         _retry_text, _output_schema
                     )
+
+        # Recompute from the terminal turn: a schema retry may itself hit a
+        # guardrail, fail, or be interrupted.
+        _guardrail = result.get("guardrail")
+        _hard_guardrail = (
+            isinstance(_guardrail, dict)
+            and _guardrail.get("action") in {"block", "halt"}
+        )
+        _public_guardrail = (
+            {
+                key: _guardrail[key]
+                for key in ("action", "code", "tool_name", "count", "signature")
+                if key in _guardrail
+            }
+            if isinstance(_guardrail, dict)
+            else None
+        )
 
         # Linearization boundary for registry steering. From this point on the
         # child cannot consume another steer. Closing under the registry lock
@@ -3303,6 +3342,12 @@ def _run_single_child(
             # despite completed=False. The heuristic is only a fallback for
             # legacy/mock results that omit the structured failure fields.
             # (Community report Aug 2026; #97655.)
+            status = "failed"
+        elif _hard_guardrail:
+            # A hard tool guardrail deliberately ends the turn with a useful
+            # explanatory assistant message. That text is not task success:
+            # the structured guardrail metadata must win over the generic
+            # summary-presence heuristic below.
             status = "failed"
         elif _schema_valid is False:
             # T1-24 follow-up: a schema was declared and the final answer —
@@ -3369,6 +3414,8 @@ def _run_single_child(
             # iteration-budget exhaustion — "max_iterations" is only truthful
             # when the child actually hit its per-delegation iteration cap.
             exit_reason = "error"
+        elif _hard_guardrail:
+            exit_reason = "guardrail_halt"
         elif completed:
             exit_reason = "completed"
         else:
@@ -3382,7 +3429,7 @@ def _run_single_child(
 
         # --- result entry contract (see _run_single_child docstring) ---
         # status ∈ {completed, interrupted, failed}
-        # exit_reason ∈ {completed, max_iterations, interrupted, error}
+        # exit_reason ∈ {completed, max_iterations, interrupted, guardrail_halt, error}
         # truncated is exactly (exit_reason == "max_iterations").
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -3426,6 +3473,12 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        if _public_guardrail is not None:
+            # Keep only classification fields and the optional signature hash.
+            # The explanatory message is intentionally omitted here: delegate
+            # results cross an agent boundary, while the code/tool/count are
+            # sufficient for machine handling and contain no raw arguments.
+            entry["guardrail"] = _public_guardrail
         # Per-delegation spend, serialized back to the model alongside
         # tokens/api_calls so the parent can see what each delegation cost.
         # Mirrors _child_cost_usd (which is stripped pre-serialization and
@@ -3438,7 +3491,14 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            if _schema_valid is False and summary and not _empty_sentinel:
+            if _hard_guardrail:
+                _guardrail_code = str(_guardrail.get("code") or "unknown")
+                entry["error"] = (
+                    "Subagent halted by tool guardrail "
+                    f"({_guardrail_code})."
+                )
+                entry["failure_reason"] = "guardrail_halt"
+            elif _schema_valid is False and summary and not _empty_sentinel:
                 # The child DID respond — the response just violates the
                 # declared contract. Name that instead of the generic
                 # "no response" error; schema_errors (below) hold the

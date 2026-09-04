@@ -50,6 +50,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+from contextvars import copy_context
+from dataclasses import dataclass, field
 from typing import Protocol, TypedDict, cast
 
 from hermes_cli.urllib_security import open_credentialed_url
@@ -130,68 +132,108 @@ def _tirith_auto_install_allowed() -> bool:
     return _allow_lazy_installs()
 
 
-# Cached path after first resolution (avoids repeated shutil.which per command).
-# _INSTALL_FAILED means "we tried and failed" — prevents retry on every command.
-_resolved_path: str | None | bool = None
 _INSTALL_FAILED = False  # sentinel: distinct from "not yet tried"
-_install_failure_reason: str = ""  # reason tag when _resolved_path is _INSTALL_FAILED
+
+
+@dataclass
+class _RuntimeState:
+    """Process-local Tirith state isolated by profile and scanner config."""
+
+    key: tuple[str, str]
+    resolved_path: str | None | bool = None
+    install_failure_reason: str = ""
+    install_thread: threading.Thread | None = None
+    update_thread: threading.Thread | None = None
+    crash_count: int = 0
+    circuit_open: bool = False
+    circuit_opened_at: float | None = None
+    circuit_probe_in_flight: bool = False
+    circuit_lock: threading.Lock = field(default_factory=threading.Lock)
+    install_lock: threading.Lock = field(default_factory=threading.Lock)
+    update_schedule_lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_runtime_states: dict[tuple[str, str], _RuntimeState] = {}
+_runtime_states_lock = threading.Lock()
+
+
+def _runtime_scope_key(configured_path: str) -> tuple[str, str]:
+    home = os.path.normcase(os.path.abspath(os.path.expanduser(str(get_hermes_home()))))
+    return home, configured_path
+
+
+def _runtime_state(configured_path: str) -> _RuntimeState:
+    key = _runtime_scope_key(configured_path)
+    with _runtime_states_lock:
+        state = _runtime_states.get(key)
+        if state is None:
+            state = _RuntimeState(key=key)
+            _runtime_states[key] = state
+        return state
+
+
+def _reset_runtime_states_for_tests() -> None:
+    """Reset process-local state; test fixtures only."""
+    with _runtime_states_lock:
+        _runtime_states.clear()
 
 # Circuit breaker: after _CRASH_LIMIT consecutive spawn/execution failures,
 # pause Tirith briefly to prevent agent hangs (#41400), then permit one
 # half-open recovery probe. Any recognized Tirith verdict closes the breaker.
 #
-# Thread safety: crash counting remains lock-free; a race can only open the
-# breaker one call early. The retry lock covers just the monotonic timestamp
-# check and re-arm, never the subprocess call. That makes a half-open probe
-# single-flight without reintroducing the hang the breaker prevents.
+# Each profile has its own lock. It protects state transitions and the explicit
+# in-flight claim, never the subprocess call.
 _CRASH_LIMIT = 3
 _CIRCUIT_RETRY_SECONDS = 60.0
-_crash_count: int = 0
-_circuit_open: bool = False
-_circuit_opened_at: float | None = None
-_circuit_retry_lock = threading.Lock()
 
 
-def _reset_tirith_crash_state() -> None:
+def _reset_tirith_crash_state(state: _RuntimeState) -> None:
     """Close the circuit after Tirith or its managed install recovers."""
-    global _crash_count, _circuit_open, _circuit_opened_at
-    _crash_count = 0
-    _circuit_open = False
-    _circuit_opened_at = None
+    with state.circuit_lock:
+        state.crash_count = 0
+        state.circuit_open = False
+        state.circuit_opened_at = None
+        state.circuit_probe_in_flight = False
 
 
-def _record_tirith_crash() -> None:
+def _record_tirith_crash(state: _RuntimeState) -> None:
     """Increment the crash counter and open the circuit breaker if needed."""
-    global _crash_count, _circuit_open, _circuit_opened_at
-    _crash_count += 1
-    if _crash_count >= _CRASH_LIMIT:
-        _circuit_open = True
-        _circuit_opened_at = time.monotonic()
-        logger.warning(
-            "tirith circuit breaker opened after %d consecutive failures; "
-            "retrying after %.0fs",
-            _crash_count,
-            _CIRCUIT_RETRY_SECONDS,
-        )
+    with state.circuit_lock:
+        state.crash_count += 1
+        if state.crash_count >= _CRASH_LIMIT:
+            state.circuit_open = True
+            state.circuit_opened_at = time.monotonic()
+            logger.warning(
+                "tirith circuit breaker opened after %d consecutive failures; "
+                "retrying after %.0fs",
+                state.crash_count,
+                _CIRCUIT_RETRY_SECONDS,
+            )
 
 
-def _circuit_retry_is_due() -> bool:
-    """Atomically claim the half-open recovery probe when its TTL is due."""
-    global _circuit_opened_at
-    with _circuit_retry_lock:
-        if not _circuit_open or _circuit_opened_at is None:
-            return False
+def _circuit_scan_admission(state: _RuntimeState) -> tuple[bool, bool]:
+    """Atomically decide whether a scan may run and claim a recovery probe.
+
+    Returns ``(scan_allowed, probe_claimed)``. A single locked decision avoids
+    a stale open/closed observation racing with another scan that recovers the
+    same profile's breaker.
+    """
+    with state.circuit_lock:
+        if not state.circuit_open:
+            return True, False
+        if state.circuit_opened_at is None or state.circuit_probe_in_flight:
+            return False, False
         now = time.monotonic()
-        if now - _circuit_opened_at < _CIRCUIT_RETRY_SECONDS:
-            return False
-        # Keep the circuit open while the claimant probes, but re-arm its
-        # timestamp first so concurrent callers cannot start another probe.
-        _circuit_opened_at = now
-        return True
+        if now - state.circuit_opened_at < _CIRCUIT_RETRY_SECONDS:
+            return False, False
+        state.circuit_probe_in_flight = True
+        return True, True
 
-# Background install thread coordination
-_install_lock = threading.Lock()
-_install_thread: threading.Thread | None = None
+
+def _finish_circuit_probe(state: _RuntimeState) -> None:
+    """Release a half-open claim even when resolution or scanning raises."""
+    with state.circuit_lock:
+        state.circuit_probe_in_flight = False
 
 # Hermes-managed Tirith updates. Tirith 0.4.1 introduced Hermes-aware
 # provenance for its self-updater; older managed release binaries are
@@ -212,10 +254,6 @@ _MAX_RELEASE_ARCHIVE_UNPACKED_BYTES = 128 * 1024 * 1024
 _UPDATE_SUCCESS_OUTCOMES = frozenset(
     {"bootstrapped", "current", "installed", "skipped", "updated"}
 )
-
-_update_schedule_lock = threading.Lock()
-_update_thread: threading.Thread | None = None
-
 
 class _UpdateState(TypedDict):
     schema_version: int
@@ -797,15 +835,15 @@ def _update_is_due(*, now: float | None = None) -> bool:
     return (current_time - checked_at) >= ttl
 
 
-def _acquire_update_lock():
-    """Acquire a process-bound advisory lock, or return ``None`` if busy.
+def _acquire_update_lock_with_status() -> tuple[int | None, str]:
+    """Acquire the advisory lock and distinguish contention from I/O errors.
 
     Tirith only ships on POSIX platforms. ``flock`` releases automatically on
     process death, so there is no stale-file reclamation race and a suspended
     updater cannot be mistaken for a dead one.
     """
     if os.name == "nt":
-        return None
+        return None, "error"
 
     import fcntl
 
@@ -813,7 +851,7 @@ def _acquire_update_lock():
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
     except OSError:
-        return None
+        return None, "error"
 
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
@@ -821,16 +859,27 @@ def _acquire_update_lock():
     try:
         fd = os.open(path, flags, 0o600)
     except OSError:
-        return None
+        return None, "error"
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             os.close(fd)
-            return None
+            return None, "error"
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, BlockingIOError):
+    except BlockingIOError:
         os.close(fd)
-        return None
+        return None, "busy"
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return None, "busy"
+        return None, "error"
+    return fd, "acquired"
+
+
+def _acquire_update_lock():
+    """Acquire a process-bound advisory lock, or return ``None``."""
+    fd, _status = _acquire_update_lock_with_status()
     return fd
 
 
@@ -906,12 +955,11 @@ def _mark_install_failed(reason: str = ""):
 
 
 def _clear_install_failed():
-    """Remove the failure marker after successful install."""
+    """Remove the install-failure marker after local recovery."""
     # Reset the warn-once dedupe set so a subsequent failure (e.g. user
     # deletes the binary) surfaces in the log again instead of being
     # silently suppressed by a stale dedupe key from before the fix.
     _reset_spawn_warning_state()
-    _reset_tirith_crash_state()
     try:
         os.unlink(_failure_marker_path())
     except OSError:
@@ -1644,7 +1692,8 @@ def _read_embedded_tirith_version(
     for pattern in _TIRITH_EMBEDDED_VERSION_RES:
         for match in pattern.finditer(payload):
             try:
-                versions.add(tuple(int(part) for part in match.groups()))
+                major, minor, patch = match.groups()
+                versions.add((int(major), int(minor), int(patch)))
             except ValueError:
                 return None, "unparseable"
     if len(versions) != 1:
@@ -1960,8 +2009,14 @@ def _background_update(path: str, *, log_failures: bool = True) -> None:
     """Failure-isolated worker for managed Tirith maintenance."""
     if not _tirith_auto_install_allowed() or not _is_managed_tirith(path):
         return
-    lock_fd = _acquire_update_lock()
+    lock_fd, lock_status = _acquire_update_lock_with_status()
     if lock_fd is None:
+        # Contention means another worker owns the outcome and will persist
+        # its own freshness state. Operational lock errors have no such owner;
+        # record a short failure backoff so every command cannot spawn a new
+        # doomed worker in a long-lived process.
+        if lock_status == "error":
+            _write_update_state("failed")
         return
     try:
         # Another process may have completed maintenance before we acquired the
@@ -1987,10 +2042,14 @@ def _background_update(path: str, *, log_failures: bool = True) -> None:
 
 
 def _schedule_managed_update(
-    path: str, configured_path: str, *, log_failures: bool = True
+    path: str,
+    configured_path: str,
+    *,
+    log_failures: bool = True,
+    state: _RuntimeState | None = None,
 ) -> None:
     """Launch at most one non-blocking managed update worker at a time."""
-    global _update_thread
+    state = state or _runtime_state(configured_path)
     if (
         not is_platform_supported()
         or _is_explicit_path(configured_path)
@@ -1999,17 +2058,18 @@ def _schedule_managed_update(
         or not _update_is_due()
     ):
         return
-    with _update_schedule_lock:
-        if _update_thread is not None and _update_thread.is_alive():
+    with state.update_schedule_lock:
+        if state.update_thread is not None and state.update_thread.is_alive():
             return
         # Re-check after serializing schedulers. A worker in this process or
         # another Hermes process may have refreshed the shared state while we
         # were waiting for the lock.
         if not _update_is_due():
             return
+        worker_context = copy_context()
         thread = threading.Thread(
-            target=_background_update,
-            args=(path,),
+            target=worker_context.run,
+            args=(_background_update, path),
             kwargs={"log_failures": log_failures},
             daemon=True,
         )
@@ -2020,7 +2080,7 @@ def _schedule_managed_update(
                 "could not start tirith background update thread", exc_info=True
             )
             return
-        _update_thread = thread
+        state.update_thread = thread
 
 
 def _is_explicit_path(configured_path: str) -> bool:
@@ -2029,7 +2089,10 @@ def _is_explicit_path(configured_path: str) -> bool:
 
 
 def _resolve_tirith_path(
-    configured_path: str, *, background_only: bool = False
+    configured_path: str,
+    *,
+    background_only: bool = False,
+    state: _RuntimeState | None = None,
 ) -> str | None:
     """Resolve the tirith binary path, auto-installing if necessary.
 
@@ -2045,45 +2108,50 @@ def _resolve_tirith_path(
     Failed installs are cached for the process lifetime (and persisted to
     disk for 24h) to avoid repeated network attempts.
     """
-    global _resolved_path, _install_failure_reason
+    state = state or _runtime_state(configured_path)
 
     # Fast path: successfully resolved on a previous call.
-    if isinstance(_resolved_path, str):
-        path = _resolved_path
+    if isinstance(state.resolved_path, str):
+        path = state.resolved_path
         if _is_managed_tirith_location(path):
             validated_path = _validated_tirith_path(path)
             if validated_path is None:
-                _resolved_path = _INSTALL_FAILED
-                _install_failure_reason = "managed_cache_untrusted"
+                state.resolved_path = _INSTALL_FAILED
+                state.install_failure_reason = "managed_cache_untrusted"
             else:
                 path = validated_path
-                _resolved_path = path
-        if isinstance(_resolved_path, str):
+                state.resolved_path = path
+        if isinstance(state.resolved_path, str):
             # The resolver is exercised for every scan, including in long-lived
             # gateways. Reconsider completed workers here so a Tirith release made
             # after Hermes startup is discovered once the shared TTL expires.
-            _schedule_managed_update(path, configured_path, log_failures=False)
+            _schedule_managed_update(
+                path,
+                configured_path,
+                log_failures=False,
+                state=state,
+            )
             return path
 
     expanded = os.path.expanduser(configured_path)
     explicit = _is_explicit_path(configured_path)
-    install_failed = _resolved_path is _INSTALL_FAILED
+    install_failed = state.resolved_path is _INSTALL_FAILED
 
     # Explicit path: check it and stop. Never auto-download a replacement.
     if explicit:
         validated_path = _validated_tirith_path(expanded)
         if validated_path is not None:
-            _resolved_path = validated_path
+            state.resolved_path = validated_path
             return validated_path
         # Also try shutil.which in case it's a bare name on PATH
         found = shutil.which(expanded)
         validated_path = _validated_tirith_path(found) if found else None
         if validated_path is not None:
-            _resolved_path = validated_path
+            state.resolved_path = validated_path
             return validated_path
         logger.warning("Configured tirith path %r not found; scanning disabled", configured_path)
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "explicit_path_missing"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "explicit_path_missing"
         return None if background_only else expanded
 
     # Default "tirith" — always re-run cheap local checks so a manual
@@ -2092,36 +2160,44 @@ def _resolve_tirith_path(
     found = shutil.which("tirith")
     validated_path = _validated_tirith_path(found) if found else None
     if validated_path is not None:
-        _resolved_path = validated_path
-        _install_failure_reason = ""
+        state.resolved_path = validated_path
+        state.install_failure_reason = ""
         _clear_install_failed()
         _schedule_managed_update(
-            validated_path, configured_path, log_failures=False
+            validated_path,
+            configured_path,
+            log_failures=False,
+            state=state,
         )
         return validated_path
     if found and _is_managed_tirith_location(found):
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "managed_cache_untrusted"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "managed_cache_untrusted"
         return None if background_only else expanded
 
     # Platform support controls Hermes' managed cache and installer, not
     # whether an operator-provided Tirith binary may scan commands. Explicit
     # paths and PATH discovery above therefore remain available everywhere.
     if not is_platform_supported():
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "unsupported_platform"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "unsupported_platform"
         return None if background_only else expanded
 
     hermes_bin = _managed_tirith_path()
     if _is_managed_tirith(hermes_bin):
-        _resolved_path = hermes_bin
-        _install_failure_reason = ""
+        state.resolved_path = hermes_bin
+        state.install_failure_reason = ""
         _clear_install_failed()
-        _schedule_managed_update(hermes_bin, configured_path, log_failures=False)
+        _schedule_managed_update(
+            hermes_bin,
+            configured_path,
+            log_failures=False,
+            state=state,
+        )
         return hermes_bin
     if os.path.lexists(hermes_bin):
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "managed_cache_untrusted"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "managed_cache_untrusted"
         return None if background_only else expanded
 
     # A policy opt-out is not an installation failure. Do not cache or persist
@@ -2133,10 +2209,13 @@ def _resolve_tirith_path(
     # skip the network retry — UNLESS the failure was "cosign_missing" and
     # cosign is now available (retryable cause resolved in-process).
     if install_failed:
-        if _install_failure_reason == "cosign_missing" and shutil.which("cosign"):
+        if (
+            state.install_failure_reason == "cosign_missing"
+            and shutil.which("cosign")
+        ):
             # Retryable cause resolved — clear sentinel and fall through to retry
-            _resolved_path = None
-            _install_failure_reason = ""
+            state.resolved_path = None
+            state.install_failure_reason = ""
             _clear_install_failed()
             install_failed = False
         else:
@@ -2145,7 +2224,7 @@ def _resolve_tirith_path(
     # If a background install thread is running, don't start a parallel one —
     # return the configured path; the OSError handler in check_command_security
     # will apply fail_open until the thread finishes.
-    if _install_thread is not None and _install_thread.is_alive():
+    if state.install_thread is not None and state.install_thread.is_alive():
         return None if background_only else expanded
 
     # Approval is a latency-sensitive path. Startup normally starts this
@@ -2160,14 +2239,14 @@ def _resolve_tirith_path(
     # detect retryable causes (e.g. cosign_missing) without restart.
     disk_reason = _read_failure_reason()
     if disk_reason is not None and _is_install_failed_on_disk():
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = disk_reason
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = disk_reason
         return expanded
 
     installed, reason = _install_tirith()
     if installed:
-        _resolved_path = installed
-        _install_failure_reason = ""
+        state.resolved_path = installed
+        state.install_failure_reason = ""
         _clear_install_failed()
         _write_update_state("installed")
         return installed
@@ -2175,41 +2254,45 @@ def _resolve_tirith_path(
         return expanded
 
     # Install failed — cache the miss and persist reason to disk
-    _resolved_path = _INSTALL_FAILED
-    _install_failure_reason = reason
+    state.resolved_path = _INSTALL_FAILED
+    state.install_failure_reason = reason
     if reason != "managed_directory_untrusted":
         _mark_install_failed(reason)
     return expanded
 
 
-def _background_install(*, log_failures: bool = True):
+def _background_install(
+    *,
+    log_failures: bool = True,
+    state: _RuntimeState | None = None,
+):
     """Background thread target: download and install tirith."""
-    global _resolved_path, _install_failure_reason
-    with _install_lock:
+    state = state or _runtime_state("tirith")
+    with state.install_lock:
         # Double-check after acquiring lock (another thread may have resolved)
-        if _resolved_path is not None:
+        if state.resolved_path is not None:
             return
 
         # Re-check local paths (may have been installed by another process)
         found = shutil.which("tirith")
         validated_path = _validated_tirith_path(found) if found else None
         if validated_path is not None:
-            _resolved_path = validated_path
-            _install_failure_reason = ""
+            state.resolved_path = validated_path
+            state.install_failure_reason = ""
             return
         if found and _is_managed_tirith_location(found):
-            _resolved_path = _INSTALL_FAILED
-            _install_failure_reason = "managed_cache_untrusted"
+            state.resolved_path = _INSTALL_FAILED
+            state.install_failure_reason = "managed_cache_untrusted"
             return
 
         hermes_bin = _managed_tirith_path()
         if _is_managed_tirith(hermes_bin):
-            _resolved_path = hermes_bin
-            _install_failure_reason = ""
+            state.resolved_path = hermes_bin
+            state.install_failure_reason = ""
             return
         if os.path.lexists(hermes_bin):
-            _resolved_path = _INSTALL_FAILED
-            _install_failure_reason = "managed_cache_untrusted"
+            state.resolved_path = _INSTALL_FAILED
+            state.install_failure_reason = "managed_cache_untrusted"
             return
 
         if not _tirith_auto_install_allowed():
@@ -2217,15 +2300,15 @@ def _background_install(*, log_failures: bool = True):
 
         installed, reason = _install_tirith(log_failures=log_failures)
         if installed:
-            _resolved_path = installed
-            _install_failure_reason = ""
+            state.resolved_path = installed
+            state.install_failure_reason = ""
             _clear_install_failed()
             _write_update_state("installed")
         elif reason == "lazy_installs_disabled":
             return
         else:
-            _resolved_path = _INSTALL_FAILED
-            _install_failure_reason = reason
+            state.resolved_path = _INSTALL_FAILED
+            state.install_failure_reason = reason
             if reason != "managed_directory_untrusted":
                 _mark_install_failed(reason)
 
@@ -2237,30 +2320,30 @@ def ensure_installed(*, log_failures: bool = True):
     daemon thread so startup never blocks. Safe to call multiple times.
     Returns the resolved path immediately if available, or None.
     """
-    global _resolved_path, _install_thread, _install_failure_reason
-
     cfg = _load_security_config()
     if not cfg["tirith_enabled"]:
         return None
+    configured_path = cfg["tirith_path"]
+    state = _runtime_state(configured_path)
 
     # Already resolved from a previous call
-    if isinstance(_resolved_path, str):
-        path = _resolved_path
+    if isinstance(state.resolved_path, str):
+        path = state.resolved_path
         validated_path = _validated_tirith_path(path)
         if validated_path is not None:
-            _resolved_path = validated_path
+            state.resolved_path = validated_path
             _schedule_managed_update(
                 validated_path,
-                cfg["tirith_path"],
+                configured_path,
                 log_failures=log_failures,
+                state=state,
             )
             return validated_path
         if not _is_managed_tirith_location(path):
             return None
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "managed_cache_untrusted"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "managed_cache_untrusted"
 
-    configured_path = cfg["tirith_path"]
     explicit = _is_explicit_path(configured_path)
     expanded = os.path.expanduser(configured_path)
 
@@ -2268,57 +2351,59 @@ def ensure_installed(*, log_failures: bool = True):
     if explicit:
         validated_path = _validated_tirith_path(expanded)
         if validated_path is not None:
-            _resolved_path = validated_path
+            state.resolved_path = validated_path
             return validated_path
         found = shutil.which(expanded)
         validated_path = _validated_tirith_path(found) if found else None
         if validated_path is not None:
-            _resolved_path = validated_path
+            state.resolved_path = validated_path
             return validated_path
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "explicit_path_missing"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "explicit_path_missing"
         return None
 
     # Default "tirith" — quick local checks first (no network)
     found = shutil.which("tirith")
     validated_path = _validated_tirith_path(found) if found else None
     if validated_path is not None:
-        _resolved_path = validated_path
-        _install_failure_reason = ""
+        state.resolved_path = validated_path
+        state.install_failure_reason = ""
         _clear_install_failed()
         _schedule_managed_update(
             validated_path,
             configured_path,
             log_failures=log_failures,
+            state=state,
         )
         return validated_path
     if found and _is_managed_tirith_location(found):
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "managed_cache_untrusted"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "managed_cache_untrusted"
         return None
 
     # Unsupported manager targets may still use explicit or PATH binaries,
     # but Hermes must not inspect its managed cache or start an installer for
     # an archive format it does not support.
     if not is_platform_supported():
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "unsupported_platform"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "unsupported_platform"
         return None
 
     hermes_bin = _managed_tirith_path()
     if _is_managed_tirith(hermes_bin):
-        _resolved_path = hermes_bin
-        _install_failure_reason = ""
+        state.resolved_path = hermes_bin
+        state.install_failure_reason = ""
         _clear_install_failed()
         _schedule_managed_update(
             hermes_bin,
             configured_path,
             log_failures=log_failures,
+            state=state,
         )
         return hermes_bin
     if os.path.lexists(hermes_bin):
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "managed_cache_untrusted"
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = "managed_cache_untrusted"
         return None
 
     # Preserve local discovery while honoring the global runtime-install
@@ -2328,10 +2413,13 @@ def ensure_installed(*, log_failures: bool = True):
         return None
 
     # If previously failed in-memory, check if the cause is now resolved
-    if _resolved_path is _INSTALL_FAILED:
-        if _install_failure_reason == "cosign_missing" and shutil.which("cosign"):
-            _resolved_path = None
-            _install_failure_reason = ""
+    if state.resolved_path is _INSTALL_FAILED:
+        if (
+            state.install_failure_reason == "cosign_missing"
+            and shutil.which("cosign")
+        ):
+            state.resolved_path = None
+            state.install_failure_reason = ""
             _clear_install_failed()
         else:
             return None
@@ -2341,18 +2429,20 @@ def ensure_installed(*, log_failures: bool = True):
     # Preserve the marker's real reason for in-memory retry logic.
     disk_reason = _read_failure_reason()
     if disk_reason is not None and _is_install_failed_on_disk():
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = disk_reason
+        state.resolved_path = _INSTALL_FAILED
+        state.install_failure_reason = disk_reason
         return None
 
     # Need to download — launch background thread so startup doesn't block
-    if _install_thread is None or not _install_thread.is_alive():
-        _install_thread = threading.Thread(
-            target=_background_install,
-            kwargs={"log_failures": log_failures},
+    if state.install_thread is None or not state.install_thread.is_alive():
+        worker_context = copy_context()
+        state.install_thread = threading.Thread(
+            target=worker_context.run,
+            args=(_background_install,),
+            kwargs={"log_failures": log_failures, "state": state},
             daemon=True,
         )
-        _install_thread.start()
+        state.install_thread.start()
 
     return None  # Not available yet; commands will fail-open until ready
 
@@ -2375,18 +2465,18 @@ def check_command_security(command: str) -> dict:
     Returns:
         {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
     """
-    global _crash_count, _circuit_open, _resolved_path
-
     cfg = _load_security_config()
 
     if not cfg["tirith_enabled"]:
         return {"action": "allow", "findings": [], "summary": ""}
+    state = _runtime_state(cfg["tirith_path"])
 
     # Circuit breaker: pause after repeated failures, then make a half-open
     # recovery attempt. Without this, a corrupted binary can make every tool
     # call hit the same slow failure; without the retry, a repaired or updated
     # binary stays disabled for the rest of a long-lived process.
-    if _circuit_open and not _circuit_retry_is_due():
+    scan_allowed, claimed_probe = _circuit_scan_admission(state)
+    if not scan_allowed:
         action = "allow" if cfg["tirith_fail_open"] else "block"
         return {
             "action": action,
@@ -2394,17 +2484,31 @@ def check_command_security(command: str) -> dict:
             "summary": f"tirith unavailable (circuit breaker, fail-{'open' if action == 'allow' else 'closed'})",
         }
 
+    try:
+        return _check_command_security_with_state(command, cfg, state)
+    finally:
+        if claimed_probe:
+            _finish_circuit_probe(state)
+
+
+def _check_command_security_with_state(
+    command: str,
+    cfg: dict,
+    state: _RuntimeState,
+) -> dict:
+    """Execute one scan after the caller applies circuit-breaker policy."""
+
     tirith_path = _resolve_tirith_path(
-        cfg["tirith_path"], background_only=True
+        cfg["tirith_path"], background_only=True, state=state
     )
     timeout = cfg["tirith_timeout"]
     fail_open = cfg["tirith_fail_open"]
 
     if tirith_path is None:
-        unsupported_manager = _install_failure_reason == "unsupported_platform"
+        unsupported_manager = state.install_failure_reason == "unsupported_platform"
         if not unsupported_manager:
             _warn_once(
-                "tirith_path_none",
+                f"{state.key!r}:tirith_path_none",
                 "tirith path resolved to None; scanning disabled",
             )
         if fail_open:
@@ -2417,8 +2521,9 @@ def check_command_security(command: str) -> dict:
     # private-cache policy on explicit or package-manager binaries.
     if _is_managed_tirith_location(tirith_path):
         if not _is_managed_tirith(tirith_path):
-            if _resolved_path == tirith_path:
-                _resolved_path = _INSTALL_FAILED
+            if state.resolved_path == tirith_path:
+                state.resolved_path = _INSTALL_FAILED
+                state.install_failure_reason = "managed_cache_untrusted"
             action = "allow" if fail_open else "block"
             return {
                 "action": action,
@@ -2431,8 +2536,8 @@ def check_command_security(command: str) -> dict:
         # cannot be swapped through an attacker-controlled alias directory.
         original_path = tirith_path
         tirith_path = os.path.abspath(_managed_tirith_path())
-        if _resolved_path == original_path:
-            _resolved_path = tirith_path
+        if state.resolved_path == original_path:
+            state.resolved_path = tirith_path
 
     try:
         result = subprocess.run(
@@ -2450,26 +2555,26 @@ def check_command_security(command: str) -> dict:
         # may have been repaired concurrently, in which case its newer cached
         # path must win. Clearing a stale cache lets the next command re-run
         # local discovery (and, when allowed, start managed recovery).
-        if _resolved_path == tirith_path:
-            _resolved_path = None
+        if state.resolved_path == tirith_path:
+            state.resolved_path = None
         # Dedupe by ``(errno, exc class)`` so a transient failure mode
         # surfaces once but doesn't drown the log on every command —
         # commonly seen on Windows when the configured path "tirith"
         # isn't on PATH yet (background install still running, or
         # install marked failed for the day).
         spawn_key = f"tirith_spawn_failed:{type(exc).__name__}:{getattr(exc, 'errno', '')}"
-        _warn_once(spawn_key, "tirith spawn failed: %s", exc)
-        _record_tirith_crash()
+        _warn_once(f"{state.key!r}:{spawn_key}", "tirith spawn failed: %s", exc)
+        _record_tirith_crash(state)
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith unavailable: {exc}"}
         return {"action": "block", "findings": [], "summary": f"tirith spawn failed (fail-closed): {exc}"}
     except subprocess.TimeoutExpired:
         _warn_once(
-            f"tirith_timeout:{timeout}",
+            f"{state.key!r}:tirith_timeout:{timeout}",
             "tirith timed out after %ds",
             timeout,
         )
-        _record_tirith_crash()
+        _record_tirith_crash(state)
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith timed out ({timeout}s)"}
         return {"action": "block", "findings": [], "summary": "tirith timed out (fail-closed)"}
@@ -2481,7 +2586,7 @@ def check_command_security(command: str) -> dict:
         # reset failures for warn/block verdicts too; otherwise unrelated
         # earlier failures accumulate and open a supposedly consecutive
         # failure breaker.
-        _reset_tirith_crash_state()
+        _reset_tirith_crash_state(state)
 
     if exit_code == 0:
         action = "allow"
@@ -2493,7 +2598,7 @@ def check_command_security(command: str) -> dict:
         # Unknown exit code (includes signal-killed processes like -11/SIGSEGV)
         # — respect fail_open
         logger.warning("tirith returned unexpected exit code %d", exit_code)
-        _record_tirith_crash()
+        _record_tirith_crash(state)
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith exit code {exit_code} (fail-open)"}
         return {"action": "block", "findings": [], "summary": f"tirith exit code {exit_code} (fail-closed)"}

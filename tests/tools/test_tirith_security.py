@@ -17,6 +17,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.x509.oid import NameOID
 
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from tools import lazy_deps as _lazy_deps
 import tools.tirith_security as _tirith_mod
 from tools.tirith_security import check_command_security, ensure_installed
@@ -25,18 +30,18 @@ from tools.tirith_security import check_command_security, ensure_installed
 _REAL_ALLOW_LAZY_INSTALLS = _lazy_deps._allow_lazy_installs
 
 
+def _state(path: str = "tirith"):
+    return _tirith_mod._runtime_state(path)
+
+
 @pytest.fixture(autouse=True)
 def _reset_resolved_path():
     """Pre-set cached path to skip auto-install in scan tests.
     Tests that specifically test ensure_installed / resolve behavior
     reset this to None themselves.
     """
-    _tirith_mod._resolved_path = "tirith"
-    _tirith_mod._install_thread = None
-    _tirith_mod._install_failure_reason = ""
-    _tirith_mod._crash_count = 0
-    _tirith_mod._circuit_open = False
-    _tirith_mod._circuit_opened_at = None
+    _tirith_mod._reset_runtime_states_for_tests()
+    _state().resolved_path = "tirith"
     with _tirith_mod._in_process_update_state_lock:
         _tirith_mod._in_process_update_states.clear()
     # The global test fixture disables runtime installs. Most tests in this
@@ -44,12 +49,7 @@ def _reset_resolved_path():
     # policy tests below override this nested patch with False.
     with patch("tools.lazy_deps._allow_lazy_installs", return_value=True):
         yield
-    _tirith_mod._resolved_path = None
-    _tirith_mod._install_thread = None
-    _tirith_mod._install_failure_reason = ""
-    _tirith_mod._crash_count = 0
-    _tirith_mod._circuit_open = False
-    _tirith_mod._circuit_opened_at = None
+    _tirith_mod._reset_runtime_states_for_tests()
     with _tirith_mod._in_process_update_state_lock:
         _tirith_mod._in_process_update_states.clear()
 
@@ -100,7 +100,7 @@ def _mock_missing_tirith(monkeypatch):
     monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
     monkeypatch.setattr(_tirith_mod.os.path, "isfile", lambda _path: False)
     monkeypatch.setattr(_tirith_mod, "_read_failure_reason", lambda: None)
-    monkeypatch.setattr(_tirith_mod, "_clear_install_failed", lambda: None)
+    monkeypatch.setattr(_tirith_mod, "_clear_install_failed", lambda *_args: None)
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +182,7 @@ class TestOSErrorFailOpen:
         result = check_command_security("echo hi")
         assert result["action"] == "allow"
         assert "unavailable" in result["summary"]
-        assert _tirith_mod._resolved_path is None
+        assert _state().resolved_path is None
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -273,7 +273,7 @@ class TestEnsureInstalled:
     def test_disabled_returns_none(self, mock_cfg):
         mock_cfg.return_value = {"tirith_enabled": False, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         assert ensure_installed() is None
 
     @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/tirith")
@@ -281,12 +281,12 @@ class TestEnsureInstalled:
     def test_found_on_path_returns_immediately(self, mock_cfg, mock_which):
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         with patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True):
             result = ensure_installed()
         assert result == "/usr/local/bin/tirith"
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
     def test_config_opt_out_prevents_tirith_download_thread(
         self, tmp_path, monkeypatch
@@ -301,8 +301,8 @@ class TestEnsureInstalled:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
         monkeypatch.delenv("HERMES_LAZY_INSTALL_TARGET", raising=False)
-        _tirith_mod._resolved_path = None
-        _tirith_mod._install_thread = None
+        _state().resolved_path = None
+        _state().install_thread = None
 
         cfg = {
             "tirith_enabled": True,
@@ -321,7 +321,7 @@ class TestEnsureInstalled:
         assert ensure_installed(log_failures=False) is None
 
         thread_factory.assert_not_called()
-        assert _tirith_mod._resolved_path is None
+        assert _state().resolved_path is None
         assert not (hermes_home / "bin").exists()
 
 
@@ -370,8 +370,8 @@ class TestLazyInstallPolicy:
         self, monkeypatch
     ):
         """A policy change during install must remain immediately reversible."""
-        _tirith_mod._resolved_path = None
-        _tirith_mod._install_failure_reason = ""
+        _state().resolved_path = None
+        _state().install_failure_reason = ""
 
         _mock_missing_tirith(monkeypatch)
         policy_states = iter((True, False))
@@ -384,8 +384,8 @@ class TestLazyInstallPolicy:
         assert _tirith_mod._resolve_tirith_path("tirith") == "tirith"
 
         mark_failure.assert_not_called()
-        assert _tirith_mod._resolved_path is None
-        assert _tirith_mod._install_failure_reason == ""
+        assert _state().resolved_path is None
+        assert _state().install_failure_reason == ""
 
         monkeypatch.setattr(_lazy_deps, "_allow_lazy_installs", lambda: True)
         install = MagicMock(return_value=("/tmp/tirith", ""))
@@ -399,8 +399,8 @@ class TestLazyInstallPolicy:
         self, monkeypatch
     ):
         """The background path must not persist a mid-install policy decision."""
-        _tirith_mod._resolved_path = None
-        _tirith_mod._install_failure_reason = ""
+        _state().resolved_path = None
+        _state().install_failure_reason = ""
 
         _mock_missing_tirith(monkeypatch)
         policy_states = iter((True, False))
@@ -413,8 +413,8 @@ class TestLazyInstallPolicy:
         _tirith_mod._background_install(log_failures=False)
 
         mark_failure.assert_not_called()
-        assert _tirith_mod._resolved_path is None
-        assert _tirith_mod._install_failure_reason == ""
+        assert _state().resolved_path is None
+        assert _state().install_failure_reason == ""
 
         monkeypatch.setattr(_lazy_deps, "_allow_lazy_installs", lambda: True)
         install = MagicMock(return_value=("/tmp/tirith", ""))
@@ -423,14 +423,14 @@ class TestLazyInstallPolicy:
         _tirith_mod._background_install(log_failures=False)
 
         install.assert_called_once_with(log_failures=False)
-        assert _tirith_mod._resolved_path == "/tmp/tirith"
+        assert _state().resolved_path == "/tmp/tirith"
 
     def test_local_binary_is_discovered_when_lazy_installs_are_disabled(
         self, tmp_path, monkeypatch
     ):
         """The opt-out disables downloads, not discovery of an installed binary."""
-        _tirith_mod._resolved_path = None
-        _tirith_mod._install_failure_reason = ""
+        _state().resolved_path = None
+        _state().install_failure_reason = ""
         local_tirith = tmp_path / "tirith"
         local_tirith.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         local_tirith.chmod(0o700)
@@ -441,7 +441,9 @@ class TestLazyInstallPolicy:
         monkeypatch.setattr(
             _tirith_mod.shutil, "which", lambda _name: str(local_tirith)
         )
-        monkeypatch.setattr(_tirith_mod, "_clear_install_failed", lambda: None)
+        monkeypatch.setattr(
+            _tirith_mod, "_clear_install_failed", lambda *_args: None
+        )
 
         assert _tirith_mod._resolve_tirith_path("tirith") == str(local_tirith)
 
@@ -453,12 +455,7 @@ class TestLazyInstallPolicy:
 # ---------------------------------------------------------------------------
 
 class TestManagedCacheExecutionBoundary:
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership boundary")
-    @pytest.mark.parametrize(
-        "fail_open, expected_action",
-        [(True, "allow"), (False, "block")],
-    )
-    def test_cached_managed_binary_mode_drift_is_never_spawned(
+    def _assert_cached_managed_binary_mode_drift_is_never_spawned(
         self, fail_open, expected_action, tmp_path, monkeypatch
     ):
         home = tmp_path / "home"
@@ -467,7 +464,7 @@ class TestManagedCacheExecutionBoundary:
         managed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         managed.chmod(0o755)
         monkeypatch.setenv("HERMES_HOME", str(home))
-        _tirith_mod._resolved_path = str(managed)
+        _state().resolved_path = str(managed)
 
         # Simulate trust drift after successful resolution. The cached string
         # must not bypass the current filesystem proof.
@@ -490,9 +487,33 @@ class TestManagedCacheExecutionBoundary:
         result = check_command_security("echo guarded")
 
         assert result["action"] == expected_action
-        assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
-        assert _tirith_mod._install_failure_reason == "managed_cache_untrusted"
+        assert _state().resolved_path is _tirith_mod._INSTALL_FAILED
+        assert _state().install_failure_reason == "managed_cache_untrusted"
         run.assert_not_called()
+
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize(
+        "fail_open, expected_action",
+        [(True, "allow"), (False, "block")],
+    )
+    def test_cached_managed_binary_mode_drift_is_never_spawned_linux(
+        self, fail_open, expected_action, tmp_path, monkeypatch
+    ):
+        self._assert_cached_managed_binary_mode_drift_is_never_spawned(
+            fail_open, expected_action, tmp_path, monkeypatch
+        )
+
+    @pytest.mark.macos_only
+    @pytest.mark.parametrize(
+        "fail_open, expected_action",
+        [(True, "allow"), (False, "block")],
+    )
+    def test_cached_managed_binary_mode_drift_is_never_spawned_macos(
+        self, fail_open, expected_action, tmp_path, monkeypatch
+    ):
+        self._assert_cached_managed_binary_mode_drift_is_never_spawned(
+            fail_open, expected_action, tmp_path, monkeypatch
+        )
 
     @pytest.mark.require_symlinks
     def test_path_alias_cannot_hide_untrusted_managed_binary(
@@ -507,7 +528,7 @@ class TestManagedCacheExecutionBoundary:
         alias.parent.mkdir()
         alias.symlink_to(managed)
         monkeypatch.setenv("HERMES_HOME", str(home))
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         monkeypatch.setattr(
             _tirith_mod,
             "_load_security_config",
@@ -526,7 +547,7 @@ class TestManagedCacheExecutionBoundary:
         result = check_command_security("echo guarded")
 
         assert result["action"] == "block"
-        assert _tirith_mod._install_failure_reason == "managed_cache_untrusted"
+        assert _state().install_failure_reason == "managed_cache_untrusted"
         run.assert_not_called()
 
     @pytest.mark.require_symlinks
@@ -542,7 +563,7 @@ class TestManagedCacheExecutionBoundary:
         alias.parent.mkdir()
         alias.symlink_to(managed)
         monkeypatch.setenv("HERMES_HOME", str(home))
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         monkeypatch.setattr(
             _tirith_mod,
             "_load_security_config",
@@ -561,7 +582,7 @@ class TestManagedCacheExecutionBoundary:
         result = check_command_security("echo safe")
 
         assert result["action"] == "allow"
-        assert _tirith_mod._resolved_path == str(managed)
+        assert _state().resolved_path == str(managed)
         assert run.call_args.args[0][0] == str(managed)
 
     @pytest.mark.macos_only
@@ -626,7 +647,7 @@ class TestUnsupportedPlatform:
         """Default fail-open remains silent when no local scanner exists."""
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         with patch("tools.tirith_security.is_platform_supported", return_value=False), \
              patch("tools.tirith_security.shutil.which", return_value=None) as mock_which, \
              patch("tools.tirith_security.subprocess.run") as mock_run, \
@@ -654,7 +675,7 @@ class TestUnsupportedPlatform:
             1,
             _json_stdout([{"rule_id": "homograph_url"}], "blocked"),
         )
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         with patch("tools.tirith_security.is_platform_supported", return_value=False):
             result = check_command_security("curl https://example.test")
 
@@ -663,27 +684,32 @@ class TestUnsupportedPlatform:
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_default_path_scans_on_unsupported_platform(self, mock_cfg, mock_run):
+    def test_default_path_scans_on_unsupported_platform(
+        self, mock_cfg, mock_run, tmp_path
+    ):
         """Manager support does not suppress the ordinary PATH contract."""
+        binary = tmp_path / "tirith"
+        binary.write_text("scanner", encoding="utf-8")
+        binary.chmod(0o700)
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
         mock_run.return_value = _mock_run(2, _json_stdout(summary="review"))
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         with patch("tools.tirith_security.is_platform_supported", return_value=False), \
              patch("tools.tirith_security.shutil.which",
-                   return_value="/usr/local/bin/tirith"), \
+                   return_value=str(binary)), \
              patch("tools.tirith_security.threading.Thread") as mock_thread:
             result = check_command_security("curl https://example.test")
 
         assert result["action"] == "warn"
-        assert mock_run.call_args.args[0][0] == "/usr/local/bin/tirith"
+        assert mock_run.call_args.args[0][0] == str(binary)
         mock_thread.assert_not_called()
 
     @patch("tools.tirith_security._load_security_config")
     def test_unsupported_missing_scanner_honors_fail_closed(self, mock_cfg):
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": False}
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         with patch("tools.tirith_security.is_platform_supported", return_value=False), \
              patch("tools.tirith_security.shutil.which", return_value=None), \
              patch("tools.tirith_security.subprocess.run") as mock_run:
@@ -705,7 +731,7 @@ class TestUnsupportedPlatform:
                                  "tirith_path": str(binary),
                                  "tirith_timeout": 5,
                                  "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         with patch("tools.tirith_security.is_platform_supported", return_value=False), \
              patch("tools.tirith_security.threading.Thread") as mock_thread:
             assert ensure_installed() == str(binary)
@@ -713,15 +739,18 @@ class TestUnsupportedPlatform:
         mock_thread.assert_not_called()
 
     @patch("tools.tirith_security._load_security_config")
-    def test_ensure_installed_honors_path(self, mock_cfg):
+    def test_ensure_installed_honors_path(self, mock_cfg, tmp_path):
+        binary = tmp_path / "tirith"
+        binary.write_text("scanner", encoding="utf-8")
+        binary.chmod(0o700)
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         with patch("tools.tirith_security.is_platform_supported", return_value=False), \
              patch("tools.tirith_security.shutil.which",
-                   return_value="/usr/local/bin/tirith"), \
+                   return_value=str(binary)), \
              patch("tools.tirith_security.threading.Thread") as mock_thread:
-            assert ensure_installed() == "/usr/local/bin/tirith"
+            assert ensure_installed() == str(binary)
 
         mock_thread.assert_not_called()
 
@@ -739,19 +768,19 @@ class TestFailedDownloadCaching:
                                              mock_disk_check, mock_mark):
         """After a failed download, subsequent resolves must not retry."""
         from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
         # First call: tries install, fails
         _resolve_tirith_path("tirith")
         assert mock_install.call_count == 1
-        assert _tirith_mod._resolved_path is _INSTALL_FAILED
+        assert _state().resolved_path is _INSTALL_FAILED
         mock_mark.assert_called_once_with("download_failed")  # reason persisted
 
         # Second call: hits the cache, does NOT call _install_tirith again
         _resolve_tirith_path("tirith")
         assert mock_install.call_count == 1  # still 1, not 2
 
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
 
 # ---------------------------------------------------------------------------
@@ -764,14 +793,15 @@ class TestExplicitPathNoAutoDownload:
     def test_tilde_explicit_path_missing_no_download(self, mock_which, mock_install):
         """An explicit ~/path that doesn't exist must NOT trigger download."""
         from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = None
+        _state("~/bin/tirith").resolved_path = None
 
         result = _resolve_tirith_path("~/bin/tirith")
         mock_install.assert_not_called()
-        assert _tirith_mod._resolved_path is _INSTALL_FAILED
+        assert _state("~/bin/tirith").resolved_path is _INSTALL_FAILED
+        assert result is not None
         assert "~" not in result  # tilde still expanded
 
-        _tirith_mod._resolved_path = None
+        _state("~/bin/tirith").resolved_path = None
 
     @patch("tools.tirith_security._mark_install_failed")
     @patch("tools.tirith_security._is_install_failed_on_disk", return_value=False)
@@ -781,13 +811,13 @@ class TestExplicitPathNoAutoDownload:
                                               mock_disk_check, mock_mark):
         """The default bare 'tirith' SHOULD trigger auto-download."""
         from tools.tirith_security import _resolve_tirith_path
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
         result = _resolve_tirith_path("tirith")
         mock_install.assert_called_once()
         assert result == "/auto/tirith"
 
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
 
 # ---------------------------------------------------------------------------
@@ -1183,7 +1213,7 @@ class TestInstallArchiveMemberValidation:
 class TestBackgroundInstall:
     def test_ensure_installed_non_blocking(self):
         """ensure_installed must return immediately when download needed."""
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
         with patch("tools.tirith_security._load_security_config",
                    return_value={"tirith_enabled": True, "tirith_path": "tirith",
@@ -1201,28 +1231,28 @@ class TestBackgroundInstall:
             MockThread.assert_called_once()
             mock_thread.start.assert_called_once()
 
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
     def test_resolve_returns_default_when_thread_alive(self):
         """_resolve_tirith_path returns default while background thread runs."""
         from tools.tirith_security import _resolve_tirith_path
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
         mock_thread = MagicMock()
         mock_thread.is_alive.return_value = True
-        _tirith_mod._install_thread = mock_thread
+        _state().install_thread = mock_thread
 
         with patch("tools.tirith_security.shutil.which", return_value=None), \
              patch("tools.tirith_security._managed_tirith_path", return_value="/nonexistent/tirith"):
             result = _resolve_tirith_path("tirith")
             assert result == "tirith"  # returns configured default, doesn't block
 
-        _tirith_mod._install_thread = None
-        _tirith_mod._resolved_path = None
+        _state().install_thread = None
+        _state().resolved_path = None
 
     def test_approval_path_starts_missing_install_in_background(self):
         """A first command must not synchronously download Tirith."""
-        _tirith_mod._resolved_path = None
-        _tirith_mod._install_thread = None
+        _state().resolved_path = None
+        _state().install_thread = None
         mock_thread = MagicMock()
         mock_thread.is_alive.return_value = False
 
@@ -1256,6 +1286,180 @@ class TestBackgroundInstall:
         run.assert_not_called()
 
 
+class TestRuntimeProfileIsolation:
+    def test_interleaved_profiles_keep_distinct_managed_paths(
+        self, tmp_path, monkeypatch
+    ):
+        homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+        managed_paths = []
+        for home in homes:
+            home.mkdir(mode=0o700)
+            managed = home / "bin" / "tirith"
+            managed.parent.mkdir(mode=0o700)
+            managed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            managed.chmod(0o700)
+            managed_paths.append(managed)
+
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
+        monkeypatch.setattr(
+            _tirith_mod, "_uses_image_managed_tirith_root", lambda: False
+        )
+        monkeypatch.setattr(
+            _tirith_mod, "_schedule_managed_update", lambda *_args, **_kwargs: None
+        )
+
+        resolved = []
+        states = []
+        for home in (homes[0], homes[1], homes[0]):
+            token = set_hermes_home_override(home)
+            try:
+                resolved.append(_tirith_mod._resolve_tirith_path("tirith"))
+                states.append(_state())
+            finally:
+                reset_hermes_home_override(token)
+
+        assert resolved == [
+            str(managed_paths[0]),
+            str(managed_paths[1]),
+            str(managed_paths[0]),
+        ]
+        assert states[0] is states[2]
+        assert states[0] is not states[1]
+
+    def test_background_update_inherits_profile_context(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        seen = {}
+
+        def record_update(path, *, log_failures=True):
+            seen["home"] = get_hermes_home()
+            seen["path"] = path
+            seen["log_failures"] = log_failures
+
+        monkeypatch.setattr(_tirith_mod, "_background_update", record_update)
+        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
+        monkeypatch.setattr(_tirith_mod, "_is_managed_tirith", lambda _path: True)
+        monkeypatch.setattr(
+            _tirith_mod, "_tirith_auto_install_allowed", lambda: True
+        )
+        monkeypatch.setattr(_tirith_mod, "_update_is_due", lambda: True)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            state = _state()
+            _tirith_mod._schedule_managed_update(
+                "/managed/tirith", "tirith", log_failures=False, state=state
+            )
+            worker = state.update_thread
+        finally:
+            reset_hermes_home_override(token)
+
+        assert worker is not None
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert seen == {
+            "home": profile_home,
+            "path": "/managed/tirith",
+            "log_failures": False,
+        }
+
+    def test_background_install_inherits_profile_context(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        seen = {}
+
+        def record_install(*, log_failures=True, state=None):
+            seen["home"] = get_hermes_home()
+            seen["log_failures"] = log_failures
+            seen["state"] = state
+
+        monkeypatch.setattr(_tirith_mod, "_background_install", record_install)
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_load_security_config",
+            lambda: {
+                "tirith_enabled": True,
+                "tirith_path": "tirith",
+                "tirith_timeout": 5,
+                "tirith_fail_open": True,
+            },
+        )
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
+        monkeypatch.setattr(
+            _tirith_mod, "_uses_image_managed_tirith_root", lambda: False
+        )
+        monkeypatch.setattr(
+            _tirith_mod, "_tirith_auto_install_allowed", lambda: True
+        )
+        monkeypatch.setattr(_tirith_mod, "_read_failure_reason", lambda: None)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            state = _state()
+            assert ensure_installed(log_failures=False) is None
+            worker = state.install_thread
+        finally:
+            reset_hermes_home_override(token)
+
+        assert worker is not None
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert seen == {
+            "home": profile_home,
+            "log_failures": False,
+            "state": state,
+        }
+
+    def test_circuit_breakers_are_scoped_per_profile(
+        self, tmp_path, monkeypatch
+    ):
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+        monkeypatch.setattr(_tirith_mod, "_load_security_config", lambda: _CFG)
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_resolve_tirith_path",
+            lambda *_args, **_kwargs: "tirith",
+        )
+        run = MagicMock(return_value=_mock_run(0, _json_stdout()))
+        monkeypatch.setattr(_tirith_mod.subprocess, "run", run)
+
+        token = set_hermes_home_override(profile_a)
+        try:
+            state_a = _state()
+            state_a.crash_count = _tirith_mod._CRASH_LIMIT
+            state_a.circuit_open = True
+            state_a.circuit_opened_at = time.monotonic()
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(profile_b)
+        try:
+            assert check_command_security("echo profile-b")["action"] == "allow"
+            state_b = _state()
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(profile_a)
+        try:
+            blocked_profile = check_command_security("echo profile-a")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert state_a is not state_b
+        assert blocked_profile["action"] == "allow"
+        assert "circuit breaker" in blocked_profile["summary"]
+        run.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Disk failure marker persistence (P2)
 # ---------------------------------------------------------------------------
@@ -1280,8 +1484,8 @@ class TestDiskFailureMarker:
     def test_in_memory_cosign_exec_failed_not_retried(self):
         """In-memory _INSTALL_FAILED with cosign_exec_failed is NOT retried."""
         from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = _INSTALL_FAILED
-        _tirith_mod._install_failure_reason = "cosign_exec_failed"
+        _state().resolved_path = _INSTALL_FAILED
+        _state().install_failure_reason = "cosign_exec_failed"
 
         with patch("tools.tirith_security.shutil.which", return_value=None), \
              patch("tools.tirith_security._managed_tirith_path", return_value="/nonexistent/tirith"), \
@@ -1290,7 +1494,7 @@ class TestDiskFailureMarker:
             assert result == "tirith"  # fallback
             mock_install.assert_not_called()
 
-        _tirith_mod._resolved_path = None
+        _state().resolved_path = None
 
 
 # ---------------------------------------------------------------------------
@@ -1363,22 +1567,22 @@ class TestCircuitBreakerRecovery:
     @patch("tools.tirith_security._load_security_config")
     def test_recognized_warn_resets_prior_failures(self, mock_cfg, mock_run):
         mock_cfg.return_value = _CFG
-        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT - 1
+        _state().crash_count = _tirith_mod._CRASH_LIMIT - 1
         mock_run.return_value = _mock_run(2, _json_stdout([], "review"))
 
         result = check_command_security("echo review")
 
         assert result["action"] == "warn"
-        assert _tirith_mod._crash_count == 0
-        assert not _tirith_mod._circuit_open
+        assert _state().crash_count == 0
+        assert not _state().circuit_open
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
     def test_open_circuit_honors_fail_closed(self, mock_cfg, mock_run):
         mock_cfg.return_value = {**_CFG, "tirith_fail_open": False}
-        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT
-        _tirith_mod._circuit_open = True
-        _tirith_mod._circuit_opened_at = time.monotonic()
+        _state().crash_count = _tirith_mod._CRASH_LIMIT
+        _state().circuit_open = True
+        _state().circuit_opened_at = time.monotonic()
 
         result = check_command_security("echo blocked")
 
@@ -1390,9 +1594,9 @@ class TestCircuitBreakerRecovery:
     @patch("tools.tirith_security._load_security_config")
     def test_open_circuit_makes_half_open_recovery_probe(self, mock_cfg, mock_run):
         mock_cfg.return_value = _CFG
-        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT
-        _tirith_mod._circuit_open = True
-        _tirith_mod._circuit_opened_at = 100.0
+        _state().crash_count = _tirith_mod._CRASH_LIMIT
+        _state().circuit_open = True
+        _state().circuit_opened_at = 100.0
         mock_run.return_value = _mock_run(0, _json_stdout())
 
         with patch(
@@ -1402,8 +1606,8 @@ class TestCircuitBreakerRecovery:
             result = check_command_security("echo recovered")
 
         assert result["action"] == "allow"
-        assert not _tirith_mod._circuit_open
-        assert _tirith_mod._circuit_opened_at is None
+        assert not _state().circuit_open
+        assert _state().circuit_opened_at is None
         mock_run.assert_called_once()
 
     @patch("tools.tirith_security.subprocess.run")
@@ -1412,12 +1616,15 @@ class TestCircuitBreakerRecovery:
         self, mock_cfg, mock_run
     ):
         mock_cfg.return_value = _CFG
-        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT
-        _tirith_mod._circuit_open = True
-        _tirith_mod._circuit_opened_at = 100.0
+        state = _state()
+        state.resolved_path = None
+        state.crash_count = _tirith_mod._CRASH_LIMIT
+        state.circuit_open = True
+        state.circuit_opened_at = 100.0
         entered = threading.Event()
         release = threading.Event()
         first_result = {}
+        current_time = [100.0 + _tirith_mod._CIRCUIT_RETRY_SECONDS]
 
         def slow_success(*_args, **_kwargs):
             entered.set()
@@ -1426,9 +1633,20 @@ class TestCircuitBreakerRecovery:
 
         mock_run.side_effect = slow_success
 
-        with patch(
-            "tools.tirith_security.time.monotonic",
-            return_value=100.0 + _tirith_mod._CIRCUIT_RETRY_SECONDS,
+        with (
+            patch(
+                "tools.tirith_security.time.monotonic",
+                side_effect=lambda: current_time[0],
+            ),
+            patch(
+                "tools.tirith_security.shutil.which",
+                return_value="/usr/local/bin/tirith",
+            ),
+            patch(
+                "tools.tirith_security._validated_tirith_path",
+                side_effect=lambda path: path,
+            ),
+            patch("tools.tirith_security._schedule_managed_update"),
         ):
             worker = threading.Thread(
                 target=lambda: first_result.update(
@@ -1438,6 +1656,9 @@ class TestCircuitBreakerRecovery:
             worker.start()
             assert entered.wait(5), "half-open probe did not start"
 
+            # Even after several additional cooldown periods, the explicit
+            # in-flight claim prevents another probe from starting.
+            current_time[0] = 100.0 + 3 * _tirith_mod._CIRCUIT_RETRY_SECONDS
             second = check_command_security("echo second")
             assert second["action"] == "allow"
             assert "circuit breaker" in second["summary"]
@@ -1448,7 +1669,35 @@ class TestCircuitBreakerRecovery:
 
         assert not worker.is_alive()
         assert first_result["result"]["action"] == "allow"
-        assert not _tirith_mod._circuit_open
+        assert not _state().circuit_open
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_programming_error_releases_half_open_claim(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        state = _state()
+        state.crash_count = _tirith_mod._CRASH_LIMIT
+        state.circuit_open = True
+        state.circuit_opened_at = 100.0
+        mock_run.side_effect = [
+            AttributeError("unexpected bug"),
+            _mock_run(0, _json_stdout()),
+        ]
+
+        with patch(
+            "tools.tirith_security.time.monotonic",
+            return_value=100.0 + _tirith_mod._CIRCUIT_RETRY_SECONDS,
+        ):
+            with pytest.raises(AttributeError, match="unexpected bug"):
+                check_command_security("echo broken probe")
+
+            assert state.circuit_open
+            assert not state.circuit_probe_in_flight
+            recovered = check_command_security("echo retry probe")
+
+        assert recovered["action"] == "allow"
+        assert not state.circuit_open
+        assert mock_run.call_count == 2
 
 
 # ---------------------------------------------------------------------------

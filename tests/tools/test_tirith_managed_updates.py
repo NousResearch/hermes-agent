@@ -12,6 +12,10 @@ import pytest
 import tools.tirith_security as tirith
 
 
+def _state(path: str = "tirith"):
+    return tirith._runtime_state(path)
+
+
 def _config(path: str = "tirith") -> dict:
     return {
         "tirith_enabled": True,
@@ -57,18 +61,12 @@ class _CapturedThread:
 
 @pytest.fixture(autouse=True)
 def _reset_update_globals():
-    tirith._resolved_path = None
-    tirith._install_thread = None
-    tirith._install_failure_reason = ""
-    tirith._update_thread = None
+    tirith._reset_runtime_states_for_tests()
     with tirith._in_process_update_state_lock:
         tirith._in_process_update_states.clear()
     _CapturedThread.instances = []
     yield
-    tirith._resolved_path = None
-    tirith._install_thread = None
-    tirith._install_failure_reason = ""
-    tirith._update_thread = None
+    tirith._reset_runtime_states_for_tests()
     with tirith._in_process_update_state_lock:
         tirith._in_process_update_states.clear()
 
@@ -221,6 +219,9 @@ class TestCrossProcessUpdateLock:
         external.write_text("outside", encoding="utf-8")
         (tmp_path / ".tirith-update.lock").symlink_to(external)
 
+        lock_fd, status = tirith._acquire_update_lock_with_status()
+        assert lock_fd is None
+        assert status == "error"
         assert tirith._acquire_update_lock() is None
         assert external.read_text(encoding="utf-8") == "outside"
 
@@ -635,8 +636,9 @@ class TestManagedCachePlacement:
     ):
         assert tirith._managed_tirith_root_is_denied(root)
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership boundary")
-    def test_peer_writable_managed_root_is_not_owned(self, tmp_path, monkeypatch):
+    def _assert_peer_writable_managed_root_is_not_owned(
+        self, tmp_path, monkeypatch
+    ):
         home = tmp_path / "home"
         managed = _write_executable(home / "bin" / "tirith")
         home.chmod(0o777)
@@ -644,9 +646,19 @@ class TestManagedCachePlacement:
 
         assert not tirith._is_managed_tirith(str(managed))
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership boundary")
-    @pytest.mark.parametrize("mode", [0o775, 0o757, 0o777, 0o655])
-    def test_managed_binary_requires_private_owner_executable_mode(
+    @pytest.mark.linux_only
+    def test_peer_writable_managed_root_is_not_owned_linux(
+        self, tmp_path, monkeypatch
+    ):
+        self._assert_peer_writable_managed_root_is_not_owned(tmp_path, monkeypatch)
+
+    @pytest.mark.macos_only
+    def test_peer_writable_managed_root_is_not_owned_macos(
+        self, tmp_path, monkeypatch
+    ):
+        self._assert_peer_writable_managed_root_is_not_owned(tmp_path, monkeypatch)
+
+    def _assert_managed_binary_requires_private_owner_executable_mode(
         self, mode, tmp_path, monkeypatch
     ):
         home = tmp_path / "home"
@@ -656,8 +668,25 @@ class TestManagedCachePlacement:
 
         assert not tirith._is_managed_tirith(str(managed))
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership boundary")
-    def test_managed_binary_must_be_owned_by_effective_user(
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize("mode", [0o775, 0o757, 0o777, 0o655])
+    def test_managed_binary_requires_private_owner_executable_mode_linux(
+        self, mode, tmp_path, monkeypatch
+    ):
+        self._assert_managed_binary_requires_private_owner_executable_mode(
+            mode, tmp_path, monkeypatch
+        )
+
+    @pytest.mark.macos_only
+    @pytest.mark.parametrize("mode", [0o775, 0o757, 0o777, 0o655])
+    def test_managed_binary_requires_private_owner_executable_mode_macos(
+        self, mode, tmp_path, monkeypatch
+    ):
+        self._assert_managed_binary_requires_private_owner_executable_mode(
+            mode, tmp_path, monkeypatch
+        )
+
+    def _assert_managed_binary_must_be_owned_by_effective_user(
         self, tmp_path, monkeypatch
     ):
         managed = _write_executable(tmp_path / "tirith")
@@ -676,6 +705,22 @@ class TestManagedCachePlacement:
         )
 
         assert not tirith._is_owned_private_executable(str(managed))
+
+    @pytest.mark.linux_only
+    def test_managed_binary_must_be_owned_by_effective_user_linux(
+        self, tmp_path, monkeypatch
+    ):
+        self._assert_managed_binary_must_be_owned_by_effective_user(
+            tmp_path, monkeypatch
+        )
+
+    @pytest.mark.macos_only
+    def test_managed_binary_must_be_owned_by_effective_user_macos(
+        self, tmp_path, monkeypatch
+    ):
+        self._assert_managed_binary_must_be_owned_by_effective_user(
+            tmp_path, monkeypatch
+        )
 
     @pytest.mark.parametrize(
         "entries, expected",
@@ -830,8 +875,8 @@ class TestUpdateScheduling:
 
         assert len(_CapturedThread.instances) == 1
         thread = _CapturedThread.instances[0]
-        assert thread.target is tirith._background_update
-        assert thread.args == (str(managed),)
+        assert thread.target.__name__ == "run"
+        assert thread.args == (tirith._background_update, str(managed))
         assert thread.kwargs == {"log_failures": False}
         assert thread.daemon is True
         assert thread.started
@@ -951,7 +996,7 @@ class TestUpdateScheduling:
 
         # Startup performs the first maintenance check.
         assert tirith.ensure_installed(log_failures=False) == str(managed)
-        first_worker = tirith._update_thread
+        first_worker = _state().update_thread
         assert first_worker is not None
         first_worker.join(timeout=2)
         assert not first_worker.is_alive()
@@ -962,12 +1007,12 @@ class TestUpdateScheduling:
         # A normal command in the same process must not launch another worker
         # while the successful-check TTL is fresh.
         assert tirith._resolve_tirith_path("tirith") == str(managed)
-        assert tirith._update_thread is first_worker
+        assert _state().update_thread is first_worker
 
         # Model a Tirith release after startup by expiring the check state.
         assert tirith._write_update_state("current", now=1)
         assert tirith._resolve_tirith_path("tirith") == str(managed)
-        second_worker = tirith._update_thread
+        second_worker = _state().update_thread
         assert second_worker is not None
         assert second_worker is not first_worker
         second_worker.join(timeout=2)
@@ -1471,7 +1516,7 @@ class TestSelfUpdateSubprocess:
     def test_failed_update_keeps_scanner_path_and_binary(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         managed = _write_executable(tmp_path / "bin" / "tirith")
-        tirith._resolved_path = str(managed)
+        _state().resolved_path = str(managed)
         monkeypatch.setattr(
             tirith.subprocess,
             "run",
@@ -1481,11 +1526,12 @@ class TestSelfUpdateSubprocess:
         )
 
         assert tirith._run_tirith_update(str(managed)) == "failed"
-        assert tirith._resolved_path == str(managed)
+        assert _state().resolved_path == str(managed)
         assert managed.read_bytes() == b"old tirith"
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership boundary")
-    def test_mode_drift_before_update_prevents_spawn(self, tmp_path, monkeypatch):
+    def _assert_mode_drift_before_update_prevents_spawn(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         managed = _write_executable(tmp_path / "bin" / "tirith")
         managed.chmod(0o775)
@@ -1495,12 +1541,24 @@ class TestSelfUpdateSubprocess:
         assert tirith._run_tirith_update(str(managed)) == "failed"
         run.assert_not_called()
 
+    @pytest.mark.linux_only
+    def test_mode_drift_before_update_prevents_spawn_linux(
+        self, tmp_path, monkeypatch
+    ):
+        self._assert_mode_drift_before_update_prevents_spawn(tmp_path, monkeypatch)
+
+    @pytest.mark.macos_only
+    def test_mode_drift_before_update_prevents_spawn_macos(
+        self, tmp_path, monkeypatch
+    ):
+        self._assert_mode_drift_before_update_prevents_spawn(tmp_path, monkeypatch)
+
     def test_signature_required_failure_keeps_binary_without_weaker_retry(
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         managed = _write_executable(tmp_path / "bin" / "tirith")
-        tirith._resolved_path = str(managed)
+        _state().resolved_path = str(managed)
         run = MagicMock(
             return_value=subprocess.CompletedProcess(
                 args=[],
@@ -1512,7 +1570,7 @@ class TestSelfUpdateSubprocess:
         monkeypatch.setattr(tirith.subprocess, "run", run)
 
         assert tirith._run_tirith_update(str(managed)) == "failed"
-        assert tirith._resolved_path == str(managed)
+        assert _state().resolved_path == str(managed)
         assert managed.read_bytes() == b"old tirith"
         run.assert_called_once()
         assert "--allow-unsigned" not in run.call_args.args[0]
@@ -1544,7 +1602,7 @@ class TestBackgroundWorkerIsolation:
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         managed = _write_executable(tmp_path / "bin" / "tirith")
-        tirith._resolved_path = str(managed)
+        _state().resolved_path = str(managed)
         monkeypatch.setattr(tirith, "_tirith_auto_install_allowed", lambda: True)
         monkeypatch.setattr(
             tirith, "_maintain_managed_tirith", lambda *_a, **_kw: "failed"
@@ -1552,11 +1610,11 @@ class TestBackgroundWorkerIsolation:
 
         tirith._background_update(str(managed), log_failures=False)
 
-        assert tirith._resolved_path == str(managed)
+        assert _state().resolved_path == str(managed)
         assert managed.read_bytes() == b"old tirith"
         assert (tmp_path / ".tirith-update.lock").is_file()
         assert not (tmp_path / ".tirith-install-failed").exists()
-        assert tirith._install_failure_reason == ""
+        assert _state().install_failure_reason == ""
         state = json.loads(
             (tmp_path / ".tirith-update-state.json").read_text(encoding="utf-8")
         )
@@ -1577,6 +1635,31 @@ class TestBackgroundWorkerIsolation:
             tirith._release_update_lock(lock_fd)
 
         maintain.assert_not_called()
+        assert tirith._read_update_state() is None
+
+    def test_operational_lock_error_sets_short_backoff(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        maintain = MagicMock(return_value="current")
+        monkeypatch.setattr(tirith, "_tirith_auto_install_allowed", lambda: True)
+        monkeypatch.setattr(
+            tirith,
+            "_acquire_update_lock_with_status",
+            lambda: (None, "error"),
+        )
+        monkeypatch.setattr(tirith, "_maintain_managed_tirith", maintain)
+
+        tirith._background_update(str(managed), log_failures=False)
+
+        maintain.assert_not_called()
+        state = tirith._read_update_state()
+        assert state is not None
+        assert state["outcome"] == "failed"
+        assert not tirith._update_is_due(
+            now=state["checked_at"] + tirith._UPDATE_FAILURE_TTL - 1
+        )
 
     def test_shared_fresh_state_is_rechecked_after_lock(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

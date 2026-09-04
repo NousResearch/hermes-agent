@@ -103,6 +103,18 @@ class TestCodexBuildKwargs:
         assert "prompt_cache_options" not in kw
         assert kw["reasoning"]["effort"] == "none"
 
+    def test_astra_openai_subdomain_is_not_official_route(self, transport):
+        """Only api.openai.com gets Astra's official cache contract."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://evil.api.openai.com/v1",
+            request_overrides={"prompt_cache_options": {"ttl": "30m"}},
+        )
+
+        assert "prompt_cache_options" not in kw
+
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
         the Codex backend only knows the base slug, so build_kwargs must

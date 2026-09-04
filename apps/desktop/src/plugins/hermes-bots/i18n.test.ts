@@ -119,6 +119,17 @@ describe('BOTS_LOCALES', () => {
     }
   })
 
+  it('distinguishes saved requests, online requirements and local files', () => {
+    const byPath = Object.fromEntries(leafEntries(en!))
+    const copy = (path: string) => byPath[`group.${path}`] as (value: string) => string
+    expect(copy('hostedStopQueued')('Studio')).toContain('request saved')
+    expect(copy('hostedStopQueued')('Studio')).not.toContain('It will stop')
+    expect(byPath['group.continuityOnDesc']).toContain('must stay online')
+    expect(byPath['group.continuityDesktopDesc']).toContain('Keep this Desktop open')
+    expect(byPath['group.filesClassicDescription']).toContain('on this Desktop')
+    expect(byPath['group.returnToLatest']).toBe(byPath['group.showLatest'])
+  })
+
   it('keeps automatic continuity copy concise and free of gateway jargon', () => {
     const byPath = Object.fromEntries(leafEntries(en!))
     const copy = (path: string) => byPath[`group.${path}`] as (value: string) => string

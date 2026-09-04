@@ -253,7 +253,7 @@ describe('snapshot navigation and restart recovery', () => {
     expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8 }, expect.any(AbortSignal))
   })
 
-  it('offers Return to latest after a restart invalidates an Older cursor', async () => {
+  it('offers Show latest after a restart invalidates an Older cursor', async () => {
     const loadPage = vi
       .fn()
       .mockResolvedValueOnce(parsedFilePage([fileItem()], true))
@@ -263,9 +263,9 @@ describe('snapshot navigation and restart recovery', () => {
     render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
     await screen.findByText('file-20.txt')
     fireEvent.click(screen.getByRole('button', { name: 'Older' }))
-    await screen.findByText('This file list has expired.')
+    await screen.findByText('Refresh the file list to continue.')
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Return to latest' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show latest' }))
     await screen.findByText('fresh-snapshot.txt')
     expect(loadPage.mock.calls.map(call => call[1]?.cursor)).toEqual([undefined, 'cursor-after-20', undefined])
   })

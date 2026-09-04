@@ -346,7 +346,7 @@ class HostedRoomService:
         if (
             recover is None or not isinstance(identity, driver.TaskIdentity)
             or not isinstance(payload, Mapping) or execution_generation < 1
-            or task.get("status") not in {"running", "indeterminate", "stopping"}):
+            or task.get("status") not in {"indeterminate", "stopping"}):
             return
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)

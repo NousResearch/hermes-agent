@@ -156,6 +156,20 @@ def test_spawn_sets_dotnet_root_from_dotnet_binary(monkeypatch, tmp_path):
     assert spec.env.get("DOTNET_ROOT") == str(sdk)
 
 
+def test_spawn_state_dir_is_stable_under_normcase(monkeypatch, tmp_path):
+    """Windows case-folded paths must share one FSAC state directory."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+    monkeypatch.setattr(srv, "_which", lambda *names: "/usr/bin/fsautocomplete")
+    monkeypatch.setattr(srv.os.path, "normcase", lambda p: p.lower())
+    ctx = ServerContext(workspace_root=str(tmp_path), install_strategy="manual")
+    spec_a = srv._spawn_fsautocomplete(str(tmp_path / "Repo"), ctx)
+    spec_b = srv._spawn_fsautocomplete(str(tmp_path / "repo"), ctx)
+    assert spec_a is not None and spec_b is not None
+    state_a = spec_a.command[spec_a.command.index("--state-directory") + 1]
+    state_b = spec_b.command[spec_b.command.index("--state-directory") + 1]
+    assert state_a == state_b
+
+
 def test_spawn_does_not_clobber_user_dotnet_root(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
     monkeypatch.setattr(srv, "_which", lambda *names: "/usr/bin/fsautocomplete")
@@ -214,6 +228,35 @@ def test_root_does_not_walk_above_workspace(tmp_path: Path):
     src.mkdir(parents=True)
     found = srv._root_fsharp(str(src / "App.fs"), str(repo))
     assert found == str(repo)
+
+
+def test_root_empty_workspace_does_not_walk(tmp_path: Path):
+    """An empty workspace must not walk toward a stray .sln above the file."""
+    (tmp_path / "Other.sln").write_text("")
+    nested = tmp_path / "a" / "b" / "c"
+    nested.mkdir(parents=True)
+    (nested / "App.fs").write_text("")
+    assert srv._root_fsharp(str(nested / "App.fs"), "") is None
+    assert srv._root_fsharp(str(nested / "App.fs"), None) is None
+
+
+def test_root_prefers_strong_marker_over_inner_directory_build_props(tmp_path: Path):
+    repo = tmp_path / "repo"
+    nested = repo / "src"
+    nested.mkdir(parents=True)
+    (nested / "Directory.Build.props").write_text("")
+    (repo / "paket.dependencies").write_text("")
+    found = srv._root_fsharp(str(nested / "App.fs"), str(repo))
+    assert found == str(repo)
+
+
+def test_root_uses_directory_build_props_as_fallback(tmp_path: Path):
+    repo = tmp_path / "repo"
+    nested = repo / "src"
+    nested.mkdir(parents=True)
+    (nested / "Directory.Build.props").write_text("")
+    found = srv._root_fsharp(str(nested / "App.fs"), str(repo))
+    assert found == str(nested)
 
 
 def test_root_uses_global_json(tmp_path: Path):

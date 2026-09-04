@@ -980,7 +980,12 @@ def _prompt_and_record(
         f"  commands you trust."
     )
     try:
-        answer = input("Allow this hook to run? [y/N]: ").strip().lower()
+        # safe_input, not bare input(): the classic CLI pushes
+        # modifyOtherKeys/Kitty extended-key mode globally, and a shifted
+        # answer would otherwise arrive as raw escape text (#97975).
+        from hermes_cli.input_decode import safe_input
+
+        answer = safe_input("Allow this hook to run? [y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()  # keep the terminal tidy after ^C
         return False

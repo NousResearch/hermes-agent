@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from hermes_cli.cli_output import line_input
+from hermes_cli.input_decode import safe_input
 
 import math
 import sys
@@ -353,7 +354,7 @@ def auth_add_command(args) -> None:
             else:
                 print("Found existing shared Nous OAuth credentials")
             try:
-                do_import = input("Import these credentials? [Y/n]: ").strip().lower()
+                do_import = safe_input("Import these credentials? [Y/n]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 do_import = "y"
             if do_import in {"", "y", "yes"}:
@@ -745,7 +746,7 @@ def _interactive_auth() -> None:
         print(f"  {i}. {choice}")
 
     try:
-        raw = input("\nChoice: ").strip()
+        raw = safe_input("\nChoice: ").strip()
     except (EOFError, KeyboardInterrupt):
         return
 
@@ -791,7 +792,7 @@ def _interactive_add() -> None:
         print("  1. API key (paste a key from the provider dashboard)")
         print("  2. OAuth login (authenticate via browser)")
         try:
-            type_choice = input("Type [1/2]: ").strip()
+            type_choice = safe_input("Type [1/2]: ").strip()
         except (EOFError, KeyboardInterrupt):
             return
         if type_choice == "2":
@@ -862,7 +863,7 @@ def _interactive_strategy() -> None:
         print(f"  {i}. {s:15s} — {descriptions.get(s, '')}{marker}")
 
     try:
-        raw = input("\nStrategy [1-4]: ").strip()
+        raw = safe_input("\nStrategy [1-4]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return
     if not raw:

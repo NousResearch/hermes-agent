@@ -45,6 +45,7 @@ from hermes_constants import (
     mark_named_profile_deleted,
     named_profile_is_deleted,
 )
+from hermes_cli.input_decode import safe_input
 
 logger = logging.getLogger(__name__)
 
@@ -1779,7 +1780,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if not yes:
         print()
         try:
-            confirm = input(f"Type '{canon}' to confirm: ").strip()
+            confirm = safe_input(f"Type '{canon}' to confirm: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nCancelled.")
             return profile_dir

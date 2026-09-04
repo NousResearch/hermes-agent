@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.secret_scope import get_secret
+from hermes_cli.input_decode import safe_input
 
 from agent.memory_provider import MemoryProvider, RecallStatus
 from hermes_constants import get_hermes_home
@@ -1043,12 +1044,12 @@ class HindsightMemoryProvider(MemoryProvider):
             if api_key:
                 env_writes["HINDSIGHT_API_KEY"] = api_key
 
-            val = input(f"  API URL [{_DEFAULT_API_URL}]: ").strip()
+            val = safe_input(f"  API URL [{_DEFAULT_API_URL}]: ").strip()
             if val:
                 provider_config["api_url"] = val
 
         elif mode == "local_external":
-            val = input(f"  Hindsight API URL [{_DEFAULT_LOCAL_URL}]: ").strip()
+            val = safe_input(f"  Hindsight API URL [{_DEFAULT_LOCAL_URL}]: ").strip()
             provider_config["api_url"] = val or _DEFAULT_LOCAL_URL
 
             sys.stdout.write("  API key (optional, blank to skip): ")
@@ -1064,7 +1065,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 if existing_base_url:
                     prompt += f" [{existing_base_url}]"
                 prompt += ": "
-                val = input(prompt).strip()
+                val = safe_input(prompt).strip()
                 if val:
                     provider_config["llm_base_url"] = val
             elif llm_provider == "openrouter":
@@ -1072,7 +1073,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
             provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
             current_model = provider_config.get("llm_model") or provider_default_model
-            val = input(f"  LLM model [{current_model}]: ").strip()
+            val = safe_input(f"  LLM model [{current_model}]: ").strip()
             provider_config["llm_model"] = val or current_model
 
             sys.stdout.write("  LLM API key: ")

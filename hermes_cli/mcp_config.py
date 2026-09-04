@@ -24,6 +24,7 @@ from hermes_cli.config import (
     get_hermes_home,  # noqa: F401 — used by test mocks
 )
 from hermes_cli.colors import Colors, color
+from hermes_cli.input_decode import safe_input
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
@@ -59,7 +60,9 @@ def _error(text: str):
 def _confirm(question: str, default: bool = True) -> bool:
     default_str = "Y/n" if default else "y/N"
     try:
-        val = input(color(f"  {question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
+        # safe_input: decode modifyOtherKeys/Kitty escapes leaked into bare
+        # input() by the CLI's global extended-key push (#97975).
+        val = safe_input(color(f"  {question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
         return default
@@ -592,7 +595,7 @@ def cmd_mcp_add(args):
 
     # Ask: enable all, select, or cancel
     try:
-        choice = input(
+        choice = safe_input(
             color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
         ).strip().lower()
     except (KeyboardInterrupt, EOFError):

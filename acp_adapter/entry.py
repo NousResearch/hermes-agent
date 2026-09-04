@@ -179,7 +179,9 @@ def _run_setup() -> None:
     if not sys.stdin.isatty():
         return
     try:
-        reply = input(
+        from hermes_cli.input_decode import safe_input
+
+        reply = safe_input(
             "\nInstall browser tools? Downloads agent-browser (npm) and "
             "optionally Playwright Chromium (~400 MB). [y/N] "
         ).strip().lower()

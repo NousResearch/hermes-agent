@@ -372,6 +372,12 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        # How user-attached voice notes and audio files are presented to the main model.
+        #   "auto"   — attach natively when the active model/provider supports audio
+        #              input (e.g. Gemini, GPT-4o Audio). Otherwise fall back to STT.
+        #   "native" — always attach natively as multimodal input_audio / inlineData parts.
+        #   "stt"    — always pre-transcribe via STT; model only sees transcription text.
+        "audio_input_mode": "auto",
         "disabled_toolsets": [],
 
         # Per-model reasoning effort overrides (spelling-tolerant).

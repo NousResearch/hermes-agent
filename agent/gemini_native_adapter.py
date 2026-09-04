@@ -299,6 +299,63 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
                     }
                 }
             )
+        elif ptype in ("input_audio", "audio"):
+            audio_info = item.get("input_audio") or item.get("audio") or {}
+            b64_data = None
+            mime = None
+            if isinstance(audio_info, dict):
+                b64_data = audio_info.get("data")
+                fmt = audio_info.get("format") or audio_info.get("mime_type") or audio_info.get("mimeType")
+                if fmt:
+                    ext_mime = {
+                        "wav": "audio/wav",
+                        "mp3": "audio/mp3",
+                        "ogg": "audio/ogg",
+                        "oga": "audio/ogg",
+                        "m4a": "audio/m4a",
+                        "aac": "audio/aac",
+                        "flac": "audio/flac",
+                    }
+                    mime = ext_mime.get(str(fmt).lower(), f"audio/{fmt}" if "/" not in str(fmt) else str(fmt))
+            elif isinstance(item.get("data"), str):
+                b64_data = item.get("data")
+                fmt = item.get("format") or item.get("mime_type") or item.get("mimeType")
+                if fmt:
+                    mime = f"audio/{fmt}" if "/" not in str(fmt) else str(fmt)
+            if b64_data:
+                if not mime:
+                    mime = "audio/wav"
+                if mime == "audio/oga":
+                    mime = "audio/ogg"
+                parts.append(
+                    {
+                        "inlineData": {
+                            "mimeType": mime,
+                            "data": b64_data,
+                        }
+                    }
+                )
+        elif ptype == "audio_url":
+            url = ((item.get("audio_url") or {}).get("url") or "")
+            if isinstance(url, str) and url.startswith("data:"):
+                try:
+                    header, encoded = url.split(",", 1)
+                    mime = header.split(":", 1)[1].split(";", 1)[0]
+                    if mime == "audio/oga":
+                        mime = "audio/ogg"
+                    raw = base64.b64decode(encoded)
+                    parts.append(
+                        {
+                            "inlineData": {
+                                "mimeType": mime,
+                                "data": base64.b64encode(raw).decode("ascii"),
+                            }
+                        }
+                    )
+                except Exception:
+                    continue
+        elif "inlineData" in item:
+            parts.append(item)
     return parts
 
 

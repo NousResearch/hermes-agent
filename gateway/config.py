@@ -967,6 +967,7 @@ class GatewayConfig:
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
+    audio_input_mode: str = "auto"  # How inbound audio is routed: auto | native | stt
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -1149,6 +1150,7 @@ class GatewayConfig:
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
+            "audio_input_mode": self.audio_input_mode,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -1217,6 +1219,17 @@ class GatewayConfig:
                 if isinstance(data.get("stt"), dict)
                 else None
             )
+
+        audio_input_mode = data.get("audio_input_mode")
+        if audio_input_mode is None:
+            raw_agent = data.get("agent")
+            if isinstance(raw_agent, dict):
+                audio_input_mode = raw_agent.get("audio_input_mode")
+        if audio_input_mode is None and isinstance(raw_gateway, dict):
+            audio_input_mode = raw_gateway.get("audio_input_mode")
+        if not isinstance(audio_input_mode, str) or not audio_input_mode.strip():
+            audio_input_mode = "auto"
+        audio_input_mode = audio_input_mode.strip().lower()
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -1334,6 +1347,7 @@ class GatewayConfig:
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
+            audio_input_mode=audio_input_mode,
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),

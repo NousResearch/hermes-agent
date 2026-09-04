@@ -7061,12 +7061,51 @@ class TurnRunner:
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
         try:
-            # If _prepare_inbound_message_text buffered image paths for native
+            # If _prepare_inbound_message_text buffered image/audio paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
             # content list. Consume-and-clear so subsequent turns on the same
-            # runner instance don't re-attach stale images.
+            # runner instance don't re-attach stale media.
             _native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
-            if _native_imgs:
+            _native_audios = self._runner._consume_pending_native_audio_paths(ctx.session_key)
+            if _native_imgs and _native_audios:
+                try:
+                    from agent.image_routing import build_native_content_parts
+                    from agent.audio_routing import build_native_audio_content_parts
+                    _img_parts, _img_skipped = build_native_content_parts(
+                        ctx.message,
+                        _native_imgs,
+                    )
+                    _aud_parts, _aud_skipped = build_native_audio_content_parts(
+                        "",
+                        _native_audios,
+                    )
+                    _combined_parts: List[Dict[str, Any]] = []
+                    _text_pieces: List[str] = []
+                    for p in _img_parts:
+                        if p.get("type") == "text" and p.get("text"):
+                            _text_pieces.append(p["text"])
+                    for p in _aud_parts:
+                        if p.get("type") == "text" and p.get("text"):
+                            _text_pieces.append(p["text"])
+                    if _text_pieces:
+                        _combined_parts.append({"type": "text", "text": "\n\n".join(_text_pieces)})
+                    for p in _img_parts:
+                        if p.get("type") != "text":
+                            _combined_parts.append(p)
+                    for p in _aud_parts:
+                        if p.get("type") != "text":
+                            _combined_parts.append(p)
+                    if any(p.get("type") in ("image_url", "input_audio") for p in _combined_parts):
+                        _run_message: Any = _combined_parts
+                    else:
+                        _run_message = ctx.message
+                except Exception as _combo_exc:
+                    logger.warning(
+                        "Native multimodal attachment failed, falling back to text: %s",
+                        _combo_exc,
+                    )
+                    _run_message = ctx.message
+            elif _native_imgs:
                 try:
                     from agent.image_routing import build_native_content_parts
                     _parts, _skipped = build_native_content_parts(
@@ -7087,6 +7126,29 @@ class TurnRunner:
                     logger.warning(
                         "Native image attachment failed, falling back to text: %s",
                         _img_exc,
+                    )
+                    _run_message = ctx.message
+            elif _native_audios:
+                try:
+                    from agent.audio_routing import build_native_audio_content_parts
+                    _parts, _skipped = build_native_audio_content_parts(
+                        ctx.message,
+                        _native_audios,
+                    )
+                    if _skipped:
+                        logger.warning(
+                            "Native audio attachment: skipped %d unreadable path(s): %s",
+                            len(_skipped), _skipped,
+                        )
+                    if any(p.get("type") == "input_audio" for p in _parts):
+                        _run_message = _parts
+                    else:
+                        # All audio failed to read — fall back to plain text.
+                        _run_message = ctx.message
+                except Exception as _aud_exc:
+                    logger.warning(
+                        "Native audio attachment failed, falling back to text: %s",
+                        _aud_exc,
                     )
                     _run_message = ctx.message
             else:
@@ -7509,6 +7571,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _pending_messages = legacy_dict_property("_pending_messages")
     _pending_native_image_paths_by_session = legacy_dict_property(
         "_pending_native_image_paths_by_session"
+    )
+    _pending_native_audio_paths_by_session = legacy_dict_property(
+        "_pending_native_audio_paths_by_session"
     )
     _session_ephemeral_pin = legacy_dict_property("_session_ephemeral_pin")
     _session_vc_last = legacy_dict_property("_session_vc_last")
@@ -20538,6 +20603,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
+        self._consume_pending_native_audio_paths(session_key)
 
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
@@ -20652,29 +20718,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
 
             if audio_paths:
-                message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-                    message_text,
-                    audio_paths,
+                _audio_mode = await asyncio.to_thread(
+                    self._decide_audio_input_mode,
+                    source=source,
+                    session_key=session_key,
                 )
-                # Echo each successful transcript back to the user immediately
-                # when configured. Lets users verify STT quality in real-time,
-                # while allowing quiet STT for users who only want the agent to
-                # receive the transcription.
-                if _successful_transcripts and self._should_echo_stt_transcripts():
-                    _echo_adapter = self._adapter_for_source(source)
-                    _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _echo_adapter:
-                        for _tx in _successful_transcripts:
-                            try:
-                                await _echo_adapter.send(
-                                    source.chat_id,
-                                    f'🎙️ "{_tx}"',
-                                    metadata=_echo_meta,
-                                )
-                            except Exception as _echo_exc:
-                                logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
-                                )
+                if _audio_mode == "native":
+                    self._session_state(
+                        session_key
+                    ).persistent.native_audio_paths = list(audio_paths)
+                    logger.info(
+                        "Audio routing: native (model supports audio). %d audio file(s) will be attached inline.",
+                        len(audio_paths),
+                    )
+                else:
+                    message_text, _successful_transcripts = await self._enrich_message_with_transcription(
+                        message_text,
+                        audio_paths,
+                    )
+                    # Echo each successful transcript back to the user immediately
+                    # when configured. Lets users verify STT quality in real-time,
+                    # while allowing quiet STT for users who only want the agent to
+                    # receive the transcription.
+                    if _successful_transcripts and self._should_echo_stt_transcripts():
+                        _echo_adapter = self._adapter_for_source(source)
+                        _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                        if _echo_adapter:
+                            for _tx in _successful_transcripts:
+                                try:
+                                    await _echo_adapter.send(
+                                        source.chat_id,
+                                        f'🎙️ "{_tx}"',
+                                        metadata=_echo_meta,
+                                    )
+                                except Exception as _echo_exc:
+                                    logger.debug(
+                                        "Transcript echo failed (non-fatal): %s", _echo_exc,
+                                    )
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
                 # English notice via `_stt_adapter.send()`. That bypassed the
@@ -20969,6 +21049,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return []
         paths = list(state.persistent.native_image_paths)
         state.persistent.native_image_paths = []
+        return paths
+
+    def _consume_pending_native_audio_paths(self, session_key: str) -> List[str]:
+        state = self._peek_session_state(session_key)
+        if state is None or not state.persistent.native_audio_paths:
+            return []
+        paths = list(state.persistent.native_audio_paths)
+        state.persistent.native_audio_paths = []
         return paths
 
     def _cache_session_source(self, session_key: str, source) -> None:
@@ -27673,6 +27761,72 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 break
             worker.join(remaining)
         return sum(1 for worker in workers if worker.is_alive())
+
+    def _decide_audio_input_mode(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> str:
+        """Resolve audio-input routing for the effective model this turn.
+
+        Returns ``"native"`` (attach raw audio parts on the user turn) or ``"stt"``
+        (pre-transcribe via STT pipeline). See agent/audio_routing.py for the full decision table.
+        """
+        try:
+            from agent.audio_routing import decide_audio_input_mode
+            from agent.auxiliary_client import _read_main_model, _read_main_provider
+            from hermes_cli.config import load_config
+
+            cfg = user_config if isinstance(user_config, dict) else load_config()
+            resolved_provider = (provider or "").strip()
+            resolved_model = (model or "").strip()
+            resolved_requested_provider = ""
+
+            needs_session_runtime = not resolved_provider or not resolved_model
+            has_session_identity = source is not None or session_key
+            if needs_session_runtime and has_session_identity:
+                try:
+                    turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        source=source,
+                        session_key=session_key,
+                        user_config=cfg,
+                    )
+                    if not resolved_model and isinstance(turn_model, str):
+                        resolved_model = turn_model.strip()
+                    runtime_provider = runtime_kwargs.get("provider") if isinstance(runtime_kwargs, dict) else None
+                    runtime_requested_provider = (
+                        runtime_kwargs.get("requested_provider")
+                        if isinstance(runtime_kwargs, dict)
+                        else None
+                    )
+                    if not resolved_provider and isinstance(runtime_provider, str):
+                        resolved_provider = runtime_provider.strip()
+                    if isinstance(runtime_requested_provider, str):
+                        resolved_requested_provider = runtime_requested_provider.strip()
+                except Exception as exc:
+                    logger.debug(
+                        "audio_routing: session runtime resolution failed, falling back to config — %s",
+                        exc,
+                    )
+
+            if not resolved_provider:
+                resolved_provider = _read_main_provider()
+            if not resolved_model:
+                resolved_model = _read_main_model()
+
+            return decide_audio_input_mode(
+                resolved_provider,
+                resolved_model,
+                cfg,
+                requested_provider=resolved_requested_provider,
+            )
+        except Exception as exc:
+            logger.debug("audio_routing: decision failed, falling back to stt — %s", exc)
+            return "stt"
 
     def _decide_image_input_mode(
         self,

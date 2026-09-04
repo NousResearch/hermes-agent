@@ -2234,6 +2234,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
+            ("GET", "/v1/plugins", self._handle_plugins),
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
@@ -3527,6 +3528,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+                "plugins": {"method": "GET", "path": "/v1/plugins"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
                 "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
@@ -4263,6 +4265,36 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "list",
             "platform": "api_server",
             "data": data,
+        })
+
+    async def _handle_plugins(self, request: "web.Request") -> "web.Response":
+        """GET /v1/plugins — list discovered plugins and their registrations.
+
+        Read-only listing intended for external clients that need to know
+        which plugins are installed and what they registered (tools, hooks,
+        middleware, commands) without sending a chat message and asking
+        the model. Mirrors what the CLI surfaces through ``/plugins list``,
+        but as a deterministic JSON payload. Disabled plugins are included
+        with ``enabled: false`` so clients can see the full surface.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            plugins = get_plugin_manager().list_plugins()
+        except Exception:
+            logger.exception("GET /v1/plugins failed")
+            return web.json_response(
+                _openai_error("Failed to enumerate plugins", err_type="server_error"),
+                status=500,
+            )
+
+        return web.json_response({
+            "object": "list",
+            "data": plugins,
         })
 
     # ------------------------------------------------------------------

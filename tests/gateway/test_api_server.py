@@ -312,6 +312,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
+    app.router.add_get("/v1/plugins", adapter._handle_plugins)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -886,6 +887,8 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            plugins_endpoint = data["endpoints"]["plugins"]
+            assert plugins_endpoint == {"method": "GET", "path": "/v1/plugins"}
 
     @pytest.mark.asyncio
     async def test_capabilities_reports_in_memory_idempotency_fallback(self, adapter):
@@ -972,6 +975,57 @@ class TestToolsetsEndpoint:
             call.kwargs["features"] is feature_snapshot
             for call in has_keys.call_args_list
         )
+
+
+class TestPluginsEndpoint:
+    @pytest.mark.asyncio
+    async def test_plugins_returns_list_envelope(self, adapter):
+        fake_plugins = [
+            {
+                "name": "Example Plugin",
+                "key": "example",
+                "kind": "integration",
+                "version": "1.2.3",
+                "description": "An example plugin",
+                "source": "builtin",
+                "enabled": True,
+                "tools": 2,
+                "hooks": 1,
+                "middleware": 0,
+                "commands": 3,
+                "error": None,
+            },
+            {
+                "name": "Disabled Plugin",
+                "key": "disabled-one",
+                "kind": "integration",
+                "version": "0.1.0",
+                "description": "Not loaded",
+                "source": "user",
+                "enabled": False,
+                "tools": 0,
+                "hooks": 0,
+                "middleware": 0,
+                "commands": 0,
+                "error": None,
+            },
+        ]
+        with patch(
+            "hermes_cli.plugins.get_plugin_manager",
+            return_value=types.SimpleNamespace(list_plugins=lambda: list(fake_plugins)),
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/plugins")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "list"
+                by_key = {p["key"]: p for p in data["data"]}
+                assert set(by_key) == {"example", "disabled-one"}
+                assert by_key["example"]["enabled"] is True
+                assert by_key["example"]["tools"] == 2
+                assert by_key["example"]["commands"] == 3
+                assert by_key["disabled-one"]["enabled"] is False
 
 
 # ---------------------------------------------------------------------------

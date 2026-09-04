@@ -15,13 +15,13 @@ Generate wiki docs + Mermaid diagrams for any codebase.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/code-wiki` |
-| Path | `optional-skills/software-development/code-wiki` |
+| Path | `optional-skills/software-development\code-wiki` |
 | Version | `0.1.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Documentation`, `Mermaid`, `Architecture`, `Diagrams`, `Wiki`, `Code-Analysis` |
-| Related skills | [`codebase-inspection`](/docs/user-guide/skills/bundled/github/github-codebase-inspection), [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) |
+| Related skills | [`codebase-inspection`](/docs/user-guide/skills/bundled/software-development/software-development-codebase-inspection), `github-repo-management` |
 
 ## Reference: full SKILL.md
 
@@ -165,24 +165,24 @@ reader has the source README.>
 
 ## Entry Points
 
-- [`path/to/main.py`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>) — <what runs when you start it>
-- [`path/to/cli.py`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>) — <CLI surface>
+- [`path/to/main.py`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/<link>) — <what runs when you start it>
+- [`path/to/cli.py`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/<link>) — <CLI surface>
 
 ## High-Level Architecture
 
 <2-3 sentences. Detail goes in architecture.md.>
 
-See [architecture.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/architecture.md).
+See [architecture.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/architecture.md).
 
 ## Module Map
 
 | Module | Purpose |
 |---|---|
-| [`<module>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/modules/<module>.md) | <one-line purpose> |
+| [`<module>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/modules/<module>.md) | <one-line purpose> |
 
 ## Getting Started
 
-See [getting-started.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/getting-started.md).
+See [getting-started.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/getting-started.md).
 ````
 
 For link targets in local mode use relative paths. For cloned repos use `https://github.com/<owner>/<repo>/blob/<sha>/<path>` so links survive future commits.
@@ -197,7 +197,7 @@ where it exits, where state lives.>
 
 ## Components
 
-- **<Component>** — <1-2 sentences>. See [`modules/<module>.md`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/modules/<module>.md).
+- **<Component>** — <1-2 sentences>. See [`modules/<module>.md`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/modules/<module>.md).
 
 ## System Diagram
 
@@ -211,8 +211,8 @@ flowchart TD
 
 ## Data Flow
 
-1. **<Step>** — [`<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
-2. **<Step>** — [`<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
+1. **<Step>** — [`<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/<link>)
+2. **<Step>** — [`<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/<link>)
 
 ## Key Design Decisions
 
@@ -244,7 +244,7 @@ For each selected module, inspect its layout with `ls`, identify 3–5 most impo
 
 ## Key Files
 
-- [`<module>/<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>) — <what it does>
+- [`<module>/<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/<link>) — <what it does>
 
 ## Public API
 
@@ -325,8 +325,8 @@ sequenceDiagram
 
 ### Walkthrough
 
-1. **User input** — [`cli.py:HermesCLI.run_session`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
-2. **Message dispatch** — [`run_agent.py:AIAgent.chat`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
+1. **User input** — [`cli.py:HermesCLI.run_session`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/<link>)
+2. **Message dispatch** — [`run_agent.py:AIAgent.chat`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/<link>)
 ````
 
 Don't invent participants. Every box must correspond to a real component the reader can find in the code.
@@ -364,8 +364,8 @@ Don't invent participants. Every box must correspond to a real component the rea
 
 ## Where to Go Next
 
-- Architecture: [architecture.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/architecture.md)
-- Module reference: [README.md#module-map](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/README.md#module-map)
+- Architecture: [architecture.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/architecture.md)
+- Module reference: [README.md#module-map](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development\code-wiki/README.md#module-map)
 ````
 
 ### 10. Write `api.md` (skip if not applicable)

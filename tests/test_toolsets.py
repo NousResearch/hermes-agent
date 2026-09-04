@@ -6,7 +6,6 @@ from toolsets import (
     TOOLSETS,
     get_toolset,
     resolve_toolset,
-    resolve_multiple_toolsets,
     get_all_toolsets,
     validate_toolset,
     create_custom_toolset,
@@ -105,15 +104,15 @@ class TestResolveToolset:
 
 
 
-class TestResolveMultipleToolsets:
-    def test_combines_and_deduplicates(self):
-        tools = resolve_multiple_toolsets(["web", "terminal"])
+
+class TestResolveToolsetComposition:
+    def test_union_over_names_combines_and_deduplicates(self):
+        tools = sorted({t for name in ("web", "terminal") for t in resolve_toolset(name)})
         assert "web_search" in tools
         assert "web_extract" in tools
         assert "terminal" in tools
         # No duplicates
         assert len(tools) == len(set(tools))
-
 
 
 class TestValidateToolset:
@@ -265,7 +264,7 @@ class TestResolveToolsetIncludeRegistry:
         finally:
             registry.deregister("__probe_registry_only_tool__")
 
-        assert static == {"terminal", "process"}, static
+        assert static == {"terminal", "process_manage"}, static
         # Registered into 'terminal' but not part of the static definition — it
         # must only appear in the merged view.
         assert "__probe_registry_only_tool__" in merged
@@ -275,7 +274,7 @@ class TestResolveToolsetIncludeRegistry:
     def test_static_view_threads_through_includes(self):
         # 'debugging' has direct tools [terminal, process] and includes [web, file]
         static = set(resolve_toolset("debugging", include_registry=False))
-        assert {"terminal", "process"} <= static
+        assert {"terminal", "process_manage"} <= static
         assert "web_search" in static
         assert "read_file" in static
 

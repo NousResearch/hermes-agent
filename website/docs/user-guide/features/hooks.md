@@ -679,7 +679,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `sender_id` | `str` | Platform sender identifier; empty outside gateway sessions |
 | `chat_id` | `str` | Platform conversation identifier for outbound replies; empty outside gateway sessions |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
+**Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
 **Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
 
@@ -764,7 +764,7 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `sender_id` | `str` | Platform sender identifier; empty outside gateway sessions |
 | `chat_id` | `str` | Platform conversation identifier for outbound replies; empty outside gateway sessions |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
+**Fires:** In `agent/turn_finalizer.py` (`finalize_turn()`, called by `run_conversation()` in `agent/conversation_loop.py`), after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 
 **Return value:** Ignored.
 
@@ -905,7 +905,7 @@ def my_callback(session_id: str, model: str, platform: str, **kwargs):
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
+**Fires:** In `agent/conversation_loop.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
 
 **Return value:** Ignored.
 
@@ -950,7 +950,7 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 | `platform` | `str` | Where the session is running |
 
 **Fires:** In two places:
-1. **`run_agent.py`** — at the end of every `run_conversation()` call, after all cleanup. Always fires, even if the turn errored.
+1. **`agent/turn_finalizer.py`** — at the end of every `run_conversation()` call (`agent/conversation_loop.py`), after all cleanup. Always fires, even if the turn errored.
 2. **`cli.py`** — in the CLI's atexit handler, but **only** if the agent was mid-turn (`_agent_running=True`) when the exit occurred. This catches Ctrl+C and `/exit` during processing. In this case, `completed=False` and `interrupted=True`.
 
 **Return value:** Ignored.
@@ -1882,11 +1882,12 @@ Secrets: prefer `secret_env` (the name of an environment variable, typically set
 
 ### Wire format
 
-Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdin, plus delivery metadata:
+Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdin, plus delivery metadata. `profile` names the Hermes profile that emitted the event (`"default"` outside profiles), so receivers behind a multiplexed gateway can tell profiles apart:
 
 ```json
 {
   "hook_event_name": "on_session_end",
+  "profile": "default",
   "tool_name": null,
   "tool_input": null,
   "session_id": "sess_abc123",

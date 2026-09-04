@@ -127,7 +127,7 @@ class TestHooksTest:
                 for_tool=None, payload_file=None,
             ))
 
-        extra = json.loads(capture.read_text())["extra"]
+        extra = json.loads(capture.read_text(encoding="utf-8"))["extra"]
         assert {
             key: extra[key] for key in ("platform", "sender_id", "chat_id")
         } == {"platform": "cli", "sender_id": "", "chat_id": ""}

@@ -675,6 +675,217 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test empty sentinel", parent_agent=parent))
             self.assertEqual(result["results"][0]["status"], "failed")
 
+    def test_failed_child_with_error_summary_marks_status_failed(self):
+        """Regression: a child whose loop gave up on a structured failure
+        (``failed=True``, ``completed=False``, e.g. "API call failed after 3
+        retries: HTTP 524") returns that error message as final_response.
+        Status was derived from summary alone, so the non-empty error text
+        made the batch report show the task as ✓ status=completed. The
+        ``failed`` flag must win over a non-empty summary."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": (
+                    "API call failed after 3 retries: HTTP 524 — origin timeout"
+                ),
+                "completed": False,
+                "failed": True,
+                "error": "HTTP 524 — origin timeout",
+                "failure_reason": "server_error",
+                "interrupted": False,
+                "api_calls": 3,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(goal="Test failed child", parent_agent=parent)
+            )
+            entry = result["results"][0]
+            self.assertEqual(entry["status"], "failed")
+            # The classified reason must survive into the batch entry so the
+            # parent can tell a quota wall from a real task error.
+            self.assertEqual(entry["failure_reason"], "server_error")
+            self.assertEqual(entry["error"], "HTTP 524 — origin timeout")
+            # A structured failure is not budget truncation.
+            self.assertEqual(entry["exit_reason"], "error")
+            self.assertFalse(entry["truncated"])
+
+    def test_successful_child_still_completed(self):
+        """Control for the failed-flag check: a child that succeeds
+        (``completed=True``, no ``failed`` flag) must keep reporting
+        status=completed — the fix must not change success behavior."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "All done.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(goal="Test success control", parent_agent=parent)
+            )
+            entry = result["results"][0]
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["exit_reason"], "completed")
+            self.assertNotIn("failure_reason", entry)
+
+
+class TestDelegateFailedChildStatus(unittest.TestCase):
+    """Honest status / exit_reason for failed subagents (issue #97655).
+
+    A child that fails on its first API call (e.g. an HTTP 400 "not a valid
+    model ID") returns completed=False with failed=True + an error string as
+    its terminal final_response. It must be reported as status=failed with an
+    honest exit_reason — never status=completed + exit_reason=max_iterations
+    (which mislabels provider rejections as iteration-budget exhaustion and
+    would render the false "TRUNCATED" banner).
+    """
+
+    def _delegate_single(self, child_result):
+        """Dispatch a single task whose mock child returns `child_result`,
+        returning the parsed child result entry dict."""
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = child_result
+            MockAgent.return_value = mock_child
+            result = json.loads(
+                delegate_task(goal="Test child status", parent_agent=parent)
+            )
+            return result["results"][0]
+
+    def test_failed_flag_marks_status_failed(self):
+        """Regression (issue #97655): a provider-rejected child (HTTP 400 on its
+        first call) returns completed=False with failed=True + an error string.
+        It must be status=failed, exit_reason=error, and NOT truncated."""
+        entry = self._delegate_single(
+            {
+                "final_response": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
+                "completed": False,
+                "interrupted": False,
+                "failed": True,
+                "error": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
+                "api_calls": 1,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "error")
+        self.assertFalse(entry["truncated"])
+
+    def test_error_with_summary_still_failed(self):
+        """A child that returns BOTH an error field and a summary must still be
+        failed — the summary-presence heuristic must not override the
+        structured failure."""
+        entry = self._delegate_single(
+            {
+                "final_response": "partial work before crashing",
+                "completed": False,
+                "interrupted": False,
+                "failed": True,
+                "error": "provider boom",
+                "api_calls": 3,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "error")
+        self.assertFalse(entry["truncated"])
+
+    def test_error_without_failed_flag_marks_failed(self):
+        """A child result that carries a non-empty error string but OMITS the
+        ``failed`` key entirely (not ``failed=False`` — the key is absent, as in
+        legacy/partial result dicts) must still be status=failed + exit_reason=error.
+        The status branch checks ``result.get('failed') or result.get('error')``,
+        so the error field alone has to win — otherwise a dropped ``failed`` key
+        would silently mislabel a provider rejection as budget exhaustion."""
+        entry = self._delegate_single(
+            {
+                "final_response": "connection reset while streaming",
+                "completed": False,
+                "interrupted": False,
+                "error": "connection reset",
+                "api_calls": 2,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "error")
+        self.assertFalse(entry["truncated"])
+
+    def test_empty_error_with_summary_is_completed(self):
+        """REGRESSION PIN: an empty-string ``error`` field must NOT be treated as
+        a failure. ``result.get('error')`` returns ``''`` which is falsy, so the
+        failure branch correctly falls through to the summary-presence heuristic.
+        Empty error + a real summary => status=completed, exit_reason=completed
+        (or max_iterations if completed=False), never 'error'."""
+        entry = self._delegate_single(
+            {
+                "final_response": "work produced",
+                "completed": True,
+                "interrupted": False,
+                "error": "",
+                "api_calls": 2,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["exit_reason"], "completed")
+        self.assertFalse(entry["truncated"])
+
+    def test_genuine_truncation_stays_completed_max_iterations(self):
+        """REGRESSION GUARD: a child that genuinely exhausts its iteration
+        budget (completed=False, no failed flag, no error) but still returns a
+        summary must keep status=completed, exit_reason=max_iterations, and
+        truncated=True. This is the legitimate truncation path we must not
+        break while making failure labels honest."""
+        entry = self._delegate_single(
+            {
+                "final_response": "made partial progress before the budget ran out",
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 10,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["exit_reason"], "max_iterations")
+        self.assertTrue(entry["truncated"])
+
+    def test_interrupted_unchanged(self):
+        """Interrupted children keep status=interrupted + exit_reason=interrupted
+        and are not marked truncated."""
+        entry = self._delegate_single(
+            {
+                "final_response": "some partial output",
+                "completed": False,
+                "interrupted": True,
+                "api_calls": 2,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "interrupted")
+        self.assertEqual(entry["exit_reason"], "interrupted")
+        self.assertFalse(entry["truncated"])
+
 
 class TestSubagentCostRollup(unittest.TestCase):
     """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd
@@ -826,6 +1037,58 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "foundry-key")
         self.assertEqual(creds["api_mode"], "anthropic_messages")
 
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_base_url_with_provider_carries_runtime_request_overrides(self, mock_resolve):
+        """#65035: the base_url short-circuit must not drop the configured
+        provider's request_overrides / max_output_tokens."""
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://provider-default.example/v1",
+            "api_key": "provider-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"extra_body": {"thinking": {"type": "disabled"}}},
+            "max_output_tokens": 8192,
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "mimo-v2.5-pro",
+            "provider": "mimo",
+            "base_url": "https://api.xiaomimimo.com/v1",
+            "api_key": "cfg-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # Explicitly configured endpoint + key still win over the runtime's.
+        self.assertEqual(creds["base_url"], "https://api.xiaomimimo.com/v1")
+        self.assertEqual(creds["api_key"], "cfg-key")
+        # The provider's request personality survives the short-circuit.
+        self.assertEqual(
+            creds["request_overrides"],
+            {"extra_body": {"thinking": {"type": "disabled"}}},
+        )
+        self.assertEqual(creds["max_output_tokens"], 8192)
+
+    def test_bare_base_url_returns_none_overrides(self):
+        """No provider alongside base_url → no overrides source; keys are
+        present but None (shape parity with the inherit-everything path)."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "", "base_url": "http://localhost:1234/v1", "api_key": "k"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["request_overrides"])
+        self.assertIsNone(creds["max_output_tokens"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_base_url_survives_runtime_resolution_failure(self, mock_resolve):
+        """Best-effort: the explicit endpoint worked before this change even
+        when the provider can't resolve — a resolution failure must not
+        break it, only skip the overrides."""
+        mock_resolve.side_effect = RuntimeError("MIMO_API_KEY not set")
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "mimo", "base_url": "https://api.xiaomimimo.com/v1", "api_key": "k"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["base_url"], "https://api.xiaomimimo.com/v1")
+        self.assertIsNone(creds["request_overrides"])
+        self.assertIsNone(creds["max_output_tokens"])
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):

@@ -1606,6 +1606,27 @@ def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
     return f"http://127.0.0.1:{m.group(1)}"
 
 
+def _cdp_from_data_dir(data_dir: str) -> Optional[str]:
+    """Return the HTTP CDP endpoint of a browser already running on ``data_dir``.
+
+    Reads Chrome's own ``DevToolsActivePort`` file directly instead of asking
+    agent-browser ``get cdp-url``: that command is not observational when the
+    named session isn't already an active browser process — it LAUNCHES one
+    and returns its endpoint, resurrecting the wrong browser (mock-keychain
+    Chrome for Testing) before the signed browser has even started (#98437).
+    A missing/unreadable file means no browser owns this dir; caller must not
+    infer anything else from that.
+    """
+    try:
+        with open(os.path.join(data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+            port_line = fh.readline().strip()
+    except OSError:
+        return None
+    if not port_line.isdigit():
+        return None
+    return f"http://127.0.0.1:{port_line}"
+
+
 def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
     """True when the CDP endpoint's browser is running on ``data_dir``.
 
@@ -1730,14 +1751,18 @@ def _real_profile_cdp() -> tuple:
         # snapshot/overlay happens solely on the relaunch path below, when no
         # live browser owns the dir.
         copy_dir = real_profile_copy_dir(browser)
-        existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
-        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+        # Non-launching reuse probe: read the copy dir's OWN DevToolsActivePort
+        # file rather than calling agent-browser's ``get cdp-url``, which
+        # launches a throwaway browser when the named session isn't already
+        # running (#98437). A hit here is on our data dir by construction.
+        existing = _cdp_from_data_dir(copy_dir)
+        if existing and _cdp_http_ready(existing):
             _real_profile_cdp_cache["cdp"] = existing
             return existing, None
-        if existing:
-            # Stale/wrong-dir session (throwaway-temp fallback, or an old copy):
-            # close it so nothing holds the dir open before we overlay + relaunch.
-            _agent_browser_close_session(_REAL_PROFILE_SESSION)
+        # No live browser owns the dir. Best-effort close any stale
+        # agent-browser session bound to the name (a close, never a launch)
+        # so nothing conflicts before we overlay + relaunch.
+        _agent_browser_close_session(_REAL_PROFILE_SESSION)
 
         # No live browser owns the dir now — safe to (re)snapshot + overlay.
         snap_dir, err = snapshot_real_profile(browser)

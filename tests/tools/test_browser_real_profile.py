@@ -239,7 +239,7 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
-                          side_effect=[None, "http://127.0.0.1:41000"]), \
+                          return_value="http://127.0.0.1:41000"), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", return_value=proc), \
              patch.object(bt, "_is_headed_mode", return_value=False):
@@ -289,7 +289,7 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
-                          side_effect=[None, "http://127.0.0.1:41000"]), \
+                          return_value="http://127.0.0.1:41000"), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", side_effect=fake_run), \
              patch.object(bt, "_is_headed_mode", return_value=False):
@@ -302,12 +302,15 @@ class TestRealProfileCdpLaunch:
         assert "--cdp" in captured["argv"]
         self._reset()
 
-    def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
-        """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
+    def test_reuse_probe_never_calls_agent_browser_get_cdp(self, tmp_path):
+        """Reuse discovery must not invoke agent-browser's launching ``get
+        cdp-url`` before the signed browser has started (#98437): that
+        command launches a throwaway browser when the named session isn't
+        already running. The probe must resolve reuse purely from the copy
+        dir's own DevToolsActivePort file."""
         import tools.browser_tool as bt
         self._reset()
         proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
-        closed = {"n": 0}
 
         class FakeChrome:
             def poll(self):
@@ -323,18 +326,60 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
-                          side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:41000"]), \
-             patch.object(bt, "_cdp_http_ready", return_value=True), \
-             patch.object(bt, "_cdp_on_data_dir", return_value=False), \
+                          return_value="http://127.0.0.1:41000") as get_cdp, \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_is_headed_mode", return_value=False):
+            cdp, err = bt._real_profile_cdp()
+        # The only permitted call is the post-launch attach confirmation.
+        assert get_cdp.call_count == 1
+        assert cdp == "http://127.0.0.1:41000"
+        self._reset()
+
+    def test_stale_port_file_is_closed_not_reused(self, tmp_path):
+        """A DevToolsActivePort file left by a dead process (no live browser
+        answering on it) is not reused: the stale session is closed and a
+        fresh browser is launched on the copy."""
+        import tools.browser_tool as bt
+        self._reset()
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+        closed = {"n": 0}
+
+        # Stale port file from an earlier real-profile generation; nothing is
+        # actually listening on it.
+        (tmp_path / "DevToolsActivePort").write_text("5000\n/devtools/browser/x\n")
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt, "_agent_browser_get_cdp",
+                          return_value="http://127.0.0.1:41000"), \
+             patch.object(bt, "_cdp_http_ready", return_value=False), \
              patch.object(bt, "_agent_browser_close_session",
                           side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", return_value=proc), \
              patch.object(bt, "_is_headed_mode", return_value=False):
             cdp, err = bt._real_profile_cdp()
-        assert closed["n"] == 1  # stale wrong-dir session was closed
+        assert closed["n"] == 1  # stale session was closed before relaunch
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
+
+    def test_cdp_from_data_dir_reads_devtoolsactiveport(self, tmp_path):
+        import tools.browser_tool as bt
+        assert bt._cdp_from_data_dir(str(tmp_path)) is None
+        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+        assert bt._cdp_from_data_dir(str(tmp_path)) == "http://127.0.0.1:41000"
 
     def test_cdp_on_data_dir_matches_devtoolsactiveport(self, tmp_path):
         import tools.browser_tool as bt
@@ -946,13 +991,12 @@ class TestReviewRound3:
         browser."""
         import tools.browser_tool as bt
         bt._real_profile_cdp_cache.clear()
+        (tmp_path / "DevToolsActivePort").write_text("9251\n/devtools/browser/x\n")
         with patch.object(bt, "_use_real_profile", return_value=True), \
              patch.object(bt, "_using_lightpanda_engine", return_value=False), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
-             patch.object(bt, "_agent_browser_get_cdp", return_value="http://127.0.0.1:9251"), \
              patch.object(bt, "_cdp_http_ready", return_value=True), \
-             patch.object(bt, "_cdp_on_data_dir", return_value=True), \
              patch("hermes_cli.browser_connect.snapshot_real_profile") as snap:
             cdp, err = bt._real_profile_cdp()
         assert cdp == "http://127.0.0.1:9251" and err is None
@@ -971,7 +1015,7 @@ class TestReviewRound3:
              patch("hermes_cli.browser_connect.snapshot_real_profile",
                    return_value=(str(tmp_path), None)) as snap, \
              patch.object(bt, "_agent_browser_get_cdp",
-                          side_effect=[None, "http://127.0.0.1:9251"]), \
+                          return_value="http://127.0.0.1:9251"), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", return_value=proc), \
              patch.object(bt, "_is_headed_mode", return_value=False):

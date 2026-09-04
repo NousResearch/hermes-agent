@@ -60,6 +60,20 @@ Check the posture any time:
 hermes monitoring status
 ```
 
+For machine-readable local health, add `--json`:
+
+```bash
+hermes monitoring status --json
+```
+
+The versioned payload reuses the gateway and cron gauge vocabulary above.
+Section status is `available` when collection succeeded, `unavailable` when
+liveness could not be determined, and `error` when snapshot construction
+failed. Export flags report effective state. The command never reads gateway
+logs or includes events, raw install ids, profile identity, OTLP endpoint
+values, prompts, messages, tool arguments/results, or raw errors. Metric
+attributes pass through a fixed content-free allowlist.
+
 The OpenTelemetry SDK is an optional extra (`pip install 'hermes-agent[otlp]'`),
 lazy-installed on first use. When the SDK is missing or the endpoint is down,
 the gateway runs unaffected: metric collection and ordinary event export stay
@@ -281,6 +295,7 @@ values with no error:
 
 ```bash
 hermes monitoring status                 # posture
+hermes monitoring status --json          # content-free local health
 python scripts/observability/gateway_health_export_probe.py \
   --endpoint http://127.0.0.1:4318/v1/traces \
   --log /tmp/cap.jsonl --wait 8          # drive the real exporter

@@ -13357,6 +13357,12 @@ def cmd_monitoring(args):
     mon: dict = mon_raw if isinstance(mon_raw, dict) else {}
 
     if action == "status":
+        if getattr(args, "json", False):
+            from hermes_cli.subcommands.monitoring import build_monitoring_status_payload
+
+            print(json.dumps(build_monitoring_status_payload(config), indent=2, sort_keys=True))
+            return
+
         from agent.monitoring import otlp_exporter
 
         gh_raw = mon.get("gateway_health_export")

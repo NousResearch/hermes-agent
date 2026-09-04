@@ -124,6 +124,15 @@ GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
+#: GLM-5.3-flash narrows the knob back to low/high/max — verified live on
+#: api.z.ai/api/paas/v4 (2026-08-27): ``medium`` and ``disabled`` are
+#: rejected with HTTP 400 code 1210 ("This model always engages in thinking
+#: and cannot be disabled; please use low, high, or max").  ``medium``
+#: clamps down to ``low`` via the nearest-weaker policy; ``xhigh`` requests
+#: the top tier.
+GLM53FLASH_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+GLM53FLASH_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+
 #: DeepSeek V4 OpenAI-compat endpoint: low/medium/high/max; ``xhigh``
 #: requests the top tier (matches the shipped profile mapping).
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
@@ -225,3 +234,18 @@ def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
         return None
     effort = str(reasoning_config.get("effort") or "").strip().lower()
     return effort or None
+
+
+def is_glm53flash_model(model: Optional[str]) -> bool:
+    """True for Z.AI's GLM-5.3-flash.
+
+    The flash variant always thinks and narrows the reasoning-effort knob to
+    exactly low/high/max (HTTP 400 code 1210 for ``medium``/``disabled``,
+    verified live on api.z.ai, 2026-08-27), so transports must clamp against
+    :data:`GLM53FLASH_EFFORTS` instead of the wider GLM-5.3 vocabulary.
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    return any(token in m for token in ("glm-5.3-flash", "glm-5-3-flash", "glm-5p3-flash"))
+

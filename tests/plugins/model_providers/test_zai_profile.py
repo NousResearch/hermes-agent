@@ -182,6 +182,67 @@ class TestZaiGLM53ReasoningEffort:
         assert top_level == {"reasoning_effort": "high"}
 
 
+class TestZaiGLM53FlashReasoningEffort:
+    """GLM-5.3-flash narrows the knob to low/high/max.
+
+    Verified live on api.z.ai/api/paas/v4 (2026-08-27): ``medium`` and
+    ``disabled`` are rejected with HTTP 400 code 1210 ("This model always
+    engages in thinking and cannot be disabled; please use low, high, or
+    max").  ``medium`` therefore clamps to the nearest weaker level
+    (``low``), and an explicit disable is served the floor instead of a
+    hard error.
+    """
+
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            ("medium", "low"),  # not on the flash wire; nearest weaker
+            ("high", "high"),
+            ("max", "max"),
+            ("xhigh", "max"),
+            ("minimal", "low"),
+        ],
+    )
+    def test_flash_efforts_clamp(self, zai_profile, effort, expected):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3-flash",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": expected}
+
+    def test_flash_disabled_serves_floor(self, zai_profile):
+        """``enabled=False`` cannot reach the wire as ``thinking: disabled``
+        (the API 400s "cannot be disabled"); it resolves to the floor
+        (low) instead."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False, "effort": "high"},
+            model="glm-5.3-flash",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["glm-5.3-flash", "glm-5-3-flash", "glm-5p3-flash", "z-ai/glm-5.3-flash"],
+    )
+    def test_flash_alias_spellings_clamp_medium(self, zai_profile, model):
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_base_glm_5_3_still_accepts_medium(self, zai_profile):
+        """The flash narrowing must not leak into the full 5.3 wire."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="glm-5.3",
+        )
+        assert top_level == {"reasoning_effort": "medium"}
+
+
 class TestZaiModelGating:
     """GLM 4.5+ get thinking; earlier GLM models are left untouched."""
 

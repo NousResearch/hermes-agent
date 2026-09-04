@@ -78,6 +78,22 @@ def _is_glm_5_3(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.3", "glm-5-3", "glm-5p3"))
 
 
+def _is_glm_5_3_flash(model: str | None) -> bool:
+    """Detect GLM-5.3-flash — it narrows the effort knob to low/high/max.
+
+    The base 5.3 accepts a graded ``low``/``medium``/``high``/``max`` scale,
+    but the flash variant rejects ``medium`` and ``disabled`` with HTTP 400
+    code 1210 ("This model always engages in thinking and cannot be
+    disabled; please use low, high, or max"), verified live on
+    api.z.ai/api/paas/v4 (2026-08-27).  It therefore needs its own
+    vocabulary rather than inheriting the 5.3 set.
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    return any(token in m for token in ("glm-5.3-flash", "glm-5-3-flash", "glm-5p3-flash"))
+
+
 def _glm_5_2_reasoning_effort(
     reasoning_config: dict | None, *, model: str | None = None
 ) -> str | None:
@@ -107,10 +123,14 @@ def _glm_5_2_reasoning_effort(
         GLM52_OVERRIDES,
         GLM53_EFFORTS,
         GLM53_OVERRIDES,
+        GLM53FLASH_EFFORTS,
+        GLM53FLASH_OVERRIDES,
         clamp_effort,
     )
 
-    if _is_glm_5_3(model):
+    if _is_glm_5_3_flash(model):
+        efforts, overrides, floor = GLM53FLASH_EFFORTS, GLM53FLASH_OVERRIDES, "low"
+    elif _is_glm_5_3(model):
         efforts, overrides, floor = GLM53_EFFORTS, GLM53_OVERRIDES, "low"
     else:
         efforts, overrides, floor = GLM52_EFFORTS, GLM52_OVERRIDES, "high"
@@ -131,13 +151,25 @@ class ZaiProfile(ProviderProfile):
         if not _model_supports_thinking(model) and not _is_glm_5_2(model):
             return extra_body, top_level
 
+        if (
+            _is_glm_5_3_flash(model)
+            and isinstance(reasoning_config, dict)
+            and reasoning_config.get("enabled") is False
+        ):
+            # GLM-5.3-flash always thinks: the API rejects ``thinking:
+            # disabled`` (and ``reasoning_effort: medium``) with HTTP 400
+            # code 1210 (verified live on api.z.ai/api/paas/v4, 2026-08-27).
+            # An explicit "off" cannot be honoured, so serve the floor
+            # (low) as the closest honest match instead of hard-failing.
+            reasoning_config = {"enabled": True, "effort": "low"}
+
         # Only emit when the user expressed a preference; omitting the field
         # keeps the server default (enabled) exactly as before.
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
             extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
-        if _is_glm_5_2(model):
+        if _is_glm_5_2(model) or _is_glm_5_3(model) or _is_glm_5_3_flash(model):
             effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)
             if effort is not None:
                 top_level["reasoning_effort"] = effort

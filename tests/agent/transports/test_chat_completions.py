@@ -17,6 +17,59 @@ def transport():
     return get_transport("chat_completions")
 
 
+class TestGLM53FlashReasoning:
+    """GLM-5.3-flash wire narrowing in extra_body.reasoning.
+
+    The flash variant always thinks and accepts exactly low/high/max —
+    medium/disabled answer HTTP 400 code 1210 on api.z.ai (verified live
+    2026-08-27).  No explicit preference (or an explicit disable, which
+    cannot be honoured) emits nothing so the server default applies.
+    """
+
+    def test_non_flash_returns_none(self):
+        from agent.transports.chat_completions import _glm_flash_reasoning
+
+        assert (
+            _glm_flash_reasoning({"enabled": True, "effort": "medium"}, "glm-5.3")
+            is None
+        )
+        assert (
+            _glm_flash_reasoning({"enabled": True, "effort": "medium"}, "glm-5.2")
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        ("reasoning_config", "expected"),
+        [
+            (None, None),  # no preference → server default thinking
+            ({"enabled": True}, None),  # enabled, no effort → default level
+            ({"enabled": False}, None),  # disable can't be honoured → omit
+            ({"enabled": False, "effort": "high"}, None),
+            ({"enabled": True, "effort": "low"}, {"enabled": True, "effort": "low"}),
+            ({"enabled": True, "effort": "medium"}, {"enabled": True, "effort": "low"}),
+            ({"enabled": True, "effort": "high"}, {"enabled": True, "effort": "high"}),
+            ({"enabled": True, "effort": "max"}, {"enabled": True, "effort": "max"}),
+            ({"enabled": True, "effort": "xhigh"}, {"enabled": True, "effort": "max"}),
+            ({"enabled": True, "effort": "minimal"}, {"enabled": True, "effort": "low"}),
+        ],
+    )
+    def test_flash_wire_value(self, reasoning_config, expected):
+        from agent.transports.chat_completions import _glm_flash_reasoning
+
+        assert _glm_flash_reasoning(reasoning_config, "glm-5.3-flash") == expected
+
+    @pytest.mark.parametrize(
+        "model",
+        ["glm-5.3-flash", "glm-5-3-flash", "glm-5p3-flash", "z-ai/glm-5.3-flash"],
+    )
+    def test_flash_alias_spellings_clamp_medium(self, model):
+        from agent.transports.chat_completions import _glm_flash_reasoning
+
+        assert _glm_flash_reasoning(
+            {"enabled": True, "effort": "medium"}, model
+        ) == {"enabled": True, "effort": "low"}
+
+
 class TestChatCompletionsBasic:
     @pytest.mark.parametrize(
         "choice",

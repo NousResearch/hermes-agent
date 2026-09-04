@@ -14,11 +14,14 @@ from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
+    GLM53FLASH_EFFORTS,
+    GLM53FLASH_OVERRIDES,
     KIMI_K3_EFFORTS,
     KIMI_K3_OVERRIDES,
     OPENAI_COMPAT_WIRE_EFFORTS,
     TOKENHUB_EFFORTS,
     clamp_effort,
+    is_glm53flash_model,
     kimi_supported_efforts,
     requested_effort,
 )
@@ -135,6 +138,31 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
         normalized["effort"] = clamped
         return normalized
     return reasoning_config
+
+
+def _glm_flash_reasoning(
+    reasoning_config: dict | None, model: str
+) -> dict[str, Any] | None:
+    """Wire value for ``extra_body.reasoning`` on Z.AI's GLM-5.3-flash.
+
+    The flash variant always thinks and accepts exactly low/high/max
+    (HTTP 400 code 1210 for ``medium`` and for ``thinking: disabled`` —
+    "This model always engages in thinking and cannot be disabled; please
+    use low, high, or max", verified live on api.z.ai 2026-08-27).  Returns
+    ``None`` when nothing should be emitted: no explicit effort preference
+    (server default thinking applies), an explicit disable (cannot be
+    honoured — omitting keeps thinking on), or the model is not the flash
+    variant.  A requested ``medium`` clamps to ``low`` (nearest weaker).
+    """
+    if not is_glm53flash_model(model):
+        return None
+    effort = requested_effort(reasoning_config)
+    if effort is None:
+        return None
+    return {
+        "enabled": True,
+        "effort": clamp_effort(effort, GLM53FLASH_EFFORTS, GLM53FLASH_OVERRIDES),
+    }
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -691,10 +719,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                _effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _effort = reasoning_config.get("effort", "medium") or "medium"
-                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                _flash_reasoning = _glm_flash_reasoning(reasoning_config, model)
+                if _flash_reasoning is not None:
+                    extra_body["reasoning"] = _flash_reasoning
+                else:
+                    _effort = "medium"
+                    if reasoning_config and isinstance(reasoning_config, dict):
+                        _effort = reasoning_config.get("effort", "medium") or "medium"
+                    extra_body["reasoning"] = {"enabled": True, "effort": _effort}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

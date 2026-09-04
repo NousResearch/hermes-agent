@@ -600,7 +600,12 @@ function NewTaskDialog({
   // change, so options track the selection immediately.
   const skillsProfile = assignee && assignee !== PARKED ? assignee : resolvedDefault
 
-  const { data: skillsData, isError: skillsFailed } = useQuery({
+  const {
+    data: skillsData,
+    isError: skillsFailed,
+    isFetching: skillsLoading,
+    refetch: refetchSkills
+  } = useQuery({
     queryKey: ['kanban', 'profile-skills', skillsProfile],
     queryFn: () => fetchProfileSkills(skillsProfile),
     staleTime: 60_000,
@@ -780,14 +785,28 @@ function NewTaskDialog({
               </SelectContent>
             </Select>
             {/* Empty roster and fetch failures are states, not errors — the
-                task still creates fine without an extra skill. */}
-            <span className="text-[0.625rem] text-(--ui-text-quaternary)">
-              {skillsFailed
-                ? k.skillsLoadFailed
-                : profileSkills.length === 0
-                  ? k.noSkillsForProfile
-                  : ''}
-            </span>
+                task still creates fine without an extra skill. A failed fetch
+                caches for the stale window, so offer a manual retry rather than
+                stranding the profile with no skills until it lapses. */}
+            {skillsFailed ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-[0.625rem] text-(--ui-text-quaternary)">
+                  {k.skillsLoadFailed}
+                </span>
+                <Button
+                  disabled={skillsLoading}
+                  onClick={() => void refetchSkills()}
+                  size="inline"
+                  variant="textStrong"
+                >
+                  {skillsLoading ? k.retryingSkills : k.retrySkills}
+                </Button>
+              </span>
+            ) : (
+              <span className="text-[0.625rem] text-(--ui-text-quaternary)">
+                {profileSkills.length === 0 ? k.noSkillsForProfile : ''}
+              </span>
+            )}
           </Field>
 
           <Field label={k.model}>

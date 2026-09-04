@@ -34,6 +34,64 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+_TODO_STATUS_MAP = {
+    "pending": "[ ]",
+    "in_progress": "[>]",
+    "completed": "[x]",
+    "cancelled": "[-]",
+}
+
+
+def _render_todo_checklist(result_str: Any) -> str:
+    """Parse a todo tool result and render a compact checklist.
+
+    Returns the formatted checklist string, or an empty string on failure.
+    """
+    if not result_str:
+        return ""
+    try:
+        data = json.loads(result_str) if isinstance(result_str, str) else result_str
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    todos = data.get("todos")
+    if not todos or not isinstance(todos, list):
+        return ""
+
+    lines = ["📋 Task List"]
+    for item in todos:
+        if not isinstance(item, dict):
+            continue
+        content = (item.get("content") or "")[:80]
+        status = _TODO_STATUS_MAP.get(str(item.get("status", "pending")).lower(), "[ ]")
+        item_id = item.get("id", "")
+        lines.append(f"{status} {content} ({item_id})" if item_id else f"{status} {content}")
+    return "\n".join(lines)
+
+
+def _dispatch_todo_progress(
+    progress_queue: Any,
+    event_type: str,
+    tool_name: Optional[str],
+    result_str: Any,
+    task_logger: logging.Logger,
+) -> bool:
+    """Handle todo-checklist progress in the progress callback.
+
+    Returns True if the event was consumed (pushed onto progress queue),
+    False if it should fall through to normal progress handling.
+    """
+    if event_type == "tool.completed" and tool_name in {"todo", "todo_list"}:
+        try:
+            checklist = _render_todo_checklist(result_str)
+            if checklist and progress_queue:
+                progress_queue.put(checklist)
+        except Exception:
+            task_logger.debug("Failed to render todo checklist", exc_info=True)
+        return True
+    return False
+
 
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
@@ -100,6 +158,12 @@ class TurnRunner:
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
+            return
+        # Todo checklist: on tool.completed, render todo results as a compact
+        # checklist in the progress message bubble. Must run BEFORE the
+        # onboarding early-return below so it isn't blocked by that handler's
+        # blanket return for tool.completed events.
+        if _dispatch_todo_progress(ctx.progress_queue, event_type, tool_name, kwargs.get("result", ""), logger):
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)

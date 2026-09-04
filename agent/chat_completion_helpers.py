@@ -1801,6 +1801,15 @@ def _is_anthropic_wire_url(url: str) -> bool:
     return url.rstrip("/").lower().endswith("/anthropic") or base_url_hostname(url) == "api.anthropic.com"
 
 
+def _host_mandated_api_mode_cached(url: str):
+    """host_mandated_api_mode() with ImportError/exception tolerance (None = not mandated)."""
+    try:
+        from hermes_cli.providers import host_mandated_api_mode
+        return host_mandated_api_mode(url)
+    except Exception:
+        return None
+
+
 def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Optional[str]) -> tuple[bool, str]:
     """(explicit, api_mode) for a fallback entry from its ORIGINAL base_url: resolve_provider_client()
     rewrites a dual-surface /anthropic base to /v1, losing the Anthropic wire signal. An explicit
@@ -1811,12 +1820,34 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
         return True, explicit
     if fb_provider == "anthropic" or (fb_base_url_hint and _is_anthropic_wire_url(fb_base_url_hint)):
         return False, "anthropic_messages"
+    # Host-mandated wire protocols: some endpoints accept exactly one protocol
+    # (Kimi Coding api.kimi.com/coding speaks native Anthropic Messages).
+    # resolve_provider_client() routes the hint through _to_openai_base_url(),
+    # which APPENDS /v1 for Kimi (/coding → /coding/v1), so the pre-resolve
+    # pass must consult host_mandated_api_mode() — the same source of truth the
+    # primary path uses — or a named kimi-coding entry (no explicit base_url)
+    # still resolves to chat_completions here. Explicit api_mode above always wins.
+    if fb_base_url_hint:
+        mandated = _host_mandated_api_mode_cached(fb_base_url_hint)
+        if mandated is not None:
+            return False, mandated
     return False, "chat_completions"
 
 
 def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
     """Re-detect api_mode from provider / resolved base URL / model when the hint pass
     landed on the chat_completions default (never called for an explicit api_mode)."""
+    # Host-mandated wire protocols first: the resolved client base_url for Kimi
+    # Coding has already been rewritten to .../coding/v1 by _to_openai_base_url(),
+    # so the /anthropic-suffix and api.anthropic.com checks below never fire for it.
+    # Ask the same host_mandated_api_mode() the primary path consults, or a
+    # kimi-coding fallback is driven over the OpenAI wire
+    # (POST /coding/chat/completions → 404). Also covers entries whose base_url
+    # is resolved from provider config rather than the fallback entry (the
+    # pre-resolve hint pass never saw it).
+    mandated = _host_mandated_api_mode_cached(fb_base_url)
+    if mandated is not None:
+        return mandated
     if fb_provider == "openai-codex":
         return "codex_responses"
     if fb_provider in {"nous", "nous-portal", "nousresearch"}:

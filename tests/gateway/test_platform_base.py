@@ -911,6 +911,15 @@ class TestDockerContainerMediaPathTranslation:
         monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
         monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
         monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        # The refusal must come from the /root denylist prefix itself, not
+        # from resolve(strict=True) happening to miss the file. On a
+        # root-homed runner (HOME=/root) the home-prefix exception in
+        # _path_under_denied_prefix accepts the runner's own real
+        # /root/.hermes/auth.json as a deliverable — the collision this
+        # test guards against.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(
             "/root/.hermes/auth.json"
@@ -1405,11 +1414,18 @@ class TestDockerProfileSandboxMediaTranslation:
             "/root/note.txt", session_key=self.SESSION_KEY
         ) == str(produced.resolve())
 
-    def test_home_credential_surface_still_refused(self, monkeypatch):
+    def test_home_credential_surface_still_refused(self, tmp_path, monkeypatch):
         """The /root/.hermes exclusion survives profile scoping: translating
         the home mount must never expose the container's secret surface —
         in the profile layout AND the legacy session layout."""
         self._enable_docker(monkeypatch)
+        # Same isolation as the container-path test above: with HOME=/root
+        # the home-prefix exception in _path_under_denied_prefix would
+        # accept the runner's real /root/.hermes/auth.json. Point HOME at
+        # tmp_path so the refusal is produced by the /root prefix itself.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(fake_home))
         for task in ("default", f"session:{self.SESSION_KEY}"):
             secrets = self._sandbox_dir(task) / "home" / ".hermes"
             secrets.mkdir(parents=True, exist_ok=True)

@@ -4973,6 +4973,168 @@ def test_ws_orphan_reap_defers_running_turn_for_active_delegation(monkeypatch):
         server._sessions.pop("delegating-turn", None)
 
 
+def _post_turn_agent(threshold=100, decision=True):
+    comp = types.SimpleNamespace(
+        threshold_tokens=threshold,
+        should_compress=lambda tokens=None: decision,
+    )
+    return types.SimpleNamespace(
+        context_compressor=comp,
+        _cached_system_prompt="",
+        tools=None,
+        session_id="post-turn-session",
+    )
+
+
+def test_post_turn_compress_fires_for_idle_over_threshold_session(monkeypatch):
+    """An over-threshold idle session compacts immediately at turn end —
+    no user message required (the "only compresses after I type" fix)."""
+    done = threading.Event()
+    calls = {"compress": 0, "sync": None}
+
+    def _fake_compress(session, focus_topic=None, **kwargs):
+        calls["compress"] += 1
+        return 5, {}
+
+    def _fake_sync(sid, session, *, clear_pending_title, restart_slash_worker):
+        calls["sync"] = (sid, clear_pending_title, restart_slash_worker)
+        done.set()
+
+    session = _session(
+        agent=_post_turn_agent(),
+        history=[{"role": "user", "content": "x"}],
+    )
+    server._sessions["pt-sid"] = session
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", _fake_sync)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit_settled_session_info", lambda *a, **k: None)
+
+    try:
+        server._maybe_post_turn_compress("pt-sid", session)
+        assert done.wait(5.0), "background compress worker never ran"
+        assert calls["compress"] == 1
+        # Post-turn policy: preserve pending title, restart slash worker.
+        assert calls["sync"] == ("pt-sid", False, True)
+        assert "_post_turn_compress_running" not in session
+        assert "_post_turn_compress_failed_at" not in session
+    finally:
+        server._sessions.pop("pt-sid", None)
+
+
+def test_post_turn_compress_installs_named_profile_scope(monkeypatch):
+    """The background worker must resolve config/secrets from the SESSION's
+    profile, not the root default — a named-profile session's compaction
+    otherwise reads the wrong config.yaml (thresholds, auxiliary compression
+    model) and the wrong secret scope."""
+    done = threading.Event()
+    seen = {}
+    installed = []
+
+    def _fake_set_home(home):
+        installed.append(home)
+        return f"token:{home}"
+
+    def _fake_reset_home(token):
+        seen["reset"] = token
+
+    def _fake_compress(session, focus_topic=None, **kwargs):
+        # Scope must still be installed while the compression call runs.
+        seen["home_during_compress"] = installed[-1] if installed else None
+        return 3, {}
+
+    session = _session(
+        agent=_post_turn_agent(),
+        history=[{"role": "user", "content": "x"}],
+        profile_home="/profiles/picasso",
+    )
+    server._sessions["pt-profile"] = session
+    monkeypatch.setattr(server, "set_hermes_home_override", _fake_set_home)
+    monkeypatch.setattr(server, "reset_hermes_home_override", _fake_reset_home)
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress",
+        lambda *a, **k: done.set(),
+    )
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit_settled_session_info", lambda *a, **k: None)
+
+    try:
+        server._maybe_post_turn_compress("pt-profile", session)
+        assert done.wait(5.0)
+        deadline = time.time() + 5.0
+        while "reset" not in seen and time.time() < deadline:
+            time.sleep(0.02)
+        assert installed == ["/profiles/picasso"]
+        assert seen["home_during_compress"] == "/profiles/picasso"
+        # ...and released afterwards, so the worker thread leaks no scope.
+        assert seen["reset"] == "token:/profiles/picasso"
+    finally:
+        server._sessions.pop("pt-profile", None)
+
+
+def test_post_turn_compress_skips_running_under_threshold_and_cooldown(monkeypatch):
+    compressed = []
+    monkeypatch.setattr(
+        server, "_compress_session_history",
+        lambda *a, **k: compressed.append(1) or (0, {}),
+    )
+
+    # Running session: never fires.
+    running = _session(
+        agent=_post_turn_agent(), running=True,
+        history=[{"role": "user", "content": "x"}],
+    )
+    server._maybe_post_turn_compress("pt-running", running)
+
+    # Under threshold (should_compress False): never fires.
+    under = _session(
+        agent=_post_turn_agent(decision=False),
+        history=[{"role": "user", "content": "x"}],
+    )
+    server._maybe_post_turn_compress("pt-under", under)
+
+    # Recent failure: never fires inside the cooldown window.
+    cooled = _session(
+        agent=_post_turn_agent(),
+        history=[{"role": "user", "content": "x"}],
+        _post_turn_compress_failed_at=time.time(),
+    )
+    server._maybe_post_turn_compress("pt-cooled", cooled)
+
+    time.sleep(0.2)
+    assert compressed == []
+
+
+def test_post_turn_compress_failure_arms_cooldown(monkeypatch):
+    done = threading.Event()
+
+    def _boom(session, focus_topic=None, **kwargs):
+        try:
+            raise RuntimeError("summary model down")
+        finally:
+            done.set()
+
+    session = _session(
+        agent=_post_turn_agent(),
+        history=[{"role": "user", "content": "x"}],
+    )
+    server._sessions["pt-fail"] = session
+    monkeypatch.setattr(server, "_compress_session_history", _boom)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    try:
+        server._maybe_post_turn_compress("pt-fail", session)
+        assert done.wait(5.0)
+        deadline = time.time() + 5.0
+        while "_post_turn_compress_running" in session and time.time() < deadline:
+            time.sleep(0.02)
+        assert session.get("_post_turn_compress_failed_at") is not None
+        assert "_post_turn_compress_running" not in session
+    finally:
+        server._sessions.pop("pt-fail", None)
+
+
 def test_ws_orphan_reap_interrupts_in_process_turn(monkeypatch):
     callbacks = []
     interrupted = []

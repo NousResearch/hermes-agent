@@ -7410,6 +7410,160 @@ def _compress_session_history(
     return len(history) - len(compressed), usage
 
 
+# A failed post-turn compaction must not refire at every turn boundary —
+# each attempt blocks the compression lock for minutes. One retry per
+# cooldown window; the next turn's preflight remains the safety net.
+_POST_TURN_COMPRESS_FAILURE_COOLDOWN_S = 300.0
+
+
+def _maybe_post_turn_compress(sid: str, session: dict) -> None:
+    """Start background compaction the moment a turn settles over-threshold.
+
+    Previously an over-threshold session only compressed at the NEXT turn's
+    preflight — from the user's chair the session "stopped", and
+    'Summarizing thread' only began after they typed something. This hook
+    runs the same automatic gate as preflight
+    (ContextCompressor.should_compress: threshold + summary-failure cooldown
+    + anti-thrash) as soon as the turn finishes, and compresses on a daemon
+    thread while the session sits idle, so the next user message starts on a
+    compacted transcript with no preflight stall.
+
+    A user prompt that races the compaction wins: _compress_session_history
+    drops its result on external history mutation, and the racing turn's
+    preflight defers on the held compression lock (#69870) instead of
+    double-compressing.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    if session.get("running") or session.get("queued_prompt"):
+        return
+    # Codex app-server sessions compact natively — mirror the preflight skip.
+    if getattr(agent, "codex_app_server_auto_compaction", None):
+        return
+    if session.get("_post_turn_compress_running"):
+        return
+    failed_at = session.get("_post_turn_compress_failed_at")
+    if failed_at and (
+        time.time() - float(failed_at) < _POST_TURN_COMPRESS_FAILURE_COOLDOWN_S
+    ):
+        return
+    comp = getattr(agent, "context_compressor", None)
+    if comp is None or not getattr(comp, "threshold_tokens", 0):
+        return
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    with session["history_lock"]:
+        history = list(session.get("history") or [])
+    if not history:
+        return
+    try:
+        tokens = estimate_request_tokens_rough(
+            history,
+            system_prompt=str(getattr(agent, "_cached_system_prompt", "") or ""),
+            tools=getattr(agent, "tools", None) or None,
+        )
+    except Exception:
+        return
+    try:
+        if not comp.should_compress(tokens):
+            return
+    except Exception:
+        return
+    session["_post_turn_compress_running"] = True
+
+    def _worker() -> None:
+        # A named-profile session's compaction must resolve config (thresholds,
+        # auxiliary compression model) and secrets from ITS profile, not the
+        # root default. The prompt path installs this scope per turn; a
+        # background worker running off-turn has to install it itself.
+        home_token = None
+        secret_token = None
+        profile_home = session.get("profile_home")
+        try:
+            if profile_home:
+                home_token = set_hermes_home_override(profile_home)
+                try:
+                    from agent.secret_scope import (
+                        build_profile_secret_scope,
+                        set_secret_scope,
+                    )
+
+                    secret_token = set_secret_scope(
+                        build_profile_secret_scope(Path(profile_home))
+                    )
+                except Exception:
+                    secret_token = None
+            with _sessions_lock:
+                if _sessions.get(sid) is not session:
+                    return
+            if session.get("running") or session.get("queued_prompt"):
+                return
+            logger.info(
+                "post-turn compression starting: sid=%s session=%s "
+                "~%s tokens >= %s threshold",
+                sid,
+                getattr(agent, "session_id", "") or "",
+                f"{tokens:,}",
+                f"{int(getattr(comp, 'threshold_tokens', 0) or 0):,}",
+            )
+            try:
+                _emit(
+                    "status.update",
+                    sid,
+                    {
+                        "kind": "compacting",
+                        "text": (
+                            "🗜️ Compacting context in the background — "
+                            "summarizing earlier conversation…"
+                        ),
+                    },
+                )
+            except Exception:
+                pass
+            removed, _usage = _compress_session_history(session)
+            _sync_session_key_after_compress(
+                sid,
+                session,
+                clear_pending_title=False,
+                restart_slash_worker=True,
+            )
+            session.pop("_post_turn_compress_failed_at", None)
+            logger.info(
+                "post-turn compression done: sid=%s removed=%d messages",
+                sid,
+                removed,
+            )
+            try:
+                _emit_settled_session_info(sid, session, agent)
+            except Exception:
+                pass
+        except CompressionLockHeld:
+            logger.info(
+                "post-turn compression skipped: lock held sid=%s", sid
+            )
+        except Exception:
+            session["_post_turn_compress_failed_at"] = time.time()
+            logger.warning(
+                "post-turn compression failed sid=%s", sid, exc_info=True
+            )
+        finally:
+            if secret_token is not None:
+                try:
+                    from agent.secret_scope import reset_secret_scope
+
+                    reset_secret_scope(secret_token)
+                except Exception:
+                    pass
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
+            session.pop("_post_turn_compress_running", None)
+
+    threading.Thread(
+        target=_worker, daemon=True, name=f"post-turn-compress-{sid}"
+    ).start()
+
+
 def _sync_session_key_after_compress(
     sid: str,
     session: dict,
@@ -14261,6 +14415,19 @@ def _run_prompt_submit(
                 f"[tui_gateway] completion queue drain failed: "
                 f"{type(_drain_exc).__name__}: {_drain_exc}",
                 file=sys.stderr,
+            )
+
+        # The turn settled with no follow-up turn queued. If the session is
+        # over its compression threshold, start compacting NOW in the
+        # background instead of leaving it for the next user message's
+        # preflight — the "session stops, and only starts Summarizing thread
+        # after I type" experience.
+        try:
+            _maybe_post_turn_compress(sid, session)
+        except Exception:
+            logger.debug(
+                "post-turn compress scheduling failed sid=%s", sid,
+                exc_info=True,
             )
 
     run_thread = threading.Thread(target=run, daemon=True)

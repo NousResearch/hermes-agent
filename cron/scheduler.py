@@ -4607,6 +4607,11 @@ def _run_job_script(
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
+    # Windows: normalize path for subprocess execution to avoid separator issues
+    # on non-default profiles where HERMES_HOME override may produce mixed separators.
+    if sys.platform == "win32":
+        path = Path(os.path.normpath(str(path)))
+
     script_timeout = _get_script_timeout()
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for

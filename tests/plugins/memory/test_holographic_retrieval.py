@@ -238,3 +238,84 @@ def test_search_without_vectors_never_encodes(hoisted_retriever, monkeypatch):
         f"encode_text called {len(calls)}x with zero vector candidates — "
         "lazy hoist regressed to eager"
     )
+
+
+# ---------------------------------------------------------------------------
+# contradict() — attribute-value conflict detection (2026-08-31)
+# Two facts about the same subject can be semantically near-identical prose
+# yet state conflicting values for the same structured attribute (e.g. an
+# expiry date). The HRR-vector similarity treats them as duplicates, so the
+# original score never surfaced them. We now extract common attributes
+# (dates, money, percents, capacities, versions) and flag value mismatches.
+# ---------------------------------------------------------------------------
+
+def _make_store(db_path, facts):
+    store = MemoryStore(str(db_path))
+    for content, category in facts:
+        store.add_fact(content=content, category=category)
+    return store
+
+
+def test_contradict_detects_attribute_value_mismatch(tmp_path):
+    """Same subject, same attribute (date), different value → surfaced."""
+    store = _make_store(
+        tmp_path / "attr_conflict.db",
+        [
+            ('"GITHUB_TOKEN" expires 2026-11-14', "tool"),
+            ('"GITHUB_TOKEN" expires 2026-11-24', "tool"),
+        ],
+    )
+    retriever = FactRetriever(store=store)
+    results = retriever.contradict()
+    assert results, "attribute mismatch should be reported as a contradiction"
+    top = results[0]
+    assert top["attribute_conflicts"] == ["date"], (
+        f"expected date conflict, got {top['attribute_conflicts']}"
+    )
+    assert top["contradiction_score"] >= 0.3
+
+
+def test_contradict_ignores_same_attribute_same_value(tmp_path):
+    """Same subject, same attribute, same value → not a conflict."""
+    store = _make_store(
+        tmp_path / "attr_same.db",
+        [
+            ('"GITHUB_TOKEN" expires 2026-11-24', "tool"),
+            ('"GITHUB_TOKEN" expires 2026-11-24; rotate early', "tool"),
+        ],
+    )
+    retriever = FactRetriever(store=store)
+    results = retriever.contradict()
+    assert not results, "identical attribute values must not be a conflict"
+
+
+def test_contradict_no_attribute_fields_preserved(tmp_path):
+    """Existing behaviour: no attributes → no attribute_conflicts field noise."""
+    store = _make_store(
+        tmp_path / "attr_none.db",
+        [
+            ('"Server" 1.9GB RAM 1 core', "tool"),
+            ('"Server" runs gateway and webui', "tool"),
+        ],
+    )
+    retriever = FactRetriever(store=store)
+    results = retriever.contradict()
+    # Both share the "Server" entity; no shared attribute differs.
+    for r in results:
+        assert r["attribute_conflicts"] == []
+
+
+def test_extract_attribute_values_unit():
+    """Attribute extraction recognises structured values and ignores prose."""
+    assert FactRetriever._extract_attribute_values(
+        '"GITHUB_TOKEN" expires 2026-11-14, rotate before then'
+    ) == {"date": "2026-11-14"}
+    assert FactRetriever._extract_attribute_values(
+        "Budget is $20/month"
+    )["money"] == "$20"
+    assert FactRetriever._extract_attribute_values(
+        "Server 1.9GB RAM, 30G disk"
+    )["capacity"] == "1.9GB"
+    assert FactRetriever._extract_attribute_values(
+        "no structured values here"
+    ) == {}

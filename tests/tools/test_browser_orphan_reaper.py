@@ -189,6 +189,65 @@ class TestReapOrphanedBrowserSessions:
         assert d.exists()
         assert pid_file.read_text() == "2"
 
+    def test_pid_record_replaced_during_dead_probe_is_retained(
+        self, fake_tmpdir
+    ):
+        """A replacement after parsing must veto dead-PID directory removal."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_deadprobe"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        pid_file = d / "bu.pid"
+        pid_file.write_text("222")
+        probes = []
+
+        def _pid_exists(pid):
+            probes.append(pid)
+            if pid == 222:
+                pid_file.write_text("333")
+            return False
+
+        with patch("gateway.status._pid_exists", side_effect=_pid_exists):
+            _reap_orphaned_browser_sessions()
+
+        assert probes == [111, 222]
+        assert d.exists()
+        assert pid_file.read_text() == "333"
+
+    def test_pid_record_replaced_after_termination_is_retained(
+        self, fake_tmpdir
+    ):
+        """Post-kill cleanup must bind to the same PID record it verified."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_postkill"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        pid_file = d / "bu.pid"
+        pid_file.write_text("222")
+        probes = []
+
+        def _pid_exists(pid):
+            probes.append(pid)
+            if probes == [111, 222, 222]:
+                pid_file.write_text("333")
+                return False
+            return pid == 222
+
+        with patch(
+            "gateway.status._pid_exists", side_effect=_pid_exists
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=444
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid"
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert probes == [111, 222, 222]
+        assert d.exists()
+        assert pid_file.read_text() == "333"
+
     def test_fresh_numeric_pid_prefix_is_retained(self, fake_tmpdir, monkeypatch):
         """An integer-looking partial write must not select/dead-check that PID."""
         import tools.browser_tool as bt

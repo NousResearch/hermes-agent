@@ -328,6 +328,18 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
     )
 
 
+#: Rows per ``IN (?,?,...)`` list. SQLite caps bound parameters at
+#: SQLITE_MAX_VARIABLE_NUMBER (999 on builds < 3.32, 32766 after); a bulk
+#: prune over a large cron-heavy store blew past it with "too many SQL
+#: variables". 500 is safely under both limits.
+_SQL_IN_CHUNK = 500
+
+
+def _chunked(seq: List[str], size: int = _SQL_IN_CHUNK):
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
+
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     """Delegate-subagent ids to cascade-delete with *parent_ids*.
 
@@ -348,30 +360,35 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     found: set[str] = set(seeds)
     frontier = list(seeds)
     while frontier:
-        ph = ",".join("?" * len(frontier))
-        cursor = conn.execute(
-            f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
-            f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
-            frontier + frontier,
-        )
-        frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
-        found.update(frontier)
+        next_frontier: List[str] = []
+        for chunk in _chunked(frontier):
+            ph = ",".join("?" * len(chunk))
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
+                f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
+                chunk + chunk,
+            )
+            for row in cursor.fetchall():
+                if row["id"] not in found:
+                    found.add(row["id"])
+                    next_frontier.append(row["id"])
+        frontier = next_frontier
     # Return only the discovered children — never the parents themselves.
     return [sid for sid in found if sid not in seeds]
 
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
-    if ids:
-        ph = ",".join("?" * len(ids))
-        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+    for chunk in _chunked(ids):
+        ph = ",".join("?" * len(chunk))
+        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(
             f"UPDATE sessions SET parent_session_id = NULL "
             f"WHERE parent_session_id IN ({ph})",
-            ids,
+            chunk,
         )
-        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
     return ids
 
 T = TypeVar("T")
@@ -15517,37 +15534,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         removed_delegate_ids: list[str] = []
 
         def _do(conn):
-            placeholders = ",".join("?" * len(unique_ids))
             # First, filter to IDs that actually exist — we want to
             # return the real deleted count, not the input length.
-            cursor = conn.execute(
-                f"SELECT id FROM sessions WHERE id IN ({placeholders})",
-                unique_ids,
-            )
-            existing = [row["id"] for row in cursor.fetchall()]
+            # Chunked: a bulk prune can carry tens of thousands of ids,
+            # well past SQLITE_MAX_VARIABLE_NUMBER for a single IN list.
+            existing: list[str] = []
+            for chunk in _chunked(unique_ids):
+                ph = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN ({ph})", chunk
+                )
+                existing.extend(row["id"] for row in cursor.fetchall())
             if not existing:
                 return 0
 
-            existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
             # of survivors — the IN list on ``parent_session_id`` does
             # exactly this.
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({existing_placeholders})",
-                existing,
-            )
-            conn.execute(
-                f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
-                existing,
-            )
-            conn.execute(
-                f"DELETE FROM sessions WHERE id IN ({existing_placeholders})",
-                existing,
-            )
+            for chunk in _chunked(existing):
+                ph = ",".join("?" * len(chunk))
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({ph})",
+                    chunk,
+                )
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({ph})", chunk
+                )
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
             return len(existing)

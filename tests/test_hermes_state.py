@@ -1500,6 +1500,47 @@ class TestBulkDeleteSessions:
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
 
+    def test_exceeds_sqlite_variable_limit(self, db, monkeypatch):
+        """A bulk delete larger than SQLITE_MAX_VARIABLE_NUMBER must not
+        raise "too many SQL variables". Reproduced on a cron-heavy store
+        where ``hermes sessions prune --source cron`` matched ~50K rows.
+        The IN lists are chunked; force a tiny chunk so the test exercises
+        the multi-chunk path (incl. delegate cascade + child orphaning)
+        without needing 32K rows."""
+        import hermes_state as hs
+
+        monkeypatch.setattr(hs, "_SQL_IN_CHUNK", 3)
+        ids = [f"s{i}" for i in range(20)]
+        for sid in ids:
+            db.create_session(session_id=sid, source="cron")
+            db.append_message(sid, role="user", content="tick")
+        # child branch of one parent + a delegate child of another
+        db.create_session(session_id="kid", source="cli", parent_session_id="s5")
+        db.create_session(
+            session_id="dele",
+            source="subagent",
+            parent_session_id="s7",
+            model_config={"_delegate_from": "s7"},
+        )
+
+        assert db.delete_sessions(ids + ["ghost"]) == 20
+        assert all(db.get_session(sid) is None for sid in ids)
+        assert db.get_session("dele") is None  # delegate cascades
+        assert db.get_session("kid")["parent_session_id"] is None  # branch orphaned
+
+    def test_bulk_delete_real_variable_limit(self, db):
+        """Un-monkeypatched: 40K ids is above every SQLite build's limit."""
+        ids = [f"x{i}" for i in range(40_000)]
+
+        def _seed(conn):
+            conn.executemany(
+                "INSERT INTO sessions (id, source, started_at) VALUES (?, 'cron', 0)",
+                [(i,) for i in ids],
+            )
+
+        db._execute_write(_seed)
+        assert db.delete_sessions(ids) == 40_000
+
 
 class TestDeleteEmptySessions:
     """``delete_empty_sessions`` sweeps every ended, non-archived session

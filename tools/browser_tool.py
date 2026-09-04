@@ -3446,9 +3446,9 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
     descendants on both platforms.
 
     Fires SIGTERM then SIGKILL back-to-back with no grace period between
-    them (unlike ``tools/mcp_stdio_watchdog.py``'s ``_terminate_process_group``,
-    which waits between signals because it's reacting to a live daemon being
-    orphaned). By the time this is called, the caller has already burned its
+    them (unlike ``tools/mcp_death_supervisor.py``'s ``_reap``, which waits
+    between signals because it's reacting to a live daemon being orphaned).
+    By the time this is called, the caller has already burned its
     full timeout budget waiting for a graceful exit — there's nothing to gain
     from waiting again here, only more delay on an already-timed-out call.
 
@@ -3487,7 +3487,7 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     # on Windows), but resolve them defensively via getattr anyway so an
     # accidental future refactor that drops that guard degrades to a plain
     # kill() instead of AttributeError — same discipline as
-    # tools/mcp_stdio_watchdog.py's _terminate_process_group.
+    # tools/mcp_death_supervisor.py's _reap.
     killpg = getattr(os, "killpg", None)
     if killpg is None:  # windows-footgun: ok - non-POSIX fallback
         try:

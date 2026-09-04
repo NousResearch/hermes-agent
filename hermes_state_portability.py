@@ -54,8 +54,8 @@ class SessionPortabilityMixin:
         where = "cwd IS NOT NULL AND TRIM(cwd) != ''"
         if not include_archived:
             where += " AND archived = 0"
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read_ctx() as conn:
+            rows = conn.execute(
                 "SELECT cwd AS cwd, COUNT(*) AS sessions, "
                 "MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
                 f"FROM sessions WHERE {where} GROUP BY cwd"
@@ -119,8 +119,8 @@ class SessionPortabilityMixin:
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """
-        with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, (prefix, prefix_hi, limit, offset))
             rows = cursor.fetchall()
 
         runs: List[Dict[str, Any]] = []
@@ -202,8 +202,8 @@ class SessionPortabilityMixin:
             {prompt_join}
             WHERE s.id IN ({placeholders})
         """
-        with self._lock:
-            cursor = self._conn.execute(query, ids)
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, ids)
             rows = cursor.fetchall()
         result: Dict[str, Dict[str, Any]] = {}
         for row in rows:
@@ -229,8 +229,8 @@ class SessionPortabilityMixin:
         Returns ``id``, ``title``, and the full first-turn ``content`` so a
         caller can re-derive what the user typed. Newest first.
         """
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read_ctx() as conn:
+            rows = conn.execute(
                 """
                 SELECT s.id, s.title, m.content
                 FROM sessions s
@@ -254,8 +254,8 @@ class SessionPortabilityMixin:
         Pairs with :meth:`list_skill_scaffolded_sessions` so a re-title can feed
         the titler the same (request, reply) shape the live path uses.
         """
-        with self._lock:
-            row = self._conn.execute(
+        with self._read_ctx() as conn:
+            row = conn.execute(
                 "SELECT content FROM messages "
                 "WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL "
                 "ORDER BY timestamp, id LIMIT 1",

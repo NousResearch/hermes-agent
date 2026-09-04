@@ -65,6 +65,7 @@ class TestFailoverReason:
             "model_not_found", "format_error",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
+            "reasoning_mandatory",
             "provider_policy_blocked",
             "content_policy_blocked",
             "thinking_signature", "long_context_tier",
@@ -689,6 +690,21 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False
+
+    # ── Reasoning-mandatory route rejecting a disable ──
+
+    def test_reasoning_mandatory_400_is_retryable_not_format_error(self):
+        e = MockAPIError(
+            "Error code: 400 - This request is not valid. Check the model name "
+            "and other parameters. Additional info: Reasoning is mandatory for "
+            "this endpoint and cannot be disabled.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="nous", model="z-ai/glm-5.3-flash")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_compress is False
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

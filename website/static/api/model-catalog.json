@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-02T16:31:43Z",
+  "updated_at": "2026-09-03T07:08:39Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -163,6 +163,18 @@
         },
         {
           "id": "meta/muse-spark-1.2",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.2-contributor",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3-contributor",
           "description": ""
         },
         {

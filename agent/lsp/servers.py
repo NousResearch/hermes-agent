@@ -146,6 +146,10 @@ class ServerDef:
     build_spawn: Callable[[str, "ServerContext"], Optional[SpawnSpec]]
     seed_first_push: bool = False
     description: str = ""
+    # Server handles ``workspace/didChangeWorkspaceFolders``: one process
+    # serves every project root (git worktrees included) as extra
+    # workspaceFolders instead of one process per root.
+    multi_root: bool = False
 
     def matches(self, file_path: str) -> bool:
         """Return True iff this server handles ``file_path``."""
@@ -974,6 +978,7 @@ SERVERS: List[ServerDef] = [
         extensions=(".py", ".pyi"),
         resolve_root=_root_python,
         build_spawn=_spawn_pyright,
+        multi_root=True,
         description="Python — Microsoft pyright",
     ),
     ServerDef(

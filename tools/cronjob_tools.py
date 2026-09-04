@@ -1125,6 +1125,12 @@ def _run_claimed_job(
             _registered = False
             release_running_job(job_id)
         refreshed = get_job(job_id) or {}
+        execution = None
+        execution_id = job.get("execution_id")
+        if execution_id:
+            from cron.executions import get_execution
+
+            execution = get_execution(str(execution_id))
         last_status = refreshed.get("last_status")
         # "delivery_failed" (#83993): the agent run itself succeeded but the
         # output never reached the user. That is NOT a success for the caller
@@ -1136,6 +1142,12 @@ def _run_claimed_job(
         run_error = refreshed.get("last_error")
         if last_status == "delivery_failed" and not run_error:
             run_error = refreshed.get("last_delivery_error")
+        if execution is not None and execution.get("status") != "completed":
+            ok = False
+            run_error = (
+                execution.get("error")
+                or f"execution ended in {execution.get('status') or 'unknown'} state"
+            )
         return {
             "claimed": True,
             "success": bool(processed and ok),

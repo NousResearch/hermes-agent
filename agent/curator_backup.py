@@ -11,6 +11,7 @@ is undoable, then extracts the chosen snapshot into place.
 The snapshot does NOT include:
   - ``.curator_backups/`` (would recurse)
   - ``.hub/`` (hub-installed skills — managed by the hub, not us)
+  - ``.git/`` (repository metadata — managed by git, not the curator)
 
 It DOES include:
   - all SKILL.md files + their directories (``scripts/``, ``references/``,
@@ -41,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import tarfile
@@ -60,7 +62,13 @@ DEFAULT_KEEP = 5
 # Entries under skills/ that should NEVER be rolled up into a snapshot.
 # .hub/ is managed by the skills hub; rolling it back would break lockfile
 # invariants. .curator_backups is the backup dir itself — recursion bomb.
-_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
+# .git is repository metadata — rolling it back would break git tracking,
+# and snapshots that include it grow with the full history: once backups
+# are committed back, the history contains prior backups, so each snapshot
+# is bigger than the last (observed: 38MB of skills inflating to 24GB in
+# weeks, #91449). ``_tar_filter`` below applies the same set to nested
+# paths, so a ``.git`` inside an individual skill dir is skipped too.
+_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".git"}
 
 # Snapshot id regex: UTC ISO with colons replaced by dashes so the filename
 # is portable (Windows-safe). An optional ``-NN`` suffix handles two
@@ -260,6 +268,12 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         return None
 
     archive = dest / "skills.tar.gz"
+    def _tar_filter(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+        parts = Path(tarinfo.name).parts
+        if any(p in _EXCLUDE_TOP_LEVEL for p in parts):
+            return None
+        return tarinfo
+
     try:
         # Stream into the tarball — no tempdir copy needed.
         with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
@@ -268,7 +282,7 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
                     continue
                 # arcname: store paths relative to skills/ so extraction
                 # drops cleanly back into the skills dir.
-                tf.add(str(entry), arcname=entry.name, recursive=True)
+                tf.add(str(entry), arcname=entry.name, recursive=True, filter=_tar_filter)
         # Capture cron/jobs.json alongside the tarball. Never fails the
         # snapshot — the skills side is the core guarantee; cron is
         # additive. We still record in the manifest whether it was
@@ -542,6 +556,40 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
 
 
+def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
+    """Move excluded entries (nested ``.git``/``.hub``/...) from *staged*
+    back under *skills* after a successful extract.
+
+    Snapshots never contain these, so the extract cannot restore them; the
+    staged copy of the live tree is the only source. ``.git`` may be a dir
+    or a file (submodule / worktree ``gitdir:`` pointer) — both are moved.
+    Best-effort and deliberately conditional: an entry is carried over only
+    when its parent skill dir was restored and nothing sits at the target.
+    If the target snapshot predates the skill, the entry is dropped with the
+    staging dir rather than left as an orphan; note the safety snapshot
+    excludes these paths too, so that case is not undoable.
+    """
+    def _carry(src: Path) -> None:
+        dest = skills / src.relative_to(staged)
+        if dest.parent.is_dir() and not dest.exists():
+            try:
+                shutil.move(str(src), str(dest))
+            except OSError as e:
+                logger.debug("Could not restore excluded entry %s: %s", src, e)
+
+    for dirpath, dirnames, filenames in os.walk(staged):
+        keep = []
+        for name in dirnames:
+            if name in _EXCLUDE_TOP_LEVEL:
+                _carry(Path(dirpath) / name)
+            else:
+                keep.append(name)
+        dirnames[:] = keep
+        for name in filenames:
+            if name in _EXCLUDE_TOP_LEVEL:
+                _carry(Path(dirpath) / name)
+
+
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
     """Move staged entries back to their original paths.
 
@@ -699,8 +747,12 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
             pass
         return (False, f"snapshot extract failed (state restored): {e}", None)
 
-    # Extract succeeded — the staging dir has served its purpose. The
-    # user's undo handle is the safety snapshot tarball we took earlier.
+    # Extract succeeded. Snapshots never contain excluded subtrees (nested
+    # ``.git``, ``.hub``, ...), so the extract cannot restore them — carry
+    # them over from the staged copy of the live tree (top-level ``.git`` is
+    # simpler: it is never staged). Then the staging dir has served its
+    # purpose; the user's undo handle is the safety snapshot tarball.
+    _restore_excluded_subtrees(staged, skills)
     try:
         shutil.rmtree(staged, ignore_errors=True)
     except OSError:

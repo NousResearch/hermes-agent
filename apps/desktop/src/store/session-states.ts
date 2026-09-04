@@ -25,6 +25,7 @@ import {
   $activeTreeGroup,
   $layoutTree,
   focusedSessionTabAnchor,
+  isPaneVisible,
   moveTreePane,
   noteActiveTreeGroup,
   revealTreePane
@@ -1551,9 +1552,11 @@ export function focusOpenSession(
     const tree = $layoutTree.get()
     const group = tree ? findGroupOfPane(tree, paneId) : null
 
-    if (group) {
-      noteActiveTreeGroup(group.id)
+    if (!group || !isPaneVisible(paneId)) {
+      return null
     }
+
+    noteActiveTreeGroup(group.id)
 
     return 'tile'
   }
@@ -1634,9 +1637,9 @@ export function focusWorkspaceOwnerSessionTile(
   const paneId = resolveRememberedActivePane(workspaceScopeKey('bots', workspaceOwnerKey), paneIds) ?? paneIds[0]
   const storedSessionId = paneId.slice(TILE_PANE_PREFIX.length)
 
-  focusOpenSession(storedSessionId, { workspaceMode: 'bots', workspaceOwnerKey })
-
-  return storedSessionId
+  return focusOpenSession(storedSessionId, { workspaceMode: 'bots', workspaceOwnerKey }) === 'tile'
+    ? storedSessionId
+    : null
 }
 
 /** Does a sidebar click still need to navigate after `focusOpenSession`? A miss

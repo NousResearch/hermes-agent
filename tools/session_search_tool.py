@@ -485,18 +485,24 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
-        # list_sessions_rich (include_children=False) already applies the
-        # canonical child classifier (_LISTABLE_CHILD_SQL): roots, /branch
-        # children, and /new-reset children are admitted (stable markers plus
-        # the legacy same-key heuristic), while delegation/compression
-        # children are hidden. Re-classifying rows here in Python duplicated
-        # that predicate and re-hid legacy pre-marker reset children the SQL
-        # deliberately admits — trust the query instead (#85756).
-        sessions = db.list_sessions_rich(
+        # Never use list_sessions_rich(order_by_last_active=True) here.  That
+        # generic query walks every compression chain and derives activity and
+        # previews from messages before LIMIT; on a multi-GB state.db it can
+        # monopolise a gateway callback for minutes.  The dedicated browse
+        # query preselects an indexed, bounded candidate set and carries a
+        # cooperative SQLite VM cancellation deadline.
+        bounded_list = getattr(db, "list_recent_sessions_bounded", None)
+        if bounded_list is None:
+            # Fail closed rather than silently returning to the exact
+            # whole-database query shape this path exists to eliminate.
+            raise RuntimeError(
+                "session database does not support bounded recent-session browse"
+            )
+        sessions = bounded_list(
             limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            order_by_last_active=True,
-        )  # fetch extra so we can skip current / compression roots
+            timeout_seconds=3.0,
+        )
 
         current_root, has_compression_hop = (
             _resolve_to_parent(db, current_session_id)

@@ -56,8 +56,8 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     safe_url_for_log,
     _ssrf_redirect_guard,
-    cache_document_from_bytes,
-    cache_video_from_bytes,
+    cache_document_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
@@ -6931,7 +6931,7 @@ class SlackAdapter(BasePlatformAdapter):
                     raw_bytes = await self._download_slack_file_bytes(
                         url, team_id=team_id
                     )
-                    cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
+                    cached_path = await cache_video_from_bytes_async(raw_bytes, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(
                         SUPPORTED_VIDEO_TYPES.get(ext, mimetype or "video/mp4")
@@ -6985,7 +6985,7 @@ class SlackAdapter(BasePlatformAdapter):
                     raw_bytes = await self._download_slack_file_bytes(
                         url, team_id=team_id
                     )
-                    cached_path = cache_document_from_bytes(
+                    cached_path = await cache_document_from_bytes_async(
                         raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
                     if in_allowlist:
@@ -9004,13 +9004,13 @@ class SlackAdapter(BasePlatformAdapter):
                         )
 
                     if audio:
-                        from gateway.platforms.base import cache_audio_from_bytes
+                        from gateway.platforms.base import cache_audio_from_bytes_async
 
-                        return cache_audio_from_bytes(response.content, ext)
+                        return await cache_audio_from_bytes_async(response.content, ext)
                     else:
-                        from gateway.platforms.base import cache_image_from_bytes
+                        from gateway.platforms.base import cache_image_from_bytes_async
 
-                        return cache_image_from_bytes(response.content, ext)
+                        return await cache_image_from_bytes_async(response.content, ext)
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                     if (
                         isinstance(exc, httpx.HTTPStatusError)

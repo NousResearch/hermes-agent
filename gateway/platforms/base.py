@@ -646,7 +646,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, TranscriptReadError, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 if TYPE_CHECKING:
@@ -949,6 +949,11 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+    """Cache image bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+
+
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
@@ -993,7 +998,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     content = await _read_httpx_body_with_limit(
                         response, media_type="image",
                     )
-                return cache_image_from_bytes(content, ext)
+                return await cache_image_from_bytes_async(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -1090,6 +1095,11 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     return str(filepath)
 
 
+async def cache_audio_from_bytes_async(data: bytes, ext: str = ".ogg") -> str:
+    """Cache audio bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_audio_from_bytes, data, ext)
+
+
 async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
     """
     Download an audio file from a URL and save it to the local cache.
@@ -1134,7 +1144,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     content = await _read_httpx_body_with_limit(
                         response, media_type="audio",
                     )
-                return cache_audio_from_bytes(content, ext)
+                return await cache_audio_from_bytes_async(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -1195,6 +1205,11 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
+
+
+async def cache_video_from_bytes_async(data: bytes, ext: str = ".mp4") -> str:
+    """Cache video bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_video_from_bytes, data, ext)
 
 
 def cleanup_video_cache(max_age_hours: int = 24) -> int:
@@ -2324,6 +2339,11 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     return str(filepath)
 
 
+async def cache_document_from_bytes_async(data: bytes, filename: str) -> str:
+    """Cache document bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_document_from_bytes, data, filename)
+
+
 def cleanup_document_cache(max_age_hours: int = 24) -> int:
     """
     Delete cached documents older than *max_age_hours*.
@@ -2442,6 +2462,23 @@ def cache_media_bytes(
     else:
         out_mime = mime if mime else "application/octet-stream"
     return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+
+
+async def cache_media_bytes_async(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Classify and cache attachment bytes without blocking the event loop."""
+    return await asyncio.to_thread(
+        cache_media_bytes,
+        data,
+        filename=filename,
+        mime_type=mime_type,
+        default_kind=default_kind,
+    )
 
 
 class MessageType(Enum):
@@ -3624,12 +3661,39 @@ class BasePlatformAdapter(ABC):
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
 
+    #: Published when an adapter is installed and running but its receive
+    #: path is not yet confirmed (e.g. Telegram polling has not proven a
+    #: getUpdates round-trip). Same ``retrying`` platform_state the runner
+    #: uses for queued reconnects, so readers see "not delivering" (#101391).
+    DEGRADED_STATUS_MESSAGE = "connected but not yet confirmed active; recovering in background"
+
+    @property
+    def send_path_degraded(self) -> bool:
+        """True while connect() succeeded but delivery is not confirmed.
+
+        Adapters with a separately-proven receive path override this; the
+        default adapter is either connected or not.
+        """
+        return False
+
     def _mark_connected(self) -> None:
         self._running = True
         self._fatal_error_code = None
         self._fatal_error_message = None
         self._fatal_error_retryable = True
-        self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+        if self.send_path_degraded:
+            self._mark_degraded()
+        else:
+            self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+
+    def _mark_degraded(self) -> None:
+        """Publish ``retrying`` for a running adapter whose delivery path is unproven."""
+        self._write_runtime_status_safe(
+            "connected_degraded",
+            platform_state="retrying",
+            error_code=None,
+            error_message=self.DEGRADED_STATUS_MESSAGE,
+        )
 
     def _mark_disconnected(self) -> None:
         self._running = False
@@ -4088,6 +4152,12 @@ class BasePlatformAdapter(ABC):
             if callable(peek):
                 session_id = peek(session_key)
             transcript = store.load_transcript(session_id or session_key)
+        except TranscriptReadError:
+            logger.warning(
+                "Transcript read failed for session %s; media dedup runs "
+                "with no history this turn (#100788)", session_key,
+            )
+            return None
         except Exception:
             return None
         if not transcript:

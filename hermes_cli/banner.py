@@ -244,11 +244,15 @@ def _is_full_sha(value: Optional[str]) -> bool:
 
 def _upstream_main_sha() -> Optional[str]:
     """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
+    from hermes_cli._subprocess_compat import noninteractive_git_env
+
     try:
         result = subprocess.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=10,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except Exception:
         return None
@@ -285,6 +289,8 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     Shallow checkouts cannot produce a trustworthy count, so they compare tip
     revisions and return ``UPDATE_AVAILABLE_NO_COUNT`` when they differ.
     """
+    from hermes_cli._subprocess_compat import noninteractive_git_env
+
     # If origin is an official SSH remote, skip local fetch and use a remote check.
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
@@ -357,6 +363,8 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             capture_output=True,
             timeout=10,
             cwd=str(repo_dir),
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
         fetch_ok = fetch_proc.returncode == 0
     except Exception:

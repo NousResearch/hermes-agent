@@ -1336,6 +1336,32 @@ class TestQuickSnapshot:
             assert "state.db" not in data.get("files", {})
             assert "state.db" in data.get("failed_dbs", [])
 
+    def test_restore_refused_db_is_not_counted(self, hermes_home, monkeypatch):
+        """A refused live-safe restore (holder detected, backup leg failed) must
+        not be counted as a restored file — `hermes import` reports it, and
+        /snapshot restore must not claim success for that file either."""
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+        restored_log: list[str] = []
+        real_info = backup_mod.logger.info
+        monkeypatch.setattr(
+            backup_mod.logger, "info",
+            lambda msg, *a, **kw: restored_log.append(msg % a if a else msg) or real_info(msg, *a, **kw),
+        )
+
+        restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        manifest = json.loads(
+            (backup_mod._quick_snapshot_root(hermes_home) / snap_id / "manifest.json").read_text()
+        )
+        non_db = [rel for rel in manifest.get("files", {}) if not rel.endswith(".db")]
+        summary = [line for line in restored_log if line.startswith("Restored ")]
+        assert summary, restored_log
+        assert summary[-1].startswith(f"Restored {len(non_db)} files"), summary[-1]
+
     def test_restore_state_db_live_connection(self, hermes_home):
         """Restoring state.db must update data visible through a live connection.
 
@@ -2225,3 +2251,175 @@ class TestImportHonorsHermesHomeOverride:
         backup_mod.run_import(args)
 
         assert calls and calls[0].get("context") == "import"
+
+
+# ---------------------------------------------------------------------------
+# Live session database import (issue #100960)
+# ---------------------------------------------------------------------------
+
+def _write_session_db(path: Path, sessions: int, messages_per_session: int) -> None:
+    """Create a minimal Hermes-shaped session database at *path*."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sessions "
+            "(session_id TEXT PRIMARY KEY, message_count INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS messages "
+            "(id INTEGER PRIMARY KEY, session_id TEXT, content TEXT)"
+        )
+        for s in range(sessions):
+            sid = f"sess-{s}"
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?)", (sid, messages_per_session)
+            )
+            for m in range(messages_per_session):
+                conn.execute(
+                    "INSERT INTO messages (session_id, content) VALUES (?, ?)",
+                    (sid, f"{sid}-msg-{m}"),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestImportLiveSessionDatabase:
+    """`hermes import` must not swap the inode of a database Hermes holds open.
+
+    Publishing state.db with a rename leaves any live gateway/dashboard/WebUI
+    connection reading and writing the unlinked inode, so its sessions vanish
+    from the database everyone else opens and nothing is logged (#100960).
+    """
+
+    def _zip_with_db(self, zip_path: Path, db_path: Path) -> None:
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(db_path, "state.db")
+
+    def _prepare(self, tmp_path, monkeypatch, live=(3, 4), backup=(2, 2)):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        live_db = home / "state.db"
+        _write_session_db(live_db, *live)
+
+        staged = tmp_path / "backup-state.db"
+        _write_session_db(staged, *backup)
+        zip_path = tmp_path / "backup.zip"
+        self._zip_with_db(zip_path, staged)
+        return home, live_db, zip_path
+
+    def test_live_holder_sees_imported_rows(self, tmp_path, monkeypatch):
+        """A connection open across the import converges on the imported data."""
+        from hermes_cli.backup import run_import
+
+        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+
+        holder = sqlite3.connect(str(live_db))
+        # Read first so the connection has cached pages of the pre-import file.
+        assert holder.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 12
+        inode_before = os.stat(live_db).st_ino
+
+        try:
+            run_import(Namespace(zipfile=str(zip_path), force=True))
+            assert holder.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
+        finally:
+            holder.close()
+
+        assert os.stat(live_db).st_ino == inode_before
+        assert _count_rows(live_db) == (2, 4)
+
+    def test_older_backup_reports_replaced_sessions(self, tmp_path, monkeypatch, capsys):
+        """Importing a backup that predates recorded work says what it dropped."""
+        from hermes_cli.backup import run_import
+
+        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        out = capsys.readouterr().out
+        assert "Session data replaced by older backup contents" in out
+        assert "3 session(s) / 12 message(s) -> 2 / 4" in out
+
+    def test_newer_backup_reports_nothing(self, tmp_path, monkeypatch, capsys):
+        """No warning when the import does not shrink the database."""
+        from hermes_cli.backup import run_import
+
+        home, live_db, zip_path = self._prepare(
+            tmp_path, monkeypatch, live=(1, 1), backup=(3, 4)
+        )
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        out = capsys.readouterr().out
+        assert "Session data replaced by older backup contents" not in out
+
+    def test_refused_restore_is_reported_and_leaves_db_intact(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A refused live-safe restore is a warning, not a counted success."""
+        import hermes_cli.backup as backup_mod
+
+        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+
+        backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        out = capsys.readouterr().out
+        assert "files skipped" in out
+        assert "state.db" in out
+        # The pre-import database is still the one on disk.
+        assert _count_rows(live_db) == (3, 12)
+
+    def test_sidecar_members_are_not_installed_beside_a_restored_db(
+        self, tmp_path, monkeypatch
+    ):
+        """A `state.db-wal` member from an old/hand-built archive must not be
+        os.replace'd next to the page-restored database: it describes a
+        different image and SQLite would replay it on the next open."""
+        from hermes_cli.backup import run_import
+
+        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+        with zipfile.ZipFile(zip_path, "a") as zf:
+            zf.writestr("state.db-wal", b"foreign-wal-from-archive")
+            zf.writestr("state.db-shm", b"foreign-shm")
+            zf.writestr("state.db-journal", b"foreign-journal")
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        for suffix, payload in (
+            ("-wal", b"foreign-wal-from-archive"),
+            ("-shm", b"foreign-shm"),
+            ("-journal", b"foreign-journal"),
+        ):
+            sidecar = live_db.with_name("state.db" + suffix)
+            assert not sidecar.exists() or sidecar.read_bytes() != payload, suffix
+        assert _count_rows(live_db) == (2, 4)
+
+    def test_missing_target_takes_the_plain_publish(self, tmp_path, monkeypatch):
+        """A fresh install has no inode to preserve; the member still lands."""
+        from hermes_cli.backup import run_import
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        staged = tmp_path / "backup-state.db"
+        _write_session_db(staged, 2, 3)
+        zip_path = tmp_path / "backup.zip"
+        self._zip_with_db(zip_path, staged)
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+        assert _count_rows(home / "state.db") == (2, 6)
+
+
+def _count_rows(db_path: Path) -> tuple[int, int]:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return (
+            conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
+            conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+        )
+    finally:
+        conn.close()

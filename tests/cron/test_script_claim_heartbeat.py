@@ -392,7 +392,7 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _heartbeat)
     monkeypatch.setattr(scheduler, "run_job", _run_job)
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda job_id: True)
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda execution_id: None)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda execution_id: {})
     monkeypatch.setattr(scheduler, "finish_execution", lambda *args, **kwargs: None)
     save_output = MagicMock()
     deliver_result = MagicMock()
@@ -564,7 +564,7 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     finish = MagicMock()
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *args, **kwargs: True)
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
     monkeypatch.setattr(
         scheduler,
         "run_job",

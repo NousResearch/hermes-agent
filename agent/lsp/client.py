@@ -103,6 +103,11 @@ def file_uri(path: str) -> str:
     return "file://" + quote(abs_path, safe="/:")
 
 
+def _folder(root: str) -> Dict[str, str]:
+    """Build an LSP ``WorkspaceFolder`` for ``root``."""
+    return {"name": os.path.basename(root.rstrip(os.sep)) or root, "uri": file_uri(root)}
+
+
 def uri_to_path(uri: str) -> str:
     """Inverse of :func:`file_uri`."""
     if not uri.startswith("file://"):
@@ -197,6 +202,10 @@ class LSPClient:
     ) -> None:
         self.server_id = server_id
         self.workspace_root = workspace_root
+        # Roots this server is serving.  Single-root servers only ever
+        # hold ``workspace_root``; multi-root servers (pyright) grow this
+        # via :meth:`add_workspace_folder` instead of a second process.
+        self.workspace_folders: List[str] = [workspace_root]
         self._command = list(command)
         self._env = env
         self._cwd = cwd or workspace_root
@@ -402,9 +411,7 @@ class LSPClient:
             "rootUri": file_uri(self.workspace_root),
             "rootPath": self.workspace_root,
             "processId": os.getpid(),
-            "workspaceFolders": [
-                {"name": "workspace", "uri": file_uri(self.workspace_root)}
-            ],
+            "workspaceFolders": [_folder(r) for r in self.workspace_folders],
             "initializationOptions": self._init_options,
             "capabilities": {
                 "window": {"workDoneProgress": True},
@@ -701,7 +708,21 @@ class LSPClient:
         return None
 
     async def _handle_workspace_folders(self, params: Any) -> Any:
-        return [{"name": "workspace", "uri": file_uri(self.workspace_root)}]
+        return [_folder(r) for r in self.workspace_folders]
+
+    async def add_workspace_folder(self, root: str) -> None:
+        """Attach another root to a running multi-root server.
+
+        Idempotent; the folder is recorded before the notification is
+        sent so concurrent callers for the same root only announce once.
+        """
+        if root in self.workspace_folders:
+            return
+        self.workspace_folders.append(root)
+        await self._send_notification(
+            "workspace/didChangeWorkspaceFolders",
+            {"event": {"added": [_folder(root)], "removed": []}},
+        )
 
     async def _handle_diagnostic_refresh(self, params: Any) -> Any:
         # We don't honour refresh — we re-pull on every touchFile.

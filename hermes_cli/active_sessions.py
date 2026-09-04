@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,32 @@ def resolve_max_concurrent_sessions(config: Any) -> Optional[int]:
     else:
         raw = getattr(config, "max_concurrent_sessions", None)
     return coerce_max_concurrent_sessions(raw, key=key)
+
+
+def format_age(seconds: float) -> str:
+    minutes = max(0, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h" if not minutes else f"{hours}h{minutes}m"
+
+
+def summarize_holders(entries: list[dict[str, Any]]) -> str:
+    """Compact "who is holding the slots" phrase, e.g. ``desktop x4, cli``."""
+    if not entries:
+        return ""
+    counts: dict[str, int] = {}
+    for entry in entries:
+        surface = str(entry.get("surface") or "unknown")
+        counts[surface] = counts.get(surface, 0) + 1
+    held = ", ".join(
+        f"{surface} x{n}" if n > 1 else surface
+        for surface, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    started = [t for t in (_optional_float(e.get("started_at")) for e in entries) if t]
+    if started:
+        held += f", oldest {format_age(time.time() - min(started))} ago"
+    return held
 
 
 def active_session_limit_message(
@@ -731,6 +757,53 @@ def transfer_active_session(
         return updated
 
 
+# A lease this process wrote in the last few seconds may not be in the
+# caller's ``own_live_lease_ids`` yet: ``try_acquire_active_session`` writes
+# the registry entry under the file lock and the server attaches the lease to
+# its session record only after that returns. A concurrent finalize that
+# snapshotted its live ids in between would otherwise read the brand-new lease
+# as an orphan and drop it. Real orphans are minutes old (#101415).
+_SELF_ORPHAN_GRACE_SECONDS = 30.0
+
+
+def _drop_self_orphans(
+    entries: list[dict[str, Any]], own_live_lease_ids: set[str] | None
+) -> list[dict[str, Any]]:
+    """Drop this process's leases only when its caller can vouch for owners."""
+    if own_live_lease_ids is None:
+        return entries
+    pid = os.getpid()
+    cutoff = time.time() - _SELF_ORPHAN_GRACE_SECONDS
+    return [
+        entry
+        for entry in entries
+        if entry.get("pid") != pid
+        or str(entry.get("lease_id") or "") in own_live_lease_ids
+        or (_optional_float(entry.get("started_at")) or 0.0) > cutoff
+    ]
+
+
+def _release_orphaned_leases_in_home(
+    registry_home: Path, live_lease_ids: set[str]
+) -> int:
+    state_path = _state_path(registry_home)
+    if not state_path.exists():
+        return 0
+    with _FileLock(_lock_path(registry_home)):
+        try:
+            entries = _prune_dead(_read_entries(state_path, strict=True))
+        except ActiveSessionRegistryError:
+            logger.warning(
+                "Active-session registry is unavailable; skipping orphaned-lease sweep"
+            )
+            return 0
+        kept = _drop_self_orphans(entries, live_lease_ids)
+        dropped = len(entries) - len(kept)
+        if dropped:
+            _write_entries(state_path, kept)
+        return dropped
+
+
 def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     """Drop this process's registry entries that no live session owns.
 
@@ -738,30 +811,26 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     dashboard process remains alive. Only the owning process can reconcile its
     own lease IDs, so entries from other processes are always preserved.
     """
-    pid = os.getpid()
-    state_path = _state_path()
-    # No registry file yet means no leases have ever been written under this
-    # home — don't take a lock (or create its file) on the idle-reaper tick.
-    if not state_path.exists():
-        return 0
-    with _FileLock(_lock_path()):
+    root = get_default_hermes_root()
+    homes = [root]
+    profiles_root = root / "profiles"
+    try:
+        homes.extend(
+            profile
+            for profile in profiles_root.iterdir()
+            if profile.is_dir() and not profile.name.startswith(".")
+        )
+    except OSError:
+        pass
+
+    dropped = 0
+    for home in homes:
         try:
-            raw_entries = _read_entries(state_path, strict=True)
-            entries = _prune_dead(raw_entries)
-        except ActiveSessionRegistryError:
-            logger.warning(
-                "Active-session registry is unavailable; skipping orphaned-lease sweep"
+            dropped += _release_orphaned_leases_in_home(home, live_lease_ids)
+        except OSError as exc:
+            logger.debug(
+                "orphaned-lease sweep failed for %s: %s", home, exc
             )
-            return 0
-        kept = [
-            entry
-            for entry in entries
-            if entry.get("pid") != pid
-            or str(entry.get("lease_id") or "") in live_lease_ids
-        ]
-        dropped = len(entries) - len(kept)
-        if dropped:
-            _write_entries(state_path, kept)
     return dropped
 
 
@@ -783,6 +852,7 @@ def active_session_liveness_guard(
     session_id: str,
     *,
     registry_home: str | Path | None = None,
+    own_live_lease_ids: set[str] | None = None,
 ) -> Iterator[bool]:
     """Hold the registry lock while reporting whether ``session_id`` is leased.
 
@@ -794,6 +864,7 @@ def active_session_liveness_guard(
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
+        entries = _drop_self_orphans(entries, own_live_lease_ids)
         _write_entries(state_path, entries)
         yield bool(target) and any(
             str(entry.get("session_id") or "") == target for entry in entries
@@ -804,6 +875,8 @@ def active_session_liveness_guard(
 def release_active_session_liveness_guard(
     lease: ActiveSessionLease,
     session_id: str,
+    *,
+    own_live_lease_ids: set[str] | None = None,
 ) -> Iterator[bool]:
     """Remove ``lease`` and hold its registry lock through a lifecycle write.
 
@@ -813,7 +886,9 @@ def release_active_session_liveness_guard(
     """
     if not lease.enabled or lease.released:
         with active_session_liveness_guard(
-            session_id, registry_home=_registry_home_for_lease(lease)
+            session_id,
+            registry_home=_registry_home_for_lease(lease),
+            own_live_lease_ids=own_live_lease_ids,
         ) as active:
             yield active
         return
@@ -828,6 +903,7 @@ def release_active_session_liveness_guard(
             for entry in entries
             if str(entry.get("lease_id") or "") != lease.lease_id
         ]
+        kept = _drop_self_orphans(kept, own_live_lease_ids)
         if len(kept) != len(entries):
             _write_entries(state_path, kept)
         lease.released = True

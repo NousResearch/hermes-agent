@@ -66,6 +66,7 @@ import { TerminalBackendPanel } from '../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { ChannelsTab } from './channels-tab'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
@@ -73,7 +74,7 @@ import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 // 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
 // Skills tab now (EmbeddedHubPicker below the installed list). Legacy
 // `?tab=hub` links fall back to 'skills' via useRouteEnumParam.
-const SKILLS_MODES = ['skills', 'toolsets', 'mcp'] as const
+const SKILLS_MODES = ['skills', 'toolsets', 'channels', 'mcp'] as const
 
 // Skills + toolsets live in the RQ cache so switching tabs/pages paints the
 // cached lists instantly (no reload flash) and mount only fires a deduped
@@ -854,6 +855,7 @@ export function SkillsView({
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
+        { id: 'channels', label: t.skills.tabChannels },
         { id: 'mcp', label: t.skills.tabMcp }
       ]}
     >
@@ -864,7 +866,9 @@ export function SkillsView({
         {profileScopeSelector}
         <div className="flex min-h-0 flex-1 flex-col">
           <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
-            {mode === 'mcp' ? (
+            {mode === 'channels' ? (
+              <ChannelsTab query={query} profile={scopeProfile} />
+            ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
               // it is the ACTIVE gateway's socket — for a scope pinned to a
               // different backend that RPC would hot-reload the wrong

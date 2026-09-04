@@ -91,6 +91,11 @@ class TurnState:
 class ConversationState:
     """State scoped to one conversation (survives turns, not boundaries)."""
 
+    # Platform toolsets are part of the model's frozen system-prompt surface.
+    # Keep the first resolved selection for this durable session id so config
+    # changes cannot alter a live conversation's schemas.
+    toolsets_snapshot: Optional[Tuple[str, ...]] = None
+    toolsets_snapshot_session_id: Optional[str] = None
     # /model per-session override (model/provider/api_key/base_url/api_mode).
     model_override: Optional[Dict[str, Any]] = None
     # /model --once restore snapshot.
@@ -117,6 +122,8 @@ class ConversationState:
         pop-loop: adding a field here means every boundary clears it
         automatically.
         """
+        self.toolsets_snapshot = None
+        self.toolsets_snapshot_session_id = None
         self.model_override = None
         self.one_turn_restore = None
         self.reasoning_override = None

@@ -1008,6 +1008,8 @@ export const ar = defineLocale({
   skills: {
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
+    tabChannels: 'القنوات',
+    configuringProfile: 'جارٍ الإعداد:',
     all: 'الكل',
     searchSkills: 'البحث في المهارات',
     searchToolsets: 'البحث في مجموعات الأدوات',

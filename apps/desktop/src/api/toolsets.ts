@@ -1,5 +1,7 @@
 import type {
   ActionResponse,
+  ChannelCapability,
+  ChannelCapabilityUpdate,
   ComputerUseStatus,
   TerminalBackendsResponse,
   ToolsetConfig,
@@ -18,6 +20,26 @@ export function getToolsets(profile?: ProfileScope): Promise<ToolsetInfo[]> {
   return window.hermesDesktop.api<ToolsetInfo[]>({
     ...capabilityScoped(profile),
     path: '/api/tools/toolsets'
+  })
+}
+
+export function getChannelCapabilities(profile?: ProfileScope): Promise<ChannelCapability[]> {
+  return window.hermesDesktop.api<ChannelCapability[]>({
+    ...capabilityScoped(profile),
+    path: '/api/tools/channels'
+  })
+}
+
+export function updateChannelCapabilities(
+  platform: string,
+  update: ChannelCapabilityUpdate,
+  profile?: ProfileScope
+): Promise<{ ok: boolean; channel: ChannelCapability }> {
+  return window.hermesDesktop.api<{ ok: boolean; channel: ChannelCapability }>({
+    ...capabilityScoped(profile),
+    path: `/api/tools/channels/${encodeURIComponent(platform)}`,
+    method: 'PUT',
+    body: update
   })
 }
 

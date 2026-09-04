@@ -278,6 +278,68 @@ class TestAgentCacheLifecycle:
             assert session_key not in runner._agent_cache
 
 
+class TestConversationToolsetSnapshot:
+    """Channel capability edits apply only after a conversation boundary."""
+
+    @staticmethod
+    def _signature(runner, toolsets):
+        return runner._agent_config_signature(
+            "anthropic/claude-sonnet-4",
+            {
+                "api_key": "test",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+            },
+            toolsets,
+            "",
+        )
+
+    def test_same_session_config_change_keeps_cached_toolsets_and_signature(self):
+        """Changing channel config cannot rebuild a live prompt prefix."""
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        session_id = "session-1"
+
+        initial = runner._freeze_conversation_toolsets(
+            session_key, session_id, ["memory", "web"]
+        )
+        after_config_change = runner._freeze_conversation_toolsets(
+            session_key, session_id, ["terminal"]
+        )
+
+        assert after_config_change == initial == ["memory", "web"]
+        assert self._signature(runner, after_config_change) == self._signature(
+            runner, initial
+        )
+
+    def test_new_session_reads_current_channel_toolsets(self):
+        """The next durable conversation starts from the updated selection."""
+        runner = _make_runner()
+        session_key = "telegram:12345"
+
+        assert runner._freeze_conversation_toolsets(
+            session_key, "session-1", ["memory", "web"]
+        ) == ["memory", "web"]
+        assert runner._freeze_conversation_toolsets(
+            session_key, "session-2", ["terminal"]
+        ) == ["terminal"]
+
+    def test_conversation_boundary_clears_toolset_snapshot(self):
+        """Explicit session boundaries release the next session's toolsets."""
+        runner = _make_runner()
+        session_key = "telegram:12345"
+
+        assert runner._freeze_conversation_toolsets(
+            session_key, "session-1", ["memory", "web"]
+        ) == ["memory", "web"]
+        runner._clear_conversation_scope(session_key, reason="new_session")
+
+        assert runner._freeze_conversation_toolsets(
+            session_key, "session-1", ["terminal"]
+        ) == ["terminal"]
+
+
 class TestAgentCacheBoundedGrowth:
     """LRU cap and idle-TTL eviction prevent unbounded cache growth."""
 
@@ -1111,4 +1173,3 @@ class TestCrossProcessInvalidationDefersCleanup:
         # Stale entry was popped, hard-teardown path never used.
         assert "telegram:s1" not in runner._agent_cache
         runner._cleanup_agent_resources.assert_not_called()
-

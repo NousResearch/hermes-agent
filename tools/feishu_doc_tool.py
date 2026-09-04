@@ -6,24 +6,18 @@ Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 
 import json
 import logging
-import threading
 
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
-# Thread-local storage for the lark client injected by feishu_comment handler.
-_local = threading.local()
-
-
-def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
-    _local.client = client
-
-
-def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+# Client resolution (injected -> env-credential fallback) is shared with
+# feishu_drive_tool to keep the two implementations from drifting.
+from tools.feishu_client_factory import (  # noqa: E402
+    clear_client,
+    get_client,
+    set_client,
+)
 
 
 # ---------------------------------------------------------------------------

@@ -44,10 +44,18 @@ def test_sibling_container_config_sites_carry_docker_network():
                     f"docker_run_as_host_user but without docker_network "
                     f"(line {node.lineno})"
                 )
+                assert "docker_extra_args" in keys, (
+                    f"{module.__name__} builds a container_config with "
+                    f"docker_run_as_host_user but without docker_extra_args "
+                    f"(line {node.lineno}) — the redteam --network=container:"
+                    f"mullvad-vpn would be dropped, leaking the host IP"
+                )
         assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
 
 
-def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
+def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool,
+                         extra_args=None, sidecar_id="vpnsidecarfullid0000",
+                         sidecar_present=True):
     """Drive DockerEnvironment through the cross-process reuse path with a
     fake existing container whose NetworkMode is *existing_mode*.
 
@@ -69,7 +77,14 @@ def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
             # missing label as "<no value>".
             Result.stdout = "existing-container-id\trunning\t<no value>\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
-            Result.stdout = f"{existing_mode}\n"
+            if "{{.Id}}" in cmd:
+                # Resolving a container:<ref> network target to its full id.
+                if sidecar_present:
+                    Result.stdout = f"{sidecar_id}\n"
+                else:
+                    Result.returncode = 1
+            else:
+                Result.stdout = f"{existing_mode}\n"
         elif len(cmd) > 1 and cmd[1] == "run":
             Result.stdout = "fresh-container-id\n"
         return Result()
@@ -84,6 +99,7 @@ def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
         timeout=60,
         task_id="reuse-guard-test",
         network=network,
+        extra_args=extra_args,
         persist_across_processes=True,
     )
     return commands
@@ -114,3 +130,52 @@ def test_reuse_skips_inspect_when_network_enabled(monkeypatch):
     assert not any(cmd[1] == "inspect" for cmd in commands)
     assert not any(cmd[1] == "rm" for cmd in commands)
     assert not any(cmd[1] == "run" for cmd in commands)
+
+
+# --- redteam VPN egress: reuse must not hand back a container that lost its
+# VPN sidecar (the home-IP leak of 2026-08-26). The redteam profile pins
+# docker_extra_args: ["--network=container:mullvad-vpn"]; a stale bridge
+# container carrying the right labels would otherwise be reused and egress
+# the host IP.
+
+_VPN_ARGS = ["--network=container:mullvad-vpn"]
+
+
+def test_reuse_rejects_bridge_container_when_vpn_network_pinned(monkeypatch):
+    commands = _reuse_guard_harness(
+        monkeypatch, existing_mode="bridge", network=True, extra_args=_VPN_ARGS,
+    )
+    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), (
+        "a redteam container on bridge must be removed when the config pins "
+        "--network=container:mullvad-vpn"
+    )
+    run_cmd = next(cmd for cmd in commands if len(cmd) > 2 and cmd[1:3] == ["run", "-d"])
+    assert "--network=container:mullvad-vpn" in run_cmd
+
+
+def test_reuse_keeps_container_matching_pinned_vpn_sidecar(monkeypatch):
+    commands = _reuse_guard_harness(
+        monkeypatch,
+        existing_mode="container:vpnsidecarfullid0000",
+        network=True,
+        extra_args=_VPN_ARGS,
+    )
+    assert not any(cmd[1] == "rm" for cmd in commands), (
+        "a container already attached to the live VPN sidecar must be reused"
+    )
+    assert not any(cmd[1] == "run" for cmd in commands)
+
+
+def test_reuse_rejects_container_when_vpn_sidecar_gone(monkeypatch):
+    # Sidecar can't be resolved -> expected mode stays the un-normalized
+    # container:mullvad-vpn, which never matches an actual id -> fail closed.
+    commands = _reuse_guard_harness(
+        monkeypatch,
+        existing_mode="container:staleoldsidecarid00",
+        network=True,
+        extra_args=_VPN_ARGS,
+        sidecar_present=False,
+    )
+    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), (
+        "a container whose VPN sidecar is gone must not be reused"
+    )

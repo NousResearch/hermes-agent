@@ -1463,17 +1463,30 @@ class DockerEnvironment(BaseEnvironment):
                 # don't get their container churned on every startup.
                 mode_mismatch = False
                 actual_mode = None
+                expected_mode = None
                 if not network:
+                    # Lockdown direction: config wants an air-gapped container
+                    # but a stale one may have been created networked.
+                    expected_mode = "none"
                     actual_mode = self._container_network_mode(container_id)
                     mode_mismatch = actual_mode != "none"
+                else:
+                    # Explicit-network direction: config pins --network to a
+                    # specific mode (e.g. container:<vpn-sidecar> for the
+                    # redteam profile). A stale container on bridge/default —
+                    # or attached to a since-replaced sidecar — would leak the
+                    # host IP, so reuse must confirm the mode still matches.
+                    expected_mode = self._expected_network_mode(all_run_args)
+                    if expected_mode is not None:
+                        actual_mode = self._container_network_mode(container_id)
+                        mode_mismatch = actual_mode != expected_mode
                 if mode_mismatch:
                     logger.warning(
-                        "Existing container %s has NetworkMode=%s but "
-                        "docker_network=false requests an air-gapped "
-                        "container — removing it and starting fresh "
+                        "Existing container %s has NetworkMode=%s but config "
+                        "requires %s — removing it and starting fresh "
                         "(task=%s, profile=%s).",
                         container_id[:12], actual_mode or "unknown",
-                        task_label, profile_name,
+                        expected_mode, task_label, profile_name,
                     )
                     try:
                         subprocess.run(
@@ -1901,6 +1914,64 @@ class DockerEnvironment(BaseEnvironment):
             return None
         mode = result.stdout.strip()
         return mode or None
+
+    def _expected_network_mode(self, run_args) -> Optional[str]:
+        """Return the HostConfig.NetworkMode a fresh container would get from
+        the ``--network``/``--net`` flag in *run_args*, or ``None`` when no
+        explicit network flag is present (default bridge — not pinned).
+
+        A ``container:<ref>`` target is normalized to ``container:<full-id>``
+        so it can be compared against a running container's actual
+        NetworkMode, which Docker reports by id, not by the name the flag
+        used. When the referenced sidecar can't be resolved (e.g. the VPN
+        container is down), the un-normalized value is returned so the
+        comparison fails closed — a redteam container must not be reused
+        without its live VPN sidecar.
+        """
+        requested = None
+        i = 0
+        n = len(run_args)
+        while i < n:
+            arg = run_args[i]
+            if arg in ("--network", "--net"):
+                requested = run_args[i + 1] if i + 1 < n else None
+                i += 2
+                continue
+            for flag in ("--network=", "--net="):
+                if arg.startswith(flag):
+                    requested = arg[len(flag):]
+                    break
+            i += 1
+        if not requested:
+            return None
+        if requested.startswith("container:"):
+            ref = requested.split(":", 1)[1]
+            resolved = self._resolve_container_id(ref)
+            return f"container:{resolved}" if resolved else requested
+        return requested
+
+    def _resolve_container_id(self, ref: str) -> Optional[str]:
+        """Resolve a container name/id *ref* to its full id, or ``None`` when
+        it can't be inspected (e.g. the container isn't running)."""
+        try:
+            result = subprocess.run(
+                [self._docker_exe, "inspect", "--format", "{{.Id}}", ref],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect Id failed for %s: %s", ref, e)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "docker inspect Id for %s returned %d: %s",
+                ref, result.returncode, result.stderr.strip(),
+            )
+            return None
+        return result.stdout.strip() or None
 
     def _find_reusable_container(
         self,

@@ -262,13 +262,16 @@ async def preprocess_context_references_async(
     warnings: list[str] = []
     blocks: list[str] = []
     injected_tokens = 0
+    hard_limit = max(1, int(context_length * 0.50))
+    soft_limit = max(1, int(context_length * 0.25))
 
     # Expand all references concurrently. Each _expand_reference is independent
     # (no shared state during expansion) — a message with several @url: refs
     # would otherwise pay one full web_extract round-trip per ref in series.
     # gather preserves positional order, so we reassemble warnings/blocks in the
-    # original ref order exactly as the prior serial loop did; the token-budget
-    # check below is unchanged (it runs once, after all refs are expanded).
+    # original ref order exactly as the prior serial loop did. Oversized text
+    # files may degrade individually to tool-readable paths; the aggregate
+    # token-budget check still runs once after all refs are expanded.
     expanded = await asyncio.gather(
         *(
             _expand_reference(
@@ -276,6 +279,7 @@ async def preprocess_context_references_async(
                 cwd_path,
                 url_fetcher=url_fetcher,
                 allowed_root=allowed_root_path,
+                max_inline_tokens=hard_limit,
             )
             for ref in refs
         )
@@ -287,8 +291,6 @@ async def preprocess_context_references_async(
             blocks.append(block)
             injected_tokens += estimate_tokens_rough(block)
 
-    hard_limit = max(1, int(context_length * 0.50))
-    soft_limit = max(1, int(context_length * 0.25))
     if injected_tokens > hard_limit:
         warnings.append(
             f"@ context injection refused: {injected_tokens} tokens exceeds the 50% hard limit ({hard_limit})."
@@ -336,10 +338,16 @@ async def _expand_reference(
     *,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: Path | None = None,
+    max_inline_tokens: int | None = None,
 ) -> tuple[str | None, str | None]:
     try:
         if ref.kind == "file":
-            return _expand_file_reference(ref, cwd, allowed_root=allowed_root)
+            return _expand_file_reference(
+                ref,
+                cwd,
+                allowed_root=allowed_root,
+                max_inline_tokens=max_inline_tokens,
+            )
         if ref.kind == "folder":
             return _expand_folder_reference(ref, cwd, allowed_root=allowed_root)
         if ref.kind == "diff":
@@ -375,6 +383,7 @@ def _expand_file_reference(
     cwd: Path,
     *,
     allowed_root: Path | None = None,
+    max_inline_tokens: int | None = None,
 ) -> tuple[str | None, str | None]:
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
     _ensure_reference_path_allowed(path)
@@ -401,7 +410,18 @@ def _expand_file_reference(
 
     lang = _code_fence_language(path)
     label = ref.raw
-    return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+    text_tokens = estimate_tokens_rough(text)
+    block = f"📄 {label} ({text_tokens} tokens)\n```{lang}\n{text}\n```"
+    if (
+        max_inline_tokens is not None
+        and estimate_tokens_rough(block) > max_inline_tokens
+    ):
+        return (
+            f"{ref.raw}: {text_tokens} tokens is too large to inline safely; "
+            "the agent received a tool-readable path instead",
+            _oversized_text_reference_block(ref, path, text_tokens),
+        )
+    return None, block
 
 
 def _expand_folder_reference(
@@ -696,6 +716,24 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         f"It is available on disk at `{_agent_visible_path(path)}`. Use your tools to work with it "
         f"(read or convert it, extract its text, or view/render it as needed); "
         f"do not tell the user the file type is unsupported."
+    )
+
+
+def _oversized_text_reference_block(
+    ref: ContextReference,
+    path: Path,
+    text_tokens: int,
+) -> str:
+    try:
+        size = format_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
+    return (
+        f"📎 {ref.raw} (text file, {size}, approximately {text_tokens} tokens) - "
+        "too large to inline safely. "
+        f"It is available on disk at `{_agent_visible_path(path)}`. "
+        "Use read_file with a narrow line range, search_files, or terminal/code tools "
+        "to inspect only the relevant parts; do not load the entire file into context."
     )
 
 

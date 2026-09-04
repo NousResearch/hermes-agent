@@ -663,25 +663,32 @@ def show_status(args):
         else:
             print(f"  Active:       {_session_count if _session_count is not None else 0}")
 
-    # Slot usage, only when max_concurrent_sessions is set. The cap is shared
-    # across CLI, desktop/TUI and the messaging gateway, so the surface that
-    # gets rejected is rarely the one holding the slots — without this the only
-    # way to find out is reading runtime/active_sessions.json by hand.
+    # Live sessions from the active-session registry. Slot usage is only
+    # meaningful when max_concurrent_sessions is set — the cap is shared across
+    # CLI, desktop/TUI and the messaging gateway, so the surface that gets
+    # rejected is rarely the one holding the slots — but the sessions
+    # themselves are worth listing either way: per-session exclusivity (#94595)
+    # made the registry authoritative for every surface, so with no cap set the
+    # entries exist and only this readout was still gated on the cap.
     try:
         from hermes_cli.active_sessions import (
             active_session_registry_snapshot,
+            current_repo_root,
             format_age,
             resolve_max_concurrent_sessions,
         )
 
         _cap = resolve_max_concurrent_sessions(config)
-    except Exception:
-        _cap = None
-    if _cap:
         try:
             _held = active_session_registry_snapshot()
         except Exception:
             _held = []
+        _here = current_repo_root()
+    except Exception:
+        _cap = None
+        _held = []
+        _here = None
+    if _cap:
         _full = len(_held) >= _cap
         print(
             "  Slots:        "
@@ -689,12 +696,26 @@ def show_status(args):
                 f"{len(_held)}/{_cap} in use", Colors.YELLOW if _full else Colors.GREEN
             )
         )
+    elif _held:
+        # No cap means no slots to report, but "another session is live in this
+        # checkout" is exactly the signal #46303 asks for.
+        print("  Live:         " + color(f"{len(_held)} session(s)", Colors.GREEN))
+    if _held:
         _now = time.time()
         for _entry in sorted(_held, key=lambda e: e.get("started_at") or 0):
             _age = format_age(_now - float(_entry.get("started_at") or _now))
+            _meta = _entry.get("metadata")
+            _repo = (_meta or {}).get("repo_root") if isinstance(_meta, dict) else None
+            _where = ""
+            if _repo:
+                _where = (
+                    "  ← this repo"
+                    if _here and str(_repo) == str(_here)
+                    else f"  {os.path.basename(str(_repo))}"
+                )
             print(
                 f"                {_entry.get('surface') or 'unknown':<17} "
-                f"{_entry.get('session_id') or '?':<24} {_age}"
+                f"{_entry.get('session_id') or '?':<24} {_age}{_where}"
             )
 
     # =========================================================================

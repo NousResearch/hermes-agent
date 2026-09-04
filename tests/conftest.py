@@ -324,6 +324,26 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # shell override leaked "myhost" into the full suite and flipped 20
     # otherwise-unrelated config tests away from the default "hermes" host.
     "HERMES_HONCHO_HOST",
+    # Desktop parent-death watchdog + spawn-lineage identity. A developer
+    # running pytest from a Desktop-spawned Hermes session (terminal tool,
+    # in-app shell) inherits these from the Desktop backend's environment.
+    # If they leak into an in-process test that calls
+    # ``web_server.start_server`` (the dashboard auth-gate tests do), the
+    # PRODUCTION parent-death watchdog arms inside the pytest process — and
+    # because this conftest pins TZ=UTC while the Desktop captured
+    # ``HERMES_PARENT_START_MARKER`` via ``ps -o lstart=`` in the developer's
+    # local timezone, the marker probe "mismatches" against a perfectly alive
+    # parent and the watchdog ``os._exit(0)``s the whole pytest run mid-file:
+    # exit code 0, no summary, no junit XML, every later test silently
+    # skipped. CI never sets these; tests must not see them either. Tests
+    # that exercise the watchdog/identity paths set them explicitly.
+    "HERMES_DESKTOP",
+    "HERMES_PARENT_PID",
+    "HERMES_PARENT_START_MARKER",
+    "HERMES_PARENT_NONCE",
+    "HERMES_SERVE_WATCHDOG_POLL_S",
+    "HERMES_SERVE_HEADLESS",
+    "HERMES_SPAWN",
     # Dashboard OAuth auth gate (PR #30156). When set, the bundled
     # dashboard-auth `nous` plugin auto-registers itself on plugin discovery,
     # which is triggered by any `/api/status` call. That leaks a provider

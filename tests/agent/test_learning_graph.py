@@ -67,11 +67,12 @@ def test_provider_cards_follow_file_cards(tmp_path, monkeypatch):
     (home / "memories" / "MEMORY.md").write_text("Project uses pytest", encoding="utf-8")
 
     class Provider:
-        def learning_cards(self, limit=200):
+        def journey_cards(self, limit=200):
             return [
-                {"source": "demo", "timestamp": 1_700_000_000, "title": "Learned from the demo provider",
-                 "body": "body text", "kind": "lesson"},
-                {"title": ""},  # dropped: no title
+                {"timestamp": 1_700_000_000, "title": "Learned from the demo provider", "body": "body text",
+                 "kind": "lesson", "session_id": "demo-session"},
+                {"body": "Only a body, dated by ISO string", "timestamp": "2023-11-14T22:13:20+00:00"},
+                {"title": "no body"},  # dropped: body is required
             ]
 
     monkeypatch.setattr(learning_graph, "_load_active_provider", lambda: ("demo", Provider()))
@@ -81,11 +82,14 @@ def test_provider_cards_follow_file_cards(tmp_path, monkeypatch):
     finally:
         reset_hermes_home_override(token)
 
-    assert [c["source"] for c in graph["memory"]] == ["memory", "demo"]
+    assert [c["source"] for c in graph["memory"]] == ["memory", "demo", "demo"]
     node = next(n for n in graph["nodes"] if n["id"] == "memory:demo:1")
     assert node["kind"] == "memory" and node["memorySource"] == "demo"
     assert node["label"] == "Learned from the demo provider" and node["timestamp"] == 1_700_000_000
-    assert graph["stats"]["memory_nodes"] == 2
+    assert graph["memory"][1]["session_id"] == "demo-session"
+    second = graph["memory"][2]
+    assert second["title"] == "Only a body, dated by ISO string" and second["timestamp"] == 1_700_000_000
+    assert graph["stats"]["memory_nodes"] == 3
 
 
 def test_graph_survives_a_broken_provider(tmp_path, monkeypatch):
@@ -93,7 +97,7 @@ def test_graph_survives_a_broken_provider(tmp_path, monkeypatch):
     home.mkdir()
 
     class Broken:
-        def learning_cards(self, limit=200):
+        def journey_cards(self, limit=200):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(learning_graph, "_load_active_provider", lambda: ("broken", Broken()))

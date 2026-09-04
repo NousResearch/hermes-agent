@@ -213,7 +213,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "schedule", "unblock", "promote", "triage-gate", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "gc",
 })
@@ -1027,6 +1027,30 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_triage_gate(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip()
+    as_json = getattr(args, "json", False)
+    with kbc.connect_closing() as conn:
+        ok, error = kb.route_triage_to_human_gate(
+            conn, args.task_id, actor=_profile_author(), reason=reason,
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    result = {
+        "task_id": args.task_id, "routed": ok,
+        "dry_run": bool(getattr(args, "dry_run", False)),
+        "source_status": "triage", "target_status": "blocked",
+        "block_kind": "needs_input", "reason": reason, "error": error,
+    }
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    elif ok:
+        verb = "Would route" if result["dry_run"] else "Routed"
+        print(f"{verb} {args.task_id}: triage -> blocked (needs_input)")
+    else:
+        print(f"cannot route {args.task_id}: {error}", file=sys.stderr)
+    return 0 if ok else 1
+
+
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     purge_ids = list(getattr(args, "purge_ids", None) or [])
@@ -1229,6 +1253,7 @@ _HANDLERS = {
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
+    "triage-gate": _cmd_triage_gate,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,

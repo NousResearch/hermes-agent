@@ -127,7 +127,7 @@ def test_try_dispatch_background_run_calls_recovery_before_claiming(monkeypatch)
         "gateway.session_context.async_delivery_supported", lambda: True
     )
     monkeypatch.setattr(
-        "tools.approval.get_current_session_key", lambda default="": ""
+        "tools.approval_context.get_current_session_key", lambda default="": ""
     )
 
     job = {"id": "unit-test-job", "name": "unit test job", "deliver": "local"}

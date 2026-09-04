@@ -144,7 +144,7 @@ class TestBusyHandlerDemotesInterruptForCompression:
         runner.adapters[event.source.platform] = adapter
         runner._session_db._db.get_compression_lock_holder.return_value = "compressing"
 
-        with patch("gateway.run.merge_pending_message_event"):
+        with patch("gateway.platforms.base.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
         adapter._send_with_retry.assert_called_once()

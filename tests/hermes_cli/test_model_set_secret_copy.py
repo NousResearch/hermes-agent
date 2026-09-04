@@ -39,7 +39,7 @@ def _write_config(home, body: str) -> None:
 
 
 def _apply(provider="myprov", model="test-model"):
-    from hermes_cli.web_server import _apply_model_assignment_sync
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
 
     return _apply_model_assignment_sync("main", provider, model, "", "")
 

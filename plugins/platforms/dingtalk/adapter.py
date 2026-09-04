@@ -29,11 +29,13 @@ Configuration in config.yaml:
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -1152,6 +1154,227 @@ class DingTalkAdapter(BasePlatformAdapter):
             metadata=metadata,
         )
 
+    # -- Outbound media helpers -----------------------------------------------
+
+    async def _upload_media(
+        self, file_path: str, media_type: str = "image"
+    ) -> str:
+        """Upload a file to DingTalk via the old oapi media/upload endpoint."""
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized")
+        if not os.path.exists(file_path):
+            raise RuntimeError(f"File not found: {file_path}")
+
+        token = await self._get_access_token()
+        if not token:
+            raise RuntimeError("Failed to obtain access token")
+
+        file_name = Path(file_path).name
+        content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+        content = await asyncio.to_thread(Path(file_path).read_bytes)
+        files = {"media": (file_name, content, content_type)}
+
+        try:
+            response = await self._http_client.post(
+                "https://oapi.dingtalk.com/media/upload",
+                params={"access_token": token, "type": media_type},
+                files=files,
+                timeout=60.0,
+            )
+        except httpx.TimeoutException:
+            raise RuntimeError("DingTalk media upload timed out after 60s")
+        except httpx.RequestError as e:
+            raise RuntimeError(
+                f"DingTalk media upload network error: {e.__class__.__name__}: {e}"
+            )
+
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"DingTalk media upload failed: HTTP {response.status_code}"
+            )
+
+        payload = response.json()
+        media_id = str(payload.get("media_id") or "")
+        if not media_id:
+            raise RuntimeError(
+                f"DingTalk media upload response missing media_id: {payload}"
+            )
+
+        logger.debug(
+            "[%s] Uploaded media %s -> %s", self.name, file_name, media_id
+        )
+        return media_id
+
+    async def _resolve_outbound_endpoint(
+        self, chat_id: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Determine the robot message endpoint and target payload for a chat.
+
+        Uses the same heuristic as ``get_chat_info`` to distinguish group vs
+        DM conversations.  For DMs without a cached user ID, falls back to
+        the group send endpoint with a logged warning.
+        """
+        chat_info = await self.get_chat_info(chat_id)
+        chat_type = str(chat_info.get("type", "dm")).strip().lower()
+
+        if chat_type == "group":
+            return (
+                "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
+                {"openConversationId": chat_id},
+            )
+
+        # DM — no persistent user-id cache in this adapter, so fall back
+        # to groupMessages/send with a warning so the message still reaches
+        # the user in most group-chat-like DM scenarios.
+        logger.warning(
+            "[%s] Cannot determine DM target for outbound media; "
+            "falling back to group send with chat_id as openConversationId. "
+            "chat_id=%s",
+            self.name, chat_id,
+        )
+        return (
+            "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
+            {"openConversationId": chat_id},
+        )
+
+    async def _send_robot_media_message(
+        self,
+        chat_id: str,
+        *,
+        msg_key: str,
+        msg_param: dict[str, Any],
+        kind_label: str,
+    ) -> SendResult:
+        """Send a native robot media message through the DingTalk robot API."""
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(
+                success=False, error="Failed to obtain access token"
+            )
+
+        endpoint, target = await self._resolve_outbound_endpoint(chat_id)
+        robot_code = self._robot_code or self._client_id
+        if not robot_code:
+            return SendResult(
+                success=False,
+                error="DingTalk robot code not configured (set platforms.dingtalk client_id)",
+            )
+
+        body: dict[str, Any] = {
+            "robotCode": robot_code,
+            "msgKey": msg_key,
+            "msgParam": json.dumps(msg_param),
+            **target,
+        }
+
+        try:
+            resp = await self._http_client.post(
+                endpoint,
+                headers={
+                    "x-acs-dingtalk-access-token": token,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=15.0,
+            )
+
+            if resp.status_code < 400:
+                resp_data = resp.json()
+                # DingTalk robot send returns a processQueryKey on success
+                process_query_key = resp_data.get("processQueryKey")
+                if not process_query_key:
+                    business_error = (
+                        resp_data.get("message")
+                        or resp_data.get("errmsg")
+                        or ""
+                    )
+                    error_msg = (
+                        f"{kind_label.title()} send failed: "
+                        f"{business_error or resp_data.get('code') or str(resp_data)}"
+                    )
+                    logger.warning("[%s] %s", self.name, error_msg)
+                    return SendResult(success=False, error=error_msg)
+
+                logger.debug(
+                    "[%s] %s message sent: processQueryKey=%s",
+                    self.name,
+                    kind_label.title(),
+                    process_query_key,
+                )
+                return SendResult(
+                    success=True,
+                    message_id=str(process_query_key),
+                )
+
+            body_text = resp.text[:200]
+            logger.warning(
+                "[%s] %s send failed HTTP %d: %s",
+                self.name, kind_label.title(), resp.status_code, body_text,
+            )
+            return SendResult(
+                success=False,
+                error=f"HTTP {resp.status_code}: {body_text}",
+            )
+        except httpx.TimeoutException:
+            return SendResult(
+                success=False,
+                error=f"Timeout sending {kind_label.title()} message to DingTalk",
+            )
+        except Exception as e:
+            logger.error(
+                "[%s] %s send error: %s", self.name, kind_label.title(), e
+            )
+            return SendResult(success=False, error=str(e))
+
+    async def _send_image_message(
+        self,
+        chat_id: str,
+        media_id: str,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Send an image message using the robot messaging API.
+
+        Uses ``sampleImageMsg`` with the uploaded media_id.  An optional
+        ``text`` field is included when a caption is provided.
+        """
+        msg_param: dict[str, Any] = {"photoURL": media_id}
+        if caption:
+            msg_param["text"] = caption
+        return await self._send_robot_media_message(
+            chat_id,
+            msg_key="sampleImageMsg",
+            msg_param=msg_param,
+            kind_label="image",
+        )
+
+    async def _send_file_message(
+        self,
+        chat_id: str,
+        media_id: str,
+        file_name: str,
+    ) -> SendResult:
+        """Send a native DingTalk file message using the robot messaging API."""
+        file_type = Path(file_name).suffix.lstrip(".").lower()
+        if not file_type:
+            return SendResult(
+                success=False,
+                error="Missing file extension for DingTalk file message",
+            )
+        return await self._send_robot_media_message(
+            chat_id,
+            msg_key="sampleFile",
+            msg_param={
+                "mediaId": media_id,
+                "fileName": file_name,
+                "fileType": file_type,
+            },
+            kind_label="file",
+        )
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -1161,14 +1384,34 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local image files directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local image uploads. "
-                "Only markdown/text replies are supported without OpenAPI media upload."
-            ),
+        """Send a local image file via DingTalk media upload and native image message.
+
+        Uploads the local image to DingTalk's media storage, then sends it as
+        a native ``sampleImageMsg`` through the robot OpenAPI.  If a caption
+        is provided, it is delivered natively inside the robot message's
+        ``text`` field -- sent once as a single combined message.
+        """
+        if not os.path.exists(image_path):
+            return SendResult(success=False, error=f"File not found: {image_path}")
+        if not os.path.isfile(image_path):
+            return SendResult(success=False, error=f"Not a file: {image_path}")
+
+        try:
+            media_id = await self._upload_media(image_path, media_type="image")
+        except Exception as e:
+            logger.error("[%s] send_image_file upload error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+        result = await self._send_image_message(
+            chat_id, media_id, caption=caption
         )
+        if result.success:
+            logger.info(
+                "[%s] Image sent to DingTalk: chat=%s file=%s message_id=%s",
+                self.name, chat_id, Path(image_path).name,
+                result.message_id or "-",
+            )
+        return result
 
     async def send_document(
         self,
@@ -1180,14 +1423,55 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local file attachments directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local file attachments. "
-                "Only markdown/text replies are supported without OpenAPI message send."
-            ),
-        )
+        """Send a document as a native DingTalk file message via media upload.
+
+        Uploads the local file to DingTalk's media storage, then sends it as
+        a native ``sampleFile`` message through the robot OpenAPI.  If a
+        caption is provided, it is delivered as a separate companion text
+        message (sampleFile has no ``text`` field for native caption delivery).
+        """
+        if not os.path.exists(file_path):
+            return SendResult(success=False, error=f"File not found: {file_path}")
+        if not os.path.isfile(file_path):
+            return SendResult(success=False, error=f"Not a file: {file_path}")
+
+        display_name = file_name or Path(file_path).name
+
+        # Validate file extension BEFORE uploading
+        file_type = Path(display_name).suffix.lstrip(".").lower()
+        if not file_type:
+            return SendResult(
+                success=False,
+                error=f"Missing file extension for DingTalk file message: {display_name}",
+            )
+
+        try:
+            media_id = await self._upload_media(file_path, media_type="file")
+        except Exception as e:
+            logger.error("[%s] send_document upload error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+        result = await self._send_file_message(chat_id, media_id, display_name)
+        if result.success:
+            logger.info(
+                "[%s] File sent to DingTalk: chat=%s file=%s message_id=%s",
+                self.name, chat_id, display_name,
+                result.message_id or "-",
+            )
+            # Deliver caption as a companion text message (sampleFile has no text field)
+            if caption:
+                caption_result = await self.send(
+                    chat_id=chat_id,
+                    content=caption,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if not caption_result.success:
+                    logger.warning(
+                        "[%s] Failed to send caption companion for file: %s",
+                        self.name, caption_result.error,
+                    )
+        return result
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""

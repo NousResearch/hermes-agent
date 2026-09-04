@@ -559,7 +559,7 @@ class TestWaitForProcessDrain:
     def test_drain_falls_back_to_read_when_selector_register_fails(self):
         """If the selector cannot register the fd (e.g. EPERM for a regular
         file, or an already-closed fd), the drain must fall back to a direct
-        blocking read instead of silently dropping all output."""
+        non-blocking polling read instead of silently dropping all output."""
         import selectors as _selectors
         from unittest import mock
 

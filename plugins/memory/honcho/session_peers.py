@@ -123,5 +123,8 @@ class SessionPeersMixin:
         if self._config is not None and bool(getattr(self._config, "peer_name", None)) \
                 and getattr(self._config, "pin_peer_name", False) is True:
             return None
+        # Either runtime id (Telegram UID or username) names the session's participant.
+        if runtime_id in self._runtime_user_ids():
+            return None
         peer_id = self._peer_id_for_runtime_id(runtime_id)
         return None if peer_id == self._resolve_user_peer_id(key) else peer_id

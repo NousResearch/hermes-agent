@@ -129,3 +129,109 @@ class TestCombinedGuards:
             error = get_read_block_error(str(cache))
             assert error is not None
             assert "internal Hermes cache" in error
+
+
+# ---------------------------------------------------------------------------
+# Kernel character-device sinks — always writable, even outside safe root
+# ---------------------------------------------------------------------------
+
+
+class TestKernelSinkAllowlist:
+    """Kernel character-device sinks (/dev/null etc.) must always be writable.
+
+    Writing to /dev/null and its siblings is an OS-level no-op used routinely
+    for shell redirection. Blocking them under HERMES_WRITE_SAFE_ROOT produces
+    false-positive denials for legitimate patterns. Regression guard for the
+    original report where writes to /dev/null failed with "outside
+    HERMES_WRITE_SAFE_ROOT".
+    """
+
+    ALLOWED_SINKS = [
+        "/dev/null",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/tty",
+        "/dev/zero",
+    ]
+
+    @pytest.mark.parametrize("sink", ALLOWED_SINKS)
+    def test_kernel_sink_allowed_under_mismatched_safe_root(self, sink, monkeypatch):
+        """Every allowlisted sink must return None (allowed) even when
+        HERMES_WRITE_SAFE_ROOT points somewhere else entirely."""
+        from agent.file_safety import _classify_write_denial
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", "/tmp/safe")
+        assert _classify_write_denial(sink) is None
+
+    def test_non_allowlisted_dev_path_still_rejected(self, monkeypatch):
+        """A /dev/... path NOT on the allowlist (e.g. /dev/random) still
+        goes through the normal safe-root check."""
+        from agent.file_safety import _classify_write_denial
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", "/tmp/safe")
+        # /dev/random is not on the allowlist and is not inside /tmp/safe
+        assert _classify_write_denial("/dev/random") == "safe_root"
+
+    def test_credential_path_still_rejected(self, monkeypatch, tmp_path):
+        """Adding the kernel-sink short-circuit must NOT weaken credential
+        denial for non-allowlisted paths."""
+        from agent.file_safety import _classify_write_denial
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+        ssh_key = tmp_path / ".ssh" / "id_ed25519"
+        ssh_key.parent.mkdir(parents=True)
+        ssh_key.write_text("")
+        assert _classify_write_denial(str(ssh_key)) == "credential"
+
+    def test_out_of_tree_path_still_rejected(self, monkeypatch, tmp_path):
+        """A genuinely out-of-safe-root path (not on the sink allowlist)
+        must still be rejected as safe_root."""
+        from agent.file_safety import _classify_write_denial
+
+        safe = tmp_path / "safe"
+        safe.mkdir()
+        elsewhere = tmp_path / "elsewhere" / "foo.txt"
+        elsewhere.parent.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe))
+        assert _classify_write_denial(str(elsewhere)) == "safe_root"
+
+    def test_symlink_to_dev_null_not_bypassed(self, monkeypatch, tmp_path):
+        """A symlink whose target is /dev/null must NOT ride the allowlist —
+        the check is on the user-supplied path's abspath, not its realpath,
+        precisely so this attack shape is blocked.
+
+        Skips gracefully on platforms without symlink support.
+        """
+        from agent.file_safety import _classify_write_denial
+
+        symlink = tmp_path / "evil"
+        try:
+            symlink.symlink_to("/dev/null")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not supported on this platform")
+
+        safe = tmp_path / "safe"
+        safe.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe))
+        # The symlink itself is NOT literally "/dev/null" — it's tmp_path/evil.
+        # Since it lives outside HERMES_WRITE_SAFE_ROOT, it must be rejected.
+        assert _classify_write_denial(str(symlink)) == "safe_root"
+
+    def test_is_kernel_sink_helper_recognizes_normalized_variants(self):
+        """The helper must recognize path variants that normalize to
+        an allowlisted sink (e.g. /dev/./null)."""
+        from agent.file_safety import _is_kernel_sink
+
+        assert _is_kernel_sink("/dev/null") is True
+        assert _is_kernel_sink("/dev/./null") is True
+        assert _is_kernel_sink("/dev/random") is False
+        assert _is_kernel_sink("/tmp/null") is False
+
+    def test_is_kernel_sink_handles_bad_input(self):
+        """The helper must return False (not raise) for empty or bogus paths."""
+        from agent.file_safety import _is_kernel_sink
+
+        assert _is_kernel_sink("") is False
+        # Non-existent parent components are fine — no filesystem is touched
+        assert _is_kernel_sink("/nonexistent/random/thing") is False

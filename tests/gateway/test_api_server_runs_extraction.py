@@ -1,5 +1,7 @@
 """Compatibility seams for the extracted ``/v1/runs`` lifecycle."""
 
+import inspect
+
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -171,6 +173,9 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/room-members/grants/refresh"),
         ("POST", "/v1/room-members/grants/revoke"),
         ("POST", "/v1/room-members/grants/revoke-exact"),
+        ("GET", "/v1/room-controls/{room_id}"),
+        ("POST", "/v1/room-controls/{room_id}"),
+        ("DELETE", "/v1/room-controls/{room_id}"),
         ("POST", "/v1/room-members/attachments"),
         (
             "PUT",
@@ -193,7 +198,10 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/runs/{run_id}/stop"),
     ]
     assert all(handler.__self__ is adapter for _, _, handler in room_routes[:4])
-    assert all(callable(handler) for _, _, handler in room_routes[4:])
+    assert all(
+        inspect.getclosurevars(handler).nonlocals.get("self") is adapter
+        for _, _, handler in room_routes[4:]
+    )
     assert all(handler.__self__ is adapter for _, _, handler in run_routes)
 
 

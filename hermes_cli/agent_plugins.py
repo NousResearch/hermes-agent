@@ -101,10 +101,22 @@ def _validate_manifest(root: Path) -> tuple[dict, list[AgentPluginDiagnostic]]:
     manifest = _read_json_object(manifest_path, label="plugin.json")
     diagnostics: list[AgentPluginDiagnostic] = []
 
+    _CURSOR_ONLY_FIELDS = {"agents", "commands", "hooks", "automations", "rules"}
     for field in sorted(set(manifest) - _PLUGIN_FIELDS):
-        diagnostics.append(
-            AgentPluginDiagnostic("manifest", f"ignored unknown top-level field: {field}")
-        )
+        if field in _CURSOR_ONLY_FIELDS:
+            # Loud diagnostic: silent success is the dangerous failure mode for
+            # Cursor ports. hermes discovers skills/ + mcp.json only.
+            diagnostics.append(
+                AgentPluginDiagnostic(
+                    "manifest",
+                    f"Cursor-only component '{field}' will NOT load: hermes discovers "
+                    "skills/ and mcp.json only from portable agent-plugins-v1 packages",
+                )
+            )
+        else:
+            diagnostics.append(
+                AgentPluginDiagnostic("manifest", f"ignored unknown top-level field: {field}")
+            )
         manifest.pop(field)
 
     if manifest.get("$schema") != PLUGIN_SCHEMA_V1:

@@ -502,7 +502,17 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
-            ephemeral_system_prompt=skills_prompt,
+            # F-live-3 fix: tell the model where it is running. Without
+            # this, 'create a file in the current directory' resolves to
+            # the home root because the model invents an absolute path.
+            ephemeral_system_prompt=(
+                (skills_prompt or "")
+                + f"\n\n# Working directory\n"
+                f"Current working directory for this session: {os.getcwd()}\n"
+                "When a task says to create or modify files 'in the current "
+                "directory' or uses relative paths, resolve them against this "
+                "directory and pass absolute paths to file tools."
+            ),
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction
@@ -522,6 +532,19 @@ def _run_agent(
         agent.suppress_status_output = True
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
+
+        # Seed the task-session cwd from the invoking process directory so
+        # file/terminal tools resolve "current directory" to where the user
+        # actually ran `hermes -z`, instead of the configured default
+        # workspace (tools/terminal_tool.py:get_session_cwd documents the
+        # process-cwd seed; gateway/TUI register the same via workspace
+        # overrides - oneshot is the only surface that never seeds it).
+        try:
+            from tools.terminal_tool import record_session_cwd
+
+            record_session_cwd(getattr(agent, "session_id", None), os.getcwd())
+        except Exception:
+            logging.debug("oneshot session-cwd seed failed", exc_info=True)
 
         result = agent.run_conversation(prompt)
         return (result.get("final_response") or "", result)

@@ -261,6 +261,34 @@ class TestCheckStructure:
         findings = _check_structure(tmp_path / "skill")
         assert any(fi.pattern_id == "symlink_escape" for fi in findings)
 
+    def _fill_beyond_file_limit(self, tmp_path):
+        for i in range(MAX_FILE_COUNT + 5):
+            (tmp_path / f"file_{i}.txt").write_text("x")
+
+    def test_plugin_root_exempt_requires_valid_schema(self, tmp_path):
+        # A package over the file-count limit is exempt only when its
+        # plugin.json actually declares the agent-plugins-v1 $schema.
+        self._fill_beyond_file_limit(tmp_path)
+        (tmp_path / "plugin.json").write_text(
+            '{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "probe"}'
+        )
+        ids = {fi.pattern_id for fi in _check_structure(tmp_path)}
+        assert "too_many_files" not in ids
+
+    def test_plugin_root_with_planted_manifest_fails_closed(self, tmp_path):
+        # Presence of plugin.json alone must NOT grant the exemption: a
+        # planted manifest without the v1 $schema fails closed.
+        self._fill_beyond_file_limit(tmp_path)
+        (tmp_path / "plugin.json").write_text('{"name": "sneaky"}')
+        ids = {fi.pattern_id for fi in _check_structure(tmp_path)}
+        assert "too_many_files" in ids
+
+    def test_plugin_root_with_malformed_manifest_fails_closed(self, tmp_path):
+        self._fill_beyond_file_limit(tmp_path)
+        (tmp_path / "plugin.json").write_text("{not json")
+        ids = {fi.pattern_id for fi in _check_structure(tmp_path)}
+        assert "too_many_files" in ids
+
     @pytest.mark.skipif(
         not _can_symlink(), reason="Symlinks need elevated privileges"
     )

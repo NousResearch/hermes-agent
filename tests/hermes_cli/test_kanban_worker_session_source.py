@@ -62,6 +62,103 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     assert captured["env"]["HERMES_SESSION_SOURCE"] == "kanban"
 
 
+def _spawn_task(tmp_path, task_id="t_b21733fb"):
+    from hermes_cli import kanban_db as kb
+    return kb.Task(
+        id=task_id,
+        title="ship it",
+        body=None,
+        assignee="default",
+        status="in_progress",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+
+
+def test_interrupted_worker_spawn_resumes_prior_session(monkeypatch, tmp_path):
+    """Retries pin --resume to THIS task's last ended session, never -c."""
+    from hermes_cli import kanban_db as kb
+
+    captured = {}
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+    monkeypatch.setattr(kb, "_retag_legacy_worker_sessions", lambda _root: None)
+    monkeypatch.setattr(kb, "worker_logs_dir", lambda board=None: tmp_path / "logs")
+    monkeypatch.setattr(
+        kb, "_interrupted_worker_resume_id", lambda task: "20260903_223452_68400d"
+    )
+
+    workspace = str(tmp_path / "ws")
+    os.makedirs(workspace, exist_ok=True)
+    kb._default_spawn(_spawn_task(tmp_path), workspace)
+
+    cmd = captured["cmd"]
+    assert "--continue" not in cmd
+    assert "--resume" in cmd
+    assert cmd[cmd.index("--resume") + 1] == "20260903_223452_68400d"
+    q = cmd[cmd.index("-q") + 1]
+    assert "Continue kanban task t_b21733fb" in q
+
+
+def test_interrupted_worker_resume_skips_live_and_oversized(tmp_path, monkeypatch):
+    """Do not resume a still-running worker session or a context bomb."""
+    import sqlite3
+    import time
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db_path = tmp_path / "state.db"
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "CREATE TABLE sessions (id TEXT, source TEXT, title TEXT, started_at REAL, "
+        "ended_at REAL, message_count INTEGER, archived INTEGER)"
+    )
+    now = time.time()
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        ("live", "kanban", "Work kanban task t_abc123 #2", now, None, 10, 0),
+    )
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        ("fat", "kanban", "Work kanban task t_abc123 #1", now - 60, now - 10, 200, 0),
+    )
+    con.commit()
+    con.close()
+
+    def _home(_name):
+        return str(tmp_path)
+
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", _home)
+    task = _spawn_task(tmp_path, task_id="t_abc123")
+    assert kb._interrupted_worker_resume_id(task) is None
+
+    con = sqlite3.connect(db_path)
+    con.execute("UPDATE sessions SET ended_at = ? WHERE id = 'live'", (now - 5,))
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        ("ok", "kanban", "Work kanban task t_abc123 #0", now - 120, now - 90, 22, 0),
+    )
+    con.commit()
+    con.close()
+    assert kb._interrupted_worker_resume_id(task) == "live"
+
+
 def test_kanban_rows_stay_out_of_the_session_list(db):
     """A `kanban` row is filtered by the same exclude the sidebar sends."""
     db.create_session(session_id="chat", source="desktop")

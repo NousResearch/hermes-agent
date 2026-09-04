@@ -10743,6 +10743,103 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     )
 
 
+_RESUME_MAX_MESSAGES = 80
+_RESUME_MAX_AGE_SECONDS = 7 * 24 * 3600
+
+
+def _interrupted_worker_resume_id(task: Task) -> Optional[str]:
+    """Return a prior kanban worker session id to ``--resume``, or None.
+
+    Dispatcher retries used to spawn a blank ``chat -q`` every time, so the
+    worker re-oriented from scratch and often hit the protocol-violation
+    bound before ``kanban_complete``. Resuming the last *ended* session for
+    this task (never ``-c`` / most-recent — that would mix sibling cards on
+    the same profile) lets it pick up mid-draft.
+
+    Skip when: config off, no state.db, session still live, too old, or the
+    transcript is already huge (fresh start is cheaper than a context bomb).
+    """
+    try:
+        from hermes_cli.config import load_config
+        enabled = (load_config() or {}).get("kanban", {}).get(
+            "resume_interrupted_workers", True,
+        )
+        if enabled is False:
+            return None
+    except Exception:
+        pass
+    if not task or not task.id or not task.assignee:
+        return None
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        home = resolve_profile_env(normalize_profile_name(task.assignee))
+    except Exception:
+        return None
+    db_path = Path(home) / "state.db"
+    if not db_path.is_file():
+        return None
+    import time as _time
+    cutoff = _time.time() - _RESUME_MAX_AGE_SECONDS
+    title_prefix = f"Work kanban task {task.id}"
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                """
+                SELECT id, ended_at, message_count, started_at
+                  FROM sessions
+                 WHERE source = 'kanban'
+                   AND IFNULL(archived, 0) = 0
+                   AND title LIKE ?
+                 ORDER BY started_at DESC
+                 LIMIT 8
+                """,
+                (title_prefix + "%",),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        _log.debug("kanban worker: resume session lookup skipped (%s)", exc)
+        return None
+    live = False
+    candidates = []
+    for sid, ended_at, message_count, started_at in row:
+        if not sid:
+            continue
+        if ended_at is None:
+            live = True
+            break
+        try:
+            started = float(started_at or 0)
+        except (TypeError, ValueError):
+            started = 0.0
+        if started and started < cutoff:
+            continue
+        try:
+            n = int(message_count or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n < 2 or n > _RESUME_MAX_MESSAGES:
+            continue
+        # Poisoned retries: grok-4.5 died mid-write_file; resuming just
+        # re-attempts the same giant generation. Fresh spawn is cheaper.
+        if n > 28:
+            continue
+        candidates.append(str(sid))
+    if live:
+        # A live worker already owns this task's transcript; do not attach a second.
+        return None
+    try:
+        log_path = worker_logs_dir() / f"{task.id}.log"
+        if log_path.is_file():
+            tail = log_path.read_bytes()[-12000:].decode("utf-8", "replace").lower()
+            if "no sse events" in tail or "api call failed after" in tail:
+                return None
+    except Exception:
+        pass
+    return candidates[0] if candidates else None
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -10769,7 +10866,6 @@ def _default_spawn(
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    prompt = f"work kanban task {task.id}"
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
 
@@ -10806,6 +10902,11 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Fail-fast idle: giant write_file generations go silent; 3×120s retries
+    # were the hang. 90s then give up this turn (kanban loop skips extra retries).
+    env.setdefault("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "90")
+    # Cap a single completion so one write_file cannot be a 20k-char SSE hang.
+    env.setdefault("HERMES_MAX_TOKENS", "4096")
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is
     # read on the board and in `hermes kanban log` — it is not a conversation
@@ -10881,6 +10982,21 @@ def _default_spawn(
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
+    resume_id = _interrupted_worker_resume_id(task)
+    _chunk_rule = (
+        "HARD RULE: never one-shot write_file a long document (provider stream "
+        "hangs). First write_file must be a short skeleton (<4000 chars / ~80 "
+        "lines). Grow the file with patch in small sections. Then kanban_complete "
+        "in the same turn as the last patch. kanban_block if truly stuck."
+    )
+    if resume_id:
+        prompt = (
+            f"Continue kanban task {task.id}. {_chunk_rule} "
+            f"If you were about to emit a giant write_file, stop — skeleton + patch only."
+        )
+    else:
+        prompt = f"work kanban task {task.id}. {_chunk_rule}"
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -10891,6 +11007,10 @@ def _default_spawn(
         # profile-local worker sessions still register configured hooks.
         "--accept-hooks",
     ]
+    if resume_id:
+        # Pin THIS task's last ended worker session. Never use --continue:
+        # -c is most-recent-on-the-profile and would mix sibling cards.
+        cmd.extend(["--resume", resume_id])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but

@@ -1,31 +1,29 @@
-"""Bot-to-bot pair loop protection (Telegram Bot API 10.0).
+"""Bot-to-bot loop guard in ``_is_user_authorized`` (#91481).
 
-Telegram ships no loop guard of its own: core.telegram.org/api/bots/bot-to-bot
-requires the BOT to "make bot-message handling terminate predictably" via
-dedupe, rate limits and maximum interaction depth per sender/receiver pair.
-
-Every test here was verified FAILING against the tree without the guard
-(mutation-checked), which matters more than the count: exercising the real
-configuration is what makes them meaningful.  In particular they run with
-TELEGRAM_GROUP_ALLOWED_CHATS set, because that env var short-circuits
-_is_user_authorized with `return True` ~32 lines before the is_bot block --
-a guard placed in the is_bot block would never run for the one configuration
-that needs it, and a test without the allowlist would go green through a
-different code path.
+The scenarios run with ``TELEGRAM_GROUP_ALLOWED_CHATS`` set: that allowlist admits every sender in
+the chat, bots included, before the ``ALLOW_BOTS`` block runs. A guard hooked only into the
+``ALLOW_BOTS`` block never sees a bot in an allowlisted group, which is the configuration that
+produced the incident.
 """
 
+import logging
+import threading
 from types import SimpleNamespace
 
 import pytest
 
+from gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings, load_settings, settings_from_config
 from gateway.session import Platform, SessionSource
 
 GROUP_CHAT = "-1001234567890"
 OTHER_GROUP = "-1009876543210"
+BOT_A = "111111111"
+BOT_B = "222222222"
+HUMAN = "100200300"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_env(monkeypatch):
+def _isolate_telegram_env(monkeypatch):
     for var in (
         "TELEGRAM_ALLOW_BOTS",
         "TELEGRAM_ALLOWED_USERS",
@@ -34,205 +32,272 @@ def _isolate_env(monkeypatch):
         "TELEGRAM_GROUP_ALLOWED_CHATS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
-        "HERMES_BOT_LOOP_PROTECTION",
-        "HERMES_BOT_LOOP_MAX_EVENTS",
-        "HERMES_BOT_LOOP_WINDOW_SEC",
-        "HERMES_BOT_LOOP_COOLDOWN_SEC",
     ):
         monkeypatch.delenv(var, raising=False)
 
-    from gateway.bot_loop_guard import reset_loop_guard
 
-    reset_loop_guard()
-    yield
-    reset_loop_guard()
+@pytest.fixture
+def clock():
+    state = {"t": 1_000_000.0}
+    return SimpleNamespace(now=lambda: state["t"], advance=lambda secs: state.__setitem__("t", state["t"] + secs))
 
 
 @pytest.fixture
-def fake_clock(monkeypatch):
-    """Drive the guard's sliding window deterministically."""
-    from gateway import bot_loop_guard
-
-    state = {"t": 1_000_000.0}
-    monkeypatch.setattr(bot_loop_guard.time, "monotonic", lambda: state["t"])
-    return SimpleNamespace(
-        advance=lambda secs: state.__setitem__("t", state["t"] + secs),
-        now=lambda: state["t"],
-    )
+def settings():
+    """Mutable holder so a test can flip settings on a live guard."""
+    return {"value": BotLoopGuardSettings(max_events=20, window_seconds=60, cooldown_seconds=60)}
 
 
-def _runner():
+@pytest.fixture
+def runner(clock, settings):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+    runner._bot_loop_guard = BotLoopGuard(settings=lambda: settings["value"], clock=clock.now)
     return runner
 
 
-def _bot(user_id: str, chat_id: str = GROUP_CHAT) -> SessionSource:
-    """A fresh inbound bot message.
-
-    A new SessionSource per turn, mirroring production (each update builds its
-    own).  A hand-rolled stub does not work here: _is_user_authorized touches
-    delivered_via_upstream_relay and other real fields and blows up with
-    AttributeError.
-    """
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id=chat_id,
-        chat_type="group",
-        user_id=user_id,
-        user_name=f"Bot{user_id}",
+def _bot(user_id: str, chat_id: str = GROUP_CHAT, chat_type: str = "group") -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type=chat_type,
+        user_id=user_id, user_name=f"Bot{user_id}", is_bot=True,
     )
-    source.is_bot = True
-    return source
 
 
-def _human(user_id: str = "100200300", chat_id: str = GROUP_CHAT, chat_type: str = "group") -> SessionSource:
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id=chat_id,
-        chat_type=chat_type,
-        user_id=user_id,
-        user_name="Alice",
+def _human(user_id: str = HUMAN, chat_id: str = GROUP_CHAT, chat_type: str = "group") -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type=chat_type,
+        user_id=user_id, user_name="Alice", is_bot=False,
     )
-    source.is_bot = False
-    return source
 
 
-def _real_config(monkeypatch, *, max_events="20"):
-    """The configuration that actually reproduces the incident."""
+def _incident_config(monkeypatch):
+    """ALLOW_BOTS on, a human allowlist, and the group-chat allowlist that short-circuits authz."""
     monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "100200300")
-    # The short-circuit that makes guard placement matter.
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", HUMAN)
     monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", f"{GROUP_CHAT},{OTHER_GROUP}")
-    monkeypatch.setenv("HERMES_BOT_LOOP_MAX_EVENTS", max_events)
-    monkeypatch.setenv("HERMES_BOT_LOOP_WINDOW_SEC", "60")
-    monkeypatch.setenv("HERMES_BOT_LOOP_COOLDOWN_SEC", "60")
 
 
-# --------------------------------------------------------------------------- 1
+def _ping_pong(runner, turns: int, chat_id: str = GROUP_CHAT) -> list:
+    return [runner._is_user_authorized(_bot(BOT_A if t % 2 == 0 else BOT_B, chat_id)) for t in range(turns)]
 
 
-def test_ping_pong_of_40_turns_is_cut_at_turn_21(monkeypatch, fake_clock):
-    """The incident, reduced: two bots replying to each other must terminate.
-
-    Observed 2026-08-21 in production: 132 messages between two Hermes profiles
-    in one group before a human intervened.  With a budget of 20 the 21st
-    inbound bot message must be suppressed.
-    """
-    _real_config(monkeypatch, max_events="20")
-    runner = _runner()
-
-    verdicts = []
-    for turn in range(40):
-        sender = "111111111" if turn % 2 == 0 else "222222222"
-        verdicts.append(runner._is_user_authorized(_bot(sender)))
-
-    assert verdicts[:20] == [True] * 20, "first 20 turns must pass"
-    assert verdicts[20] is False, "turn 21 must be suppressed"
-    assert not any(verdicts[20:]), "the exchange must not resume inside cooldown"
+# --- authz integration -----------------------------------------------------
 
 
-# --------------------------------------------------------------------------- 2
+def test_ping_pong_of_40_turns_is_cut_at_the_budget(monkeypatch, runner):
+    _incident_config(monkeypatch)
+
+    verdicts = _ping_pong(runner, 40)
+
+    assert verdicts[:20] == [True] * 20
+    assert verdicts[20] is False
+    assert not any(verdicts[20:])
 
 
-def test_human_in_same_group_still_authorized_during_cooldown(monkeypatch, fake_clock):
-    """The guard must never take the group down for people."""
-    _real_config(monkeypatch, max_events="20")
-    runner = _runner()
+def test_human_in_same_group_stays_authorized_during_cooldown(monkeypatch, runner, clock):
+    _incident_config(monkeypatch)
+    _ping_pong(runner, 25)
 
-    for turn in range(25):
-        runner._is_user_authorized(_bot("111111111" if turn % 2 == 0 else "222222222"))
-
-    assert runner._is_user_authorized(_bot("111111111")) is False, "precondition: bots are cooling down"
+    assert runner._is_user_authorized(_bot(BOT_A)) is False
     assert runner._is_user_authorized(_human()) is True
-    fake_clock.advance(5)
+    clock.advance(5)
     assert runner._is_user_authorized(_human()) is True
 
 
-# --------------------------------------------------------------------------- 3
-
-
-def test_human_dm_unaffected(monkeypatch, fake_clock):
-    """Human DMs never enter the guard at all."""
+def test_human_traffic_is_never_metered(monkeypatch, runner):
     monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "100200300")
-    monkeypatch.setenv("HERMES_BOT_LOOP_MAX_EVENTS", "20")
-    runner = _runner()
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", HUMAN)
 
     for _ in range(50):
         assert runner._is_user_authorized(_human(chat_id="123", chat_type="dm")) is True
 
-    from gateway.bot_loop_guard import loop_guard_state
-
-    assert loop_guard_state()["tracked_pairs"] == 0, "human traffic must not be metered"
+    assert runner._bot_loop_guard.tracked_conversations == 0
 
 
-# --------------------------------------------------------------------------- 4
-
-
-def test_three_bots_in_one_group_share_a_single_budget(monkeypatch, fake_clock):
-    """Budget is keyed per CONVERSATION, not per (sender, receiver).
-
-    This process only sees inbound messages, so the receiver is a constant.
-    Keying on the pair would hand each sender its own budget, and N bots would
-    need N x budget messages to trip a guard meant to cap the whole exchange.
-    """
-    _real_config(monkeypatch, max_events="20")
-    runner = _runner()
-    senders = ["111111111", "222222222", "333333333"]
+def test_three_bots_in_one_group_share_one_budget(monkeypatch, runner):
+    _incident_config(monkeypatch)
+    senders = [BOT_A, BOT_B, "333333333"]
 
     verdicts = [runner._is_user_authorized(_bot(senders[i % 3])) for i in range(30)]
 
     assert verdicts[:20] == [True] * 20
-    assert not any(verdicts[20:]), "three bots must not get 3 x budget"
+    assert not any(verdicts[20:])
 
 
-# --------------------------------------------------------------------------- 5
+def test_other_group_has_its_own_budget(monkeypatch, runner):
+    _incident_config(monkeypatch)
+    _ping_pong(runner, 25)
+    assert runner._is_user_authorized(_bot(BOT_A)) is False
+
+    assert runner._is_user_authorized(_bot(BOT_A, chat_id=OTHER_GROUP)) is True
+    assert runner._is_user_authorized(_bot(BOT_B, chat_id=OTHER_GROUP)) is True
 
 
-def test_other_group_has_its_own_budget(monkeypatch, fake_clock):
-    """One noisy group must not silence bots elsewhere."""
-    _real_config(monkeypatch, max_events="20")
-    runner = _runner()
-
-    for turn in range(25):
-        runner._is_user_authorized(_bot("111111111" if turn % 2 == 0 else "222222222"))
-    assert runner._is_user_authorized(_bot("111111111")) is False
-
-    assert runner._is_user_authorized(_bot("111111111", chat_id=OTHER_GROUP)) is True
-    assert runner._is_user_authorized(_bot("222222222", chat_id=OTHER_GROUP)) is True
-
-
-# --------------------------------------------------------------------------- 6
-
-
-def test_slow_traffic_never_blocks(monkeypatch, fake_clock):
-    """1 message / 10 s for 10 minutes: legitimate pace, zero false positives."""
-    _real_config(monkeypatch, max_events="20")
-    runner = _runner()
+def test_slow_traffic_never_trips(monkeypatch, runner, clock):
+    _incident_config(monkeypatch)
 
     verdicts = []
     for turn in range(60):
-        verdicts.append(runner._is_user_authorized(_bot("111111111" if turn % 2 == 0 else "222222222")))
-        fake_clock.advance(10)
+        verdicts.append(runner._is_user_authorized(_bot(BOT_A if turn % 2 == 0 else BOT_B)))
+        clock.advance(10)
 
-    assert all(verdicts), f"slow traffic blocked at index {verdicts.index(False) if not all(verdicts) else -1}"
-
-
-# --------------------------------------------------------------------------- 7
+    assert all(verdicts)
 
 
-def test_kill_switch_disables_the_guard(monkeypatch, fake_clock):
-    """HERMES_BOT_LOOP_PROTECTION=off restores the previous behaviour exactly."""
-    _real_config(monkeypatch, max_events="20")
-    monkeypatch.setenv("HERMES_BOT_LOOP_PROTECTION", "off")
-    runner = _runner()
+def test_window_expiry_readmits_without_tripping(monkeypatch, runner, clock):
+    _incident_config(monkeypatch)
+    assert all(_ping_pong(runner, 20))
 
-    verdicts = [
-        runner._is_user_authorized(_bot("111111111" if turn % 2 == 0 else "222222222"))
-        for turn in range(40)
-    ]
+    clock.advance(61)
+    assert runner._is_user_authorized(_bot(BOT_A)) is True
 
-    assert all(verdicts), "kill switch must suppress the guard entirely"
+
+def test_cooldown_expiry_readmits_with_a_fresh_budget(monkeypatch, runner, clock):
+    _incident_config(monkeypatch)
+    _ping_pong(runner, 21)
+    assert runner._is_user_authorized(_bot(BOT_A)) is False
+
+    clock.advance(61)
+    assert all(_ping_pong(runner, 20))
+    assert runner._is_user_authorized(_bot(BOT_A)) is False
+
+
+def test_disabled_via_config_admits_everything(monkeypatch, runner, settings):
+    _incident_config(monkeypatch)
+    settings["value"] = settings_from_config({"gateway": {"bot_loop_guard": {"enabled": False}}})
+
+    assert all(_ping_pong(runner, 40))
+
+
+def test_bot_admitted_by_allow_bots_in_a_dm_is_metered(monkeypatch, runner):
+    """The plain ALLOW_BOTS path (no chat allowlist) is covered too."""
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", HUMAN)
+
+    verdicts = [runner._is_user_authorized(_bot(BOT_A, chat_id="123", chat_type="dm")) for _ in range(25)]
+
+    assert verdicts[:20] == [True] * 20
+    assert not any(verdicts[20:])
+
+
+def test_rejected_bot_messages_do_not_consume_budget(monkeypatch, runner):
+    """Only admitted bot traffic counts, so an unauthorized bot cannot silence an authorized one."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", HUMAN)
+
+    for _ in range(30):
+        assert runner._is_user_authorized(_bot(BOT_A, chat_id="123", chat_type="dm")) is False
+
+    assert runner._bot_loop_guard.tracked_conversations == 0
+
+
+def test_platform_scopes_the_budget_key(monkeypatch, runner):
+    _incident_config(monkeypatch)
+    _ping_pong(runner, 21)
+    assert runner._is_user_authorized(_bot(BOT_A)) is False
+
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    discord_bot = SessionSource(
+        platform=Platform.DISCORD, chat_id=GROUP_CHAT, chat_type="group", user_id=BOT_A, is_bot=True,
+    )
+    assert runner._is_user_authorized(discord_bot) is True
+
+
+def test_tripping_logs_one_operator_warning(monkeypatch, runner, caplog):
+    _incident_config(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.authz_mixin"):
+        _ping_pong(runner, 25)
+
+    trips = [r for r in caplog.records if r.name == "gateway.authz_mixin" and "Bot loop guard" in r.getMessage()]
+    assert len(trips) == 1
+    assert GROUP_CHAT in trips[0].getMessage()
+
+
+def test_guard_is_created_lazily_on_a_bare_runner(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
+    runner = object.__new__(GatewayRunner)
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+
+    assert runner._is_user_authorized(_bot(BOT_A, chat_id="123", chat_type="dm")) is True
+    assert isinstance(runner._bot_loop_guard, BotLoopGuard)
+
+
+# --- BotLoopGuard unit ------------------------------------------------------
+
+
+def test_admit_states(clock):
+    guard = BotLoopGuard(settings=lambda: BotLoopGuardSettings(max_events=2, window_seconds=10, cooldown_seconds=30), clock=clock.now)
+
+    assert guard.admit("c") == (True, "ok")
+    assert guard.admit("c") == (True, "ok")
+    assert guard.admit("c") == (False, "tripped")
+    assert guard.admit("c") == (False, "cooldown")
+    clock.advance(31)
+    assert guard.admit("c") == (True, "ok")
+
+
+def test_concurrent_admits_respect_the_budget(clock):
+    guard = BotLoopGuard(settings=lambda: BotLoopGuardSettings(max_events=20, window_seconds=60, cooldown_seconds=60), clock=clock.now)
+    allowed = []
+    lock = threading.Lock()
+
+    def worker():
+        for _ in range(10):
+            ok, _state = guard.admit("c")
+            with lock:
+                allowed.append(ok)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sum(allowed) == 20
+
+
+def test_sweep_drops_idle_conversations(clock):
+    guard = BotLoopGuard(settings=lambda: BotLoopGuardSettings(max_events=5, window_seconds=10, cooldown_seconds=10), clock=clock.now)
+    for i in range(50):
+        guard.admit(f"chat-{i}")
+    assert guard.tracked_conversations == 50
+
+    clock.advance(11)
+    guard.admit("fresh")
+    assert guard.tracked_conversations == 1
+
+
+# --- settings ---------------------------------------------------------------
+
+
+def test_settings_defaults_when_block_missing_or_malformed():
+    defaults = BotLoopGuardSettings()
+    assert settings_from_config({}) == defaults
+    assert settings_from_config(None) == defaults
+    assert settings_from_config({"gateway": {"bot_loop_guard": "yes"}}) == defaults
+    assert settings_from_config({"gateway": {"bot_loop_guard": {"max_events": -1, "window_seconds": "abc"}}}) == defaults
+    assert settings_from_config({"gateway": {"bot_loop_guard": {"enabled": "maybe", "max_events": True}}}) == defaults
+
+
+def test_settings_parse_configured_values():
+    parsed = settings_from_config({"gateway": {"bot_loop_guard": {
+        "enabled": "false", "max_events": "7", "window_seconds": 30, "cooldown_seconds": 45.5,
+    }}})
+    assert parsed == BotLoopGuardSettings(enabled=False, max_events=7, window_seconds=30.0, cooldown_seconds=45.5)
+
+
+def test_load_settings_reads_config_yaml(monkeypatch):
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: {"gateway": {"bot_loop_guard": {"max_events": 3}}})
+    assert load_settings().max_events == 3
+
+    def boom():
+        raise RuntimeError("no config")
+
+    monkeypatch.setattr(hermes_config, "load_config_readonly", boom)
+    assert load_settings() == BotLoopGuardSettings()

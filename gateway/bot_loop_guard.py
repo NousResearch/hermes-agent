@@ -1,155 +1,140 @@
-"""Pair loop protection for bot-to-bot messaging.
+"""Sliding-window budget for bot-authored inbound messages (#91481).
 
-Telegram Bot API 10.0 (2026-05-08) allows bots to receive messages from other
-bots.  The platform ships NO loop guard: core.telegram.org/api/bots/bot-to-bot
-states plainly that "Bot-to-bot communication can create infinite reply loops.
-Bots using this feature must make bot-message handling terminate predictably"
-and lists the required safeguards:
+``{PLATFORM}_ALLOW_BOTS`` only decides admission. When two Hermes profiles reply to each
+other, every reply satisfies the ``mentions`` test again, so nothing ends the exchange.
+The guard counts admitted bot-authored messages per conversation and, once a conversation
+exceeds ``max_events`` inside ``window_seconds``, drops further bot messages there for
+``cooldown_seconds``. Human traffic never enters the guard.
 
-  * Deduplicate repeated messages.
-  * Apply per-chat and per-bot rate limits.
-  * Enforce maximum interaction depth and timeouts, both globally and per
-    sender/receiver pair.
-
-This module implements a sliding-window budget per (conversation, bot pair).
-The pair is tracked order-independently -- A->B and B->A count as the SAME
-pair -- so a two-bot ping-pong burns one shared budget instead of two.
-
-Observed failure this guards against (2026-08-21, profiles medicina + ytmed):
-132 messages exchanged in a single Telegram group before a human intervened.
-TELEGRAM_ALLOW_BOTS=mentions did NOT stop it: when bot A replies to bot B, the
-reply itself satisfies the "mention" test, so each turn re-armed the other bot.
-
-Tunables (env, all optional):
-  HERMES_BOT_LOOP_PROTECTION   on|off           (default on)
-  HERMES_BOT_LOOP_MAX_EVENTS   int              (default 20)
-  HERMES_BOT_LOOP_WINDOW_SEC   int              (default 60)
-  HERMES_BOT_LOOP_COOLDOWN_SEC int              (default 60)
-
-Defaults match the OpenClaw reference implementation (20 events / 60 s window /
-60 s cooldown), which solves the same problem on Discord, Slack, Matrix,
-Feishu and Google Chat.
+Settings live in config.yaml under ``gateway.bot_loop_guard``:
+``enabled`` (true), ``max_events`` (20), ``window_seconds`` (300), ``cooldown_seconds`` (600).
 """
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections import deque
-from typing import Deque, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Callable, Deque, Dict, Hashable, Tuple
 
-__all__ = ["allow_bot_event", "loop_guard_state", "reset_loop_guard"]
+__all__ = ["BotLoopGuard", "BotLoopGuardSettings", "load_settings", "settings_from_config"]
+
+_TRUTHY = frozenset({"true", "1", "yes", "on"})
+_FALSY = frozenset({"false", "0", "no", "off"})
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if not raw:
+@dataclass(frozen=True)
+class BotLoopGuardSettings:
+    enabled: bool = True
+    max_events: int = 20
+    window_seconds: float = 300.0
+    cooldown_seconds: float = 600.0
+
+
+def _as_bool(raw, default: bool) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower() if raw is not None else ""
+    if text in _TRUTHY:
+        return True
+    if text in _FALSY:
+        return False
+    return default
+
+
+def _as_positive(raw, default: float) -> float:
+    if isinstance(raw, bool):
         return default
     try:
-        val = int(str(raw).strip())
+        value = float(raw)
     except (TypeError, ValueError):
         return default
-    return val if val > 0 else default
+    return value if value > 0 else default
 
 
-def _enabled() -> bool:
-    raw = (os.getenv("HERMES_BOT_LOOP_PROTECTION") or "on").strip().lower()
-    return raw not in {"off", "false", "0", "no", "disabled"}
+def settings_from_config(cfg) -> BotLoopGuardSettings:
+    """Read ``gateway.bot_loop_guard`` from a loaded config dict; unusable values keep the default."""
+    from hermes_cli.config import cfg_get
+
+    block = cfg_get(cfg, "gateway", "bot_loop_guard", default=None)
+    if not isinstance(block, dict):
+        return BotLoopGuardSettings()
+    defaults = BotLoopGuardSettings()
+    return BotLoopGuardSettings(
+        enabled=_as_bool(block.get("enabled"), defaults.enabled),
+        max_events=int(_as_positive(block.get("max_events"), defaults.max_events)),
+        window_seconds=_as_positive(block.get("window_seconds"), defaults.window_seconds),
+        cooldown_seconds=_as_positive(block.get("cooldown_seconds"), defaults.cooldown_seconds),
+    )
 
 
-_LOCK = threading.Lock()
-# key -> (deque of event timestamps, cooldown_until)
-_EVENTS: Dict[Tuple[str, str, str], Deque[float]] = {}
-_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
-_LAST_SWEEP = 0.0
+def load_settings() -> BotLoopGuardSettings:
+    """Settings from the live config.yaml; defaults when the config cannot be read."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return settings_from_config(load_config_readonly())
+    except Exception:
+        return BotLoopGuardSettings()
 
 
-def _key(scope: str, conversation: str, a: str, b: str) -> Tuple[str, str, str]:
-    """Order-independent pair key: A->B and B->A collapse to one bucket."""
-    lo, hi = sorted([str(a or "?"), str(b or "?")])
-    return (str(scope or "-"), str(conversation or "-"), f"{lo}|{hi}")
+class BotLoopGuard:
+    """Per-conversation sliding window with a cooldown once the budget trips. Thread-safe.
 
-
-def _sweep(now: float, window: float) -> None:
-    """Drop buckets untouched for 10 windows so memory stays bounded."""
-    global _LAST_SWEEP
-    if now - _LAST_SWEEP < window:
-        return
-    _LAST_SWEEP = now
-    horizon = now - (window * 10)
-    for k in [k for k, dq in _EVENTS.items() if not dq or dq[-1] < horizon]:
-        _EVENTS.pop(k, None)
-        if _COOLDOWN.get(k, 0.0) < now:
-            _COOLDOWN.pop(k, None)
-
-
-def allow_bot_event(
-    scope: str,
-    conversation: str,
-    sender_bot: str,
-    receiver_bot: str,
-    *,
-    now: Optional[float] = None,
-) -> Tuple[bool, str]:
-    """Return (allowed, reason) for one inbound bot-authored message.
-
-    Call ONLY for messages authored by another bot, at the moment the message
-    is admitted. Human traffic must never reach this function.
+    Settings are re-read on every call so a config.yaml edit takes effect without a restart;
+    ``load_config_readonly`` caches on the file signature, so the read is cheap.
     """
-    if not _enabled():
-        return True, "guard-disabled"
 
-    max_events = _env_int("HERMES_BOT_LOOP_MAX_EVENTS", 20)
-    window = float(_env_int("HERMES_BOT_LOOP_WINDOW_SEC", 60))
-    cooldown = float(_env_int("HERMES_BOT_LOOP_COOLDOWN_SEC", 60))
+    def __init__(
+        self,
+        settings: Callable[[], BotLoopGuardSettings] = load_settings,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._settings = settings
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._events: Dict[Hashable, Deque[float]] = {}
+        self._cooldown_until: Dict[Hashable, float] = {}
+        self._last_sweep = 0.0
 
-    t = time.monotonic() if now is None else now
-    k = _key(scope, conversation, sender_bot, receiver_bot)
+    @property
+    def tracked_conversations(self) -> int:
+        with self._lock:
+            return len(self._events)
 
-    with _LOCK:
-        _sweep(t, window)
+    def admit(self, conversation: Hashable) -> Tuple[bool, str]:
+        """Count one admitted bot-authored message for ``conversation``.
 
-        until = _COOLDOWN.get(k, 0.0)
-        if until > t:
-            return False, f"cooldown:{until - t:.0f}s-left"
+        Returns ``(allowed, state)`` with state one of ``disabled``, ``ok``, ``tripped``
+        (this message exceeded the budget and started the cooldown) or ``cooldown``.
+        """
+        settings = self._settings()
+        if not settings.enabled:
+            return True, "disabled"
+        now = self._clock()
+        with self._lock:
+            self._sweep(now, settings)
+            if self._cooldown_until.get(conversation, 0.0) > now:
+                return False, "cooldown"
+            events = self._events.setdefault(conversation, deque())
+            cutoff = now - settings.window_seconds
+            while events and events[0] <= cutoff:
+                events.popleft()
+            if len(events) >= settings.max_events:
+                self._cooldown_until[conversation] = now + settings.cooldown_seconds
+                events.clear()
+                return False, "tripped"
+            events.append(now)
+            return True, "ok"
 
-        dq = _EVENTS.setdefault(k, deque())
-        cutoff = t - window
-        while dq and dq[0] < cutoff:
-            dq.popleft()
-
-        if len(dq) >= max_events:
-            _COOLDOWN[k] = t + cooldown
-            dq.clear()
-            return False, f"budget-exceeded:{max_events}/{window:.0f}s"
-
-        dq.append(t)
-        return True, f"ok:{len(dq)}/{max_events}"
-
-
-def loop_guard_state() -> dict:
-    """Snapshot for diagnostics."""
-    t = time.monotonic()
-    with _LOCK:
-        return {
-            "enabled": _enabled(),
-            "max_events": _env_int("HERMES_BOT_LOOP_MAX_EVENTS", 20),
-            "window_seconds": _env_int("HERMES_BOT_LOOP_WINDOW_SEC", 60),
-            "cooldown_seconds": _env_int("HERMES_BOT_LOOP_COOLDOWN_SEC", 60),
-            "tracked_pairs": len(_EVENTS),
-            "pairs": {
-                "|".join(k): len(dq) for k, dq in list(_EVENTS.items())[:20]
-            },
-            "cooling_down": {
-                "|".join(k): round(v - t, 1)
-                for k, v in _COOLDOWN.items()
-                if v > t
-            },
-        }
-
-
-def reset_loop_guard() -> None:
-    with _LOCK:
-        _EVENTS.clear()
-        _COOLDOWN.clear()
+    def _sweep(self, now: float, settings: BotLoopGuardSettings) -> None:
+        """Drop idle conversations at most once per window so memory stays bounded."""
+        if now - self._last_sweep < settings.window_seconds:
+            return
+        self._last_sweep = now
+        idle_cutoff = now - settings.window_seconds
+        for key in [k for k, dq in self._events.items() if not dq or dq[-1] <= idle_cutoff]:
+            del self._events[key]
+        for key in [k for k, until in self._cooldown_until.items() if until <= now]:
+            del self._cooldown_until[key]

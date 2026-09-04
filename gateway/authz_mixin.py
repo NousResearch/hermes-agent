@@ -8,9 +8,12 @@ imports its ``logger`` lazily so records keep the ``"gateway.run"`` name.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import threading
 from typing import Optional
 
+from gateway.bot_loop_guard import BotLoopGuard
 from gateway.config import Platform
 from gateway.pairing import _PLATFORM_ALLOWLIST_ENV
 from gateway.session import SessionSource
@@ -22,6 +25,8 @@ from gateway.whatsapp_identity import (
 _GROUP_CHAT_TYPES = frozenset({"group", "forum", "channel"})
 _GROUP_FORUM_TYPES = frozenset({"group", "forum"})
 _TRUTHY = frozenset({"true", "1", "yes"})
+_BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 # Platform -> ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``. Shared with the pairing
 # store's allowlist mirror (single source of truth); plugin platforms are added per-call from the registry.
@@ -470,13 +475,44 @@ class GatewayAuthorizationMixin:
             self._warned_telegram_group_users_legacy = True
         return source.chat_id in legacy_chat_ids
 
+    def _bot_loop_guard_admits(self, source: SessionSource, adapter_profile: Optional[str]) -> bool:
+        """Count one admitted bot-authored message; False while its conversation is over budget."""
+        guard = getattr(self, "_bot_loop_guard", None)
+        if guard is None:
+            with _BOT_LOOP_GUARD_INIT_LOCK:
+                guard = getattr(self, "_bot_loop_guard", None)
+                if guard is None:
+                    guard = self._bot_loop_guard = BotLoopGuard()
+        platform = source.platform.value if source.platform else ""
+        # One budget per conversation, not per sender pair: inbound only ever shows the other bots,
+        # so a per-pair key would hand N bots N budgets.
+        allowed, state = guard.admit((adapter_profile or "", platform, str(source.chat_id or "")))
+        if state == "tripped":
+            logger.warning(
+                "Bot loop guard is dropping bot messages in %s chat %s: bot %s sent one message too many "
+                "for the window, cooling down (gateway.bot_loop_guard in config.yaml).",
+                platform, source.chat_id, source.user_id,
+            )
+        return allowed
+
     def _is_user_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
         """Whether a user may use the bot.
 
         Order: trusted-upstream delegation, chat-scoped group allowlists, ``{PLATFORM}_ALLOW_BOTS``,
         per-platform allow-all, adapter role auth, pairing store, env/config allowlists,
-        ``GATEWAY_ALLOW_ALL_USERS``, default deny.
+        ``GATEWAY_ALLOW_ALL_USERS``, default deny. A bot-authored message that any of these admits
+        then passes the bot loop guard.
         """
+        if not self._principal_authorized(source, allow_adapter_delegation=allow_adapter_delegation):
+            return False
+        if not getattr(source, "is_bot", False):
+            return True
+        # The guard judges the final verdict: the chat-scoped allowlist admits a bot in an allowlisted
+        # chat before the ALLOW_BOTS block runs, so a guard inside that block would never see it.
+        return self._bot_loop_guard_admits(source, self._adapter_profile_for_source(source))
+
+    def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
+        """The allowlist verdict alone, before the bot loop guard."""
         # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
@@ -487,59 +523,6 @@ class GatewayAuthorizationMixin:
         if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
             return True
         user_id = source.user_id
-        # Pair loop protection for bot-authored traffic (#79077).  MUST run
-        # before the group-allowlist shortcut below: TELEGRAM_GROUP_ALLOWED_CHATS
-        # returns True for any sender in an allowlisted chat, bots included, so a
-        # guard placed after it never executes for the exact configuration that
-        # needs it (an allowlisted group with two bots in it).
-        #
-        # Telegram Bot API 10.0 ships no loop guard of its own --
-        # core.telegram.org/api/bots/bot-to-bot requires the BOT to "make
-        # bot-message handling terminate predictably" via dedupe, rate limits and
-        # maximum interaction depth per sender/receiver pair.  ALLOW_BOTS is
-        # admission policy only: a bot replying to another bot satisfies the
-        # "mentions" test, so each turn re-arms the peer and the exchange never
-        # terminates (observed 2026-08-21: 132 messages in one group before a
-        # human intervened).
-        #
-        # The budget is per CONVERSATION, not per (sender, receiver): this
-        # process only ever sees inbound messages, so the receiver side is a
-        # constant (our own profile) and keying on the pair would hand every
-        # distinct sender its own budget -- N bots in one group would then need
-        # N x budget messages to trip a guard meant to cap the whole exchange.
-        if getattr(source, "is_bot", False):
-            _allow_var = {
-                Platform.DISCORD: "DISCORD_ALLOW_BOTS",
-                Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-                Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
-                Platform.SLACK: "SLACK_ALLOW_BOTS",
-            }.get(source.platform)
-            if _allow_var and _platform_gate_env(_allow_var, "none").lower().strip() in {"mentions", "all"}:
-                try:
-                    from gateway.bot_loop_guard import allow_bot_event
-
-                    _ok, _why = allow_bot_event(
-                        scope=str(getattr(self, "profile_name", "") or "-"),
-                        conversation=str(getattr(source, "chat_id", "") or "-"),
-                        sender_bot="bots",
-                        receiver_bot="bots",
-                    )
-                    if not _ok:
-                        try:
-                            import logging
-
-                            logging.getLogger(__name__).warning(
-                                "Bot-to-bot loop guard suppressed message from %s in %s (%s)",
-                                getattr(source, "user_id", "?"),
-                                getattr(source, "chat_id", "?"),
-                                _why,
-                            )
-                        except Exception:
-                            pass
-                        return False
-                except ImportError:
-                    pass
-
         if not user_id:
             return False
 

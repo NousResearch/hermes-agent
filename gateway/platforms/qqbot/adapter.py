@@ -252,6 +252,9 @@ class QQAdapter(BasePlatformAdapter):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        # Holds the fire-and-forget task that hands a fatal error off to the
+        # gateway; kept referenced so it isn't garbage-collected mid-flight.
+        self._fatal_notify_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
@@ -516,6 +519,23 @@ class QQAdapter(BasePlatformAdapter):
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
+    def _schedule_fatal_notify(self) -> None:
+        """Notify the gateway of a fatal error from *outside* the listen task.
+
+        The notify chain is: _notify_fatal_error -> gateway fatal handler ->
+        _safe_adapter_disconnect -> disconnect(), and disconnect() cancels
+        this very _listen_task. Awaiting _notify_fatal_error() inline would
+        therefore cancel the running task mid-flight, aborting the gateway
+        handler *before* it queues us for background reconnection — the
+        platform then stays dead with nothing watching it.
+
+        Scheduling the notify as a separate task and returning lets
+        _listen_loop finish first. disconnect() then cancels an already-done
+        task (a harmless no-op), and the handler runs to completion and
+        enqueues us for the reconnect watcher.
+        """
+        self._fatal_notify_task = asyncio.create_task(self._notify_fatal_error())
+
     async def _listen_loop(self) -> None:
         """Read WebSocket events and reconnect on errors.
 
@@ -571,6 +591,15 @@ class QQAdapter(BasePlatformAdapter):
                             "Too many quick disconnects — check bot permissions",
                             retryable=True,
                         )
+                        # Hand off to the gateway's reconnect watcher rather
+                        # than dying silently. `retryable=True` matches the
+                        # other three exhaustion exits below: the diagnostic
+                        # ("check bot permissions") stays visible in runtime
+                        # status, and the gateway retries on its backoff
+                        # schedule so genuinely transient causes (upstream
+                        # blips, brief network wobble, session takeover
+                        # thrash) can self-heal without the user restarting.
+                        self._schedule_fatal_notify()
                         return
                 else:
                     quick_disconnect_count = 0
@@ -618,7 +647,18 @@ class QQAdapter(BasePlatformAdapter):
                         RATE_LIMIT_DELAY,
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        self._mark_disconnected()
+                        # Hand off to the gateway reconnect watcher instead of
+                        # dying silently — a bare _mark_disconnected() leaves
+                        # the listener task dead with nothing watching it.
+                        self._set_fatal_error(
+                            "qq_reconnect_exhausted",
+                            (
+                                f"Rate-limited reconnect exhausted after "
+                                f"{MAX_RECONNECT_ATTEMPTS} attempts"
+                            ),
+                            retryable=True,
+                        )
+                        self._schedule_fatal_notify()
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     if await self._reconnect(backoff_idx):
@@ -673,7 +713,17 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                        self._mark_disconnected()
+                        # Surface as retryable-fatal so the gateway reconnect
+                        # watcher takes over instead of leaving us dead.
+                        self._set_fatal_error(
+                            "qq_reconnect_exhausted",
+                            (
+                                f"WebSocket reconnect exhausted after "
+                                f"{MAX_RECONNECT_ATTEMPTS} attempts (last close code {code})"
+                            ),
+                            retryable=True,
+                        )
+                        self._schedule_fatal_notify()
                         return
 
             except Exception as exc:
@@ -685,7 +735,18 @@ class QQAdapter(BasePlatformAdapter):
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
+                    # See sibling QQCloseError branch — handing this off to the
+                    # gateway watcher is the only thing that ever brings the
+                    # adapter back after reconnect attempts are exhausted.
+                    self._set_fatal_error(
+                        "qq_reconnect_exhausted",
+                        (
+                            f"WebSocket reconnect exhausted after "
+                            f"{MAX_RECONNECT_ATTEMPTS} attempts: {exc}"
+                        ),
+                        retryable=True,
+                    )
+                    self._schedule_fatal_notify()
                     return
 
                 if await self._reconnect(backoff_idx):

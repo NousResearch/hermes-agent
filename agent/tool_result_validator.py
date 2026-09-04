@@ -16,24 +16,24 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-class ToolResultValidationError(Exception):
-    """Raised when tool result fails validation."""
-
-    def __init__(
-        self, tool_name: str, error: str, result_preview: Optional[str] = None
-    ):
-        self.tool_name = tool_name
-        self.error = error
-        self.result_preview = result_preview
-        super().__init__(
-            f"Tool '{tool_name}' validation failed: {error}"
-            + (f"\nPreview: {result_preview}" if result_preview else "")
-        )
+def get_result_preview(result: Any, max_len: int = 200) -> str:
+    """Get a short preview of the result for logging."""
+    if isinstance(result, str):
+        return result[:max_len]
+    if isinstance(result, dict):
+        try:
+            s = json.dumps(result, default=str)[:max_len]
+            return s
+        except Exception:
+            return str(result)[:max_len]
+    if isinstance(result, list):
+        return "[list with %d items]" % len(result)
+    return str(result)[:max_len]
 
 
 def _validate_file_tool_result(
@@ -41,7 +41,7 @@ def _validate_file_tool_result(
 ) -> Tuple[bool, Optional[str]]:
     """Validate file tool results (read, write, patch, etc)."""
     if not isinstance(result, str):
-        return False, f"Expected string, got {type(result).__name__}"
+        return False, "Expected string, got %s" % type(result).__name__
 
     # Empty results for read_file might be valid (empty file), but warn
     if tool_name == "read_file" and not result:
@@ -76,7 +76,7 @@ def _validate_api_tool_result(tool_name: str, result: Any) -> Tuple[bool, Option
 def _validate_terminal_result(result: Any) -> Tuple[bool, Optional[str]]:
     """Validate terminal tool results."""
     if not isinstance(result, str):
-        return False, f"Expected string, got {type(result).__name__}"
+        return False, "Expected string, got %s" % type(result).__name__
 
     # Terminal output might have errors, but that's data not a validation failure
     # The model should see error output to reason about it
@@ -104,7 +104,7 @@ def validate_tool_result(tool_name: str, result: Any) -> Tuple[bool, Optional[st
         if result is None:
             return False, "Tool returned None"
         if not isinstance(result, (str, list)):
-            return False, f"Expected string or list, got {type(result).__name__}"
+            return False, "Expected string or list, got %s" % type(result).__name__
         return True, None
 
     if tool_name == "terminal":
@@ -120,18 +120,3 @@ def validate_tool_result(tool_name: str, result: Any) -> Tuple[bool, Optional[st
     # Unknown / unregistered tool — always pass.
     # We have no schema for it and cannot safely reject anything.
     return True, None
-
-
-def get_result_preview(result: Any, max_len: int = 200) -> str:
-    """Get a short preview of the result for logging."""
-    if isinstance(result, str):
-        return result[:max_len]
-    if isinstance(result, dict):
-        try:
-            s = json.dumps(result, default=str)[:max_len]
-            return s
-        except Exception:
-            return str(result)[:max_len]
-    if isinstance(result, list):
-        return f"[list with {len(result)} items]"
-    return str(result)[:max_len]

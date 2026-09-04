@@ -8,7 +8,7 @@ validation rule that was never written for them.
 
 import pytest
 
-from agent.tool_result_validator import validate_tool_result
+from agent.tool_result_validator import validate_tool_result, get_result_preview
 
 
 # ---------------------------------------------------------------------------
@@ -168,48 +168,86 @@ class TestErrorKeyedDictsAreData:
 
 
 # ---------------------------------------------------------------------------
-# Wiring contract: validate_tool_result return values drive middleware_trace
+# Executor-side validation guards
+# These tests verify the three conditions that must ALL be true before the
+# validator is invoked (mirrors the if-guard in tool_executor._execute):
+#   - tool did not raise (tool_error_occurred=False)
+#   - call was not blocked by middleware (blocked=False)
+#   - call was not dispatched to a sub-agent (dispatched=False)
 # ---------------------------------------------------------------------------
 
 
-class TestWiringContract:
-    """The executor wiring appends to middleware_trace on invalid results.
-    Simulate that logic here to confirm the contract without needing a full
-    agent fixture.
+class TestExecutorValidationGuards:
+    """
+    Mirrors the post-exec validation block in tool_executor.py without needing
+    a full agent fixture.  Tests that:
+      1. Invalid results produce a trace entry with type/error/preview fields.
+      2. Valid results leave the trace empty.
+      3. tool_error_occurred=True skips validation entirely.
+      4. blocked=True skips validation entirely.
+      5. dispatched=True skips validation entirely.
+      6. get_result_preview is used for the preview (not raw repr).
     """
 
-    def _simulate_executor_wiring(self, tool_name: str, result: object) -> list:
-        """Mirrors the post-exec block in tool_executor.py."""
-        from agent.tool_result_validator import validate_tool_result
-
+    def _simulate_validation_block(
+        self,
+        tool_name: str,
+        result: object,
+        tool_error_occurred: bool = False,
+        blocked: bool = False,
+        dispatched: bool = False,
+    ) -> list:
+        """Mirrors the post-exec validation block in tool_executor.py."""
         trace: list = []
-        is_valid, validation_error = validate_tool_result(tool_name, result)
-        if not is_valid:
-            trace.append({
-                "type": "tool_result_validation_error",
-                "error": validation_error,
-                "preview": repr(result)[:200],
-            })
+        if not tool_error_occurred and not blocked and not dispatched:
+            is_valid, validation_error = validate_tool_result(tool_name, result)
+            if not is_valid:
+                trace.append({
+                    "type": "tool_result_validation_error",
+                    "error": validation_error,
+                    "preview": get_result_preview(result),
+                })
         return trace
 
     def test_none_result_appends_trace_entry(self):
-        trace = self._simulate_executor_wiring("read_file", None)
+        trace = self._simulate_validation_block("read_file", None)
         assert len(trace) == 1
         assert trace[0]["type"] == "tool_result_validation_error"
         assert "None" in trace[0]["error"]
 
     def test_valid_result_leaves_trace_empty(self):
-        trace = self._simulate_executor_wiring("read_file", "file contents")
+        trace = self._simulate_validation_block("read_file", "file contents")
         assert trace == []
 
-    def test_unknown_tool_none_leaves_trace_empty(self):
-        # Unknown tools always pass — trace must stay empty
-        trace = self._simulate_executor_wiring("future_tool", None)
+    def test_unknown_tool_leaves_trace_empty(self):
+        # Unknown tools always pass — trace must stay empty even for None.
+        trace = self._simulate_validation_block("future_tool", None)
         assert trace == []
 
     def test_trace_entry_includes_preview(self):
-        trace = self._simulate_executor_wiring("terminal", {"exit_code": 0})
+        trace = self._simulate_validation_block("terminal", {"exit_code": 0})
         assert len(trace) == 1
         assert "preview" in trace[0]
         assert trace[0]["preview"]  # non-empty
+
+    def test_tool_error_skips_validation(self):
+        # tool_error_occurred=True → synthetic error string, must not validate.
+        trace = self._simulate_validation_block(
+            "read_file", None, tool_error_occurred=True
+        )
+        assert trace == []
+
+    def test_blocked_skips_validation(self):
+        # Middleware blocked the call — result did not come from the real tool.
+        trace = self._simulate_validation_block(
+            "read_file", None, blocked=True
+        )
+        assert trace == []
+
+    def test_dispatched_skips_validation(self):
+        # Call was dispatched to a sub-agent — result did not come from the real tool.
+        trace = self._simulate_validation_block(
+            "read_file", None, dispatched=True
+        )
+        assert trace == []
 

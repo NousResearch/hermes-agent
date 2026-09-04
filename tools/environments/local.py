@@ -707,6 +707,15 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
+    def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
+        """Keep routed profile HOME state out of a shared shell snapshot."""
+        return (
+            "HOME",
+            "HERMES_HOME",
+            "HERMES_REAL_HOME",
+            "TERMINAL_HOME_MODE",
+        )
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
         self.init_session()

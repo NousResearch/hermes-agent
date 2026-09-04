@@ -797,6 +797,15 @@ if AIOHTTP_AVAILABLE:
         send an unsuppressible ``Origin: null``). The converse route accepts no
         cookie auth, so relaxing Origin for key-bearing upgrades is safe.
 
+        PRESENCE, NOT VALIDITY (on purpose): the exemption keys off the mere presence
+        of a ``hermes-key.`` subprotocol, not whether the key is correct. Validating
+        the key here would duplicate auth into the wrong layer — two constant-time
+        paths to keep in lockstep, and a wrong key would 403-as-origin instead of
+        401-as-auth. The only cost of presence-based matching is that a hostile page
+        can reach the handler's constant-time key check and burn a 401 — but any
+        non-browser client can already do that by omitting Origin entirely, so it
+        concedes nothing.
+
         INVARIANT: this holds ONLY while ``/v1/audio/converse`` authenticates with
         the explicit key alone (no cookie/session fallback). If ambient auth is ever
         added to that handler, this exemption silently becomes a Cross-Site

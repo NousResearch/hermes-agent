@@ -225,3 +225,99 @@ def test_one_shot_fallback_yields_nothing_on_provider_failure(monkeypatch):
         lambda text, *a, **k: json.dumps({"success": False, "error": "nope"}))
     synth = resolve_converse_synthesizer({})
     assert list(synth.synth("x")) == []
+
+
+# ── shared turn driver: history cap + control-frame ordering ──
+
+import asyncio
+import queue as _queue
+
+from tools.voice_converse_loop import _HISTORY_MAX_MESSAGES, drive_converse_turns
+
+
+class _FakeConverseSession:
+    """Minimal ConverseSession stand-in for driving drive_converse_turns hermetically.
+
+    Serves a fixed list of transcripts (then the None shutdown sentinel), and no-ops
+    the playback/barge-in coordination so a turn runs start-to-finish without VAD.
+    """
+
+    def __init__(self, transcripts):
+        self.transcripts = _queue.Queue()
+        for t in transcripts:
+            self.transcripts.put(t)
+        self.transcripts.put(None)  # shutdown sentinel
+        self.stopped = False
+
+    def take_interrupted(self):
+        return False
+
+    def set_playing(self, value, *, tts_stop=None):
+        return None
+
+
+class _EchoSynth:
+    sample_rate = 24000
+
+    def synth(self, text):
+        yield text.encode("utf-8")
+
+
+def _run_driver(session, history, replies):
+    """Drive drive_converse_turns to completion, returning the JSON frames sent."""
+    sent: list = []
+
+    async def _send_json(obj):
+        sent.append(obj)
+
+    async def _send_bytes(data):
+        sent.append(("bytes", data))
+
+    reply_iter = iter(replies)
+
+    async def _run_turn(transcript, on_delta, *, interrupted):
+        reply = next(reply_iter)
+        on_delta(reply)  # stream the whole reply as one delta
+        return reply, None
+
+    async def _main():
+        loop = asyncio.get_running_loop()
+        await drive_converse_turns(
+            session=session, synth=_EchoSynth(), cap=4000, loop=loop,
+            send_json=_send_json, send_bytes=_send_bytes,
+            run_turn=_run_turn, history=history)
+
+    asyncio.run(_main())
+    return sent
+
+
+def test_drive_converse_turns_control_frame_ordering():
+    session = _FakeConverseSession(["hello there."])
+    history: list = []
+    sent = _run_driver(session, history, ["Hi back."])
+
+    # transcript -> speaking -> PCM bytes -> turn_done, in that exact order.
+    types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
+    assert types == ["transcript", "speaking", "bytes", "turn_done"]
+    assert sent[0] == {"type": "transcript", "text": "hello there."}
+    assert sent[2] == ("bytes", b"Hi back.")
+    # The turn was recorded in history (user + assistant).
+    assert history == [
+        {"role": "user", "content": "hello there."},
+        {"role": "assistant", "content": "Hi back."},
+    ]
+
+
+def test_drive_converse_turns_caps_history_tail():
+    # Run enough turns that user+assistant messages would exceed the cap, and assert
+    # the driver keeps only the last _HISTORY_MAX_MESSAGES (a bounded tail).
+    n_turns = _HISTORY_MAX_MESSAGES  # 2 messages/turn -> 2N appended, well over the cap
+    transcripts = [f"say {i}." for i in range(n_turns)]
+    replies = [f"reply {i}." for i in range(n_turns)]
+    history: list = []
+    _run_driver(_FakeConverseSession(transcripts), history, replies)
+
+    assert len(history) == _HISTORY_MAX_MESSAGES
+    # The tail is retained: the last kept message is the final assistant reply.
+    assert history[-1] == {"role": "assistant", "content": f"reply {n_turns - 1}."}
+    assert history[0]["role"] == "user"  # cap preserves whole (user, assistant) pairs here

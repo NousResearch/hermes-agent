@@ -25,11 +25,14 @@ Pieces:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import queue
 import threading
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple
+from typing import (
+    Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple)
 
 _log = logging.getLogger("hermes_cli.web_server")
 
@@ -318,6 +321,185 @@ def split_text_for_tts_stream(text: str, cap: int) -> list:
     if buf:
         pieces.append(buf)
     return pieces
+
+
+# Bound on the per-connection conversation history kept in memory: at most this
+# many messages (~20 user+assistant turns). A long-lived socket that never closes
+# would otherwise grow ``history`` without limit; this simple tail-cap (no
+# summarization) keeps it bounded while preserving recent context.
+_HISTORY_MAX_MESSAGES = 40
+
+
+async def drive_converse_turns(
+    *,
+    session: "ConverseSession",
+    synth: Any,
+    cap: int,
+    loop: asyncio.AbstractEventLoop,
+    send_json: Callable[[dict], Awaitable[Any]],
+    send_bytes: Callable[[bytes], Awaitable[Any]],
+    run_turn: Callable[..., Awaitable[Tuple[str, Optional[str]]]],
+    history: List[Dict[str, str]],
+) -> None:
+    """Run the per-transcript incremental-TTS turn loop shared by both WS hosts.
+
+    One turn per transcript pulled off ``session.transcripts``: announce it
+    (``{"type":"transcript"}``), run the real agent turn via ``run_turn`` (deltas
+    stream out as they land), and speak the reply INCREMENTALLY — each sentence is
+    synthesized and streamed the moment it is ready (``SentenceChunker`` +
+    ``synth.synth`` → ``send_bytes``), so the user hears sentence 1 while sentence 2
+    is still being generated. Control-frame order per turn is:
+    ``transcript`` → (``speaking`` + PCM frames) → optional ``interrupted``/``error``
+    → ``turn_done``.
+
+    The host adapts by passing:
+
+    * ``send_json`` / ``send_bytes`` — awaitables wrapping the host ws (aiohttp and
+      starlette both expose async ``send_json``/``send_bytes``, so a host can pass
+      ``ws.send_json``/``ws.send_bytes`` directly).
+    * ``run_turn(transcript, on_delta, *, interrupted) -> (reply_text, err)`` — runs
+      one agent turn, calling ``on_delta`` with streaming text, and returns the reply
+      text (for history) and an error string (or ``None``). The driver awaits it as a
+      task and owns closing the synthesis pipeline when it ends.
+    * ``synth`` — a converse synthesizer (``.sample_rate`` + ``.synth(text) ->
+      Iterator[bytes]``); ``cap`` — the provider's max text length.
+    * ``history`` — the mutable conversation-history list; the driver appends the
+      user + assistant message each turn and caps it to a bounded tail.
+
+    BARGE-IN / v1 LIMITATION: a VAD trip while playing stops TTS PLAYBACK
+    (``session`` sets ``tts_stop`` + ``mark_speech_interrupted``) and we emit
+    ``{"type":"interrupted"}``, but the in-flight agent turn (``run_turn`` /
+    ``_run_agent`` / ``prompt.submit``) is NOT cancelled in v1 — it is allowed to run
+    to completion, so a barged turn may still finish and fire tools, and the next
+    utterance queues behind it. Cancelling the in-flight turn is a deliberate
+    follow-up, not implemented here.
+    """
+    from tools.tts_streaming import SentenceChunker
+    from tools.tts_text_normalize import _strip_markdown_for_tts
+
+    while not session.stopped:
+        transcript = await loop.run_in_executor(None, session.transcripts.get)
+        if transcript is None:  # shutdown sentinel
+            break
+        if not transcript:
+            continue
+        await send_json({"type": "transcript", "text": transcript})
+
+        # Clear any stale barge-in latch before this turn; capture it as the per-turn
+        # interrupted note so a host that plumbs barge-in parity (the dashboard) can
+        # prepend it to the model-bound message.
+        interrupted_in = session.take_interrupted()
+        text_q: "queue.Queue[Optional[str]]" = queue.Queue()  # deltas; None = turn done
+        pcm_q: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue()  # PCM out; None = done
+        tts_stop = threading.Event()
+        reply_parts: List[str] = []
+        turn_result: dict = {}
+
+        def _on_delta(delta: str) -> None:
+            # Called from run_turn's execution context (main-loop coroutine or a
+            # worker thread); text_q is thread-safe either way.
+            if delta:
+                reply_parts.append(delta)
+                text_q.put(delta)
+
+        async def _run_turn_task(t=transcript, note=interrupted_in) -> None:
+            # Drive one agent turn via the host adapter; the None sentinel closes the
+            # synthesis pipeline when the turn ends (whichever way it ends).
+            try:
+                reply, err = await run_turn(t, _on_delta, interrupted=note)
+                turn_result["reply"] = reply
+                if err:
+                    turn_result["err"] = err
+            except Exception as exc:  # noqa: BLE001 - surface, don't wedge the loop
+                turn_result["err"] = f"voice turn failed: {exc}"
+            finally:
+                text_q.put(None)
+
+        def _produce() -> None:
+            # Cut streaming deltas into sentences and synthesize each as it lands, so
+            # playback overlaps generation (mirrors the speak-stream producer).
+            chunker = SentenceChunker()
+            idle_poll_seconds = 0.5
+            idle_polls_before_force_flush = 4  # ~2s of silence -> speak the tail
+
+            def _sentences():
+                idle_polls = 0
+                while not (tts_stop.is_set() or session.stopped):
+                    try:
+                        delta = text_q.get(timeout=idle_poll_seconds)
+                    except queue.Empty:
+                        idle_polls += 1
+                        buffered = chunker.buf.strip()
+                        if not buffered or (
+                                "<think" in chunker.buf and "</think>" not in chunker.buf):
+                            continue
+                        if buffered.endswith((".", "!", "?", "…", ":")) or (
+                                idle_polls >= idle_polls_before_force_flush):
+                            yield from chunker.flush()
+                        continue
+                    idle_polls = 0
+                    if delta is None:
+                        yield from chunker.flush()
+                        return
+                    yield from chunker.feed(delta)
+
+            try:
+                for sentence in _sentences():
+                    cleaned = _strip_markdown_for_tts(sentence)
+                    if not cleaned:
+                        continue
+                    for piece in split_text_for_tts_stream(cleaned, cap):
+                        for chunk in synth.synth(piece):
+                            if tts_stop.is_set() or session.stopped:
+                                return
+                            loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("converse synthesis failed: %s", exc)
+            finally:
+                loop.call_soon_threadsafe(pcm_q.put_nowait, None)
+
+        turn_task = asyncio.ensure_future(_run_turn_task())
+        threading.Thread(target=_produce, name="converse-tts", daemon=True).start()
+
+        # Consumer: stream PCM out; flip `playing` on only when real audio starts
+        # (kept off during generation so a mid-thought interjection stays VAD-sensitive).
+        speaking = False
+        while True:
+            chunk = await pcm_q.get()
+            if chunk is None:
+                break
+            if not speaking:
+                session.set_playing(True, tts_stop=tts_stop)
+                await send_json({"type": "speaking"})
+                speaking = True
+            await send_bytes(chunk)
+        if speaking:
+            session.set_playing(False)
+
+        # The turn task set the None sentinel that ended synthesis, so it is
+        # effectively done; await it to surface errors and settle turn_result.
+        with contextlib.suppress(Exception):
+            await turn_task
+
+        # Persist the turn so history carries across the connection. Prefer the reply
+        # the adapter returned (the agent's final response); fall back to the streamed
+        # deltas. Cap the history to a bounded tail so a long-lived socket doesn't grow
+        # `history` without limit (simple slice cap, no summarization).
+        reply = turn_result.get("reply") or "".join(reply_parts)
+        history.append({"role": "user", "content": transcript})
+        if reply:
+            history.append({"role": "assistant", "content": reply})
+        if len(history) > _HISTORY_MAX_MESSAGES:
+            del history[:-_HISTORY_MAX_MESSAGES]
+
+        # Barge-in stops PLAYBACK only (see the v1 limitation above): report it and
+        # skip the error frame (a barged turn's error is noise), else surface any
+        # turn error. Always end the turn with `turn_done`.
+        if session.take_interrupted() or tts_stop.is_set():
+            await send_json({"type": "interrupted"})
+        elif turn_result.get("err"):
+            await send_json({"type": "error", "error": turn_result["err"]})
+        await send_json({"type": "turn_done"})
 
 
 # ── converse synthesizer: one uniform "text -> int16 PCM" seam for both paths ──

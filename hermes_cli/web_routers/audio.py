@@ -522,8 +522,17 @@ async def converse_ws(ws: "WebSocket") -> None:
                ``{"type": "turn_done"}`` after each reply,
                ``{"type": "error", "error": ...}`` on failure.
 
-    The heavy lifting lives in :mod:`hermes_cli.web_routers._converse_loop`; this
-    handler only gates auth, wires queues/threads and mirrors ``speak_stream_ws``.
+    The heavy lifting lives in the shared driver
+    :func:`tools.voice_converse_loop.drive_converse_turns` (plus the dashboard turn
+    glue in :mod:`hermes_cli.web_routers._converse_loop`); this handler only gates
+    auth, pre-creates the session, wires the client pump, and adapts ``run_voice_turn``
+    onto the driver.
+
+    BARGE-IN (v1 limitation): a VAD trip while playing stops TTS PLAYBACK (tts_stop +
+    mark_speech_interrupted) and emits ``{"type":"interrupted"}``, but the in-flight
+    agent turn (``run_voice_turn`` / ``prompt.submit``) is NOT cancelled in v1 — it
+    runs to completion, so a barged turn may still finish and fire tools, and the next
+    utterance queues behind it. Cancelling the in-flight turn is a deliberate follow-up.
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
@@ -572,6 +581,12 @@ async def converse_ws(ws: "WebSocket") -> None:
 
     session.start()
 
+    # The tui_gateway session (``sid``) owns the durable conversation state used by
+    # each ``run_voice_turn`` (via prompt.submit), so this list is NOT fed to the
+    # agent; it exists only so the shared driver can record the turn transcript/reply
+    # under a bounded tail cap (keeping a long-lived socket's memory in check).
+    conversation_history: list = []
+
     async def _pump_client():
         # Binary frames feed the mic shim; {"stop"}/disconnect ends; {"commit"}
         # forces the current utterance to endpoint.
@@ -593,110 +608,30 @@ async def converse_ws(ws: "WebSocket") -> None:
                 if msg.get("commit"):
                     session.commit()
         except Exception:
-            pass
+            _log.debug("converse client pump ended", exc_info=True)
         session.stop()
 
-    async def _drive_turns():
-        # One turn per transcript: announce it, then run the agent and speak its
-        # reply INCREMENTALLY — each sentence is synthesized and streamed the moment
-        # it is ready, so the user hears sentence 1 while sentence 2 is still being
-        # generated. Deltas from the live turn feed a SentenceChunker exactly like
-        # /api/audio/speak-stream, rather than buffering the whole reply first.
-        from tools.tts_streaming import SentenceChunker
-        from tools.tts_text_normalize import _strip_markdown_for_tts
+    async def _run_turn(transcript, on_delta, *, interrupted: bool):
+        # Dashboard turn adapter for drive_converse_turns: run the real agent turn via
+        # run_voice_turn (prompt.submit in-process), streaming deltas out through
+        # on_delta. Returns (reply_text, err): run_voice_turn already returns the error
+        # (or None), and the reply is the joined deltas (computed by the driver, so we
+        # return "" here). The per-turn barge-in note is plumbed via `interrupted`.
+        # run_voice_turn is sync (blocks until the turn ends), so run it off the loop.
         from hermes_cli.web_routers._converse_loop import run_voice_turn
 
-        while not session.stopped:
-            transcript = await loop.run_in_executor(None, session.transcripts.get)
-            if transcript is None:  # shutdown sentinel
-                break
-            if not transcript:
-                continue
-            await ws.send_json({"type": "transcript", "text": transcript})
+        err = await loop.run_in_executor(
+            None,
+            lambda: run_voice_turn(sid, transcript, on_delta, interrupted=interrupted))
+        return "", err
 
-            interrupted_in = session.take_interrupted()
-            text_q: "queue.Queue[Optional[str]]" = queue.Queue()  # deltas; None = turn done
-            pcm_q: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
-            tts_stop = threading.Event()
-            turn_err: dict = {}
+    async def _drive_turns():
+        from tools.voice_converse_loop import drive_converse_turns
 
-            def _on_delta(delta: str) -> None:
-                text_q.put(delta)
-
-            def _run_turn(t=transcript, note=interrupted_in):
-                # The real agent turn; deltas stream out via _on_delta as they land.
-                # The None sentinel closes the synthesis pipeline when the turn ends.
-                try:
-                    turn_err["err"] = run_voice_turn(sid, t, _on_delta, interrupted=note)
-                except Exception as exc:  # noqa: BLE001 - surface, don't wedge the loop
-                    turn_err["err"] = f"voice turn failed: {exc}"
-                finally:
-                    text_q.put(None)
-
-            def _produce():
-                # Cut streaming deltas into sentences and synthesize each as it lands
-                # (mirrors speak_stream_ws._produce, but the text source is the live turn).
-                chunker = SentenceChunker()
-                idle_poll_seconds = 0.5
-                idle_polls_before_force_flush = 4  # ~2s of silence -> speak the tail
-
-                def _sentences():
-                    idle_polls = 0
-                    while not (tts_stop.is_set() or session.stopped):
-                        try:
-                            delta = text_q.get(timeout=idle_poll_seconds)
-                        except queue.Empty:
-                            idle_polls += 1
-                            buffered = chunker.buf.strip()
-                            if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
-                                continue
-                            if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
-                                yield from chunker.flush()
-                            continue
-                        idle_polls = 0
-                        if delta is None:
-                            yield from chunker.flush()
-                            return
-                        yield from chunker.feed(delta)
-
-                try:
-                    for sentence in _sentences():
-                        cleaned = _strip_markdown_for_tts(sentence)
-                        if not cleaned:
-                            continue
-                        for piece in _split_text_for_speak_stream(cleaned, cap):
-                            for chunk in synth.synth(piece):
-                                if tts_stop.is_set() or session.stopped:
-                                    return
-                                loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)
-                except Exception as exc:
-                    _log.warning("converse synthesis failed: %s", exc)
-                finally:
-                    loop.call_soon_threadsafe(pcm_q.put_nowait, None)
-
-            threading.Thread(target=_run_turn, name="converse-turn", daemon=True).start()
-            threading.Thread(target=_produce, name="converse-tts", daemon=True).start()
-
-            # Consumer: stream PCM out; flip `playing` on only when real audio starts
-            # (kept off during generation so a mid-thought interjection stays VAD-sensitive).
-            speaking = False
-            while True:
-                chunk = await pcm_q.get()
-                if chunk is None:
-                    break
-                if not speaking:
-                    session.set_playing(True, tts_stop=tts_stop)
-                    await ws.send_json({"type": "speaking"})
-                    speaking = True
-                await ws.send_bytes(chunk)
-            if speaking:
-                session.set_playing(False)
-
-            if session.take_interrupted() or tts_stop.is_set():
-                await ws.send_json({"type": "interrupted"})
-            elif turn_err.get("err"):
-                await ws.send_json({"type": "error", "error": turn_err["err"]})
-            await ws.send_json({"type": "turn_done"})
+        await drive_converse_turns(
+            session=session, synth=synth, cap=cap, loop=loop,
+            send_json=ws.send_json, send_bytes=ws.send_bytes,
+            run_turn=_run_turn, history=conversation_history)
 
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())

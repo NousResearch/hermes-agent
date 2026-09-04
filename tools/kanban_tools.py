@@ -458,6 +458,14 @@ def _normalize_profile(value: Any) -> Optional[str]:
 
 def _operator_identity() -> str:
     """Return the trusted active profile name for administrative audit events."""
+    try:
+        from gateway.session_context import get_session_env
+
+        session_profile = get_session_env("HERMES_SESSION_PROFILE", "")
+        if session_profile and session_profile.strip():
+            return session_profile.strip()
+    except Exception:
+        pass
     profile = os.environ.get("HERMES_PROFILE")
     if profile and profile.strip():
         return profile.strip()

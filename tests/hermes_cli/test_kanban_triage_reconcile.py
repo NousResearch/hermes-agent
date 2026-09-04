@@ -200,6 +200,32 @@ def test_reconcile_tool_is_available_to_orchestrators(kanban_home, monkeypatch):
     }
 
 
+def test_reconcile_tool_audits_active_session_profile(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "default")
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="resolved", triage=True)
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import kanban_tools as kt
+
+    tokens = set_session_vars(profile="ops-orchestrator")
+    try:
+        result = json.loads(
+            kt._handle_reconcile(
+                {"task_id": task_id, "reason": "Resolved by external automation."}
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert result["ok"] is True
+    with kb.connect() as conn:
+        event = kb.list_events(conn, task_id)[-1]
+    assert event.kind == "administratively_reconciled"
+    assert event.payload["operator"] == "ops-orchestrator"
+
+
 def test_reconcile_tool_refuses_dispatcher_workers(kanban_home, monkeypatch):
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="resolved", triage=True)

@@ -436,17 +436,19 @@ export async function downloadGatewayMediaFile(
   }
 
   const conn = $connection.get()
-  const owner = origin.owner ?? { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile }
   // A displayed remote image can outlive a profile switch: a hermes-media
-  // stream URL still carries its own path and connection identity.
+  // stream URL still carries its own path and connection identity, so it wins
+  // over the window's current connection (but not an owner captured at read).
   const streamRequest = gatewayMediaDownloadRequest(path)
+  const owner = origin.owner ?? {
+    connectionId: streamRequest?.connectionId ?? conn?.connectionId,
+    profile: origin.profile ?? streamRequest?.profile ?? conn?.profile
+  }
 
   return window.hermesDesktop.saveGatewayFile({
-    ...((owner.connectionId ?? streamRequest?.connectionId)
-      ? { connectionId: owner.connectionId ?? streamRequest?.connectionId }
-      : {}),
+    ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
     path: streamRequest?.path ?? path,
-    ...((owner.profile ?? streamRequest?.profile) ? { profile: owner.profile ?? streamRequest?.profile } : {}),
+    ...(owner.profile ? { profile: owner.profile } : {}),
     ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
     suggestedName:
       origin.suggestedName ||

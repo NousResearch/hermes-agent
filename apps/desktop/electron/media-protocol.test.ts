@@ -101,6 +101,8 @@ describe('createMediaProtocolHandler', () => {
     expect(response.headers.get('content-range')).toBe('bytes 10-19/100')
     expect(response.headers.get('accept-ranges')).toBe('bytes')
     expect(Buffer.from(await response.arrayBuffer()).equals(bytes.subarray(10, 20))).toBe(true)
+  })
+
   it.each(['token', 'oauth'] as const)('streams remote raster bytes with %s authentication', async authMode => {
     const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
     const response = () => Promise.resolve(new Response(png, { headers: { 'content-type': 'image/png' } }))

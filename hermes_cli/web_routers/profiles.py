@@ -557,6 +557,7 @@ def _merge_profile_tree(
 
 
 @sessions_router.get("/api/profiles/projects/tree")
+@_sidebar_singleflight_cache
 def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000):
     """Project tree for every profile at once, for the all-profiles sidebar.
 

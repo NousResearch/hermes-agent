@@ -153,6 +153,26 @@ def test_classify_review_result():
         background_review._classify_review_result(["User profile ➕ prefers terse"])
         == "memory"
     )
+    # Raw skill_manage messages passed through verbatim by the non-verbose fast path
+    # (issue #103235): patch starts with "Patched", write_file with "File '…'".
+    assert (
+        background_review._classify_review_result(
+            ["Patched SKILL.md in skill 'deploy' (3 replacements)."]
+        )
+        == "skill"
+    )
+    assert (
+        background_review._classify_review_result(
+            ["File 'references/api.md' written to skill 'deploy'."]
+        )
+        == "skill"
+    )
+    assert (
+        background_review._classify_review_result(
+            ["📝 File 'references/api.md' written to skill 'deploy'."]
+        )
+        == "skill"
+    )
 
 
 def test_enabled_config_failure_logs_warning(caplog):

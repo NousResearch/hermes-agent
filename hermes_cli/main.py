@@ -5935,6 +5935,23 @@ def cmd_doctor(args):
 
     run_doctor(args)
 
+    # Diagnostics (and any --fix writes) are complete. A dependency can leave
+    # a non-daemon worker behind, stranding this standalone command in
+    # threading._shutdown after the summary has printed (#100792). Keep the
+    # exit here: run_doctor() is also used in-process by the dashboard.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    # os._exit skips atexit, including the queued logger's normal drain.
+    try:
+        from hermes_logging import drain_log_queue
+        drain_log_queue(timeout=1.0)
+    except Exception:
+        pass
+    os._exit(0)
+
 
 def cmd_verify(args):
     """Detect a project's run recipe and smoke-test it."""

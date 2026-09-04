@@ -13,6 +13,7 @@ auth/token headers were present -- send those in the derived client or you may
 get a 403/401.
 """
 import argparse
+import base64
 import json
 import re
 import sys
@@ -54,6 +55,48 @@ def trunc(text, n: int) -> str:
     return text if len(text) <= n else text[:n] + f"... [{len(text)} chars total]"
 
 
+def request_body_sample(post, max_body: int):
+    """Return (mimeType, text) from a HAR postData object, or None.
+
+    Chrome/Playwright urlencoded forms often ship ``params`` and no ``text``.
+    ``postData: null`` (common on GET) is treated as empty, not a crash.
+    """
+    if not isinstance(post, dict):
+        return None
+    mime = post.get("mimeType") or ""
+    text = post.get("text")
+    if text:
+        return mime, trunc(text, max_body)
+    params = post.get("params") or []
+    pieces = []
+    for item in params:
+        if not isinstance(item, dict) or item.get("name") is None:
+            continue
+        pieces.append(f"{item['name']}={item.get('value', '')}")
+    if not pieces:
+        return None
+    return mime, trunc("&".join(pieces), max_body)
+
+
+def response_body_text(content) -> str:
+    """Return response text, decoding HAR base64 when needed."""
+    if not isinstance(content, dict):
+        return ""
+    text = content.get("text") or ""
+    if not text:
+        return ""
+    if str(content.get("encoding") or "").lower() != "base64":
+        return text
+    try:
+        raw = base64.b64decode(text)
+    except Exception:
+        return text
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"[binary base64, {len(raw)} bytes]"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("har")
@@ -87,14 +130,15 @@ def main() -> int:
             if name in BORING_HEADERS or name in ("method", "path", "scheme", "authority"):
                 continue
             g["headers"][name] = trunc(h["value"], 120)
-        post = req.get("postData", {})
-        if post.get("text") and g["req_body"] is None:
-            g["req_body"] = (post.get("mimeType", ""), trunc(post["text"], args.max_body))
+        if g["req_body"] is None:
+            sample = request_body_sample(req.get("postData"), args.max_body)
+            if sample is not None:
+                g["req_body"] = sample
         resp = entry.get("response", {})
         if g["resp"] is None and resp:
             content = resp.get("content", {})
             g["resp"] = (resp.get("status"), content.get("mimeType", ""),
-                         trunc(content.get("text") or "", args.max_body))
+                         trunc(response_body_text(content), args.max_body))
 
     if not groups:
         print("No API-looking entries found. Re-run with --include-static to see everything.")

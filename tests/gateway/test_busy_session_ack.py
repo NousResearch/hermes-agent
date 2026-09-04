@@ -471,3 +471,64 @@ class TestLongRunningNotificationOwnership:
         ) is False
 
 
+class TestIterationProgressFormatting:
+    """User-facing iteration lines must not show the sys.maxsize sentinel as
+    a denominator when the turn budget is unbounded by default (#102806)."""
+
+    def test_bounded_budget_keeps_denominator(self):
+        from gateway.run import _format_iteration_progress
+
+        assert _format_iteration_progress(21, 60) == "iteration 21/60"
+
+    def test_unbounded_budget_omits_denominator(self):
+        import sys
+        from gateway.run import _format_iteration_progress
+
+        assert _format_iteration_progress(2, sys.maxsize) == "iteration 2"
+
+    def test_zero_max_iterations_omits_denominator(self):
+        from gateway.run import _format_iteration_progress
+
+        assert _format_iteration_progress(0, 0) == "iteration 0"
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_omits_unbounded_denominator(self, monkeypatch):
+        """Ack with the default (unbounded) budget renders iteration N only."""
+        import sys
+
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
+        )
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="yo")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 21,
+            "max_iterations": sys.maxsize,  # default: unbounded
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 600  # 10 min
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content", "")
+        assert "iteration 21" in content
+        assert str(sys.maxsize) not in content  # no sentinel denominator
+        assert "terminal" in content  # current tool still shown
+
+

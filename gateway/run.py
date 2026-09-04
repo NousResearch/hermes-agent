@@ -68,7 +68,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import (
     compression_made_progress,
 )
-from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from hermes_cli.config import TURN_LIMIT_UNLIMITED, _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -2432,6 +2432,20 @@ def _current_max_iterations() -> int:
     _reload_runtime_env_preserving_config_authority()
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
+
+
+def _format_iteration_progress(iteration: int, max_iterations: int) -> str:
+    """Render an iteration counter for user-facing status lines.
+
+    Unbounded budgets default to ``TURN_LIMIT_UNLIMITED`` (sys.maxsize) unless
+    the user sets an explicit ``agent.max_turns`` cap. Showing that sentinel as
+    a denominator (``iteration 2/9223372036854775807``) reads as a bug to a
+    user, so unbounded runs render ``iteration N`` only; bounded runs keep the
+    ``iteration N/M`` form (the bound is meaningful there).
+    """
+    if max_iterations and max_iterations != TURN_LIMIT_UNLIMITED:
+        return f"iteration {iteration}/{max_iterations}"
+    return f"iteration {iteration}"
 
 
 from contextlib import (
@@ -11626,7 +11640,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if elapsed_min > 0:
                         status_parts.append(f"{elapsed_min} min elapsed")
                 if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                    status_parts.append(_format_iteration_progress(iteration, max_iter))
                 if current_tool:
                     status_parts.append(f"running: {current_tool}")
             except Exception:
@@ -32136,7 +32150,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _parts = []
                         if _want_iteration_detail:
                             _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
+                                _format_iteration_progress(
+                                    _a.get("api_call_count", 0),
+                                    _a.get("max_iterations", 0),
+                                )
                             )
                         _action = _a.get("current_tool") or _a.get("last_activity_desc")
                         if _action:
@@ -32468,6 +32485,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _cur_tool = _activity.get("current_tool")
                 _iter_n = _activity.get("api_call_count", 0)
                 _iter_max = _activity.get("max_iterations", 0)
+                # User-facing lines below omit the sys.maxsize denominator for
+                # unbounded budgets (see _format_iteration_progress); the
+                # error log right after keeps the raw resolved values for
+                # operator diagnostics.
+                _iter_progress = _format_iteration_progress(_iter_n, _iter_max)
 
                 logger.error(
                     "Agent idle for %.0fs (timeout %.0fs) in session %s "
@@ -32493,12 +32515,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _diag_lines.append(
                         f"The agent appears stuck on tool `{_cur_tool}` "
                         f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
+                        f"{_iter_progress})."
                     )
                 else:
                     _diag_lines.append(
                         f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
+                        f"{_iter_progress}). "
                         "The agent may have been waiting on an API response."
                     )
                 _diag_lines.append(

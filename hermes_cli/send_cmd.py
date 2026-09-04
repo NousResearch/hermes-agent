@@ -30,7 +30,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 _USAGE_EXIT = 2
@@ -92,6 +92,19 @@ def _resolve_target(arg_to: Optional[str]) -> Optional[str]:
     if arg_to and arg_to.strip():
         return arg_to.strip()
     return None
+
+
+def _invalid_whatsapp_mentions(mentions: list[str]) -> list[str]:
+    """Return mention values that cannot identify a WhatsApp participant."""
+    from gateway.whatsapp_identity import to_whatsapp_jid
+
+    invalid: list[str] = []
+    for mention in mentions:
+        jid = to_whatsapp_jid(mention)
+        user, separator, domain = jid.partition("@")
+        if not separator or not user.isdigit() or domain not in {"s.whatsapp.net", "lid"}:
+            invalid.append(mention)
+    return invalid
 
 
 def _emit_result(
@@ -353,6 +366,22 @@ def cmd_send(args: argparse.Namespace) -> None:
         )
         sys.exit(_USAGE_EXIT)
 
+    mentions = list(getattr(args, "mentions", None) or [])
+    if mentions and target.split(":", 1)[0].strip().lower() != "whatsapp":
+        print(
+            "hermes send: --mention is only supported for WhatsApp targets.",
+            file=sys.stderr,
+        )
+        sys.exit(_USAGE_EXIT)
+    invalid_mentions = _invalid_whatsapp_mentions(mentions) if mentions else []
+    if invalid_mentions:
+        print(
+            "hermes send: invalid --mention value(s): "
+            f"{', '.join(invalid_mentions)}. Use a phone number or participant JID.",
+            file=sys.stderr,
+        )
+        sys.exit(_USAGE_EXIT)
+
     message = _read_message_body(
         getattr(args, "message", None),
         getattr(args, "file", None),
@@ -380,11 +409,13 @@ def cmd_send(args: argparse.Namespace) -> None:
     # Signal/SMS/WhatsApp; live-adapter path for plugin platforms).
     #
     # It expects the standard tool-call dict and returns a JSON string.
-    tool_args = {
+    tool_args: dict[str, Any] = {
         "action": "send",
         "target": target,
         "message": message,
     }
+    if mentions:
+        tool_args["mentions"] = mentions
 
     result = send_message_tool(tool_args)
     exit_code = _emit_result(
@@ -418,6 +449,7 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
             "  hermes send --to discord:#ops --file /tmp/report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
+            "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
             "  hermes send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
             "  hermes send --list                  # all platforms\n"
             "  hermes send --list telegram         # filter by platform\n"
@@ -468,6 +500,19 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         metavar="LINE",
         default=None,
         help="Prepend a subject/header line before the message body.",
+    )
+
+    parser.add_argument(
+        "--mention",
+        dest="mentions",
+        action="append",
+        default=None,
+        metavar="PHONE_OR_JID",
+        help=(
+            "WhatsApp only: add a native participant mention. Repeat for "
+            "multiple recipients; bare phone numbers are normalized to JIDs. "
+            "Include each matching @<number> near the start of the message text."
+        ),
     )
 
     parser.add_argument(

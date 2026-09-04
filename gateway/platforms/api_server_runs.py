@@ -879,6 +879,13 @@ async def _handle_runs(
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        # input_tokens is cache-inclusive (CanonicalUsage
+                        # prompt_tokens = input + cache_read + cache_write),
+                        # so a warm cached run looks identical to a cold one.
+                        # Expose the cached reads so clients can record and
+                        # split them (#99554); the existing keys keep their
+                        # semantics.
+                        "cached_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
                     }
                     return r, u
 

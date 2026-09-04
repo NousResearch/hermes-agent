@@ -146,6 +146,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
     agent.session_prompt_tokens = agent.session_completion_tokens = (
         agent.session_total_tokens
     ) = 0
+    agent.session_cache_read_tokens = 0
     with patch.object(target, "_create_agent", return_value=agent):
         home.start()
         home.send(

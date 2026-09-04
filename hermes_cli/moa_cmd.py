@@ -225,6 +225,15 @@ def _pick_slot(
             f"Note: {slot['provider']}:{slot['model']} does not support reasoning; "
             "dropping the existing reasoning_effort override."
         )
+    elif (
+        same_model
+        and current_effort == "none"
+        and _model_can_disable_reasoning(provider, str(model)) is False
+    ):
+        print(
+            f"Note: {slot['provider']}:{slot['model']} requires reasoning; "
+            "dropping the existing disabled-reasoning override."
+        )
     effort = _slot_reasoning_effort(provider, str(model), current_effort)
     if effort:
         slot["reasoning_effort"] = effort

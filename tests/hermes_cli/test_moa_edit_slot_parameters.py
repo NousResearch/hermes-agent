@@ -235,6 +235,26 @@ def test_mandatory_reasoning_model_hides_disable_and_drops_stale_disabled_overri
     assert "requires reasoning" in capsys.readouterr().out
 
 
+def test_same_mandatory_model_replacement_reports_dropped_disabled_override(capsys):
+    provider = {
+        **PROVIDER,
+        "capabilities": {
+            CURRENT["model"]: {"reasoning": True, "can_disable_reasoning": False}
+        },
+    }
+    current = {**CURRENT, "reasoning_effort": "none"}
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[provider]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[1, 0, 0]
+    ), patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value=None
+    ) as prompt:
+        slot = _pick_slot(current)
+
+    assert "reasoning_effort" not in slot
+    assert prompt.call_args.kwargs == {"current_effort": "", "allow_disable": False}
+    assert "requires reasoning" in capsys.readouterr().out
+
+
 def test_existing_slot_parameter_editor_can_unset_reasoning_effort():
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
         "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0, 1]

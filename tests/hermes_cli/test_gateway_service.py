@@ -616,17 +616,10 @@ class TestLaunchdServiceRecovery:
 
         def fake_run(cmd, check=False, **kwargs):
             run_calls.append(cmd)
-            if cmd[:2] == ["launchctl", "list"]:
-                # Post-bootstrap launchd reports a supervised PID; without one
-                # the success check correctly refuses to stop retrying.
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout='{\n\t"PID" = 5150;\n\t"Label" = "ai.hermes.gateway";\n};',
-                    stderr="",
-                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_launchctl_label_supervising_process", lambda label: True)
 
         assert gateway_cli.refresh_launchd_plist_if_needed() is True
 
@@ -675,6 +668,32 @@ class TestLaunchdServiceRecovery:
     # ── launchd_status with active supervision ───────────────────────────
 
 
+    def test_launchd_checks_find_gui_job_from_background_context(self, tmp_path, monkeypatch, capsys):
+        """Every status path must use the explicit domain when legacy list cannot see it."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(os, "getuid", lambda: 501)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                raise AssertionError("legacy list must not run after an explicit-domain match")
+            if cmd == ["launchctl", "print", "gui/501/ai.hermes.gateway"]:
+                return SimpleNamespace(returncode=0, stdout="pid = 65929\n", stderr="")
+            return SimpleNamespace(returncode=113, stdout="", stderr="not found")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 65932)
+
+        assert gateway_cli._launchctl_label_supervising_process(gateway_cli.get_launchd_label())
+        assert gateway_cli._probe_launchd_service_running()
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "Gateway is supervised by launchd (PID 65929)" in out
+        assert "Gateway service is not loaded" not in out
+
+
     def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
         """When the unsupported marker exists and a fallback PID is running."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -682,6 +701,8 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["launchctl", "print"]:
+                return SimpleNamespace(returncode=113, stdout="", stderr="not found")
             if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
                 return SimpleNamespace(
                     returncode=0,
@@ -2443,27 +2464,19 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     PLIST = "/tmp/ai.hermes.gateway.plist"
     LABEL = "ai.hermes.gateway"
 
-    # `launchctl list <label>` output for a job launchd is actively running.
-    # Success requires a PID here, not just exit 0 — exit 0 alone also covers a
-    # registered-but-not-running definition (macOS 26+ `state = not running`).
-    RUNNING_LIST_OUTPUT = '{\n\t"PID" = 4242;\n\t"Label" = "ai.hermes.gateway";\n};'
-
     def test_returns_true_once_label_is_registered(self, monkeypatch):
-        """Success requires launchctl list to confirm a supervised process, not
-        just a zero bootstrap exit."""
-        list_results = iter([1, 0])  # first check: not registered, second: registered
+        """Success requires a supervised process, not just a zero bootstrap exit."""
+        probe_results = iter([False, True])
 
         def fake_run(cmd, check=False, **kwargs):
-            if cmd[:2] == ["launchctl", "list"]:
-                rc = next(list_results)
-                return SimpleNamespace(
-                    returncode=rc,
-                    stdout=self.RUNNING_LIST_OUTPUT if rc == 0 else "",
-                    stderr="",
-                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchctl_label_supervising_process",
+            lambda label: next(probe_results),
+        )
         monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
 
         ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
@@ -2483,17 +2496,14 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
                 if attempts["bootstrap"] == 1:
                     raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
-            if cmd[:2] == ["launchctl", "list"]:
-                # registered only after the second (successful) bootstrap
-                ok = attempts["bootstrap"] >= 2
-                return SimpleNamespace(
-                    returncode=0 if ok else 1,
-                    stdout=self.RUNNING_LIST_OUTPUT if ok else "",
-                    stderr="",
-                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchctl_label_supervising_process",
+            lambda label: attempts["bootstrap"] >= 2,
+        )
         monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
 
         ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
@@ -2505,25 +2515,21 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     def test_registered_but_not_running_is_not_success(self, monkeypatch):
         """A definition with no PID must not end the loop.
 
-        `launchctl list` exits 0 for a registered-but-not-running job (macOS
-        26+ `state = not running`), so exit-0 alone would report success for a
-        gateway launchd is not actually running. Verified against live launchd
-        on 2026-08-05.
+        A domain may contain a registered-but-not-running job, so registration
+        alone would report success for a gateway launchd is not actually
+        running. Verified against live launchd on 2026-08-05.
         """
-        list_calls = {"n": 0}
+        probe_calls = {"n": 0}
 
         def fake_run(cmd, check=False, **kwargs):
-            if cmd[:2] == ["launchctl", "list"]:
-                list_calls["n"] += 1
-                # Registered (exit 0) but no PID line — never running.
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout='{\n\t"Label" = "ai.hermes.gateway";\n};',
-                    stderr="",
-                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        def fake_probe(label):
+            probe_calls["n"] += 1
+            return False
+
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_launchctl_label_supervising_process", fake_probe)
         monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
 
         ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
@@ -2531,7 +2537,7 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             deadline=gateway_cli.time.monotonic() - 1,  # already expired
         )
         assert ok is False
-        assert list_calls["n"] >= 1
+        assert probe_calls["n"] >= 1
 
 
 class TestTimeoutStopSecCoversCronFloor:

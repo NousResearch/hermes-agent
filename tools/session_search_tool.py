@@ -11,10 +11,11 @@ mode parameter):
      anchor message plus metadata. Pass ``detail="full"`` to fully hydrate
      every result. Zero LLM cost.
 
-  2. SCROLL — pass ``session_id`` + ``around_message_id``. Returns a window
-     of ±window messages centered on the anchor, no FTS5, no bookends. To
-     scroll forward / backward, re-anchor on the last / first message id of
-     the returned window.
+   2. SCROLL — pass ``session_id`` + ``around_message_id`` from a prior tool
+      result. Returns a window of ±window messages centered on the anchor, no
+      FTS5, no bookends. To scroll forward / backward, re-anchor on the last /
+      first message id of the returned window. An invalid anchor falls back to
+      a bounded read rather than returning a retryable tool failure.
 
   3. READ — pass ``session_id`` without an anchor. Returns the whole session,
      or a bounded head/tail view for large sessions.
@@ -477,7 +478,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     if truncated:
         response["message"] = (
             f"Session has {total} messages; showing first {head} + last {tail}. "
-            "Pass around_message_id (any id above) to scroll the middle."
+            "Use only a message id returned above to scroll the middle; do not guess one."
         )
     return json.dumps(response, ensure_ascii=False)
 
@@ -656,6 +657,50 @@ def _scroll(
                     logging.debug("rebind get_messages_around failed: %s", e, exc_info=True)
 
     if not messages:
+        # Do not surface an unusable anchor as a retryable tool failure.
+        # This can mean the id is guessed/stale or that the named session has
+        # no messages to anchor. Models otherwise retry the same scroll shape
+        # with another fabricated id, burning the turn before the loop guardrail
+        # can intervene. A bounded read is useful immediately and exposes real
+        # ids for a later scroll when one is genuinely needed. Deliberately use
+        # the read shape's own head/tail defaults instead of the scroll window:
+        # this fallback is discovery recovery, not another centered slice.
+        try:
+            fallback = json.loads(_read_session(db, session_id))
+        except Exception:
+            logging.debug("scroll recovery read failed for %s", session_id, exc_info=True)
+            fallback = {}
+        if fallback.get("success"):
+            recovery = {
+                "reason": "invalid_around_message_id",
+                "requested_around_message_id": around_message_id,
+                "message": (
+                    "The requested message id cannot anchor a window in this "
+                    "session. It may be absent or stale, or the session may have "
+                    "no messages here. A bounded session read was returned instead. "
+                    "Do not retry scroll with a guessed id; use only an id returned "
+                    "in messages, or use query discovery to find a new anchor."
+                ),
+            }
+            # Put the recovery contract before the transcript.  The bounded read
+            # can be large; if its metadata is appended afterwards, models can
+            # miss that this was a successful recovery and retry the same bad
+            # scroll anchor.
+            recovery_response = {
+                "success": True,
+                "mode": "read",
+                "scroll_recovery": recovery,
+                "next_step": (
+                    "Do not retry this scroll anchor. Use a message id returned "
+                    "in messages, or query discovery for a new anchor."
+                ),
+            }
+            recovery_response.update({
+                key: value
+                for key, value in fallback.items()
+                if key not in {"success", "mode", "scroll_recovery"}
+            })
+            return json.dumps(recovery_response, ensure_ascii=False)
         return tool_error(
             f"around_message_id {around_message_id} not in session_id {session_id}",
             success=False,
@@ -1210,17 +1255,18 @@ SESSION_SEARCH_SCHEMA = {
             "session_id": {
                 "type": "string",
                 "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
+                    "Session to read inside. Pair with around_message_id only for "
+                    "scrolling; use session_id alone for a bounded read. For scroll, "
+                    "prefer a session_id returned from a prior discovery call."
                 ),
             },
             "around_message_id": {
                 "type": "integer",
                 "description": (
-                    "Scroll shape. Message id to center the window on — use "
-                    "match_message_id from a discovery result, or any id from a "
-                    "prior window."
+                    "Scroll shape. Message id to center the window on. Use only "
+                    "match_message_id from discovery or an id seen in a prior window; "
+                    "never guess an id. To scroll forward pass the last window message's "
+                    "id; to scroll backward pass the first."
                 ),
             },
             "window": {

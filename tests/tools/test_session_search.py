@@ -376,6 +376,42 @@ class TestScrollShape:
         ))
         assert result["window"] == 20
 
+    def test_scroll_with_invalid_anchor_returns_bounded_read_recovery(self, db):
+        _seed_modpack_sessions(db)
+
+        result = json.loads(session_search(
+            session_id="s_oldest", around_message_id=0, db=db
+        ))
+
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert list(result)[:4] == [
+            "success", "mode", "scroll_recovery", "next_step"
+        ]
+        assert result["session_id"] == "s_oldest"
+        assert result["message_count"] == 5
+        assert result["scroll_recovery"] == {
+            "reason": "invalid_around_message_id",
+            "requested_around_message_id": 0,
+            "message": (
+                "The requested message id cannot anchor a window in this "
+                "session. It may be absent or stale, or the session may have "
+                "no messages here. A bounded session read was returned instead. "
+                "Do not retry scroll with a guessed id; use only an id returned "
+                "in messages, or use query discovery to find a new anchor."
+            ),
+        }
+        assert result["messages"]
+
+    def test_scroll_with_missing_session_preserves_not_found_error(self, db):
+        result = json.loads(session_search(
+            session_id="missing", around_message_id=0, db=db
+        ))
+
+        assert result["success"] is False
+        assert result["error"] == "session_id not found: missing"
+        assert "scroll_recovery" not in result
+
 
     def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):
         db.create_session("s_current", source="cli")

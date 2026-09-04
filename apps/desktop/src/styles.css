@@ -1957,6 +1957,18 @@ body.guest-pointer-lock :is(webview, iframe) {
   transition: opacity 120ms ease-out;
 }
 
+/* The third layer of #99793: the fade above multiplies on top of the
+   reasoning colour. When the disclosure is OPEN the body is reading
+   matter, not chrome, so its opacity is token-gated — the default
+   reproduces the stock fade exactly (0.67); set
+   --conversation-reasoning-open-opacity: 1 to read open reasoning at full
+   strength without unfading tool rows. `:has(> body)` matches only while
+   the body is mounted (open); collapsed rows keep the plain fade. */
+[data-slot='aui_assistant-message-content']
+  [data-slot='aui_thinking-disclosure']:has(> [data-slot='aui_thinking-body']) {
+  opacity: var(--conversation-reasoning-open-opacity, 0.67);
+}
+
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */

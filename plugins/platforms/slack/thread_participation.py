@@ -50,21 +50,23 @@ class SlackThreadParticipationStore:
         self._entries = dict(newest)
         return True
 
-    def _flush_locked(self) -> None:
+    def _flush_locked(self) -> bool:
         try:
             atomic_json_write(self._path, self._entries, indent=None, separators=(",", ":"))
         except OSError as exc:
             logger.debug("Slack thread participation state could not be persisted: %s", exc)
+            return False
+        return True
 
     def is_muted(self, team_id: str, channel_id: str, thread_ts: str) -> bool:
         with self._lock:
             return self._key(team_id, channel_id, thread_ts) in self._entries
 
-    def mute(self, team_id: str, channel_id: str, thread_ts: str) -> None:
+    def mute(self, team_id: str, channel_id: str, thread_ts: str) -> bool:
         with self._lock:
             self._entries[self._key(team_id, channel_id, thread_ts)] = time.time()
             self._prune_locked()
-            self._flush_locked()
+            return self._flush_locked()
 
     def unmute(self, team_id: str, channel_id: str, thread_ts: str) -> bool:
         with self._lock:

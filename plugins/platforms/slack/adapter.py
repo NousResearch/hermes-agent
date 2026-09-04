@@ -4262,16 +4262,24 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned and thread_ts:
             mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
             if is_thread_reply and mention_stripped.lower() == "!leave":
-                self._thread_participation_store().mute(team_id, channel_id, thread_ts)
+                persisted = self._thread_participation_store().mute(
+                    team_id, channel_id, thread_ts)
                 marker = self._workspace_message_marker(team_id, thread_ts)
-                self._mentioned_threads.discard(marker)
-                self._mentioned_threads.discard(thread_ts)
                 await self.send(
                     channel_id,
-                    "Left this thread. Mention me to rejoin.",
+                    (
+                        "Left this thread. Mention me to rejoin."
+                        if persisted
+                        else "Couldn't leave this thread because the leave state could not be saved. Please try again."
+                    ),
                     reply_to=thread_ts,
                     metadata={"team_id": team_id},
                 )
+                # send() records its reply root as bot participation, so clear direct wake
+                # markers only after the acknowledgement has completed.
+                for wake_markers in (self._mentioned_threads, self._bot_message_ts):
+                    wake_markers.discard(marker)
+                    wake_markers.discard(thread_ts)
                 return
             self._thread_participation_store().unmute(team_id, channel_id, thread_ts)
         if (

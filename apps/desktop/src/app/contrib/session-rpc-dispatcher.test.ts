@@ -24,10 +24,18 @@ vi.mock('@/store/gateway', async importActual => ({
 
 const probe = vi.hoisted(() => ({ resolveSessionOwner: vi.fn(async () => undefined as unknown) }))
 const sessionMocks = vi.hoisted(() => ({ requestSessionResume: vi.fn() }))
+const storedTranscript = vi.hoisted(() => ({
+  fetchStoredTranscriptAcrossBackends: vi.fn(async () => null as unknown)
+}))
 
 vi.mock('@/app/session/hooks/use-session-actions/utils', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   resolveSessionOwner: probe.resolveSessionOwner
+}))
+
+vi.mock('@/api/sessions', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  fetchStoredTranscriptAcrossBackends: storedTranscript.fetchStoredTranscriptAcrossBackends
 }))
 
 vi.mock('@/store/session', async importActual => ({
@@ -35,9 +43,12 @@ vi.mock('@/store/session', async importActual => ({
   requestSessionResume: sessionMocks.requestSessionResume
 }))
 
-const { createSessionRpcDispatcher } = await import('./session-rpc-dispatcher')
+const { createSessionRpcDispatcher, readOnlyResumeResponse } = await import('./session-rpc-dispatcher')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
+const { $readOnlyStoredTranscripts, isReadOnlyRuntimeId, isStoredTranscriptReadOnly } = await import(
+  '@/store/read-only-transcript'
+)
 const { $removedSessionIds, $sessionMutationsInFlight } = await import('@/store/session-removal')
 
 const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, setSessionOwnerHint, setSessions } =
@@ -67,6 +78,8 @@ beforeEach(() => {
   $connectionsRegistry.set({ connections: [{ id: 'local' }] } as never)
   $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
   probe.resolveSessionOwner.mockResolvedValue(undefined)
+  storedTranscript.fetchStoredTranscriptAcrossBackends.mockResolvedValue(null)
+  $readOnlyStoredTranscripts.set(new Set())
 })
 
 afterEach(() => {
@@ -78,6 +91,7 @@ afterEach(() => {
   $profiles.set([])
   $removedSessionIds.set(new Set())
   $sessionMutationsInFlight.set(new Set())
+  $readOnlyStoredTranscripts.set(new Set())
   _resetSessionOwnerHintsForTests({ storage: true })
   sessionMocks.requestSessionResume.mockReset()
   vi.clearAllMocks()
@@ -131,6 +145,103 @@ describe('createSessionRpcDispatcher: fail closed', () => {
     await expect(dispatcher().request('session.resume', { session_id: 'stored-x' })).rejects.toSatisfy(
       isSessionOwnerResolutionError
     )
+  })
+})
+
+describe('createSessionRpcDispatcher: session.resume no-owner recovery (#102618)', () => {
+  // #94724 gave the tile-delegate path a read-only stored-transcript recovery,
+  // but this dispatcher kept the BARE fail-closed gate — so an orphaned /
+  // owner-less session whose resume surfaced here dead-ended on "Couldn't open
+  // this session" behind a Retry that re-ran the same resume forever. The
+  // recovery has to live on both doors.
+  const transcript = {
+    messages: [
+      { content: 'what did we decide?', role: 'user' },
+      { content: 'we shipped it', role: 'assistant' }
+    ],
+    session_id: 'stored-orphan'
+  }
+
+  it('answers from the stored transcript instead of throwing, and never routes a live session', async () => {
+    storedTranscript.fetchStoredTranscriptAcrossBackends.mockResolvedValue(transcript)
+    const { ambientRequest, request } = dispatcher()
+
+    const resumed = await request<{ message_count: number; messages: unknown[]; session_id: string }>(
+      'session.resume',
+      { session_id: 'stored-orphan' }
+    )
+
+    expect(storedTranscript.fetchStoredTranscriptAcrossBackends).toHaveBeenCalledWith('stored-orphan')
+    expect(isReadOnlyRuntimeId(resumed.session_id)).toBe(true)
+    expect(resumed.messages).toEqual(transcript.messages)
+    expect(resumed.message_count).toBe(2)
+
+    // The whole point: no live routing happened on any socket.
+    expect(ambientRequest).not.toHaveBeenCalled()
+    expect(gatewayMocks.requestGatewayForAgent).not.toHaveBeenCalled()
+    expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
+
+    // Latched so composer/submit surfaces refuse writes into a session with
+    // no routable runtime.
+    expect(isStoredTranscriptReadOnly('stored-orphan')).toBe(true)
+  })
+
+  it('still rejects with the ORIGINAL owner error when no backend holds the transcript', async () => {
+    storedTranscript.fetchStoredTranscriptAcrossBackends.mockResolvedValue(null)
+
+    await expect(dispatcher().request('session.resume', { session_id: 'stored-nowhere' })).rejects.toSatisfy(
+      isSessionOwnerResolutionError
+    )
+    expect(isStoredTranscriptReadOnly('stored-nowhere')).toBe(false)
+  })
+
+  it('leaves every OTHER session-scoped method failing closed', async () => {
+    storedTranscript.fetchStoredTranscriptAcrossBackends.mockResolvedValue(transcript)
+
+    await expect(dispatcher().request('prompt.submit', { session_id: 'stored-orphan', text: 'hi' })).rejects.toSatisfy(
+      isSessionOwnerResolutionError
+    )
+    await expect(dispatcher().request('session.activate', { session_id: 'stored-orphan' })).rejects.toSatisfy(
+      isSessionOwnerResolutionError
+    )
+    expect(storedTranscript.fetchStoredTranscriptAcrossBackends).not.toHaveBeenCalled()
+  })
+
+  it('does not recover a resume that failed for a REAL reason once the owner is known', async () => {
+    // A resolvable owner never enters the recovery path: a transport failure
+    // must keep its own semantics rather than being papered over with history.
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    storedTranscript.fetchStoredTranscriptAcrossBackends.mockResolvedValue(transcript)
+    gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(new Error('backend exploded'))
+
+    await expect(dispatcher().request('session.resume', { session_id: 'stored-omar' })).rejects.toThrow(
+      'backend exploded'
+    )
+    expect(storedTranscript.fetchStoredTranscriptAcrossBackends).not.toHaveBeenCalled()
+  })
+
+  it('clears a stale read-only latch once the owner resolves again', async () => {
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    // Round 1: unresolvable owner (no row) → read-only.
+    storedTranscript.fetchStoredTranscriptAcrossBackends.mockResolvedValue(transcript)
+    setSessions([])
+    await dispatcher().request('session.resume', { session_id: 'stored-omar' })
+    expect(isStoredTranscriptReadOnly('stored-omar')).toBe(true)
+
+    // Round 2: the row is back (owner backfilled) → live resume clears the latch.
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    await expect(dispatcher().request('session.resume', { session_id: 'stored-omar' })).resolves.toEqual({
+      routed: true
+    })
+    expect(isStoredTranscriptReadOnly('stored-omar')).toBe(false)
+  })
+
+  it('readOnlyResumeResponse reports an idle, non-running snapshot', () => {
+    const response = readOnlyResumeResponse('stored-9', transcript.messages as never)
+
+    expect(response.running).toBe(false)
+    expect(response.resumed).toBe('stored-9')
+    expect(isReadOnlyRuntimeId(response.session_id)).toBe(true)
   })
 })
 

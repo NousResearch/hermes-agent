@@ -37,6 +37,7 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
     mock = MagicMock()
     mock.base_url = base_url
     mock.api_key = api_key
+    mock._api_key_provider = None
     return mock
 
 
@@ -213,6 +214,30 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+    def test_callable_fallback_credential_survives_client_swap(self):
+        """key_cmd/Entra callables must not collapse to client.api_key=''."""
+        token_provider = lambda: "fresh-token"
+        client = _mock_client(
+            base_url="https://fallback.example/v1",
+            api_key="",
+        )
+        client._api_key_provider = token_provider
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:relay",
+                "model": "fallback-model",
+            },
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(client, "fallback-model"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_key is token_provider
+        assert agent._client_kwargs["api_key"] is token_provider
 
 
     def test_nous_anthropic_fallback_uses_the_messages_wire(self):
@@ -502,3 +527,44 @@ class TestFallbackExtraBodyReResolution:
         agent.request_overrides["temperature"] = 0.2
         self._activate(agent)
         assert agent.request_overrides.get("temperature") == 0.2
+
+    def test_fallback_entry_reasoning_controls_override_provider_default(self):
+        """A fallback's explicit effort/body must beat the provider-wide default."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:fbprov",
+                "model": "gpt-5.6-terra",
+                "base_url": self.FB_URL,
+                "reasoning_effort": "max",
+                "extra_body": {
+                    "reasoning": {"enabled": True, "effort": "max"},
+                },
+            },
+        )
+        agent.provider = "custom"
+        agent.model = "gpt-5.6-sol"
+        agent.base_url = self.OLD_URL
+        agent.request_overrides = {
+            "extra_body": {
+                "reasoning": {"enabled": True, "effort": "medium"},
+            },
+        }
+        agent._custom_providers = [
+            {
+                "provider_key": "fbprov",
+                "base_url": self.FB_URL,
+                "api_mode": "chat_completions",
+                "extra_body": {
+                    "reasoning": {"enabled": True, "effort": "medium"},
+                },
+            },
+        ]
+
+        self._activate(agent)
+
+        assert agent.api_mode == "chat_completions"
+        assert agent.reasoning_config == {"enabled": True, "effort": "max"}
+        assert agent.request_overrides["extra_body"]["reasoning"] == {
+            "enabled": True,
+            "effort": "max",
+        }

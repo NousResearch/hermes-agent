@@ -156,6 +156,32 @@ class TestResolveProviderClientNamedCustom:
         assert "api.b.ai" in str(client.base_url)
         assert client.api_key == "sk-real-b-ai-pool-key-12345"
 
+    def test_async_named_custom_key_cmd_preserves_token_provider(self, tmp_path):
+        """Vision/async auxiliary clients must not drop a key_cmd credential."""
+        _write_config(tmp_path, {
+            "providers": {
+                "relay": {
+                    "name": "relay",
+                    "base_url": "https://relay.example.test/v1",
+                    "key_cmd": "printf 'sk-dynamic-test-token'",
+                    "default_model": "vision-model",
+                },
+            },
+        })
+
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, model = resolve_provider_client(
+            "relay", "vision-model", async_mode=True, is_vision=True
+        )
+
+        assert client is not None
+        assert model == "vision-model"
+        assert callable(getattr(client, "_api_key_provider", None))
+
+        import asyncio
+        assert asyncio.run(client._api_key_provider()) == "sk-dynamic-test-token"
+
 
 class TestResolveProviderClientModelNormalization:
     """Direct-provider auxiliary routing should normalize models like main runtime."""

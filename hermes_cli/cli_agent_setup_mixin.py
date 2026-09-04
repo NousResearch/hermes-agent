@@ -120,6 +120,7 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        resolved_request_overrides = dict(runtime.get("request_overrides") or {})
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -164,12 +165,15 @@ class CLIAgentSetupMixin:
             or resolved_api_mode != self.api_mode
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
+            or resolved_request_overrides
+            != dict(getattr(self, "_provider_request_overrides", {}) or {})
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
+        self._provider_request_overrides = resolved_request_overrides
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -352,11 +356,16 @@ class CLIAgentSetupMixin:
             ),
         }
 
+        provider_overrides = dict(
+            getattr(self, "_provider_request_overrides", {}) or {}
+        )
+
         service_tier = getattr(self, "service_tier", None)
         if service_tier != "priority":
             # None (normal) or auto/cold — the bounded window is applied per
-            # request by agent.fast_mode, not pinned into request_overrides.
-            route["request_overrides"] = None
+            # request by agent.fast_mode. Preserve provider-level overrides
+            # such as providers.<name>.extra_body on the normal tier.
+            route["request_overrides"] = provider_overrides or None
             return route
 
         try:
@@ -367,7 +376,17 @@ class CLIAgentSetupMixin:
             )
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides
+        merged_overrides = provider_overrides
+        if overrides:
+            merged_overrides = {**provider_overrides, **overrides}
+            provider_extra = provider_overrides.get("extra_body")
+            fast_extra = overrides.get("extra_body")
+            if isinstance(provider_extra, dict) and isinstance(fast_extra, dict):
+                merged_overrides["extra_body"] = {
+                    **provider_extra,
+                    **fast_extra,
+                }
+        route["request_overrides"] = merged_overrides or None
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:

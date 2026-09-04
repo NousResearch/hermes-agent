@@ -2825,9 +2825,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # An explicit ``api_mode`` on the fallback entry always wins — including
         # an explicit "chat_completions" — and suppresses all re-detection below.
         fb_api_mode_explicit = bool(str(fb.get("api_mode") or "").strip())
+        fb_named_api_mode = ""
+        if str(fb_provider or "").strip().lower().startswith("custom:"):
+            _fb_provider_key = str(fb_provider).split(":", 1)[1].strip().lower()
+            for _cp in getattr(agent, "_custom_providers", None) or []:
+                if not isinstance(_cp, dict):
+                    continue
+                _cp_keys = {
+                    str(_cp.get("provider_key") or "").strip().lower(),
+                    str(_cp.get("name") or "").strip().lower(),
+                }
+                if _fb_provider_key in _cp_keys:
+                    fb_named_api_mode = str(
+                        _cp.get("api_mode") or _cp.get("transport") or ""
+                    ).strip()
+                    break
         fb_api_mode = "chat_completions"
         if fb_api_mode_explicit:
             fb_api_mode = str(fb.get("api_mode")).strip()
+        elif fb_named_api_mode:
+            # A named custom provider's declared transport is authoritative.
+            # Do not infer Responses solely from a GPT-looking model name.
+            fb_api_mode = fb_named_api_mode
         elif fb_provider == "anthropic":
             # Provider-name check must not be gated on fb_base_url_hint:
             # an entry that names provider: anthropic without an explicit
@@ -2877,7 +2896,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
 
-        if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+        if not (fb_api_mode_explicit or fb_named_api_mode) and fb_api_mode == "chat_completions":
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
@@ -2977,6 +2996,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_provider, fb_model, exc,
                 )
 
+        # OpenAI stores callable credentials (key_cmd, Entra ID) in a private
+        # provider slot while exposing ``client.api_key`` as an empty string.
+        # Preserve the callable across the client swap or the first fallback
+        # request is sent without Authorization and incorrectly skips to the
+        # next provider.
+        _fb_key_provider = getattr(fb_client, "_api_key_provider", None)
+        _fb_runtime_api_key = (
+            _fb_key_provider if callable(_fb_key_provider) else fb_client.api_key
+        )
+
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
         # SDK default.
@@ -2985,7 +3014,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-            effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+            effective_key = (_fb_runtime_api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (_fb_runtime_api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
@@ -2997,7 +3026,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._client_kwargs = {}
         else:
             # Swap OpenAI client and config in-place
-            agent.api_key = fb_client.api_key
+            agent.api_key = _fb_runtime_api_key
             agent.client = fb_client
             # Preserve provider-specific headers that
             # resolve_provider_client() may have baked into
@@ -3011,7 +3040,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if not fb_headers:
                 fb_headers = getattr(fb_client, "default_headers", None)
             agent._client_kwargs = {
-                "api_key": fb_client.api_key,
+                "api_key": _fb_runtime_api_key,
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }
@@ -3073,10 +3102,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # config load failure must not kill the swap.
         try:
             from hermes_cli.config import load_config
-            from hermes_constants import resolve_reasoning_config
+            from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
-            agent.reasoning_config = resolve_reasoning_config(
-                load_config() or {}, agent.model
+            fallback_effort = fb.get("reasoning_effort")
+            fallback_reasoning = parse_reasoning_effort(fallback_effort)
+            agent.reasoning_config = (
+                fallback_reasoning
+                if fallback_effort is not None and fallback_reasoning is not None
+                else resolve_reasoning_config(load_config() or {}, agent.model)
             )
             logger.info(
                 "Fallback %s: reasoning_config resolved: %s",
@@ -3102,6 +3135,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # swap untouched.
         try:
             from agent.agent_init import (
+                _apply_reasoning_config_to_request_overrides,
                 _custom_provider_extra_body_for_agent,
                 _merge_custom_provider_extra_body,
             )
@@ -3131,9 +3165,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 else:
                     _overrides.pop("extra_body", None)
                 agent.request_overrides = _overrides
-            # Merge in the fallback provider's own extra_body (existing
-            # caller-provided keys win on conflict inside the merge helper).
+            # Merge in the fallback provider's own extra_body, then layer the
+            # fallback entry itself on top because it is the most specific
+            # route configuration.
             _merge_custom_provider_extra_body(agent, _custom_providers)
+            # The fallback entry is more specific than the named provider and
+            # may carry its own request controls.
+            _fallback_extra_body = fb.get("extra_body")
+            if isinstance(_fallback_extra_body, dict) and _fallback_extra_body:
+                _overrides = dict(getattr(agent, "request_overrides", {}) or {})
+                _merged_fb_body = dict(_overrides.get("extra_body") or {})
+                _merged_fb_body.update(_fallback_extra_body)
+                _overrides["extra_body"] = _merged_fb_body
+                agent.request_overrides = _overrides
+            _apply_reasoning_config_to_request_overrides(agent)
             logger.info(
                 "Fallback %s: extra_body resolved: %s",
                 agent.model,

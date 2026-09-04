@@ -268,6 +268,35 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _has_provider_config_key_command(config_path: Path) -> bool:
+    """Return True when config declares a command-minted provider token.
+
+    ``key_cmd`` is a first-class credential source and intentionally keeps the
+    token out of ``.env``. Doctor must not tell a correctly configured user to
+    run setup merely because that safer credential source lives in YAML.
+    """
+    try:
+        from hermes_cli.config import read_user_config_raw
+
+        config = read_user_config_raw(config_path)
+    except Exception:
+        return False
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for entry in providers.values():
+            if isinstance(entry, dict) and str(entry.get("key_cmd") or "").strip():
+                return True
+
+    legacy = config.get("custom_providers")
+    if isinstance(legacy, list):
+        return any(
+            isinstance(entry, dict) and str(entry.get("key_cmd") or "").strip()
+            for entry in legacy
+        )
+    return False
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -1490,8 +1519,10 @@ def run_doctor(args):
             content = env_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = env_path.read_text(encoding="latin-1")
-        if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
+        if _has_provider_env_config(content) or _has_provider_config_key_command(
+            HERMES_HOME / "config.yaml"
+        ):
+            check_ok("API key, key command, or custom endpoint configured")
         else:
             check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'hermes setup' to configure API keys")

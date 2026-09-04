@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from agent.agent_init import _merge_custom_provider_extra_body
+from agent.agent_init import (
+    _apply_reasoning_config_to_request_overrides,
+    _merge_custom_provider_extra_body,
+)
 
 
 
@@ -71,3 +74,35 @@ def test_named_custom_provider_extra_body_matches_provider_key():
     )
 
     assert agent.request_overrides == {"extra_body": {"enable_thinking": False}}
+
+
+def test_runtime_reasoning_overrides_provider_wide_reasoning_default():
+    agent = SimpleNamespace(
+        reasoning_config={"enabled": True, "effort": "max"},
+        request_overrides={
+            "extra_body": {
+                "reasoning": {"enabled": True, "effort": "medium"},
+                "provider_only": True,
+            },
+        },
+    )
+
+    _apply_reasoning_config_to_request_overrides(agent)
+
+    assert agent.request_overrides == {
+        "extra_body": {
+            "reasoning": {"enabled": True, "effort": "max"},
+            "provider_only": True,
+        },
+    }
+
+
+def test_runtime_reasoning_does_not_invent_an_unsupported_wire_field():
+    agent = SimpleNamespace(
+        reasoning_config={"enabled": True, "effort": "max"},
+        request_overrides={"extra_body": {"provider_only": True}},
+    )
+
+    _apply_reasoning_config_to_request_overrides(agent)
+
+    assert agent.request_overrides == {"extra_body": {"provider_only": True}}

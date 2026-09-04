@@ -47,6 +47,10 @@ providers:
   qwen-token-plan:
     base_url: https://qwen-token-plan.example/v1
     api_key: test-key
+    extra_body:
+      reasoning:
+        enabled: true
+        effort: medium
     models:
       qwen3.8-max-preview:
         supports_vision: true
@@ -96,6 +100,20 @@ def test_real_cli_args_keep_transport_and_capability_identities_separate():
     cli.agent = sentinel_agent
     assert cli._ensure_runtime_credentials() is True
     assert cli.agent is sentinel_agent
+
+
+def test_normal_tier_preserves_named_custom_provider_request_overrides():
+    """A normal-tier turn must not drop providers.<name>.extra_body."""
+    _cli, route = _resolve_cli_route()
+
+    assert route["request_overrides"] == {
+        "extra_body": {
+            "reasoning": {
+                "enabled": True,
+                "effort": "medium",
+            }
+        }
+    }
 
 
 def test_named_identity_reaches_agent_and_vision_tool_native_gates():

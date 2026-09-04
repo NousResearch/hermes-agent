@@ -203,6 +203,7 @@ def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    reasoning: Optional[str] = None,
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
@@ -215,6 +216,7 @@ def run_oneshot(
             env var, then config.yaml's model.default / model.model.
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
+        reasoning: Optional reasoning-effort override for this invocation.
         toolsets: Optional comma-separated string or iterable of toolsets.
         skills: Optional repeated/comma-separated skill identifiers to preload.
         usage_file: Optional path; when set, a JSON usage report (estimated
@@ -280,6 +282,7 @@ def run_oneshot(
                     prompt,
                     model=model,
                     provider=provider,
+                    reasoning=reasoning,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                     skills=skills,
@@ -358,6 +361,7 @@ def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    reasoning: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
@@ -454,6 +458,18 @@ def _run_agent(
         explicit_api_key=explicit_api_key_from_alias,
     )
 
+    # Match interactive/TUI semantics: the per-invocation CLI flag wins over
+    # per-model and global config without persisting anything. Previously the
+    # top-level parser accepted --reasoning for -z but oneshot silently dropped
+    # it before constructing AIAgent.
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    reasoning_config = resolve_reasoning_config(cfg, effective_model)
+    if reasoning is not None and str(reasoning).strip():
+        explicit_reasoning = parse_reasoning_effort(reasoning)
+        if explicit_reasoning is not None:
+            reasoning_config = explicit_reasoning
+
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
     # sets; explicit values preserve user order.
@@ -501,6 +517,8 @@ def _run_agent(
             platform="cli",
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
+            request_overrides=runtime.get("request_overrides"),
+            reasoning_config=reasoning_config,
             fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
             # Interactive callbacks are intentionally NOT wired beyond this

@@ -64,7 +64,10 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
     everywhere, capped at native. ``overhead_bytes`` is runtime cost beyond weights+KV; zero keeps
     this pure physics for decision-table tests, production callers pass it.
     """
-    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention)
+    # Pass overhead into the gate too: refusing on weights+KV alone under-priced
+    # every decision by the runtime overhead the rung loop already accounts for.
+    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention,
+                            overhead_bytes=overhead_bytes)
     if refusal:
         return refusal
 

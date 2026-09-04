@@ -31,8 +31,25 @@ _GIB = 1 << 30
 _MARGIN_FLOOR = 2 << 30
 _MARGIN_FRACTION = 0.09
 # UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
-# app, so budget from RAM minus this fraction.
-_UMA_HEADROOM_FRACTION = 0.20
+# app, so budget from the pool minus a reserve: clamp(pool * 10%, 1.5 GiB, 12 GiB).
+#
+# It is a clamp, not a flat fraction, because the OS working set is roughly CONSTANT, not
+# proportional to installed memory. The previous flat 20% held back ~51 GiB on a 256 GiB Mac
+# Studio for an OS that will never use a fraction of that — computing 204.8 GiB usable and so
+# REFUSING a 405B-Q4 model that in fact fits. The cap fixes that end. The floor fixes the other:
+# turbofit's sibling implementation capped flat at 8 GiB, which saturates at 160 GiB and leaves a
+# 192 GiB+ machine reserving no more than a 160 GiB one — unsafe on exactly the hardware where an
+# OOM costs most. 12 GiB keeps growing past that point.
+#
+# The clamp is a strict middle: it never reserves more than the old 20% (so it refuses nothing
+# that used to load) and never less than turbofit's (so each change there trims an over-fit).
+#
+# Clamped in whole MiB, matching apple_unified_budget.py exactly so the two cannot drift by
+# sub-MiB rounding. This MUST stay in sync with that shared module — change it there and
+# re-vendor; do not fork the formula.
+_UMA_RESERVE_FRACTION = 0.10
+_UMA_RESERVE_FLOOR_MB = 1536       # 1.5 GiB — binds at 8 GiB
+_UMA_RESERVE_CAP_MB = 12 * 1024    # 12 GiB — binds from 128 GiB up
 
 # Engine-fallback gates for the unified-pool quirk — BOTH must hold, and no discrete card can
 # meet either: (1) the allocator's pool exceeds the smi report by well past rounding/ECC slack
@@ -244,8 +261,27 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
+def _uma_reserve_bytes(total: int) -> int:
+    """Bytes held back from the shared pool for the OS: clamp(total * 10%, 1.5 GiB, 12 GiB).
+
+    Sized from ``total`` — the pool's physical extent — never from a live-free reading. The OS's
+    working set does not shrink because a model is already resident, so scaling the reserve off
+    live-free would shrink it exactly when memory is tightest, and would make one machine report
+    a different reserve minute to minute.
+
+    Clamped in whole MiB to match apple_unified_budget.py bit-for-bit.
+    """
+    total_mb = max(0, total) // (1 << 20)
+    scaled = total_mb * _UMA_RESERVE_FRACTION
+    reserve_mb = int(min(float(_UMA_RESERVE_CAP_MB), max(float(_UMA_RESERVE_FLOOR_MB), scaled)))
+    return reserve_mb << 20
+
+
 def _uma_budget(base: int, total: int) -> HardwareBudget:
-    usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
+    """``base`` is what may be claimed now (live-free, or ``total`` when planning); ``total`` is
+    the pool's physical extent. The reserve is sized from ``total`` and subtracted from ``base``,
+    so planning and live differ in available headroom, not in what the OS is owed."""
+    usable = max(0, base - _uma_reserve_bytes(total))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True)
 

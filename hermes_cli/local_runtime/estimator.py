@@ -131,17 +131,61 @@ class PhysicsRefusal:
     message: str
 
 
+# OS free-memory floor for UNIFIED-memory machines. On a shared pool the model's
+# working set comes out of the same physical RAM the OS lives in, so "it fits the
+# budget" is not the same as "the machine still works". The reserve in
+# hardware.py shapes the budget; this is the hard admission gate that refuses a
+# load which would leave the OS too little to run.
+#
+# Shape is min(cap, max(floor, fraction)) — the same idiom the discrete path
+# already uses. Justified per tier: a single constant is wrong (3 GiB of a 512 GiB
+# Mac Pro is 0.6%), and an UNCAPPED max(3 GiB, 10%) is also wrong — it would newly
+# refuse a 240 GiB model on a 256 GiB machine, a regression. The cap is
+# load-bearing, not decoration.
+_OS_FLOOR_FRACTION = 0.10
+_OS_FLOOR_MIN = 3 << 30            # 3 GiB — binds up to 32 GiB of RAM
+_OS_FLOOR_CAP = 16 << 30           # 16 GiB — binds from 160 GiB of RAM up
+
+
+def os_free_floor_bytes(total_ram: int) -> int:
+    """Bytes that must remain free for the OS after a model is resident."""
+    return int(min(_OS_FLOOR_CAP, max(_OS_FLOOR_MIN, total_ram * _OS_FLOOR_FRACTION)))
+
+
 def physics_check(profile: ModelProfile, budget: HardwareBudget,
-                  floor: int, *, flash_attention: bool = True) -> PhysicsRefusal | None:
+                  floor: int, *, flash_attention: bool = True,
+                  overhead_bytes: int = 0) -> PhysicsRefusal | None:
+    """Refuse a model that cannot physically run.
+
+    ``overhead_bytes`` is runtime cost beyond weights+KV. It defaults to 0 so the
+    pure-physics decision-table tests are unchanged, but production callers pass
+    it: without it every refusal decision was under-priced by that amount.
+    """
     needed = (profile.weights_bytes
               + ctx_bytes(profile, min(floor, profile.n_ctx_train or floor),
-                          flash_attention=flash_attention))
+                          flash_attention=flash_attention)
+              + overhead_bytes)
     available = budget.usable_vram_bytes + budget.ram_available_bytes
-    if needed <= available:
-        return None
     gib = 1 << 30
-    return PhysicsRefusal(
-        needed_bytes=needed, available_bytes=available,
-        message=(f"{profile.name}: needs ~{needed / gib:.1f} GiB at the "
-                 f"{floor // 1024}K floor but only ~{available / gib:.1f} GiB "
-                 "of VRAM+RAM exist — try a smaller quant (UD-Q3/Q2)"))
+    if needed > available:
+        return PhysicsRefusal(
+            needed_bytes=needed, available_bytes=available,
+            message=(f"{profile.name}: needs ~{needed / gib:.1f} GiB at the "
+                     f"{floor // 1024}K floor but only ~{available / gib:.1f} GiB "
+                     "of VRAM+RAM exist — try a smaller quant (UD-Q3/Q2)"))
+
+    # Unified memory only: on a discrete card the weights live in VRAM and do not
+    # consume host RAM, so the OS floor does not apply there.
+    if budget.uma:
+        total_ram = budget.total_device_bytes
+        os_floor = os_free_floor_bytes(total_ram)
+        left_for_os = total_ram - needed
+        if left_for_os < os_floor:
+            return PhysicsRefusal(
+                needed_bytes=needed, available_bytes=available,
+                message=(f"{profile.name}: needs ~{needed / gib:.1f} GiB of the "
+                         f"~{total_ram / gib:.1f} GiB shared pool, leaving only "
+                         f"~{left_for_os / gib:.1f} GiB for the OS (floor is "
+                         f"~{os_floor / gib:.1f} GiB) — the machine would swap; "
+                         "try a smaller quant (UD-Q3/Q2) or a shorter context"))
+    return None

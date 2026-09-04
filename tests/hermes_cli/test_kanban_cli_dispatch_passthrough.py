@@ -43,6 +43,10 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
             "max_spawn": 5,
             "default_assignee": "default",
             "max_in_progress_per_profile": 2,
+            "max_in_progress_per_profile_overrides": {
+                "supervisor": 1,
+                "implementer": 3,
+            },
         }
     }
     monkeypatch.setattr(
@@ -69,6 +73,10 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     )
     assert captured.get("default_assignee") == "default"
     assert captured.get("max_in_progress_per_profile") == 2
+    assert captured.get("max_in_progress_per_profile_overrides") == {
+        "supervisor": 1,
+        "implementer": 3,
+    }
 
 
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):

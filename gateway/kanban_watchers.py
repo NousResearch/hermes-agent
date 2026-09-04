@@ -1479,6 +1479,17 @@ class GatewayKanbanWatchersMixin:
                         max_in_progress_per_profile,
                     )
 
+        max_in_progress_per_profile_overrides = (
+            _kb.normalize_profile_cap_overrides(
+                kanban_cfg.get("max_in_progress_per_profile_overrides")
+            )
+        )
+        if max_in_progress_per_profile_overrides:
+            logger.info(
+                "kanban dispatcher: max_in_progress_per_profile_overrides=%r",
+                max_in_progress_per_profile_overrides,
+            )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -1572,6 +1583,9 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    max_in_progress_per_profile_overrides=(
+                        max_in_progress_per_profile_overrides
+                    ),
                     reconcile_orphans=reconcile_orphans,
                 )
             except sqlite3.DatabaseError as exc:

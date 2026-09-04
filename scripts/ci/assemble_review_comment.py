@@ -149,8 +149,11 @@ def collect_failed_jobs(
     """Build error items for failed CI jobs from the ``needs`` context.
 
     ``needs_json`` is the JSON string emitted by ``all-checks-pass`` — a
-    ``{job_name: result}`` dict where result is ``success`` / ``failure``
-    / ``skipped``. Only ``failure`` entries become error items.
+    ``{job_name: result}`` dict. Every result other than ``success`` and
+    ``skipped`` becomes an error item, matching what the gate itself
+    blocks on (``scripts/ci/gate_results.py``). ``cancelled`` in
+    particular must surface: it is a lane that ran no assertions, and
+    leaving it out of the comment hid the reason the gate went red.
 
     ``exclude_sources`` is a set of ``source`` values from status objects
     declared by workflow_call jobs. Job names containing any of these
@@ -177,7 +180,7 @@ def collect_failed_jobs(
 
     items: list[ReviewItem] = []
     for name, result in sorted(needs.items()):
-        if result != "failure":
+        if result in ("success", "skipped"):
             continue
         if norm_sources:
             norm = name.lower().replace("-", " ")
@@ -187,7 +190,7 @@ def collect_failed_jobs(
         items.append(ReviewItem(
             severity="error",
             title=name,
-            summary=f"Job **{name}** failed.",
+            summary=f"Job **{name}** {'failed' if result == 'failure' else result}.",
             job_url=job_url,
         ))
     return items

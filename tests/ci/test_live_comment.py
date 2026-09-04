@@ -79,6 +79,23 @@ def test_watched_run_jobs_carry_the_workflow_name_into_the_comment():
     assert job_urls[f"{DOCKER} / build (amd64)"] == "https://example/1"
 
 
+def test_cancelled_job_is_not_reported_as_skipped():
+    """A cancelled lane never ran its assertions, so it is not a pass.
+
+    The comment shares its ``{job: result}`` dict with the merge gate,
+    which blocks on anything outside success/skipped. Mapping
+    ``cancelled`` onto ``skipped`` rendered a ✅ for the very lane the
+    gate was failing on.
+    """
+    jobs = [
+        {"name": "Python tests", "status": "completed", "conclusion": "cancelled",
+         "html_url": "https://example/1"},
+    ]
+    completed, pending, _ = classify_jobs(jobs)
+    assert completed["Python tests"] == "cancelled"
+    assert pending == []
+
+
 def test_parse_watch_workflows_keeps_commas_inside_a_name():
     """Workflow names contain commas, so the list is newline-separated."""
     assert _mod.parse_watch_workflows("Docker Build, Test, and Publish\n") == [

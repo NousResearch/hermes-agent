@@ -100,10 +100,22 @@ def test_failed_jobs_empty_needs():
     assert _mod.collect_failed_jobs("", "https://run") == []
 
 
+def test_failed_jobs_include_cancelled_not_just_failure():
+    """A cancelled lane blocks the merge, so the comment must name it.
 
-
-
-
+    ``all-checks-pass`` fails on any result outside success/skipped. When
+    this list only matched ``"failure"``, the gate went red while the
+    review comment showed nothing to explain it.
+    """
+    needs = json.dumps({
+        "tests": "cancelled",
+        "lint": "success",
+        "docker-lint": "skipped",
+    })
+    items = _mod.collect_failed_jobs(needs, "https://run")
+    assert [item.title for item in items] == ["tests"]
+    assert items[0].severity == "error"
+    assert "cancelled" in items[0].summary
 
 
 def test_failed_jobs_excluded_by_source():

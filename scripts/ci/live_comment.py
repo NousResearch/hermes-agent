@@ -81,12 +81,15 @@ _INFRA_JOBS = frozenset({
     "Detect affected areas",
 })
 
-# Map GitHub API conclusion values to our result strings.
+# Map GitHub API conclusion values to our result strings. ``cancelled``
+# stays ``cancelled``: it is not a pass, and folding it into ``skipped``
+# made a lane that never finished render as a green ✅ in the comment
+# while ``all-checks-pass`` was going red on it.
 _CONCLUSION_MAP = {
     "success": "success",
     "failure": "failure",
     "skipped": "skipped",
-    "cancelled": "skipped",
+    "cancelled": "cancelled",
     "neutral": "skipped",
     "timed_out": "failure",
     "action_required": "skipped",
@@ -98,8 +101,8 @@ def classify_jobs(api_jobs: list[dict]) -> tuple[dict[str, str], list[str], dict
     Returns ``(completed, pending, job_urls)``:
 
     - ``completed``: ``{job_name: result}`` where result is
-      ``"success"`` / ``"failure"`` / ``"skipped"``. Only non-infra jobs
-      that have finished.
+      ``"success"`` / ``"failure"`` / ``"skipped"`` / ``"cancelled"``.
+      Only non-infra jobs that have finished.
     - ``pending``: list of job names still running (in_progress / queued
       / waiting). Excludes infra jobs.
     - ``job_urls``: ``{job_name: html_url}`` — direct links to each
@@ -665,9 +668,12 @@ def run(
             continue
 
         if all_done:
-            failed = [name for name, result in completed.items() if result == "failure"]
+            failed = [
+                name for name, result in completed.items()
+                if result not in ("success", "skipped")
+            ]
             if failed:
-                print(f"  All jobs done, {len(failed)} failed: {', '.join(failed)}")
+                print(f"  All jobs done, {len(failed)} did not pass: {', '.join(failed)}")
             else:
                 print("  All jobs completed — done.")
             break

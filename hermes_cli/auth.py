@@ -338,6 +338,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url="https://api.moonshot.cn/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),
+        base_url_env_var="KIMI_CN_BASE_URL",
     ),
     "stepfun": ProviderConfig(
         id="stepfun",

@@ -421,3 +421,11 @@ Presets:
   }
 }
 ```
+
+## Live end-to-end check for identity mapping
+
+`tests/integration/test_honcho_peer_mapping_live.py` drives simulated Telegram, Discord and Signal accounts through the plugin into a throwaway workspace and re-maps one of them with `hermes honcho peers map`. It runs only with `HONCHO_E2E=1` and either `HONCHO_E2E_API_KEY` or a signed-in `~/.hermes/honcho.json`; the workspace is deleted at the end.
+
+```bash
+HONCHO_E2E=1 uv run pytest tests/integration/test_honcho_peer_mapping_live.py -m integration -q
+```

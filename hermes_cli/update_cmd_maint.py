@@ -18,6 +18,13 @@ from typing import Optional
 from hermes_constants import venv_python_path
 
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_cli.update_backup_policy import (
+    PRE_UPDATE_SNAPSHOT_KEEP as _PRE_UPDATE_SNAPSHOT_KEEP,
+    PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE as _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    normalize_pre_update_backup_keep as _normalize_pre_update_backup_keep,
+    normalize_pre_update_backup_mode as _normalize_pre_update_backup_mode,
+    resolve_pre_update_backup_policy_strict,
+)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -44,11 +51,8 @@ _STALE_PURGE_PROTECTED = frozenset(
     )}
 )
 
-_PRE_UPDATE_SNAPSHOT_KEEP = 1
-
 # Per-file cap for the quick snapshot (larger files skipped with a warning): it protects
 # small hard-to-regenerate state, not a multi-GB state.db (24 GB cost ~60s + 24 GB/update).
-_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
 
 _SQLITE_WAL_BUG_DETAIL = "SQLite {} still has the WAL-reset corruption bug"
 
@@ -687,13 +691,6 @@ def _ensure_acp_launcher() -> None:
         print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
 
-_BACKUP_MODE_ALIASES = {
-    "off": "off", "false": "off", "none": "off", "disabled": "off",
-    "full": "full", "zip": "full", "true": "full",
-    "quick": "quick",
-}
-
-
 def _resolve_pre_update_backup_mode(args) -> str:
     """Backup mode ``off``/``quick``/``full``. CLI flags win (``--no-backup`` beats ``--backup``);
     config accepts mode strings plus legacy booleans (true→full, false→off, which also disables
@@ -709,15 +706,14 @@ def _resolve_pre_update_backup_mode(args) -> str:
         logger.debug("Could not load config for pre-update backup: %s", exc)
         raw = "quick"
 
-    if raw is True:
-        return "full"
-    if raw is False:
+    if raw is None:
         return "off"
-    mode = _BACKUP_MODE_ALIASES.get(str(raw).strip().lower())
-    if mode is None:
+
+    try:
+        return _normalize_pre_update_backup_mode(raw)
+    except ValueError:
         logger.warning("Unknown updates.pre_update_backup value %r — using 'quick'", raw)
         return "quick"
-    return mode
 
 
 def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
@@ -793,7 +789,7 @@ def _run_full_backup() -> None:
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
     try:
-        out_path = create_pre_update_backup(keep=int(_keep))
+        out_path = create_pre_update_backup(keep=_normalize_pre_update_backup_keep(_keep))
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")

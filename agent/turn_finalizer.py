@@ -167,9 +167,38 @@ def _resolve_budget_fallback(
     # terminal outcome so the task does not remain in an ambiguous lifecycle state. The worker's run is
     # closed via ``_record_task_failure`` (compare-and-swap receipt path) which is a no-op if another path
     # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
-    if _kanban_task:
+    # Skip when this exhaustion belongs to an in-process child (delegate subagent /
+    # background-review fork / in-worker cron agent): those children see the same
+    # HERMES_KANBAN_TASK env var but own their own — much smaller — iteration budgets,
+    # so their exhaustion must not record a terminal ``timed_out`` against the
+    # dispatcher-owned task and advance the parent's failure circuit breaker.
+    if _kanban_task and _should_record_budget_exhaustion(agent):
         _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
     return final_response, _turn_exit_reason, preserved_verification_fallback
+
+
+def _should_record_budget_exhaustion(agent) -> bool:
+    """Budget-exhaustion recording is dispatcher-owned only.
+
+    ``HERMES_KANBAN_TASK`` stays set in ``os.environ`` for in-process children
+    (delegate_task subagents, background-review forks, cron jobs fired via the
+    ``cronjob`` tool) running inside a dispatcher worker.  Those children carry
+    their own — much smaller — iteration budgets, so a child running out of
+    iterations must NOT record a terminal ``timed_out`` failure against the
+    worker's task: the misattribution advances the dispatcher's
+    consecutive-failure circuit breaker and can archive live work that was
+    still running fine at the parent level.
+
+    Gate on the dispatcher-ownership predicate (False for delegated children
+    and non-dispatcher-owned cron execution) plus the review fork's
+    persistence-isolation marker (``background_review.py`` sets
+    ``review_agent._persist_disabled = True``).
+    """
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    if not is_dispatcher_owned_worker_context():
+        return False
+    return not getattr(agent, "_persist_disabled", False)
 
 
 def _rollback_interrupted_preflight_display(agent, interrupted) -> None:

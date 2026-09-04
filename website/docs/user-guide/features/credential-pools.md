@@ -149,6 +149,18 @@ Provider-supplied `reset_at` timestamps override these default cooldowns.
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
 
+### Manual DEAD retention
+
+A manual credential marked `DEAD` after a permanent authentication failure is never selected for rotation. By default, Hermes removes it on a later availability check after 24 hours. This cleanup is intentionally not triggered by saving settings.
+
+```yaml
+credential_pool:
+  prune_dead_manual_entries: true       # false retains manual DEAD entries
+  dead_manual_prune_ttl_hours: 24       # finite numeric value from 0 to 8760
+```
+
+Set `dead_manual_prune_ttl_hours: 0` to make an existing manual `DEAD` entry eligible for removal on its next availability check. Set `prune_dead_manual_entries: false` to retain it indefinitely. CLI listing exposes only the canonical terminal reason (or `permanent_auth_failure`) and a valid UTC timestamp; it never displays the raw provider error message or token.
+
 ## Custom Endpoint Pools
 
 Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from the `providers:` dict in config.yaml (or the legacy `custom_providers` list, which is auto-migrated).
@@ -190,7 +202,7 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 | Custom endpoint config | `model.api_key` in config.yaml | Yes (custom endpoints) |
 | Manual entries | Added via `hermes auth add` | Persisted in auth.json |
 
-Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are never auto-pruned.
+Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are not auto-pruned for source changes; manual entries marked `DEAD` use the configurable retention cleanup described above.
 
 Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd references, and custom config values) are reference-only at the `auth.json` boundary. Hermes can use the resolved value in memory for the current run, but it persists only metadata such as the source ref, label, status, request counters, and a non-reversible fingerprint. Manual entries and Hermes-owned OAuth/device-code state keep the durable tokens they need to refresh.
 

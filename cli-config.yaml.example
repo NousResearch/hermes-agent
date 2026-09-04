@@ -38,6 +38,16 @@ runtime:
   nofile_soft_limit: 4096
 
 # =============================================================================
+# Credential Pool Retention
+# =============================================================================
+# Manual credentials marked DEAD after permanent authentication failures stay
+# excluded from rotation. They are pruned on a later availability check after
+# this retention window; changing this setting never deletes entries directly.
+credential_pool:
+  prune_dead_manual_entries: true  # false keeps manual DEAD entries indefinitely
+  dead_manual_prune_ttl_hours: 24  # finite number from 0 to 8760; 0 = next availability check
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

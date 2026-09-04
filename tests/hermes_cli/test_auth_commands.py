@@ -294,6 +294,64 @@ def test_auth_list_includes_non_registry_configured_provider(
     assert "private-groq (1 credentials):" in capsys.readouterr().out
 
 
+def test_auth_list_redacts_unsafe_dead_metadata(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        "credential_pool:\n  prune_dead_manual_entries: false\n",
+        encoding="utf-8",
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "dead-credential",
+                        "label": "dead-entry",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "secret-access-token",
+                        "last_status": "dead",
+                        "last_status_at": 1_700_000_000,
+                        "last_error_reason": "provider said secret-access-token",
+                        "last_error_message": "raw provider message secret-access-token",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    auth_list_command(type("Args", (), {"provider": "openai-codex"})())
+
+    output = capsys.readouterr().out
+    assert "dead permanent_auth_failure (at 2023-11-14T22:13:20Z)" in output
+    assert "secret-access-token" not in output
+    assert "raw provider message" not in output
+
+
+def test_auth_list_omits_oversized_dead_timestamp():
+    from agent.credential_pool import STATUS_DEAD
+    from hermes_cli.auth_commands import _format_dead_status
+
+    entry = type(
+        "Entry",
+        (),
+        {
+            "last_status": STATUS_DEAD,
+            "last_error_reason": "token_revoked",
+            "last_status_at": 10**10000,
+        },
+    )()
+
+    assert _format_dead_status(entry) == " dead token_revoked"
+
+
 def test_interactive_auth_add_accepts_non_registry_configured_provider(
     tmp_path, monkeypatch
 ):

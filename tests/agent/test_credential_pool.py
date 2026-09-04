@@ -559,8 +559,132 @@ def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):
     assert persisted[0]["id"] == "cred-ok"
 
 
+def test_dead_manual_entry_is_retained_when_pruning_is_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        "credential_pool:\n  prune_dead_manual_entries: false\n",
+        encoding="utf-8",
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-old-dead",
+                        "label": "ancient-dead",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "stale",
+                        "refresh_token": "stale",
+                        "last_status": "dead",
+                        "last_status_at": time.time() - (25 * 3600),
+                        "last_error_reason": "token_invalidated",
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-at",
+                        "refresh_token": "healthy-rt",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    assert load_pool("openai-codex").select().id == "cred-ok"
+    persisted = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]["openai-codex"]
+    assert [entry["id"] for entry in persisted] == ["cred-old-dead", "cred-ok"]
 
 
+def test_oversized_dead_timestamp_is_retained_without_crashing_availability_check(
+    tmp_path, monkeypatch
+):
+    """Malformed persisted status metadata must not break credential rotation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-dead-huge-time",
+                        "label": "dead-huge-time",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "stale",
+                        "last_status": "dead",
+                        "last_status_at": 10**1000,
+                        "last_error_reason": "token_revoked",
+                    },
+                    {
+                        "id": "cred-ok",
+                        "label": "healthy",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "healthy-at",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    assert load_pool("openai-codex").select().id == "cred-ok"
+    persisted = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]["openai-codex"]
+    assert [entry["id"] for entry in persisted] == ["cred-dead-huge-time", "cred-ok"]
+
+
+def test_credential_pool_retention_defaults_are_exposed_in_config_defaults():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["credential_pool"] == {
+        "prune_dead_manual_entries": True,
+        "dead_manual_prune_ttl_hours": 24,
+    }
+
+
+@pytest.mark.parametrize(
+    ("configured_hours", "expected_seconds"),
+    [
+        (0, 0),
+        (1.5, 5400),
+        (8760, 8760 * 3600),
+        (True, 24 * 3600),
+        ("1", 24 * 3600),
+        (-1, 24 * 3600),
+        (8761, 24 * 3600),
+        (10**1000, 24 * 3600),
+        (float("nan"), 24 * 3600),
+        (float("inf"), 24 * 3600),
+    ],
+)
+def test_manual_dead_prune_ttl_accepts_only_finite_hour_values(
+    monkeypatch, configured_hours, expected_seconds
+):
+    from agent import credential_pool
+
+    monkeypatch.setattr(
+        credential_pool,
+        "_load_config_safe",
+        lambda: {"credential_pool": {"dead_manual_prune_ttl_hours": configured_hours}},
+    )
+
+    assert credential_pool._manual_dead_prune_ttl_seconds() == expected_seconds
 
 
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):

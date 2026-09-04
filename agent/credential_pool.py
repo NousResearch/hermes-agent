@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import threading
@@ -109,6 +110,27 @@ CREDENTIAL_PERSIST_FAILED_REASON = "credential_persist_failed"
 # the cleanup.  They remain in the pool marked DEAD until an explicit re-auth
 # write-side sync (``_save_codex_tokens`` etc.) clears the status.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+
+def _manual_dead_prune_ttl_seconds() -> Optional[float]:
+    """Return the manual-DEAD retention TTL, or None when pruning is disabled."""
+    config = _load_config_safe()
+    pool_config = config.get("credential_pool") if isinstance(config, dict) else None
+    if not isinstance(pool_config, dict):
+        return float(DEAD_MANUAL_PRUNE_TTL_SECONDS)
+    if pool_config.get("prune_dead_manual_entries") is False:
+        return None
+    ttl_hours = pool_config.get("dead_manual_prune_ttl_hours")
+    if isinstance(ttl_hours, bool) or not isinstance(ttl_hours, (int, float)):
+        return float(DEAD_MANUAL_PRUNE_TTL_SECONDS)
+    try:
+        ttl_hours = float(ttl_hours)
+    except OverflowError:
+        return float(DEAD_MANUAL_PRUNE_TTL_SECONDS)
+    if not math.isfinite(ttl_hours) or not 0 <= ttl_hours <= 8760:
+        return float(DEAD_MANUAL_PRUNE_TTL_SECONDS)
+    return float(ttl_hours) * 60 * 60
+
 
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
@@ -2487,8 +2509,18 @@ class CredentialPool:
                 # would just be undone by ``_seed_from_singletons`` on the
                 # next load anyway.
                 if _is_manual_source(entry.source):
-                    dead_at = entry.last_status_at or 0
-                    if dead_at and now - dead_at > DEAD_MANUAL_PRUNE_TTL_SECONDS:
+                    dead_at = entry.last_status_at
+                    if isinstance(dead_at, bool) or not isinstance(dead_at, (int, float)):
+                        dead_at = None
+                    else:
+                        try:
+                            dead_at = float(dead_at)
+                        except OverflowError:
+                            dead_at = None
+                    if dead_at is not None and not math.isfinite(dead_at):
+                        dead_at = None
+                    prune_ttl = _manual_dead_prune_ttl_seconds()
+                    if dead_at and prune_ttl is not None and now - dead_at > prune_ttl:
                         _label = entry.label or entry.id[:8]
                         logger.warning(
                             "credential pool: pruning DEAD manual entry %s "

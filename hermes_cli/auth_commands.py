@@ -3,6 +3,7 @@
 from __future__ import annotations
 from hermes_cli.cli_output import line_input
 
+from datetime import datetime, timezone
 import math
 import sys
 import time
@@ -15,7 +16,9 @@ from agent.credential_pool import (
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE,
+    STATUS_DEAD,
     STATUS_EXHAUSTED,
+    _TERMINAL_AUTH_REASONS,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
@@ -214,6 +217,32 @@ def _classify_exhausted_status(entry) -> tuple[str, bool]:
 
     return "exhausted", True
 
+
+
+def _format_dead_status(entry) -> str:
+    """Render only canonical, non-secret metadata for terminal credentials."""
+    if entry.last_status != STATUS_DEAD:
+        return ""
+    reason = getattr(entry, "last_error_reason", None)
+    reason = reason.strip().lower() if isinstance(reason, str) else ""
+    if reason not in _TERMINAL_AUTH_REASONS:
+        reason = "permanent_auth_failure"
+    timestamp = getattr(entry, "last_status_at", None)
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+        return f" dead {reason}"
+    try:
+        timestamp = float(timestamp)
+    except OverflowError:
+        return f" dead {reason}"
+    if not math.isfinite(timestamp):
+        return f" dead {reason}"
+    try:
+        rendered_timestamp = datetime.fromtimestamp(timestamp, timezone.utc).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z")
+    except (OSError, OverflowError, ValueError):
+        return f" dead {reason}"
+    return f" dead {reason} (at {rendered_timestamp})"
 
 
 def _format_exhausted_status(entry) -> str:
@@ -553,7 +582,7 @@ def auth_list_command(args) -> None:
             marker = "  "
             if current is not None and entry.id == current.id:
                 marker = "← "
-            status = _format_exhausted_status(entry)
+            status = _format_dead_status(entry) or _format_exhausted_status(entry)
             source = _display_source(entry.source)
             print(f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{status} {marker}".rstrip())
         print()

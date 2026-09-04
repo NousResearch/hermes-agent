@@ -449,6 +449,53 @@ async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path
     assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
 
 
+@pytest.mark.asyncio
+async def test_gateway_message_before_send_adds_plugin_keyboard(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:-100123:42")
+    calls = []
+
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: name == "gateway_message_before_send")
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda name, **kwargs: calls.append((name, kwargs)) or [
+            {
+                "telegram_inline_keyboard": [[
+                    {"text": "👍", "callback_data": "rf:up:exec-1"},
+                    {"text": "👎", "callback_data": "rf:down:exec-1"},
+                ]]
+            }
+        ],
+    )
+
+    await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={
+            "source": "cron",
+            "execution_id": "exec-1",
+            "job_id": "job-1",
+            "routine_feedback_eligible": True,
+        },
+    )
+
+    assert calls == [(
+        "gateway_message_before_send",
+        {
+            "source": "cron",
+            "execution_id": "exec-1",
+            "job_id": "job-1",
+            "routine_feedback_eligible": True,
+            "platform": "telegram",
+            "chat_id": "-100123",
+            "thread_id": "42",
+        },
+    )]
+    assert adapter.calls[0]["metadata"]["telegram_inline_keyboard"][0][0]["text"] == "👍"
+
+
 class FailingAdapter:
     async def send(self, chat_id, content, metadata=None):
         return SendResult(success=False, error="route failed", retryable=False)
@@ -600,5 +647,3 @@ async def test_save_failure_during_truncation_raises_for_non_chunking_adapter(tm
     # retry (footer needs the path) re-raises.
     with pytest.raises(OSError, match="No space left on device"):
         await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
-
-

@@ -1785,6 +1785,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata = {
                     "direct_messages_topic_id": str(thread_id),
                     "job_id": job["id"],
+                    "source": "cron",
+                    "execution_id": job.get("execution_id"),
                 }
                 # Media metadata mirrors the text routing so attachments land in
                 # the same DM topic instead of the General lane (#22773).
@@ -1799,10 +1801,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # anchor, so the metadata key bypasses that check and lets the
                 # adapter route via a plain message_thread_id.
                 route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"]}
+                route_metadata = {
+                    "job_id": job["id"],
+                    "source": "cron",
+                    "execution_id": job.get("execution_id"),
+                }
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
+
+            # Only a successful generated-text run can produce a confirmed
+            # delivery record. Plugins that add feedback controls must gate on
+            # this flag so failed-run summaries never show unusable buttons.
+            if emit_gateway_message_delivered:
+                route_metadata["routine_feedback_eligible"] = True
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.

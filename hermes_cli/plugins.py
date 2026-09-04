@@ -174,6 +174,12 @@ VALID_HOOKS: Set[str] = {
     # Confirmed outbound Telegram cron text delivery. Observers receive the
     # execution and Telegram message identifiers, never message content.
     "gateway_message_delivered",
+    # Outbound delivery customization. Plugins may return a neutral
+    # ``telegram_inline_keyboard`` value for Telegram sends.
+    "gateway_message_before_send",
+    # Unmatched Telegram callback queries. Plugins may return a handled
+    # directive with answer/edit instructions for their own callback prefix.
+    "telegram_callback_query",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
@@ -289,6 +295,7 @@ class PluginManifest:
     description: str = ""
     author: str = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
+    requires_hooks: List[str] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
@@ -1194,6 +1201,10 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    def supports_hook(self, hook_name: str) -> bool:
+        """Return whether this Hermes core supports a plugin hook."""
+        return hook_name in VALID_HOOKS
+
     # -- middleware registration -------------------------------------------
 
     def register_middleware(self, kind: str, callback: Callable) -> None:
@@ -1660,6 +1671,11 @@ class PluginManager:
                 description=data.get("description", ""),
                 author=data.get("author", ""),
                 requires_env=data.get("requires_env", []),
+                requires_hooks=[
+                    str(hook)
+                    for hook in data.get("requires_hooks", [])
+                    if isinstance(hook, str)
+                ] if isinstance(data.get("requires_hooks", []), list) else [],
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
                 source=source,
@@ -1774,6 +1790,16 @@ class PluginManager:
             "Loading plugin '%s' (source=%s, kind=%s, path=%s)",
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
         )
+
+        missing_hooks = sorted(set(manifest.requires_hooks) - VALID_HOOKS)
+        if missing_hooks:
+            loaded.error = "requires unsupported hook(s): " + ", ".join(missing_hooks)
+            logger.warning(
+                "Plugin '%s' requires unsupported hook(s): %s",
+                manifest.name, ", ".join(missing_hooks),
+            )
+            self._plugins[manifest.key or manifest.name] = loaded
+            return
 
         from tools.registry import registry as _registry
         _plugin_id = manifest.key or manifest.name

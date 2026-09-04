@@ -104,6 +104,22 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_plugin_requires_supported_hooks(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "future_plugin",
+            manifest_extra={"requires_hooks": ["future_hook"]},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        plugin = mgr._plugins["future_plugin"]
+        assert plugin.enabled is False
+        assert plugin.error == "requires unsupported hook(s): future_hook"
+
     def test_plugin_can_register_and_invoke_middleware(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(
@@ -634,6 +650,16 @@ class TestPluginHooks:
 
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_valid_hooks_include_telegram_feedback_hooks(self):
+        assert "gateway_message_before_send" in VALID_HOOKS
+        assert "telegram_callback_query" in VALID_HOOKS
+
+    def test_context_reports_hook_support(self):
+        ctx = PluginContext(PluginManifest(name="test"), PluginManager())
+
+        assert ctx.supports_hook("telegram_callback_query") is True
+        assert ctx.supports_hook("future_hook") is False
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""

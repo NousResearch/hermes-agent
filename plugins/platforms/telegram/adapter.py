@@ -27,6 +27,32 @@ from typing import Dict, List, Optional, Set, Any
 logger = logging.getLogger(__name__)
 
 
+def _build_inline_keyboard(value: Any) -> Any:
+    """Build a Telegram keyboard from the plugin-neutral metadata shape."""
+    if not isinstance(value, list) or not value:
+        return None
+    rows = []
+    for row in value:
+        if not isinstance(row, list) or not row:
+            return None
+        buttons = []
+        for button in row:
+            if not isinstance(button, dict):
+                return None
+            label = button.get("text")
+            callback_data = button.get("callback_data")
+            if label is None or callback_data is None:
+                return None
+            callback_data = str(callback_data)
+            if not callback_data or len(callback_data.encode("utf-8")) > 64:
+                return None
+            buttons.append(
+                InlineKeyboardButton(text=str(label), callback_data=callback_data)
+            )
+        rows.append(buttons)
+    return InlineKeyboardMarkup(rows)
+
+
 def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
     text = "" if error is None else str(error)
@@ -1647,6 +1673,9 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> bool:
         return bool(
             not (metadata or {}).get("expect_edits")
+            and _build_inline_keyboard(
+                (metadata or {}).get("telegram_inline_keyboard")
+            ) is None
             and self._rich_eligible(content)
         )
 
@@ -4304,6 +4333,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        reply_markup = _build_inline_keyboard(
+            (metadata or {}).get("telegram_inline_keyboard")
+        )
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -4381,6 +4414,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_source = reply_to or (
                     str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None
                 )
+                markup_kwargs = (
+                    {"reply_markup": reply_markup}
+                    if i == 0 and reply_markup is not None
+                    else {}
+                )
                 if private_dm_topic_send:
                     should_thread = (
                         reply_to_source is not None
@@ -4420,6 +4458,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **markup_kwargs,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -4434,6 +4473,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **markup_kwargs,
                                 )
                             else:
                                 raise
@@ -6168,6 +6208,71 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    async def _handle_plugin_callback_query(
+        self,
+        query: Any,
+        data: str,
+        *,
+        chat_id: Any,
+        chat_type: Any,
+        thread_id: Any,
+        user_id: Any,
+    ) -> bool:
+        """Dispatch an authorized, otherwise-unmatched callback to plugins."""
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if not has_hook("telegram_callback_query"):
+                return False
+            if not self._is_callback_user_authorized(
+                str(user_id or ""),
+                chat_id=chat_id,
+                chat_type=str(chat_type) if chat_type is not None else None,
+                thread_id=thread_id,
+                user_name=getattr(query.from_user, "first_name", None),
+            ):
+                return False
+            results = invoke_hook(
+                "telegram_callback_query",
+                data=data,
+                chat_id=str(chat_id) if chat_id is not None else None,
+                thread_id=str(thread_id) if thread_id is not None else None,
+                message_id=(
+                    str(getattr(getattr(query, "message", None), "message_id"))
+                    if getattr(getattr(query, "message", None), "message_id", None)
+                    is not None
+                    else None
+                ),
+                user_id=str(user_id) if user_id is not None else None,
+            )
+            for result in results:
+                if not isinstance(result, dict) or result.get("handled") is not True:
+                    continue
+                answer_text = result.get("answer_text")
+                if answer_text:
+                    await query.answer(text=str(answer_text)[:200])
+                else:
+                    await query.answer()
+                if "edit_text" in result:
+                    await query.edit_message_text(
+                        text=str(result["edit_text"]),
+                        reply_markup=(
+                            _build_inline_keyboard(result["telegram_inline_keyboard"])
+                            if result.get("telegram_inline_keyboard") is not None
+                            else None
+                        ),
+                    )
+                elif result.get("clear_keyboard"):
+                    await query.edit_message_reply_markup(reply_markup=None)
+                elif result.get("telegram_inline_keyboard") is not None:
+                    markup = _build_inline_keyboard(result["telegram_inline_keyboard"])
+                    if markup is not None:
+                        await query.edit_message_reply_markup(reply_markup=markup)
+                return True
+        except Exception:
+            logger.debug("telegram_callback_query hook failed", exc_info=True)
+        return False
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -6535,42 +6640,53 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         # --- Update prompt callbacks ---
-        if not data.startswith("update_prompt:"):
+        if data.startswith("update_prompt:"):
+            answer = data.split(":", 1)[1]  # "y" or "n"
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer update prompts.")
+                return
+            await query.answer(text=f"Sent '{answer}' to the update process.")
+            # Edit the message to show the choice and remove buttons
+            label = "Yes" if answer == "y" else "No"
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass  # non-fatal if edit fails
+            # Write the response file
+            try:
+                from hermes_constants import get_hermes_home
+                home = get_hermes_home()
+                response_path = home / ".update_response"
+                tmp = response_path.with_suffix(".tmp")
+                tmp.write_text(answer, encoding="utf-8")
+                tmp.replace(response_path)
+                logger.info("Telegram update prompt answered '%s' by user %s",
+                            answer, getattr(query.from_user, "id", "unknown"))
+            except Exception as exc:
+                logger.error("Failed to write update response from callback: %s", exc)
             return
-        answer = data.split(":", 1)[1]  # "y" or "n"
-        caller_id = str(getattr(query.from_user, "id", ""))
-        if not self._is_callback_user_authorized(
-            caller_id,
+
+        # Native Hermes callbacks above always win. Plugins handle only an
+        # otherwise-unmatched callback after the same authorization checks.
+        await self._handle_plugin_callback_query(
+            query,
+            data,
             chat_id=query_chat_id,
-            chat_type=str(query_chat_type) if query_chat_type is not None else None,
-            thread_id=str(query_thread_id) if query_thread_id is not None else None,
-            user_name=query_user_name,
-        ):
-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
-            return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
-        # Edit the message to show the choice and remove buttons
-        label = "Yes" if answer == "y" else "No"
-        try:
-            await query.edit_message_text(
-                text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=None,
-            )
-        except Exception:
-            pass  # non-fatal if edit fails
-        # Write the response file
-        try:
-            from hermes_constants import get_hermes_home
-            home = get_hermes_home()
-            response_path = home / ".update_response"
-            tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer, encoding="utf-8")
-            tmp.replace(response_path)
-            logger.info("Telegram update prompt answered '%s' by user %s",
-                        answer, getattr(query.from_user, "id", "unknown"))
-        except Exception as exc:
-            logger.error("Failed to write update response from callback: %s", exc)
+            chat_type=query_chat_type,
+            thread_id=query_thread_id,
+            user_id=getattr(query.from_user, "id", None),
+        )
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

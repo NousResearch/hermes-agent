@@ -161,6 +161,21 @@ _DEFAULT_PAYLOADS = {
         "thread_id": "test-thread",
         "message_id": "test-message",
     },
+    "gateway_message_before_send": {
+        "source": "cron",
+        "execution_id": "test-execution",
+        "job_id": "test-job",
+        "platform": "telegram",
+        "chat_id": "test-chat",
+        "thread_id": "test-thread",
+    },
+    "telegram_callback_query": {
+        "data": "rf:up:test-execution",
+        "chat_id": "test-chat",
+        "thread_id": "test-thread",
+        "message_id": "test-message",
+        "user_id": "test-user",
+    },
     "pre_api_request": {
         "session_id": "test-session",
         "task_id": "test-task",

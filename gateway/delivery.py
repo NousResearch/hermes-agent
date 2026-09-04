@@ -185,6 +185,46 @@ def _send_result_error_kind(result: Any) -> Optional[str]:
     return str(kind) if kind else None
 
 
+def _apply_gateway_message_before_send(
+    target: "DeliveryTarget",
+    content: str,
+    metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Apply plugin-owned metadata to an outbound Telegram delivery.
+
+    The hook is deliberately narrow: plugins can provide only the neutral
+    ``telegram_inline_keyboard`` value consumed by the Telegram adapter. A
+    broken plugin or malformed directive leaves the normal delivery unchanged.
+    """
+    if target.platform != Platform.TELEGRAM:
+        return metadata
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+
+        if not has_hook("gateway_message_before_send"):
+            return metadata
+        results = invoke_hook(
+            "gateway_message_before_send",
+            source=metadata.get("source"),
+            execution_id=metadata.get("execution_id"),
+            job_id=metadata.get("job_id"),
+            routine_feedback_eligible=bool(metadata.get("routine_feedback_eligible")),
+            platform=target.platform.value,
+            chat_id=str(target.chat_id),
+            thread_id=metadata.get("thread_id") or target.thread_id,
+        )
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            keyboard = result.get("telegram_inline_keyboard")
+            if keyboard is not None:
+                metadata["telegram_inline_keyboard"] = keyboard
+                break
+    except Exception:
+        logger.debug("gateway_message_before_send hook failed", exc_info=True)
+    return metadata
+
+
 def _classify_dead_from_error_text(error_text: Optional[str]) -> Optional[str]:
     """Best-effort dead-target classification from a raised error's text.
 
@@ -603,6 +643,9 @@ class DeliveryRouter:
                 send_metadata["telegram_dm_topic_reply_fallback"] = True
             elif "thread_id" not in send_metadata and "message_thread_id" not in send_metadata and not has_explicit_direct_topic:
                 send_metadata["thread_id"] = target_thread_id
+        send_metadata = _apply_gateway_message_before_send(
+            target, content, send_metadata,
+        )
         result = await transport.send(
             target.platform,
             target.chat_id,
@@ -640,7 +683,6 @@ class DeliveryRouter:
             if _send_result_failed(result):
                 raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
         return result
-
 
 
 

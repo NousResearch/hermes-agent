@@ -5,6 +5,7 @@ import contextlib
 import copy
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+import errno
 import json
 import logging
 import shutil
@@ -288,11 +289,21 @@ def _jobs_lock():
             _jobs_lock_state.load_stamp = None
 
 
+def _is_fire_fence_contention(exc: OSError) -> bool:
+    """Return whether a nonblocking platform lock reports an active holder."""
+    return exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+
+
 @contextlib.contextmanager
-def _fire_job_lock(job_id: str):
-    """Serialize one job's owner mutations and external side effects. Unlike the global jobs lock
-    this may be held across network delivery; scoped to one profile + job so unrelated jobs keep
-    progressing. Fails closed when cross-process locking is unavailable."""
+def _fire_job_lock(job_id: str, *, raise_unavailable: bool = False):
+    """Serialize one job's owner mutations and external side effects.
+
+    Unlike the global jobs lock, this lock may be held across network delivery.
+    It is scoped to one profile + job, so unrelated cron jobs keep progressing.
+    Fencing fails closed when cross-process locking is unavailable. Heartbeat
+    callers can request an exception for backend I/O failure so it remains
+    distinct from ordinary contention with an active fence holder.
+    """
     cron_dir = _current_cron_store().cron_dir
     lock_key = f"{cron_dir.resolve()}::{job_id}"
     with _fire_fence_locks_guard:
@@ -316,6 +327,7 @@ def _fire_job_lock(job_id: str):
         lock_path = cron_dir / f".fire-{uuid.uuid5(uuid.NAMESPACE_URL, lock_key).hex}.lock"
         lock_fd = None
         acquired = False
+        unavailable_error = None
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
@@ -326,7 +338,14 @@ def _fire_job_lock(job_id: str):
                 logger.error("Timed out waiting for fire fence %s; failing closed", lock_path)
             acquired = bool(result)
         except (OSError, IOError) as exc:
+            unavailable_error = exc
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
+
+        if unavailable_error is not None and raise_unavailable:
+            if lock_fd is not None:
+                lock_fd.close()
+                lock_fd = None
+            raise unavailable_error
 
         held_locks[lock_key] = acquired
         try:
@@ -2540,7 +2559,7 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    with _fire_job_lock(job_id) as acquired:
+    with _fire_job_lock(job_id, raise_unavailable=True) as acquired:
         if not acquired:
             return None
         return _with_job(job_id, apply, False)

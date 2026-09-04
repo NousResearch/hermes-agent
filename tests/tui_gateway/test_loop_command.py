@@ -195,7 +195,12 @@ def test_tui_tick_noop_when_not_due(server, session):
     sid, session_key, s = session
     from hermes_cli.loops import LoopManager
 
-    LoopManager(session_key).set("poll", interval_seconds=300)
+    mgr = LoopManager(session_key)
+    mgr.set("poll", interval_seconds=300)
+    # New loops are due immediately; push the wakeup out to model "not due".
+    from hermes_cli.loops import save_loop
+    mgr.state.next_due_at = time.time() + 300
+    save_loop(session_key, mgr.state)
 
     with patch.object(server, "_run_prompt_submit") as submit, \
          patch.object(server, "_emit"):

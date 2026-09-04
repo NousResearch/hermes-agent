@@ -119,7 +119,7 @@ Or edit `$HERMES_HOME/mem0.json` directly:
 {
   "mode": "oss",
   "oss": {
-    "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+    "llm": {"provider": "openai", "config": {"model": "gpt-5-mini", "is_reasoning_model": true}},
     "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
     "vector_store": {"provider": "qdrant", "config": {"path": "~/.hermes/mem0_qdrant"}}
   }

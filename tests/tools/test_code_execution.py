@@ -248,7 +248,7 @@ class TestExecuteCode(unittest.TestCase):
 
     def _run(self, code, enabled_tools=None):
         """Helper: run code with mocked handle_function_call."""
-        with patch("tools.code_execution_tool._rpc_server_loop") as mock_rpc:
+        with patch("tools.code_execution_rpc._rpc_server_loop") as mock_rpc:
             # Use real execution but mock the tool dispatcher
             pass
         # Actually run with full integration, mocking at the model_tools level
@@ -441,7 +441,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
         import tools.web_tools  # noqa: F401 - registers web_search, web_extract
 
-        for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
+        for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
             if not entry:
                 # Tool might not be registered yet (e.g., terminal uses a
@@ -475,10 +475,11 @@ class TestStubSchemaDrift(unittest.TestCase):
         compile(src, "hermes_tools.py", "exec")
 
         # Verify specific parameter signatures are in the source
-        # search_files must accept context, offset, output_mode
+        # search_files must accept its pagination, output, and ordering controls
         self.assertIn("context", src)
         self.assertIn("offset", src)
         self.assertIn("output_mode", src)
+        self.assertIn("order", src)
 
         # patch must accept mode and patch params
         self.assertIn("mode", src)
@@ -810,7 +811,15 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("TAIL", result["output"])
         self.assertGreater(result["stdout_bytes_total"], result["stdout_bytes_captured"])
         self.assertGreater(result["stdout_bytes_omitted"], 0)
+        # Spillover (#96997-adjacent): the warning now points at the saved
+        # full-output file instead of advising a narrower re-run.
         self.assertIn("execute_code stdout was truncated", result["warning"])
+        self.assertIn("read_file", result["warning"])
+        self.assertIn("stdout_spill_path", result)
+        with open(result["stdout_spill_path"], encoding="utf-8") as f:
+            body = f.read()
+        self.assertIn("HEAD", body)
+        self.assertIn("TAIL", body)
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):
@@ -828,7 +837,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         Sends each dict in *requests* as a newline-delimited JSON message
         and returns the list of decoded JSON responses.
         """
-        from tools.code_execution_tool import _rpc_server_loop
+        from tools.code_execution_rpc import _rpc_server_loop
 
         # socketpair gives us a connected client end and a "server" end we
         # can hand to accept() by wrapping it in a tiny listener shim.

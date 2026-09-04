@@ -292,6 +292,40 @@ def test_prefetch_runs_for_substantive_user_message():
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 
+# ── Per-turn author ──────────────────────────────────────────────────────────
+
+
+def test_turn_author_is_normalized_then_reaches_on_turn_start_and_the_agent_stash():
+    agent, mm = _agent_with_memory_manager()
+
+    _build(agent, user_message="what did we decide about the deploy pipeline?",
+           turn_author={"id": " bot:al\x00pha ", "name": "Alpha", "is_bot": 1, "x": 1})
+
+    kwargs = mm.on_turn_start.call_args.kwargs
+    assert (kwargs["author_id"], kwargs["author_name"], kwargs["author_is_bot"]) == ("bot:alpha", "Alpha", True)
+    # The end-of-turn sync reads this back off the agent.
+    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+
+def test_turn_without_author_clears_previous_bot_author():
+    agent, mm = _agent_with_memory_manager()
+    _build(agent, user_message="first turn", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
+    assert agent._turn_author["id"] == "bot:alpha"
+
+    _build(agent, user_message="second turn")
+
+    assert agent._turn_author is None
+    kwargs = mm.on_turn_start.call_args.kwargs
+    assert kwargs["author_id"] is None
+    assert kwargs["author_is_bot"] is False
+
+
+def test_author_is_stashed_even_without_memory_manager():
+    agent = _FakeAgent()
+    _build(agent, turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
+    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]

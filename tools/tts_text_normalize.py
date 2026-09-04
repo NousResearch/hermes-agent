@@ -258,7 +258,7 @@ def flatten_newlines_for_payload(text: str) -> str:
     return text.strip()
 
 
-def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
+def prepare_spoken_text(text: str, max_chars: int | None = None) -> str:
     """Return a TTS-friendly script from assistant text.
 
     Deterministic cleanup, not a semantic rewrite: it removes ``<think>``
@@ -267,6 +267,11 @@ def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     turns visual line formatting into speakable sentence pauses, and flattens
     the result to a single line so newline-sensitive providers (Kokoro) speak
     the whole script.
+
+    Do not truncate by default. Christo expects spoken replies to match the
+    visible response, not a silent summary or shortened variant. Provider-safe
+    chunking and hard provider limits must be handled by the TTS tool/provider
+    layer so the caller can split, combine, or report an explicit failure.
     """
     spoken = strip_nonspoken_blocks(text)
     spoken = strip_markdown_for_tts(spoken)

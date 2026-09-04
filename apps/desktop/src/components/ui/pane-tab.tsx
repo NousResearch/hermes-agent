@@ -36,7 +36,8 @@ const TAB_CLOSEABLE = 'min-w-13'
 const TAB_VERTICAL =
   'w-full max-h-48 justify-center not-first:border-t not-first:border-t-(--ui-stroke-quaternary) [writing-mode:vertical-rl]'
 
-const TAB_ACTIVE = 'h-full text-foreground [--tab-surface:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
+const TAB_ACTIVE =
+  'h-full text-foreground [--tab-surface:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
 
 // Horizontal only: the active tab is the sole seam on the strip — a
 // theme-primary underline drawn as an inset shadow in its own last pixel row,

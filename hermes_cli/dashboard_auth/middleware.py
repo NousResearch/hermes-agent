@@ -68,7 +68,12 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     prefix = prefix_from_request(request)
     login_url = f"{prefix}/login?next={next_param}" if next_param else f"{prefix}/login"
     if request.url.path.startswith("/api/"):
+        # API 401s are audited: without this, a stale desktop bearer fails silently
+        # server-side (the log looks healthy while every request is rejected).
+        # HTML 302s are the normal unauthenticated navigation flow and stay silent.
         expired = reason == "invalid_or_expired_session"
+        audit_log(AuditEvent.SESSION_REJECTED, reason=reason, path=request.url.path,
+                  ip=_client_ip(request))
         return JSONResponse(
             {"error": "session_expired" if expired else "unauthenticated", "detail": "Unauthorized",
              "reason": reason, "login_url": login_url}, status_code=401)

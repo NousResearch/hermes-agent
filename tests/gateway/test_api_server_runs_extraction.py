@@ -9,6 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.platforms import api_server
+from gateway.platforms import api_server_room_attachments
+from gateway.platforms import api_server_room_control_files
+from gateway.platforms import api_server_room_controls
 from gateway.platforms import api_server_room_dispatch
 from gateway.platforms import api_server_room_grants
 from gateway.platforms import api_server_runs
@@ -176,6 +179,11 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("GET", "/v1/room-controls/{room_id}"),
         ("POST", "/v1/room-controls/{room_id}"),
         ("DELETE", "/v1/room-controls/{room_id}"),
+        ("GET", "/v1/room-controls/{room_id}/files"),
+        ("GET", "/v1/room-controls/{room_id}/files/resolve"),
+        ("GET", "/v1/room-controls/{room_id}/files/{attachment_id}"),
+        ("GET", "/v1/room-controls/{room_id}/latest-reply"),
+        ("GET", "/v1/room-controls/{room_id}/messages/{event_id}"),
         ("POST", "/v1/room-members/attachments"),
         (
             "PUT",
@@ -198,9 +206,14 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/runs/{run_id}/stop"),
     ]
     assert all(handler.__self__ is adapter for _, _, handler in room_routes[:4])
+    assert [handler.__module__ for _, _, handler in room_routes[4:]] == [
+        *([api_server_room_controls.__name__] * 3),
+        *([api_server_room_control_files.__name__] * 5),
+        *([api_server_room_attachments.__name__] * 3),
+    ]
     assert all(
         inspect.getclosurevars(handler).nonlocals.get("self") is adapter
-        for _, _, handler in room_routes[4:]
+        for _, _, handler in (*room_routes[4:7], *room_routes[12:])
     )
     assert all(handler.__self__ is adapter for _, _, handler in run_routes)
 

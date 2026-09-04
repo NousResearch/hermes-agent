@@ -61,3 +61,51 @@ export function pickPrimaryPreviewTarget(targets: string[]): string[] {
 
   return [localUrl || targets[targets.length - 1]]
 }
+
+const LINK_PREVIEW_URL_RE = /https?:\/\/[^\s<>"')\]]+/gi
+
+/**
+ * Click-to-expand preview candidates (D7): the external http(s) URLs a
+ * settled message mentions, deduped, in first-appearance order. Local hosts
+ * are excluded here — the preview bridge refuses them server-side anyway,
+ * and a chip for a URL that can never unfurl is noise. Streaming-safe: the
+ * caller only runs this once the turn settles.
+ */
+export function extractLinkPreviewTargets(text: string): string[] {
+  if (!text) {
+    return []
+  }
+
+  const seen = new Set<string>()
+  const targets: string[] = []
+
+  for (const match of text.matchAll(LINK_PREVIEW_URL_RE)) {
+    const raw = match[0].replace(/[.,;:!]+$/, '')
+
+    if (seen.has(raw)) {
+      continue
+    }
+
+    seen.add(raw)
+
+    let url: URL
+
+    try {
+      url = new URL(raw)
+    } catch {
+      continue
+    }
+
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      continue
+    }
+
+    if (/^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i.test(url.host)) {
+      continue
+    }
+
+    targets.push(raw)
+  }
+
+  return targets
+}

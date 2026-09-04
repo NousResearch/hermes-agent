@@ -336,6 +336,14 @@ declare global {
       }
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      /** Click-to-expand link preview (D7). Resolved in the main process:
+       *  SSRF-guarded, per-host paced, persisted-cache tiered fetch. The
+       *  thumbnail rides the envelope as a main-process-validated data URL
+       *  (`image`) — the renderer never GETs imageUrl itself. */
+      fetchLinkPreview?: (url: string) => Promise<
+        | { ok: true; meta: { url: string; title: string; description: string; imageUrl: string; image: string; fetchedAt: number } }
+        | { ok: false; reason: 'private-url' | 'error' }
+      >
       /** A site's icon as a data URL, or '' when it has none we can read.
        *  Resolved and cached in the main process (electron/favicon.ts). */
       resolveFavicon?: (url: string) => Promise<string>

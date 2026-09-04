@@ -12,9 +12,11 @@ import { useInRouterContext, useNavigate } from 'react-router'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
+import { LinkPreviewChipCard } from '@/components/assistant-ui/link-preview-card'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
   contentHasVisibleText,
+  extractLinkPreviewTargets,
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
@@ -236,6 +238,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             {MESSAGE_PARTS}
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />
+            <AssistantLinkPreviews />
             <MessagePrimitive.Error>
               <ErrorPrimitive.Root
                 className="mt-1.5 flex flex-col gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--dt-destructive)_35%,transparent)] bg-[color-mix(in_srgb,var(--dt-destructive)_7%,transparent)] px-3 py-2 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
@@ -369,6 +372,46 @@ const AssistantPreviewEmbeds: FC = () => {
     <div className="mt-3 flex flex-wrap gap-2">
       {previewTargets.map(target => (
         <PreviewAttachment key={target} source="explicit-link" target={target} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * PERF leaf, same discipline as AssistantPreviewEmbeds above: owns the
+ * settled-text selector that feeds the click-to-expand link-preview chips
+ * (D7). Returns '' while running so per-token flushes skip the regex scan;
+ * targets only materialize once the turn settles.
+ *
+ * Renders nothing when the desktop bridge is absent (tests / web target) or
+ * when the message mentions no external http(s) URLs. Chips are cheap by
+ * construction: collapsed they are static buttons — nothing is fetched until
+ * the user clicks, and the fetch goes through the main-process preview
+ * resolver (SSRF-guarded, cached, per-host paced).
+ */
+const AssistantLinkPreviews: FC = () => {
+  const hasBridge = Boolean(window.hermesDesktop?.fetchLinkPreview)
+
+  const completedText = useAuiState(s =>
+    s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
+  )
+
+  const targets = useMemo(() => {
+    if (!hasBridge || !completedText) {
+      return []
+    }
+
+    return extractLinkPreviewTargets(completedText)
+  }, [completedText, hasBridge])
+
+  if (targets.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="mt-2 flex max-w-xl flex-wrap gap-2">
+      {targets.map(target => (
+        <LinkPreviewChipCard href={target} key={target} />
       ))}
     </div>
   )

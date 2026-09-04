@@ -85,6 +85,11 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Local HERMES stack on the operator's own machine: offline Ollama
+    # inference, semantic search over their own indexed documents, and live
+    # OKX market data. Gated by check_fn on HERMES_LOCAL_DIR existing, so
+    # these are invisible on machines without the local stack installed.
+    "hermes_local_ask", "hermes_knowledge", "hermes_market", "hermes_status",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -111,6 +116,19 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "hermes_local": {
+        "description": (
+            "The operator's own local HERMES stack: fully offline inference via "
+            "Ollama on this machine (nothing leaves the device, no API cost), "
+            "semantic search over their personally indexed documents, live OKX "
+            "market data, and local-stack health. Auto-disabled when the local "
+            "stack is absent (set HERMES_LOCAL_DIR to point at it)."
+        ),
+        "tools": ["hermes_local_ask", "hermes_knowledge",
+                  "hermes_market", "hermes_status"],
         "includes": []
     },
 

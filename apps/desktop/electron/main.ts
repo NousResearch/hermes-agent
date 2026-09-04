@@ -412,6 +412,7 @@ import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-market
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
+import { windowMenuTemplate } from './window-menu'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -6930,12 +6931,7 @@ function buildApplicationMenu() {
       { role: 'togglefullscreen' }
     ]
   })
-  template.push({
-    label: 'Window',
-    submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
-  })
+  template.push(windowMenuTemplate(IS_MAC))
   template.push({
     label: 'Help',
     role: 'help',

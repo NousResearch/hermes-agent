@@ -1160,6 +1160,31 @@ class TestNodeRuntimeNpmResolution:
             env=ANY,
         )
 
+    def test_update_refreshes_linux_desktop_entry_when_build_is_current(
+        self, tmp_path, monkeypatch
+    ):
+        """An up-to-date build must still repair a stale Linux launcher."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        desktop_dir = tmp_path / "apps" / "desktop"
+        desktop_dir.mkdir(parents=True)
+        (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
+        packaged_exe = desktop_dir / "release" / "linux-unpacked" / "Hermes"
+
+        monkeypatch.setattr(hm, "_desktop_packaged_executable", lambda _dir: packaged_exe)
+        monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _dir: False)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
+        monkeypatch.setattr(hm, "_desktop_build_needed", lambda *_args, **_kwargs: False)
+        calls = []
+        monkeypatch.setattr(hm, "_register_linux_desktop_entry", lambda: calls.append(True))
+
+        assert update_cmd._rebuild_desktop_after_update(
+            desktop_dir,
+            had_desktop_app_before_update=False,
+        )
+        assert calls == [True]
+
     def test_git_failure_zip_fallback_rebuilds_missing_desktop(self, tmp_path, monkeypatch):
         """The Windows ZIP fallback keeps Desktop intact when replacing ``apps/``.
 

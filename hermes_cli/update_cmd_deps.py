@@ -836,6 +836,10 @@ def _rebuild_desktop_after_update(
         skip_desktop_build = False
     if skip_desktop_build:
         print("  ✓ Desktop app up to date")
+        # Re-render persistence artifacts even when Electron itself is current:
+        # an update may have changed launcher resolution while the existing
+        # desktop entry still points at a retired interpreter.
+        _m()._register_linux_desktop_entry()
         return True
 
     desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]

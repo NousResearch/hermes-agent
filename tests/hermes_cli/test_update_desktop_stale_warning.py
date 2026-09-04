@@ -34,7 +34,7 @@ def desktop_env(tmp_path, monkeypatch):
     desktop_dir.mkdir(parents=True)
     (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
 
-    calls = {"builds": 0, "build_needed": True}
+    calls = {"builds": 0, "build_needed": True, "registrations": 0}
 
     class _FakeMain:
         PROJECT_ROOT = tmp_path
@@ -46,6 +46,10 @@ def desktop_env(tmp_path, monkeypatch):
         @staticmethod
         def _desktop_build_needed(*_a, **_kw):
             return calls["build_needed"]
+
+        @staticmethod
+        def _register_linux_desktop_entry():
+            calls["registrations"] += 1
 
         @staticmethod
         def _run_logged_subprocess(cmd, cwd=None, env=None):
@@ -96,6 +100,7 @@ def test_up_to_date_desktop_returns_true_without_spawning(desktop_env):
     calls["build_needed"] = False
     assert _run(desktop_dir) is True
     assert calls["builds"] == 0
+    assert calls["registrations"] == 1
 
 
 def test_desktop_never_installed_returns_true(tmp_path, monkeypatch):

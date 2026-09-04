@@ -3342,6 +3342,22 @@ def _deliver_result(
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
 
+        # Durable operational updates have a separate, identity-verified
+        # sender.  Keep ordinary cron/conversational delivery on the normal
+        # configured gateway credential (Halo).
+        if (
+            platform_name == "telegram"
+            and str(chat_id) == "8148316720"
+            and content.lstrip().startswith(("Updated:", "Changed:"))
+        ):
+            from tools.operational_sender import send_operational_message
+
+            try:
+                send_operational_message(content, str(chat_id))
+            except Exception as exc:
+                delivery_errors.append(str(exc))
+            continue
+
         # bot-chat targets don't ride a gateway adapter: the output becomes a
         # real inbound turn in the target profile's canonical Bot Chat via the
         # chat CLI lane (the same one Bot Mode agent-to-agent sends use). The

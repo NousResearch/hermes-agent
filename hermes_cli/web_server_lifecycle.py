@@ -317,6 +317,14 @@ def _start_parent_death_watchdog() -> None:
     if has_marker != (nonce is not None):
         return
     if has_marker and (not _valid_parent_start_marker(start_marker or "") or not nonce or nonce != nonce.strip()):
+        # Disarming is fail-safe (the backend keeps serving) but must not be
+        # traceless: this backend will never reap itself if the Desktop dies.
+        _log.warning(
+            "Parent-death watchdog disabled: unusable HERMES_PARENT_START_MARKER=%r / nonce; "
+            "falling back to no parent tracking for desktop PID %s.",
+            start_marker,
+            desktop_pid,
+        )
         return
 
     try:

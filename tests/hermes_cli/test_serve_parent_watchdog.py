@@ -151,3 +151,27 @@ def test_parent_watchdog_treats_empty_marker_env_as_absent(monkeypatch):
     monkeypatch.setattr(web_server_lifecycle.threading, "Thread", _Thread)
     web_server_lifecycle._start_parent_death_watchdog()
     assert seen["args"] == (4242, None)
+
+
+def test_parent_watchdog_warns_when_disarmed_by_unusable_marker(monkeypatch, caplog):
+    """Disarming is fail-safe but must leave a trace in the log."""
+    import logging
+
+    from hermes_cli import web_server_lifecycle
+
+    monkeypatch.setenv("HERMES_PARENT_PID", "4242")
+    monkeypatch.setenv("HERMES_PARENT_START_MARKER", "ps:Sat")
+    monkeypatch.setenv("HERMES_PARENT_NONCE", "n")
+    started = []
+    monkeypatch.setattr(
+        web_server_lifecycle.threading, "Thread", lambda *a, **k: started.append(1) or _NoThread()
+    )
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+        web_server_lifecycle._start_parent_death_watchdog()
+    assert started == [], "an unusable marker must disarm, not arm, the watchdog"
+    assert any("watchdog disabled" in r.getMessage() for r in caplog.records)
+
+
+class _NoThread:
+    def start(self):
+        raise AssertionError("watchdog thread must not start")

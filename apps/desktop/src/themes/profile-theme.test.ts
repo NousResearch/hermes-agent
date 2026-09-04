@@ -64,3 +64,26 @@ describe('a profile that has never chosen a mode', () => {
     expect(modePref.resolve('default')).toBe('light')
   })
 })
+
+// #101216: named-profile assign must seed the global fallback so a Bot Mode
+// gateway hop onto a never-themed bot does not resolve `system`.
+describe('named-profile appearance seeds the global fallback (#101216)', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('lets a never-themed bot profile inherit Dark set on the launch profile', () => {
+    modePref.assign('forge', 'dark')
+    expect(modePref.resolve('atlas')).toBe('dark')
+  })
+
+  it('keeps an explicit per-profile override over the global fallback', () => {
+    modePref.assign('forge', 'dark')
+    modePref.assign('atlas', 'light')
+    expect(modePref.resolve('forge')).toBe('dark')
+    expect(modePref.resolve('atlas')).toBe('light')
+  })
+
+  it('promotes a unanimous pre-existing per-profile mode into the empty global slot', () => {
+    window.localStorage.setItem('hermes-desktop-profile-modes-v1', JSON.stringify({ forge: 'dark' }))
+    expect(modePref.resolve('atlas')).toBe('dark')
+  })
+})

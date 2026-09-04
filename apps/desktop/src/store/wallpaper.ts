@@ -34,7 +34,9 @@ let paletteRequestGeneration = 0
 let cancelDeferredRefresh: (() => void) | null = null
 
 export function readWallpaperPreferences(profile: string): WallpaperPreferences {
-  return sanitizeWallpaperPreferences(readJson(wallpaperStorageKey(normalizeProfileKey(profile))))
+  const key = normalizeProfileKey(profile)
+
+  return pendingPreferences.get(key) ?? sanitizeWallpaperPreferences(readJson(wallpaperStorageKey(key)))
 }
 
 export function persistPreferences(profile: string, preferences: WallpaperPreferences): void {
@@ -419,51 +421,72 @@ export async function refreshWallpaper(
 
   try {
     const asset = await bridge.get(normalizedProfile)
-    let nextPreferences = preferences
-    let paletteStatus: WallpaperState['paletteStatus'] = 'idle'
+
+    if (!wallpaperRequestIsCurrent(generation, normalizedProfile)) {
+      return
+    }
 
     if (asset) {
       await decodeWallpaperAsset(asset)
 
-      if (preferences.adaptiveTheme) {
-        if (preferences.paletteMode === 'manual') {
-          if (preferences.manualPalette) {
-            paletteStatus = 'ready'
-          } else {
-            nextPreferences = sanitizeWallpaperPreferences({
-              ...preferences,
-              manualPalette: manualPalette(asset, preferences)
-            })
-            cancelScheduledPreferences(normalizedProfile)
-            persistPreferences(normalizedProfile, nextPreferences)
-            paletteStatus = 'ready'
-          }
-        } else if (cachedPalette(asset, preferences)) {
-          paletteStatus = 'ready'
-        } else {
-          try {
-            const withPalette = await preferencesWithPalette(normalizedProfile, preferences, asset)
-
-            if (withPalette) {
-              nextPreferences = withPalette
-              cancelScheduledPreferences(normalizedProfile)
-              persistPreferences(normalizedProfile, withPalette)
-              paletteStatus = 'ready'
-            } else {
-              paletteStatus = 'error'
-            }
-          } catch {
-            paletteStatus = 'error'
-          }
-        }
+      if (!wallpaperRequestIsCurrent(generation, normalizedProfile)) {
+        return
       }
     }
 
-    if (generation === requestGeneration && normalizedProfile === normalizeProfileKey($activeGatewayProfile.get())) {
-      $wallpaper.set({ ...$wallpaper.get(), asset, paletteStatus, preferences: nextPreferences, status: 'ready' })
+    const loadedPreferences = $wallpaper.get().preferences
+    let withPalette: WallpaperPreferences | null = null
+
+    if (
+      asset &&
+      loadedPreferences.adaptiveTheme &&
+      loadedPreferences.paletteMode === 'auto' &&
+      !cachedPalette(asset, loadedPreferences)
+    ) {
+      withPalette = await preferencesWithPalette(normalizedProfile, loadedPreferences, asset).catch(() => null)
+
+      if (!wallpaperRequestIsCurrent(generation, normalizedProfile)) {
+        return
+      }
     }
+
+    // Only the palette belongs to this request. Sliders, mode switches and
+    // profile resets may have changed while native work was in flight.
+    const latest = $wallpaper.get()
+    let nextPreferences = latest.preferences
+    let paletteStatus: WallpaperState['paletteStatus'] = 'idle'
+
+    if (withPalette?.palette) {
+      nextPreferences = sanitizeWallpaperPreferences({
+        ...nextPreferences,
+        palette: withPalette.palette,
+        paletteSource: withPalette.paletteSource
+      })
+    }
+
+    if (asset && nextPreferences.adaptiveTheme) {
+      if (nextPreferences.paletteMode === 'manual') {
+        if (!nextPreferences.manualPalette) {
+          nextPreferences = sanitizeWallpaperPreferences({
+            ...nextPreferences,
+            manualPalette: manualPalette(asset, nextPreferences)
+          })
+        }
+
+        paletteStatus = 'ready'
+      } else {
+        paletteStatus = cachedPalette(asset, nextPreferences) ? 'ready' : 'error'
+      }
+    }
+
+    if (nextPreferences !== latest.preferences) {
+      cancelScheduledPreferences(normalizedProfile)
+      persistPreferences(normalizedProfile, nextPreferences)
+    }
+
+    $wallpaper.set({ ...latest, asset, paletteStatus, preferences: nextPreferences, status: 'ready' })
   } catch {
-    if (generation === requestGeneration && normalizedProfile === normalizeProfileKey($activeGatewayProfile.get())) {
+    if (wallpaperRequestIsCurrent(generation, normalizedProfile)) {
       $wallpaper.set({ ...$wallpaper.get(), error: true, status: 'error' })
     }
   }

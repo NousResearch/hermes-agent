@@ -10,8 +10,9 @@ prepends the alias's resolved model id onto the matching provider row (so it
 becomes selectable) and records the alias name in a per-row ``model_aliases`` map so
 the UI can label the entry (e.g. ``qwen27b (qwen/qwen3.6-27b)``).
 
-These tests exercise the helper in isolation by monkeypatching
-``DIRECT_ALIASES``, so no config, network or auth state is required.
+The unit tests exercise the helper in isolation by monkeypatching
+``DIRECT_ALIASES``. The final regression test uses a temporary config and the
+shared payload builder to cover the full picker path without network or auth.
 """
 
 from hermes_cli import model_switch, model_switch_providers

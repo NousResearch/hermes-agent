@@ -1,13 +1,60 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { clearNotifications, notify } from '@/store/notifications'
+import { setToastSessionOpener } from '@/store/toast-focus'
 
 import { NotificationStack, toastTitleClassName } from './notifications'
 
 const LONG_TITLE = 'This turn is no longer in server history (it may have been compressed away).'
 const DETAIL = 'target user message is no longer in session history'
+
+describe('toast session click', () => {
+  const opened: string[] = []
+
+  beforeEach(() => {
+    opened.length = 0
+    clearNotifications()
+    setToastSessionOpener(sessionId => opened.push(sessionId))
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    setToastSessionOpener(null)
+  })
+
+  it('clicking a session toast opens the session and dismisses the toast', () => {
+    notify({ kind: 'error', message: 'turn failed', sessionId: 'runtime-1' })
+
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <NotificationStack />
+      </I18nProvider>
+    )
+
+    fireEvent.click(screen.getByText('turn failed'))
+
+    expect(opened).toEqual(['runtime-1'])
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('the dismiss button does not navigate', () => {
+    notify({ kind: 'error', message: 'turn failed', sessionId: 'runtime-1' })
+
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <NotificationStack />
+      </I18nProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+
+    expect(opened).toEqual([])
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
 
 describe('toast titles', () => {
   beforeEach(() => {

@@ -59,6 +59,7 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
     message: firstBillingLine(block.message) || translateNow('billingBlock.fallbackMessage'),
     // Sticky: a credit wall blocks every turn until resolved.
     durationMs: 0,
+    sessionId,
     action: { label: billingCtaLabel(block, ctaCopy), onClick: () => runBillingRecovery(block) }
   })
 }

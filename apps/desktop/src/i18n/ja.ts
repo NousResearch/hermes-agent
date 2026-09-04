@@ -293,6 +293,8 @@ export const ja = defineLocale({
     notifications: {
       title: '通知',
       intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
+      inAppLabel: 'アプリ内トースト',
+      inAppDesc: 'アプリ内にポップアップ表示されるメッセージ（エラー・警告・確認）。オフにするとチャット領域がすっきりします。上のOS通知には影響しません。',
       enableAll: '通知を有効にする',
       enableAllDesc: 'オフで以下の通知をすべて無効にします。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',

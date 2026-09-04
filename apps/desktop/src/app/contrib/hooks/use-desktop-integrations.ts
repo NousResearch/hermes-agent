@@ -24,6 +24,7 @@ import {
   setRememberedSessionId
 } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
+import { setToastSessionOpener } from '@/store/toast-focus'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -214,6 +215,17 @@ export function useDesktopIntegrations({
     })
 
     return () => unsubscribe?.()
+  }, [navigate, runtimeIdByStoredSessionId])
+
+  // In-app toasts with a sessionId click open the same target the OS
+  // notification above opens — same runtime→stored id translation, same
+  // 'stack' intent (open beside what's on screen, never steal main).
+  useEffect(() => {
+    setToastSessionOpener(sessionId => {
+      openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate, 'stack')
+    })
+
+    return () => setToastSessionOpener(null)
   }, [navigate, runtimeIdByStoredSessionId])
 
   useEffect(() => {

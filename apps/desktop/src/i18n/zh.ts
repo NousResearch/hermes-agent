@@ -458,6 +458,8 @@ export const zh: Translations = {
     notifications: {
       title: '通知',
       intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
+      inAppLabel: '应用内提示',
+      inAppDesc: '在应用内弹出的消息（错误、警告、确认）。关闭可保持聊天区域清爽，不影响上方的系统通知。',
       enableAll: '启用通知',
       enableAllDesc: '关闭后静音下方所有通知。',
       focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',

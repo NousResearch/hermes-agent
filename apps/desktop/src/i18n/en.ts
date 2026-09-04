@@ -471,6 +471,8 @@ export const en: Translations = {
     notifications: {
       title: 'Notifications',
       intro: 'OS notifications (not in-app toasts). Per device.',
+      inAppLabel: 'In-app toasts',
+      inAppDesc: 'Pop-up messages inside the app (errors, warnings, confirmations). Turn off to keep the chat area clear — OS notifications above are unaffected.',
       enableAll: 'Enable notifications',
       enableAllDesc: 'Off silences every notification below.',
       focusedHint: 'Completion alerts only fire while Hermes is in the background.',

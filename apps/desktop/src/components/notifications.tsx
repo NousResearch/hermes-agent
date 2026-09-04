@@ -17,6 +17,7 @@ import {
   dismissNotification,
   type NotificationKind
 } from '@/store/notifications'
+import { focusToastSession } from '@/store/toast-focus'
 
 type ToneVariant = 'default' | 'destructive' | 'warning' | 'success'
 
@@ -207,10 +208,25 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
   const accent = notification.accentColor
   const iconStyle: CSSProperties = { marginTop: '0.42ch', ...(accent ? { color: accent } : {}) }
 
+  // A toast that names a session opens it on click — same affordance as an OS
+  // notification. The explicit dismiss button and any action button stop the
+  // event so their clicks don't also navigate.
+  const openSession = notification.sessionId
+    ? (event: React.MouseEvent) => {
+        if (event.defaultPrevented) {
+          return
+        }
+
+        focusToastSession(notification.sessionId)
+        dismissNotification(notification.id)
+      }
+    : undefined
+
   return (
     <Alert
       aria-live={notification.kind === 'error' ? 'assertive' : 'polite'}
-      className={cn(STACK_SURFACE, 'grid-cols-[auto_minmax(0,1fr)_auto] pr-2.5')}
+      className={cn(STACK_SURFACE, 'grid-cols-[auto_minmax(0,1fr)_auto] pr-2.5', openSession && 'cursor-pointer')}
+      onClick={openSession}
       role={notification.kind === 'error' ? 'alert' : 'status'}
       variant={styles.variant}
     >
@@ -232,7 +248,8 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
           {notification.action && (
             <Button
               className="mt-1.5"
-              onClick={() => {
+              onClick={event => {
+                event.stopPropagation()
                 notification.action?.onClick()
                 dismissNotification(notification.id)
               }}
@@ -248,7 +265,10 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
       <Button
         aria-label={copy.dismiss}
         className="col-start-3 -mr-1 text-muted-foreground"
-        onClick={() => dismissNotification(notification.id)}
+        onClick={event => {
+          event.stopPropagation()
+          dismissNotification(notification.id)
+        }}
         size="icon-xs"
         type="button"
         variant="ghost"

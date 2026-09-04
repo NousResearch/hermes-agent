@@ -195,17 +195,34 @@ def _named_plugin_action(request: Request, name: str, action: Callable[[str], di
     return _plugin_action(action(_validate_plugin_name(name)), fallback_error, rescan=rescan)
 
 
+def _set_agent_plugin_enabled_with_restart_hint(name: str, *, enabled: bool) -> dict:
+    """Toggle an agent plugin, stamping ``restart_required`` on the ok result.
+
+    Config-only change: running gateway/TUI processes scan plugins once at
+    start and won't pick this up, so tell the UI a restart is needed —
+    mirrors the CLI's "Takes effect on next session." (#54941). Contract:
+    every ok toggle result carries an explicit ``unchanged`` boolean (pinned
+    by test_real_toggle_always_reports_unchanged); a missing key errs on the
+    side of prompting a restart. Imported late so a test's monkeypatch on
+    ``plugins_cmd`` wins at call time.
+    """
+    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+    result = dashboard_set_agent_plugin_enabled(name, enabled=enabled)
+    if result.get("ok"):
+        result["restart_required"] = not result.get("unchanged", False)
+    return result
+
+
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
-    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
+    return _named_plugin_action(request, name, lambda n: _set_agent_plugin_enabled_with_restart_hint(n, enabled=True),
                                 "Enable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
-    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
+    return _named_plugin_action(request, name, lambda n: _set_agent_plugin_enabled_with_restart_hint(n, enabled=False),
                                 "Disable failed.", rescan=False)
 
 

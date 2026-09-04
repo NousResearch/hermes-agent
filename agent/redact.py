@@ -23,6 +23,47 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Session-scoped vault-value redaction registry
+# ---------------------------------------------------------------------------
+# Exact secret values that transited a server-side vault fill this process
+# lifetime (browser_vault_fill). Generic credential-shaped regexes cannot
+# catch an arbitrary user password, so the fill path registers the exact
+# bytes here and every browser_* tool result (including browser_cdp
+# Runtime.evaluate passthrough) is scrubbed against them before it can
+# reach the model. Values are held in memory only — never persisted,
+# never logged, cleared with the process.
+_VAULT_REDACTION_VALUES: set = set()
+_VAULT_REDACTION_LOCK = threading.Lock()
+_VAULT_REDACTION_MIN_LEN = 4  # avoid pathological scrubs on 1-3 char values
+
+
+def register_vault_redaction_value(value) -> None:
+    """Register an exact vault secret value for model-facing redaction.
+
+    Called by the vault fill path for every secret value it injects into a
+    page, BEFORE the injection happens, so no later browser tool result can
+    echo the value back into model context.
+    """
+    if not isinstance(value, str):
+        return
+    if len(value) < _VAULT_REDACTION_MIN_LEN:
+        return
+    with _VAULT_REDACTION_LOCK:
+        _VAULT_REDACTION_VALUES.add(value)
+
+
+def redact_registered_vault_values(text: str) -> str:
+    """Exact-substring scrub of every registered vault secret value."""
+    if not isinstance(text, str) or not text:
+        return text
+    with _VAULT_REDACTION_LOCK:
+        values = list(_VAULT_REDACTION_VALUES)
+    for value in values:
+        if value in text:
+            text = text.replace(value, "«redacted-vault-secret»")
+    return text
+
 # Sensitive query-string parameter names (case-insensitive exact match).
 # Ported from nearai/ironclaw#2529 — catches tokens whose values don't match
 # any known vendor prefix regex (e.g. opaque tokens, short OAuth codes).
@@ -879,6 +920,12 @@ def redact_sensitive_text(
         text = str(text)
     if not text:
         return text
+
+    # Registered vault secret values are a hard model-egress boundary:
+    # scrubbed unconditionally, regardless of the user's redact_secrets
+    # preference. Exact-substring, so no false positives on ordinary text.
+    text = redact_registered_vault_values(text)
+
     if not (force or _REDACT_ENABLED):
         return text
 

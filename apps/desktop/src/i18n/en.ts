@@ -406,7 +406,8 @@ export const en: Translations = {
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
-      plugins: 'Plugins'
+      plugins: 'Plugins',
+      vault: 'Credential Vault'
     },
     plugins: {
       title: 'Desktop plugins',
@@ -467,6 +468,53 @@ export const en: Translations = {
         desktopFailed: 'Desktop plugin install failed',
         missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
       }
+    },
+    vault: {
+      title: 'Credential Vault',
+      blurb:
+        'Encrypted local credentials the agent can use to sign into sites without ever seeing the password. Labels, origins, and login identifiers are visible; passwords never are.',
+      count: n => `${n} saved`,
+      loadFailed: 'Could not load vault items',
+      empty: 'No saved credentials yet',
+      emptyDesc:
+        'Add a login and the agent can sign into that site for you — it types the username itself and fills the password from the vault without ever seeing it.',
+      add: 'Add credential',
+      addTitle: 'Add credential',
+      addDescription: 'Stored encrypted on this machine. The agent never sees the password.',
+      added: 'Credential saved to the vault.',
+      adding: 'Saving…',
+      addConfirm: 'Save to vault',
+      kindField: 'Kind',
+      kinds: { login: 'Login', payment: 'Payment card', address: 'Address' },
+      labelField: 'Label',
+      labelPlaceholder: 'e.g. GitHub work account',
+      labelRequired: 'A label is required.',
+      originField: 'Site origin',
+      originPlaceholder: 'https://github.com',
+      originInvalid: 'Enter a valid URL like https://example.com.',
+      identifierTypeField: 'Identifier type',
+      identifierTypes: { email: 'Email', phone: 'Phone', username: 'Username' },
+      identifierField: 'Identifier',
+      identifierShown: identifier => identifier,
+      passwordField: 'Password',
+      loginFieldsRequired: 'Identifier and password are required.',
+      cardNumberField: 'Card number',
+      cardNameField: 'Name on card',
+      expMonthField: 'Exp. month',
+      expYearField: 'Exp. year',
+      cvcField: 'CVC',
+      postalField: 'Postal code',
+      addressLine1Field: 'Address line 1',
+      addressLine2Field: 'Address line 2',
+      cityField: 'City',
+      stateField: 'State / region',
+      countryField: 'Country',
+      optional: '(optional)',
+      createdOn: date => `Added ${date}`,
+      deleteAction: 'Delete credential',
+      deleteTitle: 'Delete credential?',
+      deleteDescription: label => `"${label}" will be removed from the encrypted vault. This cannot be undone.`,
+      deleteConfirm: 'Delete'
     },
     notifications: {
       title: 'Notifications',

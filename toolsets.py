@@ -51,6 +51,8 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    # Vault autofill (gated on local vault having items via check_fn)
+    "browser_vault_list", "browser_vault_fill",
     # replaces other tools when browser.backend is "browser-use"
     "browser_exec",
     # Text-to-speech
@@ -186,7 +188,8 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "browser_exec", "web_search"
+            "browser_dialog", "browser_vault_list", "browser_vault_fill",
+            "browser_exec", "web_search"
         ],
         "includes": []
     },
@@ -400,6 +403,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_vault_list", "browser_vault_fill",
             "browser_exec",
             "todo_list", "memory",
             "session_search", "clarify",
@@ -433,6 +437,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_vault_list", "browser_vault_fill",
             "browser_exec",
             "todo_list", "memory",
             "session_search",
@@ -459,6 +464,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_vault_list", "browser_vault_fill",
             "browser_exec",
             # Planning & memory
             "todo_list", "memory",

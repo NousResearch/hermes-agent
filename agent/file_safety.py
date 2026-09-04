@@ -402,6 +402,35 @@ def get_read_block_error(path: str) -> Optional[str]:
             "can still bypass.)"
         )
 
+    # vault/: local encrypted credential vault (agent/vault_store.py).
+    # Holds vault.key + vault.json.enc side by side — key + ciphertext =
+    # plaintext, so a direct read defeats the model-blind design. Same
+    # credential class and same directory-prefix deny as browser-profile/.
+    for hd in hermes_dirs:
+        try:
+            vault_dir = (hd / "vault").resolve()
+        except Exception:
+            continue
+        if resolved == vault_dir:
+            return (
+                f"Access denied: {path} is the Hermes credential vault "
+                "directory and cannot be read directly. Vault secrets are "
+                "resolved server-side by browser_vault_fill only. "
+                "(Defense-in-depth — not a security boundary; the terminal "
+                "tool can still bypass.)"
+            )
+        try:
+            resolved.relative_to(vault_dir)
+        except ValueError:
+            continue
+        return (
+            f"Access denied: {path} is inside the Hermes credential vault "
+            "(encrypted secrets + local key) and cannot be read directly. "
+            "Vault secrets are resolved server-side by browser_vault_fill "
+            "only. (Defense-in-depth — not a security boundary; the terminal "
+            "tool can still bypass.)"
+        )
+
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw
     # .env contents — .env.example is the documented-shape substitute. The

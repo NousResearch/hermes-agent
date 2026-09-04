@@ -514,6 +514,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.vault import build_vault_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -12682,6 +12683,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -14104,6 +14106,11 @@ def main():
     from hermes_cli.bundles import register_cli as _bundles_register, bundles_command
     _bundles_register(bundles_parser)
     bundles_parser.set_defaults(func=bundles_command)
+
+    # =========================================================================
+    # vault command  (parser built in hermes_cli/subcommands/vault.py)
+    # =========================================================================
+    build_vault_parser(subparsers)
 
     # =========================================================================
     # plugins command  (parser built in hermes_cli/subcommands/plugins.py)

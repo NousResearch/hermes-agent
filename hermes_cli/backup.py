@@ -200,7 +200,10 @@ _IMPORT_SKIP_NAMES = {
 }
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+# vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
+# IS included in backups (user-entered secrets, not regenerable — unlike the
+# excluded browser-profile/ snapshot) but must come back owner-only.
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}
 
 # Reserved archive subtree for provider state that lives OUTSIDE HERMES_HOME
 # (e.g. ~/.honcho, ~/.hindsight). The active memory provider declares these via

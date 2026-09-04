@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.moa_cmd import _pick_slot
+from hermes_cli.moa_cmd import _pick_slot, cmd_moa
 
 
 CURRENT = {
@@ -15,14 +16,22 @@ CURRENT = {
     "reasoning_effort": "low",
 }
 
+PROVIDER = {
+    "slug": "openrouter",
+    "name": "OpenRouter",
+    "models": ["anthropic/claude-opus-4.8", "openai/gpt-4.1"],
+    "capabilities": {
+        "anthropic/claude-opus-4.8": {"reasoning": True},
+        "openai/gpt-4.1": {"reasoning": False},
+    },
+}
+
 
 def test_existing_slot_parameters_can_be_edited_without_model_picker():
-    with patch(
-        "hermes_cli.moa_cmd._prompt_choice",
-        side_effect=[0, 2, 6],  # edit, set max_tokens, high effort
-    ), patch("builtins.input", return_value="1200") as prompt, patch(
-        "hermes_cli.moa_cmd._model_options",
-        side_effect=AssertionError("provider/model picker must not run"),
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2]
+    ) as choice, patch("builtins.input", return_value="1200") as prompt, patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value="high"
     ):
         slot = _pick_slot(CURRENT)
 
@@ -34,18 +43,26 @@ def test_existing_slot_parameters_can_be_edited_without_model_picker():
         "reasoning_effort": "high",
     }
     prompt.assert_called_once()
+    assert [call.args[0] for call in choice.call_args_list] == [
+        "Edit existing slot",
+        "Max tokens",
+    ]
 
 
 def test_existing_slot_parameter_editor_can_keep_current_values():
-    with patch("hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0, 0]), patch(
-        "builtins.input", side_effect=AssertionError("value prompt must not run")
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0]
+    ), patch("builtins.input", side_effect=AssertionError("value prompt must not run")), patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value=None
     ):
         assert _pick_slot(CURRENT) == CURRENT
 
 
-def test_existing_slot_parameter_editor_can_clear_overrides():
-    with patch("hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 1, 1]), patch(
-        "builtins.input", side_effect=AssertionError("value prompt must not run")
+def test_existing_slot_parameter_editor_can_clear_max_tokens_override():
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 1]
+    ), patch("builtins.input", side_effect=AssertionError("value prompt must not run")), patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value="none"
     ):
         slot = _pick_slot(CURRENT)
 
@@ -53,25 +70,87 @@ def test_existing_slot_parameter_editor_can_clear_overrides():
         "provider": "openrouter",
         "model": "anthropic/claude-opus-4.8",
         "enabled": False,
+        "reasoning_effort": "none",
     }
 
 
 def test_existing_slot_can_still_change_provider_and_model():
-    providers = [{"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.6-sol"]}]
+    providers = [
+        {
+            "slug": "openai-codex",
+            "name": "OpenAI Codex",
+            "models": ["gpt-5.6-sol"],
+            "capabilities": {"gpt-5.6-sol": {"reasoning": True}},
+        }
+    ]
     with patch("hermes_cli.moa_cmd._model_options", return_value=providers), patch(
         "hermes_cli.moa_cmd._prompt_choice",
         side_effect=[1, 0, 0],  # change model, provider, model
-    ):
+    ), patch("hermes_cli.main._prompt_reasoning_effort_selection", return_value="medium"):
         slot = _pick_slot(CURRENT)
 
-    assert slot == {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+    assert slot == {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "medium",
+    }
 
 
 def test_custom_max_tokens_reprompts_until_positive_integer(capsys):
-    with patch("hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2, 0]), patch(
-        "builtins.input", side_effect=["invalid", "0", "2048"]
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2]
+    ), patch("builtins.input", side_effect=["invalid", "0", "2048"]), patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value=None
     ):
         slot = _pick_slot(CURRENT)
 
     assert slot["max_tokens"] == 2048
     assert capsys.readouterr().out.count("positive integer") == 2
+
+
+def test_non_reasoning_slot_does_not_offer_reasoning_control():
+    current = {**CURRENT, "model": "openai/gpt-4.1"}
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0]
+    ), patch("hermes_cli.main._prompt_reasoning_effort_selection") as prompt:
+        slot = _pick_slot(current)
+
+    assert slot == current
+    prompt.assert_not_called()
+
+
+def test_aggregator_editor_does_not_offer_or_persist_max_tokens():
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0]
+    ) as choice, patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value="high"
+    ):
+        slot = _pick_slot(CURRENT, role="aggregator")
+
+    assert "max_tokens" not in slot
+    assert choice.call_count == 1
+    assert choice.call_args.args[1][0] == "Keep provider/model; edit reasoning_effort"
+
+
+def test_configure_marks_reference_and_aggregator_slot_roles():
+    config = {
+        "moa": {
+            "default_preset": "default",
+            "presets": {
+                "default": {
+                    "reference_models": [CURRENT],
+                    "aggregator": CURRENT,
+                }
+            },
+        }
+    }
+    with patch("hermes_cli.moa_cmd.load_config", return_value=config), patch(
+        "hermes_cli.moa_cmd._pick_slot",
+        side_effect=[dict(CURRENT), dict(CURRENT)],
+    ) as pick_slot, patch("hermes_cli.moa_cmd._prompt_choice", return_value=1), patch(
+        "hermes_cli.moa_cmd.save_config"
+    ), patch("hermes_cli.moa_cmd._print_config"):
+        cmd_moa(SimpleNamespace(moa_command="configure", name="default"))
+
+    assert pick_slot.call_args_list[0].kwargs == {"role": "reference"}
+    assert pick_slot.call_args_list[1].kwargs == {"role": "aggregator"}

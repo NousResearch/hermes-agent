@@ -50,9 +50,6 @@ def _model_options() -> list[dict[str, Any]]:
     ]
 
 
-_REASONING_EFFORTS = ("none", *VALID_REASONING_EFFORTS)
-
-
 def _prompt_positive_int(title: str, current: int | None = None) -> int | None:
     suffix = f" [{current}]" if current is not None else ""
     while True:
@@ -71,56 +68,91 @@ def _prompt_positive_int(title: str, current: int | None = None) -> int | None:
         print("Please enter a positive integer, or leave blank to keep the current value.")
 
 
-def _edit_slot_parameters(current: dict[str, Any]) -> dict[str, Any]:
-    slot = dict(current)
-    current_max_tokens = slot.get("max_tokens")
-    max_tokens_label = current_max_tokens if isinstance(current_max_tokens, int) else "preset default"
-    max_tokens_action = _prompt_choice(
-        "Max tokens",
-        [
-            f"Keep current ({max_tokens_label})",
-            "Use preset default (unset override)",
-            "Set custom limit",
-        ],
+def _provider_for_slot(
+    providers: list[dict[str, Any]], slot: dict[str, Any]
+) -> dict[str, Any] | None:
+    provider_slug = str(slot.get("provider") or "")
+    return next((provider for provider in providers if provider.get("slug") == provider_slug), None)
+
+
+def _model_supports_reasoning(provider: dict[str, Any], model: str) -> bool:
+    capabilities = provider.get("capabilities")
+    model_capabilities = capabilities.get(model) if isinstance(capabilities, dict) else None
+    return isinstance(model_capabilities, dict) and bool(model_capabilities.get("reasoning"))
+
+
+def _slot_reasoning_effort(
+    provider: dict[str, Any], model: str, current_effort: str = ""
+) -> str | None:
+    if not _model_supports_reasoning(provider, model):
+        return None
+
+    from hermes_cli.main import _prompt_reasoning_effort_selection
+
+    selected = _prompt_reasoning_effort_selection(
+        list(VALID_REASONING_EFFORTS), current_effort=current_effort
     )
-    if max_tokens_action == 1:
-        slot.pop("max_tokens", None)
-    elif max_tokens_action == 2:
-        value = _prompt_positive_int(
+    return selected or (current_effort or None)
+
+
+def _edit_slot_parameters(
+    current: dict[str, Any], provider: dict[str, Any] | None, *, role: str
+) -> dict[str, Any]:
+    slot = dict(current)
+    if role == "reference":
+        current_max_tokens = slot.get("max_tokens")
+        max_tokens_label = current_max_tokens if isinstance(current_max_tokens, int) else "preset default"
+        max_tokens_action = _prompt_choice(
             "Max tokens",
-            current_max_tokens if isinstance(current_max_tokens, int) else None,
+            [
+                f"Keep current ({max_tokens_label})",
+                "Use preset default (unset override)",
+                "Set custom limit",
+            ],
         )
-        if value is not None:
-            slot["max_tokens"] = value
+        if max_tokens_action == 1:
+            slot.pop("max_tokens", None)
+        elif max_tokens_action == 2:
+            value = _prompt_positive_int(
+                "Max tokens",
+                current_max_tokens if isinstance(current_max_tokens, int) else None,
+            )
+            if value is not None:
+                slot["max_tokens"] = value
+    else:
+        slot.pop("max_tokens", None)
 
     current_effort = str(slot.get("reasoning_effort") or "").strip().lower()
-    effort_label = current_effort or "provider default"
-    effort_action = _prompt_choice(
-        "Reasoning effort",
-        [
-            f"Keep current ({effort_label})",
-            "Use provider default (unset override)",
-            *_REASONING_EFFORTS,
-        ],
-    )
-    if effort_action == 1:
-        slot.pop("reasoning_effort", None)
-    elif effort_action >= 2:
-        slot["reasoning_effort"] = _REASONING_EFFORTS[effort_action - 2]
+    if provider is not None:
+        effort = _slot_reasoning_effort(
+            provider, str(slot.get("model") or ""), current_effort
+        )
+        if effort:
+            slot["reasoning_effort"] = effort
     return slot
 
 
-def _pick_slot(current: dict[str, Any] | None = None) -> dict[str, Any]:
+def _pick_slot(
+    current: dict[str, Any] | None = None, *, role: str = "reference"
+) -> dict[str, Any]:
     if current:
+        parameter_label = (
+            "reasoning_effort"
+            if role == "aggregator"
+            else "max_tokens / reasoning_effort"
+        )
         action = _prompt_choice(
             "Edit existing slot",
             [
-                "Keep provider/model; edit max_tokens / reasoning_effort",
+                f"Keep provider/model; edit {parameter_label}",
                 "Change provider/model",
             ],
         )
         if action == 0:
-            return _edit_slot_parameters(current)
+            providers = _model_options()
+            return _edit_slot_parameters(
+                current, _provider_for_slot(providers, current), role=role
+            )
 
     providers = _model_options()
     if not providers:
@@ -138,7 +170,11 @@ def _pick_slot(current: dict[str, Any] | None = None) -> dict[str, Any]:
     current_model = (current or {}).get("model", "")
     model_default = models.index(current_model) if current_model in models else 0
     model = models[_prompt_choice(f"Select model for {provider.get('slug')}", models, model_default)]
-    return {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    slot = {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    effort = _slot_reasoning_effort(provider, str(model))
+    if effort:
+        slot["reasoning_effort"] = effort
+    return slot
 
 
 def _format_slot(slot: dict[str, Any]) -> str:
@@ -183,7 +219,7 @@ def cmd_moa(args) -> None:
         idx = 0
         while True:
             base = existing[idx] if idx < len(existing) else None
-            picked = _pick_slot(base)
+            picked = _pick_slot(base, role="reference")
             picked["enabled"] = bool((base or {}).get("enabled", True))
             refs.append(picked)
             idx += 1
@@ -193,7 +229,7 @@ def cmd_moa(args) -> None:
         print("Configure aggregator model.")
         current = dict(current)
         current["reference_models"] = refs
-        current["aggregator"] = _pick_slot(current.get("aggregator"))
+        current["aggregator"] = _pick_slot(current.get("aggregator"), role="aggregator")
         moa["presets"][preset_name] = current
         moa.setdefault("default_preset", preset_name)
         cfg["moa"] = normalize_moa_config(moa)

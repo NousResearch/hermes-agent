@@ -2255,6 +2255,31 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
+    # --- pre-spawn RO evidence capture (read-only + bounded writability probe, best-effort) ---
+    # Records /proc/mounts+mountinfo, mount options, profile writability,
+    # and bounded kernel evidence at the exact dispatcher spawn boundary
+    # so the next worker failure can be triaged as ext4 RO remount vs
+    # path-local visibility. Never raises, never mutates perms.
+    # File writes limited to logs/<task>.prespawn.json via tmp rename.
+    # Open-append probe is a bounded writability probe (not pure read-only):
+    # it opens existing files with "ab" without writing then closes; it
+    # bumps atime and requires W but does not mutate content.
+    try:
+        from hermes_cli.kanban_prespawn_evidence import (
+            capture_prespawn_evidence as _kpe_capture,
+            write_prespawn_evidence_file as _kpe_write,
+        )
+
+        _ev = _kpe_capture(
+            task_id=task.id,
+            profile=profile_arg,
+            workspace=workspace,
+            board=board,
+            hermes_home=env.get("HERMES_HOME"),
+        )
+        _kpe_write(_kb.worker_logs_dir(board=board), task.id, _ev, suffix="prespawn")
+    except Exception:
+        pass
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above

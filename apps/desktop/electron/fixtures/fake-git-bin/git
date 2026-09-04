@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Fake `git` binary for run-git.test.ts (see README in this dir).
+#
+# Args:
+#   ok    -> exit 0, print a line on stdout  (normal fast success)
+#   fail  -> exit 7, print a line on stderr  (normal fast failure)
+#   block -> sleep forever (simulates a blackholed git fetch: never exits)
+case "$1" in
+  ok)
+    printf 'ok-stdout\n'
+    exit 0
+    ;;
+  fail)
+    printf 'fail-stderr\n' >&2
+    exit 7
+    ;;
+  block)
+    # Never return: the runGit timeout must kill this and settle the promise.
+    # `exec` replaces the shell so SIGTERM lands on the blocking child directly.
+    exec sleep 100000
+    ;;
+  *)
+    printf 'unknown command: %s\n' "$1" >&2
+    exit 2
+    ;;
+esac

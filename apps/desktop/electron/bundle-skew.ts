@@ -57,7 +57,7 @@ export interface BundleSkewResult {
 export type RunGit = (
   args: string[],
   options: { cwd: string }
-) => Promise<{ code: number; stderr: string; stdout: string }>
+) => Promise<{ code: number | null; stderr: string; stdout: string }>
 
 /**
  * The apps/desktop paths that actually reach the user: renderer sources,

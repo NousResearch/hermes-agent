@@ -344,6 +344,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { createRunGit } from './run-git'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -2990,34 +2991,13 @@ function resolveUpdateRoot() {
   return candidates.find(c => directoryExists(path.join(c, '.git'))) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
-function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      resolveGitBinary(),
-      IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args,
-      hiddenWindowsChildOptions({
-        cwd: options.cwd,
-        env: { ...process.env, ...((options.env || {}) as any), GIT_TERMINAL_PROMPT: '0' },
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-    )
-
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', chunk => {
-      const text = chunk.toString()
-      stdout += text
-      options.onLine?.('stdout', text)
-    })
-    child.stderr.on('data', chunk => {
-      const text = chunk.toString()
-      stderr += text
-      options.onLine?.('stderr', text)
-    })
-    child.once('error', reject)
-    child.once('exit', code => resolve({ code, stdout, stderr }))
-  })
-}
+// runGit is the bounded git subprocess runner (extracted for testability).
+// It resolves with `{ code, stdout, stderr }` on exit, and on a stalled/
+// blackholed git call it hard-timeouts (SIGTERM then SIGKILL) and resolves
+// with `{ code: null, timedOut: true, stderr: ... }` so the update check
+// surfaces a fetch-failed error instead of hanging on "Looking for updates…"
+// forever. See run-git.ts.
+const runGit = createRunGit(resolveGitBinary)
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 

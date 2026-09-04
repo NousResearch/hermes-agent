@@ -1438,6 +1438,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
+    "gpt-6-astra": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,

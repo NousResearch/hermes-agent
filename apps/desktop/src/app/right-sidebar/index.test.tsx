@@ -11,9 +11,13 @@ import { resetProjectTreeState } from './files/use-project-tree'
 import { RightSidebarPane } from './index'
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
+const repoStatus = vi.fn<(cwd: string) => Promise<null>>()
 
 function installBridge() {
-  ;(window as unknown as { hermesDesktop: { readDir: typeof readDir } }).hermesDesktop = { readDir }
+  ;(window as unknown as { hermesDesktop: { git: { repoStatus: typeof repoStatus }; readDir: typeof readDir } }).hermesDesktop = {
+    git: { repoStatus },
+    readDir
+  }
 }
 
 describe('RightSidebarPane', () => {
@@ -24,6 +28,8 @@ describe('RightSidebarPane', () => {
     resetProjectTreeState()
     readDir.mockReset()
     readDir.mockResolvedValue({ entries: [{ isDirectory: false, name: 'README.md', path: '/repo/README.md' }] })
+    repoStatus.mockReset()
+    repoStatus.mockResolvedValue(null)
     installBridge()
   })
 
@@ -95,8 +101,12 @@ describe('RightSidebarPane', () => {
 
     const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
     readDir.mockClear()
+    repoStatus.mockClear()
     fireEvent.click(refresh)
-    await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo-tile'))
+    await waitFor(() => {
+      expect(readDir).toHaveBeenCalledWith('/repo-tile')
+      expect(repoStatus).toHaveBeenCalledWith('/repo-tile')
+    })
   })
 
   it('keeps the focused tile workspace cwd even when clicking into the sidebar group', async () => {
@@ -123,7 +133,11 @@ describe('RightSidebarPane', () => {
 
     const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
     readDir.mockClear()
+    repoStatus.mockClear()
     fireEvent.click(refresh)
-    await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo-tile'))
+    await waitFor(() => {
+      expect(readDir).toHaveBeenCalledWith('/repo-tile')
+      expect(repoStatus).toHaveBeenCalledWith('/repo-tile')
+    })
   })
 })

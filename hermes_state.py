@@ -3616,6 +3616,79 @@ def _live_writer_holds_db(db_path: Path) -> bool:
     )
 
 
+# ── Multi-process WAL writer-set detection (#100896) ──
+# One state.db opened in WAL mode by several processes at once (a gateway
+# alongside a dashboard and/or webui — each a separate systemd unit) is the
+# writer-set shape behind the corruption cluster #100896 / #90837 / #100313.
+# WAL is safe across processes only while every opener coordinates through
+# SQLite's WAL locks; the tracked signature — lost/reordered page writes, a
+# torn `sessions` b-tree — is one connection's close-time checkpoint racing a
+# peer's WAL growth. There is no safe live downgrade once the set exists
+# (flipping journal_mode under concurrent openers destroys a peer's
+# committed-but-uncheckpointed WAL frames), so the only containment available
+# at open time is to DETECT the set and say so loudly, naming the durable fix:
+# `database.journal_mode: delete` in config.yaml (applied under exclusive
+# access). The in-process duplicate-handle warning (#98573) cannot see this —
+# it counts handles in ONE process, and fired 7 minutes before the #100896
+# onset while the second writer was a different process entirely.
+_multi_writer_warned_paths: set[str] = set()
+_multi_writer_warned_lock = threading.Lock()
+
+
+def _warn_if_multi_process_wal_writer_set(db_path: Path) -> None:
+    """Warn (once per process per path) when state.db is WAL and a peer holds it.
+
+    Fires at open time, before the first write, so a joining process names the
+    multi-process writer set the moment it forms. The scan runs at most once
+    per process per resolved path — the foreign-holder authority walks
+    ``/proc/*/fd``, which is cheap once but must not ride a per-request
+    ``SessionDB()`` open. Diagnostic containment only: it never flips the
+    journal mode under live peers, it makes the operator's durable fix
+    actionable.
+    """
+    try:
+        key = str(Path(db_path).resolve())
+    except OSError:
+        key = str(db_path)
+    with _multi_writer_warned_lock:
+        if key in _multi_writer_warned_paths:
+            return
+    # Scan BEFORE marking the path: a transient scan failure must be retried by
+    # the next open, not permanently silenced by an early mark.
+    try:
+        holders = _foreign_state_db_holders(db_path)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "multi-process WAL writer-set check failed for %s: %s", db_path, exc
+        )
+        return
+    # Only positive evidence of a second writer warns. The authority encodes a
+    # failed or unavailable scan as a pid<0 sentinel; that is "cannot prove
+    # exclusive ownership", not "a second process exists", and a diagnostic
+    # must not raise it to the same alarm as an observed peer.
+    foreign = [holder for holder in holders if holder[0] > 0]
+    with _multi_writer_warned_lock:
+        if key in _multi_writer_warned_paths:
+            return
+        _multi_writer_warned_paths.add(key)
+    if not foreign:
+        return
+    pids = sorted({pid for pid, _ in foreign})
+    logger.warning(
+        "%s: state.db is in WAL mode with %d other process(es) holding the "
+        "database or its -wal/-shm sidecars open (PID(s): %s). This "
+        "multi-process WAL writer set is the corruption signature behind the "
+        "state.db damage cluster; if this deployment runs a gateway alongside "
+        "a dashboard or webui, set `database.journal_mode: delete` in "
+        "config.yaml to remove the multi-writer WAL class (apply it under "
+        "exclusive access, then restart). This warning fires once per process "
+        "per database.",
+        db_path,
+        len(pids),
+        ", ".join(str(pid) for pid in pids),
+    )
+
+
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
     """Repair a state.db whose ``sqlite_master`` schema is malformed or whose
     FTS indexes reject writes.
@@ -5558,6 +5631,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._wal_active = (
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
                 )
+                if self._wal_active:
+                    # #100896: name the multi-process WAL writer set the moment
+                    # this process joins it (gateway + dashboard + webui), so
+                    # the operator gets the corruption signature at open time
+                    # instead of inferring it after the fact.
+                    _warn_if_multi_process_wal_writer_set(self.db_path)
                 apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)

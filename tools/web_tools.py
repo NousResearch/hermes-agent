@@ -1349,17 +1349,35 @@ async def web_extract_tool(
                 # the one-shot rescue sticky for a whole TTL — the next call
                 # must attempt the chosen backend again.
                 if not _extract_rescued:
-                    for fetched_pos, fetched in enumerate(results):
-                        if fetched_pos >= len(fetch_urls):
-                            break
+                    # Build a lookup from requested URLs for proper association.
+                    # Providers may reorder or omit URLs, so we match by URL
+                    # instead of by position to avoid cache pollution.
+                    _requested_url_set = {u.lower().rstrip("/") for u in fetch_urls}
+                    _url_to_fetch = {}
+                    for fetched in results:
                         if fetched.get("error"):
+                            continue
+                        # Check both result["url"] and metadata.sourceURL
+                        # for the actual URL the provider returned
+                        _result_url = (
+                            fetched.get("url", "")
+                            or (fetched.get("metadata") or {}).get("sourceURL", "")
+                        ).lower().rstrip("/")
+                        if _result_url and _result_url in _requested_url_set:
+                            _url_to_fetch[_result_url] = fetched
+                    
+                    # Cache each successful fetch matched by URL
+                    for fetch_url in fetch_urls:
+                        _key = fetch_url.lower().rstrip("/")
+                        fetched = _url_to_fetch.get(_key)
+                        if not fetched:
                             continue
                         _content = (
                             fetched.get("raw_content", "") or fetched.get("content", "")
                         )
                         if _content:
                             _extract_cache_put(
-                                fetch_urls[fetched_pos],
+                                fetch_url,
                                 _content,
                                 title=fetched.get("title", ""),
                                 format=format,
@@ -1372,17 +1390,28 @@ async def web_extract_tool(
                     merged: List[Dict[str, Any]] = [None] * len(safe_urls)  # type: ignore[list-item]
                     for position, hit in cached_results.items():
                         merged[position] = hit
-                    for fetched_pos, position in enumerate(fetch_positions):
-                        merged[position] = (
-                            results[fetched_pos]
-                            if fetched_pos < len(results)
-                            else {
+                    # Build a lookup from requested URLs to fetched results
+                    # for proper association (providers may reorder)
+                    _fetch_url_to_result = {}
+                    for fetched in results:
+                        _result_url = (
+                            fetched.get("url", "")
+                            or (fetched.get("metadata") or {}).get("sourceURL", "")
+                        ).lower().rstrip("/")
+                        if _result_url:
+                            _fetch_url_to_result[_result_url] = fetched
+                    for position in fetch_positions:
+                        _req_url = safe_urls[position].lower().rstrip("/")
+                        fetched = _fetch_url_to_result.get(_req_url)
+                        if fetched:
+                            merged[position] = fetched
+                        else:
+                            merged[position] = {
                                 "url": safe_urls[position],
                                 "title": "",
                                 "content": "",
                                 "error": "Extract backend returned no result for this URL",
                             }
-                        )
                     results = merged
 
         # Reconstruct the original input order across invalid, blocked, and

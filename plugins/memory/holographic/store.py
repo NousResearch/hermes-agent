@@ -66,6 +66,32 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
         VALUES (new.fact_id, new.content, new.tags);
 END;
 
+-- Trigram FTS5 table for CJK (Chinese) substring search (2026-08-27 patch).
+-- The default unicode61 tokenizer splits CJK into individual chars, breaking
+-- phrase matching.  The trigram tokenizer creates overlapping 3-char tokens so
+-- natural-language Chinese queries can hit facts.  Mirrors the proven
+-- messages_fts_trigram pattern in hermes_state_common.py (L3 session search).
+CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts_trigram
+    USING fts5(content, tags, content=facts, content_rowid=fact_id,
+               tokenize='trigram');
+
+CREATE TRIGGER IF NOT EXISTS facts_trigram_ai AFTER INSERT ON facts BEGIN
+    INSERT INTO facts_fts_trigram(rowid, content, tags)
+        VALUES (new.fact_id, new.content, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS facts_trigram_ad AFTER DELETE ON facts BEGIN
+    INSERT INTO facts_fts_trigram(facts_fts_trigram, rowid, content, tags)
+        VALUES ('delete', old.fact_id, old.content, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS facts_trigram_au AFTER UPDATE ON facts BEGIN
+    INSERT INTO facts_fts_trigram(facts_fts_trigram, rowid, content, tags)
+        VALUES ('delete', old.fact_id, old.content, old.tags);
+    INSERT INTO facts_fts_trigram(rowid, content, tags)
+        VALUES (new.fact_id, new.content, new.tags);
+END;
+
 CREATE TABLE IF NOT EXISTS memory_banks (
     bank_id    INTEGER PRIMARY KEY AUTOINCREMENT,
     bank_name  TEXT NOT NULL UNIQUE,

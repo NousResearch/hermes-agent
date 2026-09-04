@@ -238,3 +238,90 @@ def test_search_without_vectors_never_encodes(hoisted_retriever, monkeypatch):
         f"encode_text called {len(calls)}x with zero vector candidates — "
         "lazy hoist regressed to eager"
     )
+
+
+# ---------------------------------------------------------------------------
+# Trigram CJK search — mixed CJK/English recall + DDL caching
+# (2026-08-31, addressing AI review on #97050)
+# ---------------------------------------------------------------------------
+
+def test_mixed_cjk_english_query_recalls_english_term(tmp_path):
+    """A mixed query must not silently drop the English term.
+
+    The trigram index tokenizes English content into overlapping 3-grams
+    ("deployment" -> "dep"/"epl"/"loy"...), so a MATCH token that keeps the
+    whole word ("deployment") matches nothing. The fix windows Latin runs the
+    same way as CJK, restoring recall for the English part.
+    """
+    store = MemoryStore(str(tmp_path / "mixed.db"))
+    store.add_fact(content="The deployment rollback failed due to stale state.", category="project")
+    store.add_fact(content="内存多大决定上下文窗口上限。", category="tool")
+    retriever = FactRetriever(store=store)
+
+    results = retriever.search("deployment内存", limit=5)
+    assert results, "mixed CJK/English query should return candidates"
+    # The English-bearing fact must be in the top results
+    assert any("deployment" in r["content"].lower() for r in results), (
+        "English term silently dropped in mixed query"
+    )
+
+
+def test_trigram_available_cached_no_ddl_on_repeat(tmp_path):
+    """_trigram_available() must probe the build only once.
+
+    The probe executes CREATE/DROP DDL on the live store; repeating it on
+    every search adds write-lock contention. After the first call the result
+    is cached and no further DDL runs.
+    """
+    store = MemoryStore(str(tmp_path / "ddl_cache.db"))
+    retriever = FactRetriever(store=store)
+
+    # Wrap the live connection with a counting proxy so we can observe DDL
+    # without touching the read-only sqlite3.Connection.execute attribute.
+    real_conn = store._conn
+
+    class CountingConn:
+        def __init__(self, real):
+            self._real = real
+            self.probe_ddl = 0
+
+        def execute(self, sql, *args, **kwargs):
+            if isinstance(sql, str) and "_tgram_probe" in sql:
+                self.probe_ddl += 1
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    counting = CountingConn(real_conn)
+    retriever.store._conn = counting
+    try:
+        assert retriever._trigram_available() in (True, False)
+        first_probe_count = counting.probe_ddl
+        for _ in range(5):
+            retriever._trigram_available()
+        assert counting.probe_ddl == first_probe_count, (
+            f"DDL probe repeated: {counting.probe_ddl} after first call"
+        )
+    finally:
+        retriever.store._conn = real_conn
+
+
+def test_or_tokens_trigram_windows_latin_runs():
+    """Latin runs are windowed into 3-grams, not kept whole.
+
+    "deployment" must yield dep/epl/loy/... so the MATCH token exists in the
+    trigram index; a whole-word token would match nothing.
+    """
+    tokens = FactRetriever._or_tokens_trigram("deployment内存")
+    assert '"deployment"' not in tokens, "whole English word must not be a token"
+    assert '"dep"' in tokens and '"loy"' in tokens, "English 3-grams missing"
+
+
+def test_window_tokens_matches_or_tokens_latin():
+    """Ranking windows and MATCH tokens must share the same splitter."""
+    match = FactRetriever._or_tokens_trigram("deployment内存")
+    windows = FactRetriever._window_tokens("deployment内存")
+    # Every window appears (quoted) in the MATCH expression
+    for w in windows:
+        assert f'"{w}"' in match, f"window {w!r} missing from MATCH tokens"

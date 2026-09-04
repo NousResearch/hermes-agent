@@ -45,6 +45,11 @@ class FactRetriever:
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
 
+        # Cache trigram-tokenizer availability: depends only on the SQLite
+        # build, which never changes at runtime. The probe (CREATE/DROP DDL)
+        # runs at most once instead of on every search.
+        self._trigram_available_cache: bool | None = None
+
     def search(
         self,
         query: str,
@@ -102,6 +107,17 @@ class FactRetriever:
             relevance = (self.fts_weight * fts_score
                         + self.jaccard_weight * jaccard
                         + self.hrr_weight * hrr_sim)
+
+            # Trigram window-hit boost: when candidates came from the trigram
+            # path, facts sharing more 3-char windows with the query are more
+            # relevant (window_hits added by _fts_candidates).  Bias toward
+            # the query's total window count so a fact hitting all windows
+            # ranks above one hitting a single window.
+            window_hits = fact.get("window_hits", 0)
+            if window_hits:
+                total_windows = len(self._window_tokens(query))
+                if total_windows:
+                    relevance += window_hits / total_windows
 
             # Trust weighting
             score = relevance * fact["trust_score"]
@@ -492,6 +508,92 @@ class FactRetriever:
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        """True when text contains CJK (Chinese/Japanese/Korean) chars.
+
+        Same ranges used by L3 session search (hermes_state_search.py):
+        CJK Unified Ideographs, Extension A/B, CJK Symbols.
+        """
+        for ch in text:
+            cp = ord(ch)
+            if (0x4E00 <= cp <= 0x9FFF or    # CJK Unified Ideographs
+                    0x3400 <= cp <= 0x4DBF or    # CJK Extension A
+                    0x20000 <= cp <= 0x2A6DF or  # CJK Extension B
+                    0x3000 <= cp <= 0x303F):     # CJK Symbols
+                return True
+        return False
+
+    def _trigram_available(self) -> bool:
+        """True when this SQLite build has the FTS5 trigram tokenizer.
+
+        Cached: the probe (CREATE/DROP DDL on the live connection) is
+        expensive and the build never changes at runtime, so it runs at most
+        once per FactRetriever instance.
+        """
+        if self._trigram_available_cache is not None:
+            return self._trigram_available_cache
+        try:
+            conn = self.store._conn
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS _tgram_probe USING fts5(x, tokenize='trigram')"
+            )
+            conn.execute("DROP TABLE IF EXISTS _tgram_probe")
+            self._trigram_available_cache = True
+        except Exception:
+            self._trigram_available_cache = False
+        return self._trigram_available_cache
+
+    @staticmethod
+    def _or_tokens_trigram(query: str) -> str:
+        """Split a query into overlapping 3-char tokens, OR-joined.
+
+        The trigram tokenizer indexes overlapping 3-char sequences for BOTH
+        CJK and Latin text ("deployment" → "dep"/"epl"/"loy"/...), so a
+        natural-language query like "VPS内存多大" as a whole won't appear
+        verbatim in a fact, but its 3-char windows overlap with fact content.
+        OR-join so any window hit returns candidates, then Jaccard rerank in
+        `search()` picks the best.  Latin runs are windowed too: keeping a
+        whole word such as "deployment" would produce a MATCH token the
+        trigram index does not contain, silently dropping recall for that
+        term in mixed CJK/English queries.
+        """
+        q = query.strip()
+        if not q:
+            return q
+        tokens = []
+        i = 0
+        n = len(q)
+        while i < n:
+            # collect a run: CJK run windowed, else latin/digit run windowed
+            j = i
+            while j < n and (0x4E00 <= ord(q[j]) <= 0x9FFF or 0x3000 <= ord(q[j]) <= 0x303F):
+                j += 1
+            if j > i:
+                run = q[i:j]
+                for k in range(len(run) - 2):
+                    tokens.append(run[k:k + 3])
+                i = j
+            else:
+                j = i
+                while j < n and not (0x4E00 <= ord(q[j]) <= 0x9FFF or 0x3000 <= ord(q[j]) <= 0x303F):
+                    j += 1
+                w = q[i:j]
+                for k in range(len(w) - 2):
+                    tokens.append(w[k:k + 3])
+                i = j
+        if not tokens:
+            return q
+        # Dedupe, keep order, drop tokens that cannot match (len<3 runs)
+        seen = set()
+        out = []
+        for t in tokens:
+            if t in seen:
+                continue
+            seen.add(t)
+            out.append(f'"{t}"')
+        return " OR ".join(out)
+
     def _fts_candidates(
         self,
         query: str,
@@ -506,15 +608,31 @@ class FactRetriever:
         """
         conn = self.store._conn
 
-        # Build query - FTS5 rank is negative (lower = better match)
-        # We need to join facts_fts with facts to get all columns
+        # CJK (Chinese/Japanese/Korean) queries route to the trigram index
+        # (2026-08-27 patch): unicode61 tokenizes CJK into single chars, so
+        # natural-language Chinese queries never match phrases.  The trigram
+        # tokenizer indexes overlapping 3-char sequences, giving substring
+        # match for any >=3-char query.  Same pattern as L3 session search
+        # (messages_fts_trigram in hermes_state_common.py).
+        cjk = self._contains_cjk(query)
+        if cjk and self._trigram_available():
+            table = "facts_fts_trigram"
+            # trigram does substring match on >=3-char tokens.  For
+            # natural-language queries ("VPS内存多大"), OR-join the
+            # 3-char sliding-window tokens so any overlapping phrase can
+            # match, instead of requiring the whole sentence verbatim.
+            match_arg = self._or_tokens_trigram(query)
+        else:
+            table = "facts_fts"
+            # FTS5 defaults to AND-between-tokens, which kills recall on
+            # natural-language queries ("what happened with the deployment
+            # rollback"). Sanitize: drop stopwords, OR-join content tokens, so
+            # any significant term can match.
+            match_arg = self._sanitize_fts_query(query)
+
         params: list = []
-        where_clauses = ["facts_fts MATCH ?"]
-        # FTS5 defaults to AND-between-tokens, which kills recall on
-        # natural-language queries ("what happened with the deployment
-        # rollback"). Sanitize: drop stopwords, OR-join content tokens, so
-        # any significant term can match.
-        params.append(self._sanitize_fts_query(query))
+        where_clauses = [f"{table} MATCH ?"]
+        params.append(match_arg)
 
         if category:
             where_clauses.append("f.category = ?")
@@ -526,11 +644,11 @@ class FactRetriever:
         where_sql = " AND ".join(where_clauses)
 
         sql = f"""
-            SELECT f.*, facts_fts.rank as fts_rank_raw
-            FROM facts_fts
-            JOIN facts f ON f.fact_id = facts_fts.rowid
+            SELECT f.*, {table}.rank as fts_rank_raw
+            FROM {table}
+            JOIN facts f ON f.fact_id = {table}.rowid
             WHERE {where_sql}
-            ORDER BY facts_fts.rank
+            ORDER BY {table}.rank
             LIMIT ?
         """
         params.append(limit)
@@ -543,6 +661,30 @@ class FactRetriever:
 
         if not rows:
             return []
+
+        # For the trigram path, augment ranking with per-fact window-token
+        # hit count: count how many of the query's 3-char windows appear in
+        # this fact's content.  More hits = more relevant (natural-language
+        # queries rarely match verbatim, so this beats raw FTS rank).
+        if cjk and self._trigram_available():
+            windows = self._window_tokens(query)
+            out = []
+            for row in rows:
+                fact = dict(row)
+                fact.pop("fts_rank_raw", None)
+                content = fact.get("content", "")
+                if windows:
+                    hits = sum(1 for w in windows if w in content)
+                    fact["window_hits"] = hits
+                    # fts_rank keeps its normalized position as a tiebreak
+                    fact["fts_rank"] = abs(row["fts_rank_raw"]) / max(
+                        max(abs(r["fts_rank_raw"]) for r in rows), 1e-6
+                    )
+                else:
+                    fact["window_hits"] = 0
+                    fact["fts_rank"] = 0.5
+                out.append(fact)
+            return out
 
         # Normalize FTS5 rank: rank is negative, lower = better
         # Convert to positive score in [0, 1] range
@@ -558,6 +700,40 @@ class FactRetriever:
             results.append(fact)
 
         return results
+
+    @staticmethod
+    def _window_tokens(query: str) -> list[str]:
+        """Return the overlapping 3-char windows of a query (for ranking).
+
+        Mirrors `_or_tokens_trigram`'s tokenization (CJK and Latin runs both
+        windowed) but returns raw window strings (no quoting / OR) for
+        content-hit counting.  Keeping both in sync matters: the MATCH tokens
+        and the ranking windows must come from the same splitter or a mixed
+        CJK/English query's window_hits diverge from what actually matched.
+        """
+        q = query.strip()
+        tokens: list[str] = []
+        i = 0
+        n = len(q)
+        while i < n:
+            j = i
+            while j < n and (0x4E00 <= ord(q[j]) <= 0x9FFF or 0x3000 <= ord(q[j]) <= 0x303F):
+                j += 1
+            if j > i:
+                run = q[i:j]
+                for k in range(len(run) - 2):
+                    tokens.append(run[k:k + 3])
+                i = j
+            else:
+                j = i
+                while j < n and not (0x4E00 <= ord(q[j]) <= 0x9FFF or 0x3000 <= ord(q[j]) <= 0x303F):
+                    j += 1
+                w = q[i:j]
+                for k in range(len(w) - 2):
+                    tokens.append(w[k:k + 3])
+                i = j
+        seen = set()
+        return [t for t in tokens if not (t in seen or seen.add(t))]
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:

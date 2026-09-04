@@ -444,7 +444,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
-| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
+| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `sender_id`, `usage` | Full prompt, response, history, platform user ID, and session-cumulative token usage. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -746,7 +746,8 @@ Fires **once per turn**, after the tool-calling loop completes and the agent has
 
 ```python
 def my_callback(session_id: str, user_message: str, assistant_response: str,
-                conversation_history: list, model: str, platform: str, **kwargs):
+                conversation_history: list, model: str, platform: str,
+                sender_id: str, usage: dict, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -757,6 +758,8 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `conversation_history` | `list` | Copy of the full message list after the turn completed |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `sender_id` | `str` | Platform user identifier for gateway sessions, or an empty string when unavailable |
+| `usage` | `dict` | Session-cumulative input, output, cache, reasoning, prompt, completion, and total token counters at finalization; subtract the previous observed totals when a plugin needs per-turn deltas |
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 

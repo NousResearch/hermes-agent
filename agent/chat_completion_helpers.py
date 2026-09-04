@@ -3073,10 +3073,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # config load failure must not kill the swap.
         try:
             from hermes_cli.config import load_config
-            from hermes_constants import resolve_reasoning_config
+            from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
-            agent.reasoning_config = resolve_reasoning_config(
-                load_config() or {}, agent.model
+            fallback_effort = fb.get("reasoning_effort")
+            fallback_reasoning = parse_reasoning_effort(fallback_effort)
+            agent.reasoning_config = (
+                fallback_reasoning
+                if fallback_effort is not None and fallback_reasoning is not None
+                else resolve_reasoning_config(load_config() or {}, agent.model)
             )
             logger.info(
                 "Fallback %s: reasoning_config resolved: %s",
@@ -3102,6 +3106,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # swap untouched.
         try:
             from agent.agent_init import (
+                _apply_reasoning_config_to_request_overrides,
                 _custom_provider_extra_body_for_agent,
                 _merge_custom_provider_extra_body,
             )
@@ -3131,9 +3136,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 else:
                     _overrides.pop("extra_body", None)
                 agent.request_overrides = _overrides
-            # Merge in the fallback provider's own extra_body (existing
-            # caller-provided keys win on conflict inside the merge helper).
+            # Merge in the fallback provider's own extra_body, then layer the
+            # fallback entry itself on top because it is the most specific
+            # route configuration.
             _merge_custom_provider_extra_body(agent, _custom_providers)
+            # The fallback entry is more specific than the named provider and
+            # may carry its own request controls.
+            _fallback_extra_body = fb.get("extra_body")
+            if isinstance(_fallback_extra_body, dict) and _fallback_extra_body:
+                _overrides = dict(getattr(agent, "request_overrides", {}) or {})
+                _merged_fb_body = dict(_overrides.get("extra_body") or {})
+                _merged_fb_body.update(_fallback_extra_body)
+                _overrides["extra_body"] = _merged_fb_body
+                agent.request_overrides = _overrides
+            _apply_reasoning_config_to_request_overrides(agent)
             logger.info(
                 "Fallback %s: extra_body resolved: %s",
                 agent.model,

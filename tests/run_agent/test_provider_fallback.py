@@ -502,3 +502,42 @@ class TestFallbackExtraBodyReResolution:
         agent.request_overrides["temperature"] = 0.2
         self._activate(agent)
         assert agent.request_overrides.get("temperature") == 0.2
+
+    def test_fallback_entry_reasoning_controls_override_provider_default(self):
+        """A fallback's explicit effort/body must beat the provider-wide default."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:fbprov",
+                "model": "gpt-5.6-terra",
+                "base_url": self.FB_URL,
+                "reasoning_effort": "max",
+                "extra_body": {
+                    "reasoning": {"enabled": True, "effort": "max"},
+                },
+            },
+        )
+        agent.provider = "custom"
+        agent.model = "gpt-5.6-sol"
+        agent.base_url = self.OLD_URL
+        agent.request_overrides = {
+            "extra_body": {
+                "reasoning": {"enabled": True, "effort": "medium"},
+            },
+        }
+        agent._custom_providers = [
+            {
+                "provider_key": "fbprov",
+                "base_url": self.FB_URL,
+                "extra_body": {
+                    "reasoning": {"enabled": True, "effort": "medium"},
+                },
+            },
+        ]
+
+        self._activate(agent)
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "max"}
+        assert agent.request_overrides["extra_body"]["reasoning"] == {
+            "enabled": True,
+            "effort": "max",
+        }

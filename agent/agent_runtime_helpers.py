@@ -2996,6 +2996,9 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     if new_extra_body:
         overrides["extra_body"] = dict(new_extra_body)
     agent.request_overrides = overrides
+    from agent.agent_init import _apply_reasoning_config_to_request_overrides
+
+    _apply_reasoning_config_to_request_overrides(agent)
 
 
 def switch_model(

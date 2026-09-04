@@ -490,6 +490,39 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _apply_reasoning_config_to_request_overrides(agent) -> None:
+    """Apply the active reasoning level to an existing custom wire field.
+
+    A named custom provider may declare ``extra_body.reasoning`` to certify
+    that its endpoint accepts that wire shape. The active per-model/session
+    ``reasoning_config`` is more specific than that provider-wide default and
+    must therefore win. Do not invent the field for providers that did not
+    declare it: their reasoning vocabulary may be different or unsupported.
+    """
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    if not isinstance(reasoning_config, dict):
+        return
+
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    extra_body = overrides.get("extra_body")
+    if not isinstance(extra_body, dict) or not isinstance(extra_body.get("reasoning"), dict):
+        return
+
+    merged_reasoning = dict(extra_body["reasoning"])
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if reasoning_config.get("enabled") is False or effort == "none":
+        merged_reasoning.update({"enabled": False, "effort": "none"})
+    elif effort:
+        merged_reasoning.update({"enabled": True, "effort": effort})
+    else:
+        return
+
+    merged_extra_body = dict(extra_body)
+    merged_extra_body["reasoning"] = merged_reasoning
+    overrides["extra_body"] = merged_extra_body
+    agent.request_overrides = overrides
+
+
 def _normalize_run_budget_seconds(value) -> Optional[float]:
     """Normalize a wall-clock run budget value to a positive float or None.
 
@@ -2654,6 +2687,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _apply_reasoning_config_to_request_overrides(agent)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

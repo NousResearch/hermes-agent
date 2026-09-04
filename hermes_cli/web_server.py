@@ -13328,7 +13328,10 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                             "this provider may require a manually-registered OAuth client."
                         )
                     _save_mcp_server(flow.server_name, cfg)
-                    flow.tools = [{"name": t, "description": d} for t, d in tools]
+                    flow.tools = [
+                        {"name": t, "title": title, "description": d}
+                        for t, title, d in tools
+                    ]
                     flow.mark_approved()
                     if flow.reconnect_live:
                         from tools.mcp_tool import reconnect_mcp_server

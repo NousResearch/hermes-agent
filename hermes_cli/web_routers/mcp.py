@@ -313,13 +313,18 @@ async def test_mcp_server(
             {
                 "name": t,
                 "description": d,
+                # Additive-optional, same convention as schema_chars below:
+                # only present when the server actually set one, so a plain
+                # probe with no titles produces byte-identical output to
+                # before this field existed — old renderers see nothing new.
+                **({"title": title} if title else {}),
                 **(
                     {"schema_chars": schema_chars[t]}
                     if isinstance(schema_chars.get(t), int)
                     else {}
                 ),
             }
-            for t, d in tools
+            for t, title, d in tools
         ],
         "prompts": details.get("prompts", 0),
         "resources": details.get("resources", 0),

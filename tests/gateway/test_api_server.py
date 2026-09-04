@@ -4562,6 +4562,37 @@ class TestConversationParameter:
                 assert len(history) > 0
 
     @pytest.mark.asyncio
+    async def test_empty_conversation_history_does_not_clear_previous_response_chain(self, adapter):
+        """Client default [] must preserve a previous_response_id transcript."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "First response", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                first = await cli.post("/v1/responses", json={"input": "first"})
+                assert first.status == 200
+                first_id = (await first.json())["id"]
+
+                mock_run.return_value = (
+                    {"final_response": "Second response", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                second = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "second",
+                        "previous_response_id": first_id,
+                        "conversation_history": [],
+                    },
+                )
+                assert second.status == 200
+                history = mock_run.call_args_list[1].kwargs["conversation_history"]
+                assert history
+                assert history[0]["content"] == "first"
+
+    @pytest.mark.asyncio
     async def test_conversation_and_previous_response_id_conflict(self, adapter):
         """Cannot use both conversation and previous_response_id."""
         app = _create_app(adapter)

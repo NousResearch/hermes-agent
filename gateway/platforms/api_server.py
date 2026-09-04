@@ -42,6 +42,7 @@ Requires:
 import asyncio
 import errno
 import hashlib
+import inspect
 import hmac
 import json
 from contextlib import contextmanager, nullcontext
@@ -1876,7 +1877,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
                 status=403,
             )
-
         from gateway.session import _is_path_unsafe
 
         if re.search(r'[\r\n\x00]', raw) or _is_path_unsafe(raw):
@@ -3127,6 +3127,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: str,
         *,
         fail_closed: bool = False,
+        resolve_compaction: bool = True,
     ) -> List[Dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
@@ -3135,8 +3136,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return []
         try:
             resolved_id = session_id
-            if hasattr(db, "resolve_resume_session_id"):
-                resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+            resolve_session = getattr(db, "resolve_resume_session_id", None)
+            if resolve_compaction and callable(resolve_session):
+                candidate = await asyncio.to_thread(resolve_session, session_id)
+                if isinstance(candidate, str) and candidate:
+                    resolved_id = candidate
             return await asyncio.to_thread(db.get_messages_as_conversation, resolved_id)
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
@@ -4971,7 +4975,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Accept explicit conversation_history from the request body.
         # This lets stateless clients supply their own history instead of
         # relying on server-side response chaining via previous_response_id.
-        # Precedence: explicit conversation_history > previous_response_id.
+        # A non-empty explicit history takes precedence over continuation.
         conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
@@ -6217,9 +6221,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, Any]] = []
-        explicit_history_provided = "conversation_history" in body
+        explicit_history_is_authoritative = False
         raw_history = body.get("conversation_history")
-        if explicit_history_provided:
+        if "conversation_history" in body:
             if not isinstance(raw_history, list):
                 return web.json_response(
                     _openai_error("'conversation_history' must be an array of message objects"),
@@ -6238,9 +6242,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history.append({"role": str(entry["role"]), "content": entry_content})
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+            # An empty array is a common client default, not an instruction to
+            # replace an existing transcript. Only non-empty input overrides
+            # response/session continuation and receives explicit persistence.
+            explicit_history_is_authoritative = bool(raw_history)
 
         stored_session_id = None
-        if not explicit_history_provided and previous_response_id:
+        # Preserve previous_response_id/session continuation when callers send
+        # conversation_history: [] as a client default.
+        if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))
@@ -6250,8 +6260,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
-        # Only fires when no explicit history was provided.
-        if not conversation_history and len(input_messages) > 1:
+        # Only fires when no authoritative explicit history was provided.
+        if (
+            not explicit_history_is_authoritative
+            and not conversation_history
+            and len(input_messages) > 1
+        ):
             for msg in input_messages[:-1]:
                 if msg.get("role") and _content_has_visible_payload(msg.get("content")):
                     conversation_history.append(msg)
@@ -6294,6 +6308,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         session_id = provided_session_id or body_session_id or stored_session_id
+        # Body session IDs identify/correlate the run but do not authorize
+        # loading prior conversation history.  Header IDs opt into resume.
         continuation_session_id = provided_session_id
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
@@ -6366,13 +6382,36 @@ class APIServerAdapter(BasePlatformAdapter):
         if cached_response is not None:
             return cached_response
 
-        response_session_id = session_id
-        if not conversation_history and continuation_session_id:
+        if (
+            not explicit_history_is_authoritative
+            and not conversation_history
+            and continuation_session_id
+        ):
             try:
-                conversation_history = await self._conversation_history_for_session(
-                    continuation_session_id,
-                    fail_closed=True,
-                )
+                session_db = await self._ensure_session_db_async()
+                if session_db is not None:
+                    resolve_session = getattr(
+                        session_db, "resolve_resume_session_id", None
+                    )
+                    if callable(resolve_session):
+                        resolved_session_id = await asyncio.to_thread(
+                            resolve_session, continuation_session_id
+                        )
+                        if isinstance(resolved_session_id, str) and resolved_session_id:
+                            continuation_session_id = resolved_session_id
+                            session_id = resolved_session_id
+                history_loader = self._conversation_history_for_session
+                if inspect.ismethod(history_loader):
+                    conversation_history = await history_loader(
+                        continuation_session_id,
+                        fail_closed=True,
+                        resolve_compaction=False,
+                    )
+                else:
+                    conversation_history = await history_loader(
+                        continuation_session_id,
+                        fail_closed=True,
+                    )
             except Exception:
                 return web.json_response(
                     _openai_error(
@@ -6381,6 +6420,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=503,
                 )
+        response_session_id = session_id
         cached_response = _cached_idempotency_response()
         if cached_response is not None:
             return cached_response
@@ -6536,7 +6576,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 task_id=effective_task_id,
                             )
                             if (
-                                explicit_history_provided
+                                explicit_history_is_authoritative
                                 and isinstance(r, dict)
                                 and isinstance(r.get("messages"), list)
                             ):

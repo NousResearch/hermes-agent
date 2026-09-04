@@ -17,9 +17,10 @@ import logging
 import socket as _socket
 import time
 from typing import Any, Dict, List, Optional
+from xml.etree import ElementTree as _stdlib_et
+
 # Security: parse untrusted, pre-auth request bodies (WeCom callbacks) with
 # defusedxml to block billion-laughs / entity-expansion (and XXE) DoS. The
-# parsing API (fromstring) is a drop-in for the stdlib calls used below;
 # response-building XML lives in wecom_crypto.py and is not parsed here.
 try:
     import defusedxml.ElementTree as ET
@@ -397,7 +398,12 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return crypt.decrypt(msg_signature, timestamp, nonce, encrypt).decode("utf-8")
 
     def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
-        root = ET.fromstring(xml_text)
+        # This payload has already passed the defusedxml-gated, pre-auth
+        # envelope parser and WeCom signature/decryption. Keep that hostile
+        # ingress boundary strict while allowing event conversion itself to
+        # work when the optional ``wecom`` extra is not installed (notably in
+        # direct callers and the base gateway test environment).
+        root = _stdlib_et.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
         # Silently acknowledge lifecycle events.
         if msg_type == "event":

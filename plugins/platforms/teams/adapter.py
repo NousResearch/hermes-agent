@@ -76,8 +76,11 @@ def _probe_teams_sdk_available() -> bool:
             return False
         return importlib.util.find_spec("microsoft_teams.apps") is not None
     except (ValueError, ModuleNotFoundError, ImportError):
-        # Test stubs may inject a module without ``__spec__``.
-        return "microsoft_teams.apps" in _sys.modules
+        # A parent namespace without an import spec cannot prove that a cached
+        # ``microsoft_teams.apps`` belongs to it. The child may be stale from a
+        # previously removed SDK/module tree, so fail closed and let the lazy
+        # binder perform the authoritative import when Teams is enabled.
+        return False
 
 
 TEAMS_SDK_AVAILABLE = _probe_teams_sdk_available()

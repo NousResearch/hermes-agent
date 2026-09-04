@@ -1,26 +1,41 @@
 """Import-safety tests for the Discord gateway adapter."""
 
-import builtins
-import importlib
+import subprocess
 import sys
+import textwrap
 
 
 class TestDiscordImportSafety:
-    def test_module_imports_even_when_discord_dependency_is_missing(self, monkeypatch):
-        original_import = builtins.__import__
+    def test_module_imports_even_when_discord_dependency_is_missing(self):
+        """Probe the missing-dependency import in an isolated module cache.
 
-        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == "discord" or name.startswith("discord."):
-                raise ImportError("discord unavailable for test")
-            return original_import(name, globals, locals, fromlist, level)
+        Re-importing a dotted module in-process updates both ``sys.modules``
+        and the parent package's ``adapter`` attribute. Restoring only the
+        former leaves later Discord tests pointing at the simulated-missing
+        module even though discord.py is installed.
+        """
+        probe = textwrap.dedent(
+            """
+            import builtins
+            import importlib
 
-        # Purge the cached module so the import below actually re-runs the
-        # module body with discord.py simulated-missing.
-        monkeypatch.delitem(sys.modules, "plugins.platforms.discord.adapter", raising=False)
-        monkeypatch.delitem(sys.modules, "plugins.platforms.discord", raising=False)
-        monkeypatch.setattr(builtins, "__import__", fake_import)
+            original_import = builtins.__import__
 
-        module = importlib.import_module("plugins.platforms.discord.adapter")
+            def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "discord" or name.startswith("discord."):
+                    raise ImportError("discord unavailable for test")
+                return original_import(name, globals, locals, fromlist, level)
 
-        assert module.DISCORD_AVAILABLE is False
-        assert module.discord is None
+            builtins.__import__ = fake_import
+            module = importlib.import_module("plugins.platforms.discord.adapter")
+            assert module.DISCORD_AVAILABLE is False
+            assert module.discord is None
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr

@@ -45,13 +45,14 @@ class TestPollingHealthConfirmation:
         """Only the FIRST round-trip of a generation logs — a quiet evening
         must not spam one INFO per getUpdates poll."""
         a = _bare_adapter()
-        a._record_polling_progress(1)  # first — logs
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+            a._record_polling_progress(1)  # first — logs
             a._record_polling_progress(1)  # second — silent
             a._record_polling_progress(1)  # third — silent
-        assert not [
+        health_logs = [
             rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()
         ]
+        assert len(health_logs) == 1
 
     def test_new_generation_logs_again(self, caplog):
         """A reconnect starts a new generation with a fresh event; its first

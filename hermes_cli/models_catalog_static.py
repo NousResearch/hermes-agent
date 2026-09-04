@@ -19,13 +19,19 @@ _OPENROUTER_DESCRIPTIONS = {
     "moonshotai/kimi-k3": "recommended",
     "z-ai/glm-5.2": "default",
     "openrouter/pareto-code": "auto-routes to cheapest coder meeting openrouter.min_coding_score",
+    "openai/gpt-6-astra-fast": "2x price, priority tier",
+    "openai/gpt-6-astra-flex": "0.5x price, flex tier",
+    "openai/gpt-6-astra-pro-fast": "2x price, priority tier",
+    "openai/gpt-6-astra-pro-flex": "0.5x price, flex tier",
 }
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
     for mid in (
         "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5",
         "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8-fast",
-        "anthropic/claude-sonnet-5", "anthropic/claude-haiku-4.5", "openai/gpt-5.6-sol", "openai/gpt-5.6-sol-pro",
+        "anthropic/claude-sonnet-5", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra", "openai/gpt-6-astra-fast",
+        "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro", "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-sol-pro",
         "openai/gpt-5.6-terra", "openai/gpt-5.6-terra-pro", "openai/gpt-5.6-luna", "openai/gpt-5.6-luna-pro",
         "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.6", "deepseek/deepseek-v4-pro",

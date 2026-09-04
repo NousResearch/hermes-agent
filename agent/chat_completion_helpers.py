@@ -460,6 +460,64 @@ def _provider_stream_error_from_text(
     return None
 
 
+def _is_interrupted_placeholder_text(text: Optional[str]) -> bool:
+    """True when *text* is exactly the internal interrupted-turn sentinel.
+
+    The send-time heal path writes ``[response interrupted]`` (22 chars) onto
+    empty non-final wire copies; a stream cut mid-sentinel surfaces the same
+    bytes without the closing bracket (21 chars). Either shape as a complete
+    final text with ``finish_reason=stop`` is transport/stream corruption,
+    never a legitimate model answer (#102566). Longer texts that merely
+    contain the sentinel are NOT matched — quoting the string (e.g. while
+    discussing this bug) must keep working.
+    """
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+    stripped = (text or "").strip()
+    return stripped in (
+        _INTERRUPTED_PLACEHOLDER,
+        _INTERRUPTED_PLACEHOLDER[:-1],
+    )
+
+
+def _provider_stream_placeholder_error(
+    full_content: Optional[str],
+    finish_reason: Optional[str],
+    *,
+    has_tool_calls: bool,
+) -> Optional[ProviderStreamError]:
+    """Convert a sentinel-only final stream text into a retryable stream error.
+
+    When a normal (``finish_reason=stop``) tool-free stream assembles to
+    exactly the internal ``[response interrupted]`` sentinel, the bytes came
+    from the transport — proxy error-injection or an interrupted-but-resumed
+    stream — not from the model (#102566). Persisting them as the visible
+    answer loses the real reply and pollutes the session; raising lets the
+    retry machinery refetch instead of freezing the placeholder.
+    """
+    if has_tool_calls:
+        return None
+    if str(finish_reason or "").lower() != "stop":
+        return None
+    if not _is_interrupted_placeholder_text(full_content or ""):
+        return None
+    return ProviderStreamError(
+        status_code=None,
+        body=_provider_error_body(
+            {
+                "code": "placeholder_stream_corruption",
+                "message": (
+                    "Stream delivered only the internal interrupted-turn "
+                    "placeholder as final text; treating as transient stream "
+                    "corruption, not a model answer."
+                ),
+            },
+            None,
+        ),
+        raw_text=full_content or "",
+    )
+
+
 def estimate_request_context_tokens(api_payload: Any) -> int:
     """Estimate context/load tokens from an API payload, dict or messages list.
 
@@ -4577,7 +4635,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
                 content_parts.append(delta_content)
-                if not tool_calls_acc:
+                if not tool_calls_acc and _is_interrupted_placeholder_text(delta_content):
+                    # #102566: sentinel bytes injected by the transport are not
+                    # model output — deliver nothing (no display, no streamed
+                    # buffer, no delivered flag). The bytes stay in
+                    # content_parts so the end-of-stream guard below converts
+                    # the turn into a retryable stream error instead of
+                    # persisting the placeholder as the visible answer.
+                    logger.debug(
+                        "Suppressing interrupted-placeholder stream delta "
+                        "(transport corruption, not model output)"
+                    )
+                elif not tool_calls_acc:
                     if pending_text_parts or _provider_stream_text_may_be_sse(delta_content):
                         pending_text_parts.append(delta_content)
                         pending_text = "".join(pending_text_parts)
@@ -4879,6 +4948,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         )
         if provider_stream_error is not None:
             raise provider_stream_error
+        placeholder_stream_error = _provider_stream_placeholder_error(
+            full_content,
+            effective_finish_reason,
+            has_tool_calls=bool(mock_tool_calls),
+        )
+        if placeholder_stream_error is not None:
+            raise placeholder_stream_error
         _flush_pending_stream_text()
 
         full_reasoning = "".join(reasoning_parts) or None
@@ -5778,6 +5854,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _partial_text = (
                 getattr(agent, "_current_streamed_assistant_text", "") or ""
             ).strip() or None
+            if _partial_text is not None and _is_interrupted_placeholder_text(_partial_text):
+                # #102566: sentinel bytes split across deltas escape the
+                # per-delta suppression above (no single fragment matches),
+                # so the streamed buffer can still assemble to exactly the
+                # placeholder. Never freeze those bytes as the stub answer:
+                # an EMPTY stub is skipped from history by the truncation
+                # path (see NOTE below), keeping the session clean while
+                # the continuation machinery still fires.
+                _partial_text = None
 
             # Append a user-visible warning if tool calls were dropped so
             # the user and model both know what was attempted.

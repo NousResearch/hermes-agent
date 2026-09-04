@@ -781,6 +781,17 @@ def find_profile_gateway_processes(exclude_pids: set | None = None, *, strict: b
     return processes
 
 
+_TRANSIENT_SERVICE_STATES = frozenset(
+    {
+        "stop_pending",
+        "start_pending",
+        "continue_pending",
+        "pause_pending",
+        "paused",
+    }
+)
+
+
 def find_windows_gateway_services(
     *, psutil_module=None, profile_processes: list[ProfileGatewayProcess] | None = None
 ) -> list[WindowsGatewayService]:
@@ -816,6 +827,12 @@ def find_windows_gateway_services(
             if not service_name:
                 raise RuntimeError("SCM service has an empty name")
             if service_status == "stopped":
+                continue
+            if service_status in _TRANSIENT_SERVICE_STATES:
+                # A service mid-transition (e.g. BcastDVRUserService stuck in
+                # stop_pending) cannot be supervising a live gateway tree, and
+                # its PID is not yet meaningful. Skip it instead of aborting
+                # the whole update on an unrelated Windows service.
                 continue
             if service_status != "running":
                 if service_pid > 0:

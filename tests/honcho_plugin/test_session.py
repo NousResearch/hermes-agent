@@ -1248,65 +1248,6 @@ class TestGetSessionContextFallback:
 
 
 class TestContextTokensForwarded:
-    """Honcho picks short vs long summary from the tokens= budget.
-
-    Regression: get_prefetch_context and get_session_context called
-    context(summary=True) without tokens=, so a configured contextTokens
-    cap was ignored and every turn got honcho_chat_summary_long.
-    """
-
-    def _manager(self, context_tokens=4000):
-        mgr = HonchoSessionManager(context_tokens=context_tokens)
-        session = HonchoSession(
-            key="cli:test",
-            user_peer_id="robert",
-            assistant_peer_id="hermes",
-            honcho_session_id="sess-1",
-        )
-        mgr._cache[session.key] = session
-        honcho_session = MagicMock()
-        honcho_session.context.return_value = SimpleNamespace(
-            summary=SimpleNamespace(content="short summary"),
-            peer_representation="rep",
-            peer_card=["fact"],
-            messages=[],
-        )
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
-        mgr._fetch_peer_context = MagicMock(
-            return_value={"representation": "", "card": []}
-        )
-        return mgr, session, honcho_session
-
-    def test_get_prefetch_context_passes_context_tokens_to_summary_call(self):
-        mgr, session, honcho_session = self._manager()
-
-        result = mgr.get_prefetch_context(session.key)
-
-        assert result["summary"] == "short summary"
-        honcho_session.context.assert_called_once_with(summary=True, tokens=4000)
-
-    def test_get_session_context_passes_context_tokens_to_cached_session_call(self):
-        """Sweeper gap on #70951: the cached session-level context() path
-        must forward tokens= alongside its peer arguments."""
-        mgr, session, honcho_session = self._manager()
-
-        result = mgr.get_session_context(session.key, peer="user")
-
-        assert result["summary"] == "short summary"
-        honcho_session.context.assert_called_once_with(
-            summary=True,
-            tokens=4000,
-            peer_target=session.user_peer_id,
-            peer_perspective=session.assistant_peer_id,
-        )
-
-
-# ---------------------------------------------------------------------------
-# contextTokens must reach session.context() (salvage of #70951 via #92964)
-# ---------------------------------------------------------------------------
-
-
-class TestContextTokensForwarded:
     """Honcho picks the short or long summary from the tokens= budget. get_prefetch_context and
     get_session_context called context(summary=True) without it, so a configured contextTokens
     cap was ignored and every turn got the long summary."""

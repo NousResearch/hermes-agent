@@ -1,7 +1,12 @@
 import { act, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $composerSuggestionsBySession, type ComposerSuggestion, offerSuggestions } from '@/store/composer-suggestions'
+import {
+  $composerSuggestionsBySession,
+  type ComposerSuggestion,
+  offerSuggestions,
+  setComposerSuggestionsEnabled
+} from '@/store/composer-suggestions'
 
 import { SuggestionPills } from './suggestion-pills'
 
@@ -50,6 +55,7 @@ const click = async (container: HTMLElement) => {
 }
 
 afterEach(() => {
+  setComposerSuggestionsEnabled(true)
   $composerSuggestionsBySession.set({})
 })
 
@@ -115,6 +121,40 @@ describe('SuggestionPills', () => {
 
     expect(labels(container)).toEqual([])
     expect(flow.cancelled()).toBe(true)
+  })
+
+  it('keeps a withdrawn invocation cancelled when the same key is immediately re-offered', async () => {
+    const first = pill('github')
+    const second = pill('github')
+    const { container } = render(<SuggestionPills sessionId="s1" />)
+
+    act(() => offerSuggestions('s1', 'mcp', [first.suggestion]))
+    await click(container)
+
+    act(() => offerSuggestions('s1', 'mcp', []))
+    expect(first.flow.cancelled()).toBe(true)
+
+    act(() => offerSuggestions('s1', 'mcp', [second.suggestion]))
+    await click(container)
+
+    expect(first.flow.cancelled()).toBe(true)
+    expect(second.flow.cancelled()).toBe(false)
+  })
+
+  it('hides existing and newly offered pills while the preference is disabled', () => {
+    const { container } = render(<SuggestionPills sessionId="s1" />)
+
+    act(() => offerSuggestions('s1', 'mcp', [pill('github').suggestion]))
+    expect(labels(container)).toEqual(['Add github'])
+
+    act(() => setComposerSuggestionsEnabled(false))
+    expect(labels(container)).toEqual([])
+
+    act(() => offerSuggestions('s1', 'mcp', [pill('linear').suggestion]))
+    expect(labels(container)).toEqual([])
+
+    act(() => setComposerSuggestionsEnabled(true))
+    expect(labels(container)).toEqual(['Add linear'])
   })
 
   it('cancels in-flight work when the strip unmounts', async () => {

@@ -43,7 +43,7 @@ gateway:
     home_missing: "Não foi possível salvar o destino. Escolha uma conversa conectada e tente novamente."
     home_connector: "Este conector não pode verificar o destino principal. Use uma conversa nativa conectada."
     home_failed: "Não foi possível salvar o destino. Verifique as configurações do gateway e tente {command_prefix}sethome novamente."
-    home_saved: "Canal principal definido para entregas visíveis ao público desta conversa. O controle de conversas em grupo exige autorização separada e, em conversas compartilhadas, confirmação."
+    home_saved: "Canal principal definido para entregas visíveis ao público desta conversa. O controle de conversas em grupo exige autorização separada e, em conversas compartilhadas, confirmação. Envie {command_prefix}group para configurá-lo aqui."
 
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
   draining:         "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."

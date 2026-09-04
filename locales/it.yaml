@@ -43,7 +43,7 @@ gateway:
     home_missing: "Impossibile salvare la destinazione. Scegli una chat connessa e riprova."
     home_connector: "Questo connettore non può verificare la destinazione principale. Usa una chat nativa connessa."
     home_failed: "Impossibile salvare la destinazione. Controlla le impostazioni del gateway e riprova {command_prefix}sethome."
-    home_saved: "Canale principale impostato per consegne visibili al pubblico di questa chat. Il controllo delle chat di gruppo richiede un’autorizzazione separata e, nelle chat condivise, una conferma."
+    home_saved: "Canale principale impostato per consegne visibili al pubblico di questa chat. Il controllo delle chat di gruppo richiede un’autorizzazione separata e, nelle chat condivise, una conferma. Invia {command_prefix}group per configurarlo qui."
 
   approval_expired: "⚠️ Approvazione scaduta (l'agente non è più in attesa). Chiedi all'agente di riprovare."
   draining:         "⏳ Attendo il completamento di {count} agente/i attivo/i prima di riavviare..."

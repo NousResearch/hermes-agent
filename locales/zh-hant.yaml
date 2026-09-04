@@ -43,7 +43,7 @@ gateway:
     home_missing: "無法儲存主要聊天目標。請選擇已連線的聊天後重試。"
     home_connector: "此連接器無法驗證主要聊天目標。請使用已連線的原生聊天。"
     home_failed: "無法儲存主要聊天目標。請檢查閘道設定後重試 {command_prefix}sethome。"
-    home_saved: "已設定主要聊天傳送目標，此聊天的受眾可看到傳送內容。群聊控制需要另外授權，在共用聊天中還需要確認。"
+    home_saved: "已設定主要聊天傳送目標，此聊天的受眾可看到傳送內容。群聊控制需要另外授權，在共用聊天中還需要確認。傳送 {command_prefix}group 以在此設定控制。"
 
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."

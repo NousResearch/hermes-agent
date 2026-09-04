@@ -43,7 +43,7 @@ gateway:
     home_missing: "无法保存主聊天目标。请选择已连接的聊天后重试。"
     home_connector: "此连接器无法验证主聊天目标。请使用已连接的原生聊天。"
     home_failed: "无法保存主聊天目标。请检查网关设置后重试 {command_prefix}sethome。"
-    home_saved: "已设置主聊天投递目标，此聊天的受众可看到投递内容。群聊控制需要单独授权，在共享聊天中还需要确认。"
+    home_saved: "已设置主聊天投递目标，此聊天的受众可看到投递内容。群聊控制需要单独授权，在共享聊天中还需要确认。发送 {command_prefix}group 以在此设置控制。"
 
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
   draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."

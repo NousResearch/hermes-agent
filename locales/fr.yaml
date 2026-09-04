@@ -43,7 +43,7 @@ gateway:
     home_missing: "Impossible d’enregistrer la destination. Choisissez une discussion connectée et réessayez."
     home_connector: "Ce connecteur ne peut pas vérifier la destination principale. Utilisez une discussion native connectée."
     home_failed: "Impossible d’enregistrer la destination. Vérifiez les paramètres, puis relancez {command_prefix}sethome."
-    home_saved: "Destination principale définie : les livraisons seront visibles par l’audience de cette discussion. Le contrôle des discussions de groupe exige une autorisation distincte et, dans les discussions partagées, une confirmation."
+    home_saved: "Destination principale définie : les livraisons seront visibles par l’audience de cette discussion. Le contrôle des discussions de groupe exige une autorisation distincte et, dans les discussions partagées, une confirmation. Envoyez {command_prefix}group pour le configurer ici."
 
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining:         "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."

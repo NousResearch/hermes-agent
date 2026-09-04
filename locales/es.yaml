@@ -43,7 +43,7 @@ gateway:
     home_missing: "No se pudo guardar el destino. Elige un chat conectado e inténtalo otra vez."
     home_connector: "Este conector no puede verificar el destino principal. Usa un chat nativo conectado."
     home_failed: "No se pudo guardar el destino. Revisa la configuración de la pasarela y vuelve a ejecutar {command_prefix}sethome."
-    home_saved: "Canal principal configurado para entregas visibles para la audiencia de este chat. El control de chats de grupo requiere autorización independiente y, en chats compartidos, confirmación."
+    home_saved: "Canal principal configurado para entregas visibles para la audiencia de este chat. El control de chats de grupo requiere autorización independiente y, en chats compartidos, confirmación. Envía {command_prefix}group para configurarlo aquí."
 
   approval_expired: "⚠️ La aprobación ha caducado (el agente ya no está esperando). Pida al agente que lo intente de nuevo."
   draining:         "⏳ Esperando a que terminen {count} agente(s) activo(s) antes de reiniciar..."

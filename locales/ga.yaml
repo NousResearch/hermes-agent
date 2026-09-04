@@ -47,7 +47,7 @@ gateway:
     home_missing: "Níorbh fhéidir an ceann scríbe baile a shábháil. Roghnaigh comhrá ceangailte agus bain triail eile as."
     home_connector: "Ní féidir leis an gceanglóir seo an ceann scríbe baile a fhíorú. Úsáid comhrá dúchasach ceangailte."
     home_failed: "Níorbh fhéidir an ceann scríbe baile a shábháil. Seiceáil socruithe an gheata agus bain triail as {command_prefix}sethome arís."
-    home_saved: "Socraíodh an cainéal baile le haghaidh seachadtaí atá le feiceáil ag lucht léitheoireachta an chomhrá seo. Teastaíonn údarú ar leith chun comhráite grúpa a rialú agus deimhniú i gcomhráite comhroinnte."
+    home_saved: "Socraíodh an cainéal baile le haghaidh seachadtaí atá le feiceáil ag lucht léitheoireachta an chomhrá seo. Teastaíonn údarú ar leith chun comhráite grúpa a rialú agus deimhniú i gcomhráite comhroinnte. Seol {command_prefix}group chun na rialuithe a shocrú anseo."
 
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."

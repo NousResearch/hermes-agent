@@ -43,7 +43,7 @@ gateway:
     home_missing: "Das Heimziel konnte nicht gespeichert werden. Wähle einen verbundenen Chat und versuche es erneut."
     home_connector: "Dieser Konnektor kann das Heimziel nicht verifizieren. Verwende einen verbundenen nativen Chat."
     home_failed: "Das Heimziel konnte nicht gespeichert werden. Prüfe die Gateway-Einstellungen und versuche {command_prefix}sethome erneut."
-    home_saved: "Heimkanal für Zustellungen festgelegt, die das Publikum dieses Chats sehen kann. Gruppenchat-Steuerung benötigt eine separate Autorisierung und in geteilten Chats eine Bestätigung."
+    home_saved: "Heimkanal für Zustellungen festgelegt, die das Publikum dieses Chats sehen kann. Gruppenchat-Steuerung benötigt eine separate Autorisierung und in geteilten Chats eine Bestätigung. Sende {command_prefix}group, um die Steuerung hier einzurichten."
 
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."

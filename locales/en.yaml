@@ -53,7 +53,7 @@ gateway:
     home_missing: "Home could not be saved. Choose a connected chat and try again."
     home_connector: "This connector cannot verify a home destination. Use a connected native chat."
     home_failed: "Home could not be saved. Try {command_prefix}sethome again. If it keeps failing, ask the person who manages Hermes for help."
-    home_saved: "This is now your Home chat for scheduled updates and cross-chat messages. Send {command_prefix}group to set up Group Chat controls here."
+    home_saved: "This is now your Home chat for scheduled updates and cross-chat messages. Send {command_prefix}group to set up Group Chat controls. They need separate permission, and shared chats ask for confirmation before showing activity."
 
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."

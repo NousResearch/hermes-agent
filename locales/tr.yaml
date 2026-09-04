@@ -43,7 +43,7 @@ gateway:
     home_missing: "Ana hedef kaydedilemedi. Bağlı bir sohbet seçip yeniden deneyin."
     home_connector: "Bu bağlayıcı ana hedefi doğrulayamıyor. Bağlı bir yerel platform sohbeti kullanın."
     home_failed: "Ana hedef kaydedilemedi. Ağ geçidi ayarlarını kontrol edip {command_prefix}sethome komutunu yeniden deneyin."
-    home_saved: "Ana kanal, bu sohbetin izleyicilerinin görebileceği iletimler için ayarlandı. Grup sohbeti denetimi ayrı yetkilendirme ve paylaşılan sohbetlerde onay gerektirir."
+    home_saved: "Ana kanal, bu sohbetin izleyicilerinin görebileceği iletimler için ayarlandı. Grup sohbeti denetimi ayrı yetkilendirme ve paylaşılan sohbetlerde onay gerektirir. Burada ayarlamak için {command_prefix}group gönderin."
 
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."

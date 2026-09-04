@@ -43,7 +43,7 @@ gateway:
     home_missing: "Az alapértelmezett célt nem sikerült menteni. Válassz csatlakoztatott csevegést, és próbáld újra."
     home_connector: "Ez az összekötő nem tudja igazolni az alapértelmezett célt. Használj csatlakoztatott natív csevegést."
     home_failed: "Az alapértelmezett célt nem sikerült menteni. Ellenőrizd az átjáró beállításait, majd próbáld újra a {command_prefix}sethome parancsot."
-    home_saved: "Az alapértelmezett csatorna beállítva a csevegés közönsége által látható kézbesítésekhez. A csoportos csevegés vezérléséhez külön engedélyezés, megosztott csevegésben pedig megerősítés is kell."
+    home_saved: "Az alapértelmezett csatorna beállítva a csevegés közönsége által látható kézbesítésekhez. A csoportos csevegés vezérléséhez külön engedélyezés, megosztott csevegésben pedig megerősítés is kell. A beállításhoz küldd el a {command_prefix}group parancsot."
 
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."

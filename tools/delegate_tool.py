@@ -26,6 +26,7 @@ import re
 logger = logging.getLogger(__name__)
 import os
 import threading
+from pathlib import Path
 import time
 import weakref
 from concurrent.futures import (
@@ -457,7 +458,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
 
 # Model-facing control actions accepted by delegate_task(action=...).
 # "spawn" (or omitted) keeps the historical spawn semantics.
-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+_CONTROL_ACTIONS = frozenset({"list", "steer", "stop", "tail", "stream"})
 
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
@@ -525,8 +526,11 @@ def _handle_control_action(
     subagent_id: Optional[str],
     message: Optional[str],
     parent_agent: Any,
+    *,
+    lines: Optional[int] = None,
+    args: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Synchronous control plane for delegate_task: list/steer/stop.
+    """Synchronous control plane for delegate_task: list/steer/stop/tail/stream.
 
     Runs in-turn (never backgrounded) and only over subagents descended from
     *parent_agent* — the same registry the TUI overlay drives, but scoped so
@@ -636,7 +640,21 @@ def _handle_control_action(
             "message; re-delegate a follow-up task if more work is needed."
         )
 
-    return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
+    if action == "tail":
+        return _handle_tail_action(subagent_id, parent_agent, lines)
+
+    if action == "stream":
+        a = args or {}
+        return _handle_stream_action(
+            subagent_id,
+            parent_agent,
+            lines=lines,
+            kinds=a.get("kinds") if isinstance(a.get("kinds"), list) else None,
+            tool_name=a.get("tool_name") if isinstance(a.get("tool_name"), str) else None,
+            errors_only=bool(a.get("errors_only", False)),
+        )
+
+    return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, stop, tail, or stream.")
 
 
 def _extract_output_tail(
@@ -3964,7 +3982,7 @@ def delegate_task(
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(
-            normalized_action, subagent_id, message, parent_agent
+            normalized_action, subagent_id, message, parent_agent,
         )
     if normalized_action and normalized_action != "spawn":
         return tool_error(
@@ -5130,8 +5148,10 @@ def _build_top_level_description() -> str:
         "transcript paths, and the completed result (one consolidated message, "
         "results in task order) re-enters the conversation on its own. Do NOT "
         "wait or poll; continue other work. While children run, `action` "
-        "(list/steer/stop) controls them live — steer when a transcript shows "
-        "a child drifting.\n\n"
+        "(list/steer/stop/tail/stream) controls them live — steer when a transcript shows "
+        "a child drifting; tail to peek at one child's recent lines without "
+        "waiting on its completion message; stream for the same data parsed into "
+        "typed events you can grep or count.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
@@ -5288,13 +5308,19 @@ DELEGATE_TASK_SCHEMA = {
             # re-add to the schema.
             "action": {
                 "type": "string",
-                "enum": ["spawn", "list", "steer", "stop"],
+                "enum": ["spawn", "list", "steer", "stop", "tail", "stream"],
                 "description": (
                     "Default 'spawn'. Live control of running children: "
                     "'list' = ids/goals/status/transcripts; 'steer' = queue "
                     "course-correction text into one child (subagent_id + "
                     "message) without stopping it; 'stop' = end one child "
-                    "early (subagent_id; partial result still returns). "
+                    "early (subagent_id; partial result still returns); "
+                    "'tail' = return the last N lines (default 40) of one "
+                    "child's live transcript (subagent_id + lines) for "
+                    "in-flight visibility without waiting on completion; "
+                    "'stream' = same target, but the lines are parsed into "
+                    "typed events (kickoff/assistant/thinking/tool_start/"
+                    "tool_result/marker) for machine consumption. "
                     "Control actions return immediately; goal/tasks are "
                     "ignored unless spawning."
                 ),
@@ -5312,6 +5338,41 @@ DELEGATE_TASK_SCHEMA = {
                     "For action='steer': the course correction, appended to "
                     "the child's next tool result mid-run. Be directive and "
                     "specific."
+                ),
+            },
+            "lines": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+                "default": 40,
+                "description": (
+                    "For action='tail'/'stream': how many of the most-recent lines "
+                    "to return from the child's live transcript. Defaults to "
+                    "40; capped at 1000. Ignored for other actions."
+                ),
+            },
+            "kinds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "For action='stream': optional list of event kinds to "
+                    "include (kickoff, assistant, thinking, tool_start, "
+                    "tool_result, marker, raw). Defaults to all."
+                ),
+            },
+            "tool_name": {
+                "type": "string",
+                "description": (
+                    "For action='stream': optional filter; only events for "
+                    "this tool name are returned. Ignored for other actions."
+                ),
+            },
+            "errors_only": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "For action='stream': if true, only events with is_error=true "
+                    "are returned (tool results that failed). Ignored otherwise."
                 ),
             },
         },
@@ -5384,3 +5445,120 @@ registry.register(
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
+
+
+def _handle_tail_action(
+    subagent_id: Optional[str],
+    parent_agent: Any,
+    lines: Optional[int],
+) -> str:
+    "Return the last N lines of a live child's transcript (RFC #12)."
+    sid = (subagent_id or "").strip()
+    if not sid:
+        return tool_error(
+            "action='tail' requires subagent_id (from the spawn dispatch "
+            "response or action='list')."
+        )
+    with _active_subagents_lock:
+        record = _active_subagents.get(sid)
+    if record is None or not _owns_subagent_record(record, parent_agent):
+        return tool_error(
+            f"No live subagent '{sid}' in this conversation's spawn tree. It "
+            f"may have already finished (its result arrives as a normal "
+            f"completion message). Use action='list' to see live children."
+        )
+    agent = record.get("agent")
+    path_str = getattr(agent, "_live_transcript_path", None) if agent else None
+    if not path_str:
+        return json.dumps(
+            {
+                "action": "tail",
+                "subagent_id": sid,
+                "status": "no_transcript",
+                "note": (
+                    "This child has no live transcript (older dispatch or "
+                    "non-streaming backend). Tail is not available."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    path = Path(path_str)
+    if not path.exists():
+        return json.dumps(
+            {
+                "action": "tail",
+                "subagent_id": sid,
+                "status": "transcript_missing",
+                "transcript_path": path_str,
+            },
+            ensure_ascii=False,
+        )
+    try:
+        requested = int(lines) if lines is not None else 40
+    except (TypeError, ValueError):
+        requested = 40
+    requested = max(1, min(1000, requested))
+    try:
+        text_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return tool_error(f"Could not read transcript: {exc}")
+    tail = text_lines[-requested:]
+    return json.dumps(
+        {
+            "action": "tail",
+            "subagent_id": sid,
+            "transcript_path": path_str,
+            "lines_returned": len(tail),
+            "lines_requested": requested,
+            "lines": tail,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _handle_stream_action(
+    subagent_id: Optional[str],
+    parent_agent: Any,
+    *,
+    lines: Optional[int],
+    kinds: Optional[List[str]],
+    tool_name: Optional[str],
+    errors_only: bool,
+) -> str:
+    "Return the last N lines of a child's transcript parsed into typed events (RFC #03)."
+    tail_payload = json.loads(
+        _handle_tail_action(subagent_id, parent_agent, lines) or "{}"
+    )
+    if tail_payload.get("status") in {"no_transcript", "transcript_missing"}:
+        payload = dict(tail_payload)
+        payload["action"] = "stream"
+        return json.dumps(payload, ensure_ascii=False)
+    if "error" in tail_payload or "lines" not in tail_payload:
+        return json.dumps(tail_payload, ensure_ascii=False)
+    from tools.delegation_live_stream import filter_events, parse_lines, summarise
+    events = parse_lines(tail_payload["lines"])
+    filtered = filter_events(
+        events,
+        kinds=kinds,
+        tool_name=tool_name,
+        errors_only=errors_only,
+    )
+    summary = summarise(filtered)
+    return json.dumps(
+        {
+            "action": "stream",
+            "subagent_id": subagent_id,
+            "transcript_path": tail_payload.get("transcript_path"),
+            "lines_requested": tail_payload.get("lines_requested"),
+            "lines_returned": tail_payload.get("lines_returned"),
+            "filters": {
+                "kinds": kinds,
+                "tool_name": tool_name,
+                "errors_only": errors_only,
+            },
+            "event_count": len(filtered),
+            "summary": summary,
+            "events": [e.to_dict() for e in filtered],
+        },
+        ensure_ascii=False,
+    )

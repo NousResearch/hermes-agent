@@ -1127,7 +1127,35 @@ def find_windows_gateway_services(
         if profile_processes is None:
             profile_processes = find_profile_gateway_processes(strict=True)
         service_names_by_pid: dict[int, set[str]] = {}
-        indeterminate_services_by_pid: dict[int, list[tuple[str, object]]] = {}
+        # Transient states (STOP_PENDING/START_PENDING) are re-polled instead of
+        # raising immediately — an unrelated service cycling through them must
+        # not abort the update (#98378), mirroring update_cmd's
+        # _restore_windows_gateway_service. Genuine errors still fail closed.
+        transient_services_by_pid: dict[int, list[tuple[str, object]]] = {}
+
+        def _re_poll_service_status(current_service, current_status):
+            """Return a stable status, waiting out the transient state.
+
+            Polls only this one service (never the whole SCM) at 0.2s
+            intervals until a ~10s deadline. ``None`` means the service is
+            gone or became re-inspectable as stable/unknown at the deadline;
+            the caller then re-reads it through the normal path.
+            """
+            if current_status not in ("stop_pending", "start_pending"):
+                return current_status
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                time.sleep(0.2)
+                try:
+                    polled_status = current_service.status()
+                except FileNotFoundError:
+                    return None
+                except Exception:
+                    return current_status
+                if polled_status not in ("stop_pending", "start_pending"):
+                    return polled_status
+            return None
+
         for service in psutil_module.win_service_iter():
             try:
                 if all(
@@ -1150,11 +1178,26 @@ def find_windows_gateway_services(
                 raise RuntimeError("SCM service inspection failed") from exc
             if not service_name:
                 raise RuntimeError("SCM service has an empty name")
+            settled_status = _re_poll_service_status(service, service_status)
+            if settled_status is None:
+                try:
+                    data = service.as_dict()
+                    service_status = data.get("status")
+                    service_pid = int(data.get("pid") or 0)
+                except FileNotFoundError:
+                    # The service was deleted between enumeration and
+                    # inspection; it cannot still supervise a live gateway
+                    # tree.
+                    continue
+                except Exception as exc:
+                    raise RuntimeError("SCM service inspection failed") from exc
+            else:
+                service_status = settled_status
             if service_status == "stopped":
                 continue
             if service_status != "running":
                 if service_pid > 0:
-                    indeterminate_services_by_pid.setdefault(service_pid, []).append(
+                    transient_services_by_pid.setdefault(service_pid, []).append(
                         (service_name, service_status)
                     )
                 continue
@@ -1177,9 +1220,9 @@ def find_windows_gateway_services(
                 raise RuntimeError("Gateway process identity changed during SCM discovery")
             ancestor_pids = [int(parent.pid) for parent in gateway_process.parents()]
             for pid in ancestor_pids:
-                indeterminate_services = indeterminate_services_by_pid.get(pid, [])
-                if indeterminate_services:
-                    service_name, service_status = indeterminate_services[0]
+                transient_services = transient_services_by_pid.get(pid, [])
+                if transient_services:
+                    service_name, service_status = transient_services[0]
                     raise RuntimeError(
                         f"SCM service {service_name} has indeterminate status: "
                         f"{service_status}"

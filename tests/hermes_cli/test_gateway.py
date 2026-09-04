@@ -1187,11 +1187,136 @@ def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch
         Process=FakeProcess,
     )
 
+    # The transitional status persists past the bounded wait: fail-closed.
+    # time.sleep is called once before the first re-poll and time.monotonic()
+    # twice per loop iteration (while check + deadline), so two monotonic
+    # steps keep the loop alive for exactly one status probe before the
+    # deadline trips — the re-poll is exercised without a real 10s wait.
+    clock = iter([0.0, 0.0, 99.0, 99.0])
+    monkeypatch.setattr(gateway.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(gateway.time, "sleep", lambda *_a: None)
+
     with pytest.raises(RuntimeError, match="indeterminate status: stop_pending"):
         gateway.find_windows_gateway_services(
             psutil_module=fake_psutil,
             profile_processes=[profile],
         )
+
+
+def test_find_windows_gateway_services_waits_out_stop_pending_to_stopped(monkeypatch):
+    """A transient stop_pending ancestor that settles stopped must not abort discovery (#98378)."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name, pid):
+            self._name = name
+            self._pid = pid
+            self._statuses = iter(["stop_pending", "stopped"])
+
+        def name(self):
+            return self._name
+
+        def pid(self):
+            return self._pid
+
+        def status(self):
+            return next(self._statuses)
+
+        def as_dict(self):
+            return {"name": self._name, "pid": self._pid, "status": "stop_pending"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(100)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService("BcastDVRUserService_12345", 100)],
+        Process=FakeProcess,
+    )
+    monkeypatch.setattr(gateway.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(gateway.time, "sleep", lambda *_a: None)
+
+    # The settled-stopped service is ignored: discovery completes with no
+    # service ownership rather than raising and aborting the update.
+    assert gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil,
+        profile_processes=[profile],
+    ) == []
+
+
+def test_find_windows_gateway_services_stop_pending_settling_running_is_registered(
+    monkeypatch,
+):
+    """A stop_pending service that settles running registers normally, including in ancestry."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name, pid):
+            self._name = name
+            self._pid = pid
+            self._statuses = iter(["stop_pending", "running"])
+
+        def name(self):
+            return self._name
+
+        def pid(self):
+            return self._pid
+
+        def status(self):
+            return next(self._statuses)
+
+        def as_dict(self):
+            return {"name": self._name, "pid": self._pid, "status": "running"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(100)]
+
+        def children(self, recursive=False):
+            assert self.pid == 100
+            assert recursive is True
+            return [FakeProcess(300)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService("HermesGateway", 100)],
+        Process=FakeProcess,
+    )
+    monkeypatch.setattr(gateway.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(gateway.time, "sleep", lambda *_a: None)
+
+    # The service settles running BEFORE its descendant walk, so every
+    # identity timestamp is read live (pid 100 → 100.0, pid 300 → 300.0).
+    result = gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil,
+        profile_processes=[profile],
+    )
+
+    assert result == [
+        gateway.WindowsGatewayService(
+            name="HermesGateway",
+            profile="default",
+            service_pid=100,
+            gateway_pid=300,
+            descendant_pids=frozenset({300}),
+            descendant_identities=((300, 300.0),),
+            service_create_time=100.0,
+            gateway_create_time=300.0,
+        )
+    ]
 
 
 def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypatch):

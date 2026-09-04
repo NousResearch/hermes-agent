@@ -1742,6 +1742,16 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
 
+    # Snapshot root gateway pid/lock files to protect them from accidental deletion
+    # during profile teardown (#102790). The root gateway lives at the default
+    # HERMES_HOME and must not be affected by named-profile deletion.
+    from hermes_constants import get_hermes_home, get_default_hermes_root
+    default_root = get_default_hermes_root()
+    root_gateway_pid = default_root / "gateway.pid"
+    root_gateway_lock = default_root / "gateway.lock"
+    root_pid_existed = root_gateway_pid.exists()
+    root_lock_existed = root_gateway_lock.exists()
+
     # Show what will be deleted
     model, provider = _read_config_model(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
@@ -1884,6 +1894,12 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print("✓ Active profile reset to default")
     except Exception:
         pass
+
+    # Verify root gateway pid/lock files were not accidentally removed
+    if root_pid_existed and not root_gateway_pid.exists():
+        print(f"⚠ Root gateway pid file {root_gateway_pid} was removed during profile deletion!")
+    if root_lock_existed and not root_gateway_lock.exists():
+        print(f"⚠ Root gateway lock file {root_gateway_lock} was removed during profile deletion!")
 
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error

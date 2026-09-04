@@ -6,6 +6,8 @@ import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/de
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
+import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 export function delay(ms: number): Promise<void> {
@@ -113,14 +115,20 @@ export async function resumeStoredRuntimeSession(
   storedSessionId: string,
   deps: SessionRecoveryDeps
 ): Promise<null | string> {
-  const resolveProfile = deps.resolveProfile ?? defaultResolveProfile
-  const profile = await resolveProfile(storedSessionId)
+  // Single-flight per stored id: after a reconnect many surfaces discover the
+  // same dead runtime at once, and each independent session.resume mints a new
+  // runtime — every loser is an orphan for the reaper. Sharing one in-flight
+  // promise makes concurrent recoveries converge on ONE runtime.
+  const resumed = await singleFlightSessionResume(storedSessionId, async () => {
+    const resolveProfile = deps.resolveProfile ?? defaultResolveProfile
+    const profile = await resolveProfile(storedSessionId)
 
-  const resumed = await deps.requestGateway<{ session_id: string }>('session.resume', {
-    session_id: storedSessionId,
-    source: 'desktop',
-    omit_messages: true,
-    ...(profile ? { profile } : {})
+    return deps.requestGateway<{ session_id: string }>('session.resume', {
+      session_id: storedSessionId,
+      source: 'desktop',
+      omit_messages: true,
+      ...(profile ? { profile } : {})
+    })
   })
 
   return resumed?.session_id ?? null
@@ -163,6 +171,33 @@ export async function withSessionNotFoundResume<T>(
       throw err
     }
 
+    // A previous recovery for this stored session already minted a runtime
+    // that its caller drift-aborted away from. Reuse it before resuming
+    // again — re-minting would strand yet another runtime for the reaper.
+    const cachedRecoveredId = takeRecoveredRuntime(storedSessionId, sessionId)
+
+    if (cachedRecoveredId) {
+      const cachedDrift = deps.driftReason?.()
+
+      if (cachedDrift) {
+        // Still drifted: keep the runtime findable for whoever acts next.
+        registerRecoveredRuntime(storedSessionId, cachedRecoveredId)
+        throw new SessionRecoveryAborted(cachedDrift, cachedRecoveredId)
+      }
+
+      try {
+        deps.onRecovered?.(cachedRecoveredId)
+
+        return { recovered: true, result: await call(cachedRecoveredId), sessionId: cachedRecoveredId }
+      } catch (cachedErr) {
+        // The cached runtime died in the meantime; fall through to a fresh
+        // resume only for the same stale-session class, otherwise surface it.
+        if (!isSessionNotFoundError(cachedErr)) {
+          throw cachedErr
+        }
+      }
+    }
+
     let recoveredId: null | string
 
     try {
@@ -178,6 +213,11 @@ export async function withSessionNotFoundResume<T>(
     const drift = deps.driftReason?.()
 
     if (drift) {
+      // Do NOT abandon the freshly-minted runtime: adoption is wrong here
+      // (the user moved on), so record it in the stored->runtime recovery
+      // cache. The next action targeting this stored session reuses it
+      // instead of minting another orphan (#91276).
+      registerRecoveredRuntime(storedSessionId, recoveredId)
       throw new SessionRecoveryAborted(drift, recoveredId)
     }
 
@@ -199,18 +239,22 @@ export async function withSessionNotFoundResume<T>(
  * blocks an IDLE target and reports "session busy" about a session doing
  * nothing, and the converse lets a background send fire mid-turn.
  *
- * The published per-session state is authoritative. Fall back to the
- * foreground flag only when the target has no state yet — a just-minted
- * session whose first publish hasn't landed.
+ * The published per-session state is authoritative. A known target with no
+ * slice yet is idle — never inherit another session's leftover foreground
+ * flag (focusing B while A runs). Fall back to the foreground flag only for
+ * a true draft (no session id), where that flag must be the focused view's
+ * busy, not a process-global lock.
  */
 export function isTargetSessionBusy(
   sessionStates: Record<string, { busy: boolean }>,
   sessionId: null | string,
   foregroundBusy: boolean
 ): boolean {
-  const state = sessionId ? sessionStates[sessionId] : undefined
+  if (!sessionId) {
+    return foregroundBusy
+  }
 
-  return state ? state.busy : foregroundBusy
+  return Boolean(sessionStates[sessionId]?.busy)
 }
 
 // Gateway JSON-RPC calls reject with "request timed out: <method>" when the
@@ -603,28 +647,45 @@ export function isVisibleUserMessage(message: ChatMessage): boolean {
   return message.role === 'user' && !message.hidden
 }
 
+/**
+ * A user turn whose submit failed: the optimistic bubble stayed in the
+ * transcript (followed by an assistant error), but the turn never reached the
+ * gateway, so it does not exist in backend history. Every backend-facing
+ * user-turn count must skip these or every later ordinal overshoots the
+ * gateway's index and the rewind mis-aims / gets refused (#41275, #86573).
+ */
+export function isFailedUserTurn(messages: readonly ChatMessage[], index: number): boolean {
+  const next = messages[index + 1]
+
+  return next?.role === 'assistant' && Boolean(next.error)
+}
+
+/**
+ * Indices of the user turns the backend also knows about — visible AND not
+ * failed. This is the ONE ordinal space shared with the gateway: truncate
+ * ordinals, ordinal→index resolution, survivor-rowId rebinding, and durable
+ * row-id resolution all iterate exactly this list.
+ */
+export function visibleUserMessageIndices(messages: readonly ChatMessage[]): number[] {
+  const indices: number[] = []
+
+  for (let index = 0; index < messages.length; index += 1) {
+    if (isVisibleUserMessage(messages[index]) && !isFailedUserTurn(messages, index)) {
+      indices.push(index)
+    }
+  }
+
+  return indices
+}
+
 export function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): number {
-  return messages.slice(0, end).filter(isVisibleUserMessage).length
+  return visibleUserMessageIndices(messages).filter(index => index < end).length
 }
 
 export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targetOrdinal: number): number {
-  let ordinal = 0
+  const indices = visibleUserMessageIndices(messages)
 
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]
-
-    if (!isVisibleUserMessage(message)) {
-      continue
-    }
-
-    if (ordinal === targetOrdinal) {
-      return index
-    }
-
-    ordinal += 1
-  }
-
-  return -1
+  return targetOrdinal >= 0 && targetOrdinal < indices.length ? indices[targetOrdinal] : -1
 }
 
 export interface SubmitTextOptions {
@@ -642,6 +703,10 @@ export interface SubmitTextOptions {
    *  body — model-facing scaffolding the UI must never render — so the slash
    *  dispatcher passes the invocation (`/work fix the leak`) here. */
   displayText?: string
+  /** `hidden` types the persisted user row (display_kind) so no bubble
+   *  renders anywhere — the off-screen path for widget intents. The agent
+   *  still receives the text as a normal user turn. */
+  displayKind?: 'hidden'
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

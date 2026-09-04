@@ -401,10 +401,10 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
 
   // What connecting actually means — the endpoint that will be contacted.
   // VS Code's trust dialog links the config it's about to trust; same idea.
-  // Directory servers know their URL statically; catalog entries state their
-  // provenance (the reviewed manifest carries the transport).
+  // Catalog entries carry their transport URL in the API response; the
+  // static directory remains a fallback rung for older backends.
   const known = directoryEntry(server)
-  const sourceLine = action === 'install' ? (known?.url ?? copy.catalogSource) : null
+  const sourceLine = action === 'install' ? (entry?.url ?? known?.url ?? copy.catalogSource) : null
   const brand = brandFor(server)
 
   const trailingIcon = brand ? (

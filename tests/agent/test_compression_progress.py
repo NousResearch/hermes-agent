@@ -7,7 +7,7 @@ estimated request token count without removing any rows — and surfaces a
 spurious ``Context length exceeded`` failure followed by an auto-reset of
 an otherwise healthy session.
 
-These tests pin the contract of ``_compression_made_progress``: a
+These tests pin the contract of ``compression_made_progress``: a
 row-count reduction OR a *material* (>5%) token-count reduction counts as
 progress.
 """
@@ -15,7 +15,7 @@ progress.
 from __future__ import annotations
 
 from agent.turn_context import (
-    _compression_made_progress,
+    compression_made_progress,
     _compression_warrants_another_preflight_pass,
 )
 
@@ -23,7 +23,7 @@ from agent.turn_context import (
 class TestCompressionMadeProgress:
     def test_rows_reduced_counts_as_progress(self):
         """Removing message rows is the obvious progress signal."""
-        assert _compression_made_progress(
+        assert compression_made_progress(
             orig_len=10, new_len=5, orig_tokens=1000, new_tokens=1000
         ) is True
 
@@ -31,7 +31,7 @@ class TestCompressionMadeProgress:
 
     def test_neither_moved_means_no_progress(self):
         """The genuine "stuck" case — same rows, same tokens, give up."""
-        assert _compression_made_progress(
+        assert compression_made_progress(
             orig_len=10, new_len=10, orig_tokens=1000, new_tokens=1000
         ) is False
 
@@ -43,11 +43,11 @@ class TestCompressionMadeProgress:
         progress — matching the overflow-handler retry path (#39550) so a
         marginal wobble can't keep the multi-pass loop spinning."""
         # 1000 -> 970 is a 3% drop, below the 5% floor.
-        assert _compression_made_progress(
+        assert compression_made_progress(
             orig_len=10, new_len=10, orig_tokens=1000, new_tokens=970
         ) is False
         # 1000 -> 940 is a 6% drop, above the floor.
-        assert _compression_made_progress(
+        assert compression_made_progress(
             orig_len=10, new_len=10, orig_tokens=1000, new_tokens=940
         ) is True
 

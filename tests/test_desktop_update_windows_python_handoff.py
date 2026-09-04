@@ -37,11 +37,30 @@ WINDOWS_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
 def _read() -> str:
-    return WINDOWS_PS1.read_text(encoding="utf-8")
+    # windows.ps1 is eol=crlf in .gitattributes, so checkouts materialize
+    # CRLF on disk (CI included). Normalize so the SelfTest-block strip's
+    # `\n}\n` anchors match regardless of the working-copy line endings.
+    return WINDOWS_PS1.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _handoff_source() -> str:
+    """The script with its ``-SelfTest*`` fixture blocks removed.
+
+    Those blocks exercise the hand-off machinery deliberately -- the pipe-drain
+    fixture runs a synthetic PowerShell step through ``Invoke-HermesStep`` to
+    prove the drain cannot deadlock (#90455) -- so they are not update steps
+    and the "must drive python.exe" rule does not apply to them. Each exits
+    before any marker/venv/desktop machinery runs.
+
+    Scoped here rather than allow-listing a target, so the rule stays absolute
+    for every real step. The non-greedy match ends at the first closing brace
+    in column 0; the blocks' own braces are all indented.
+    """
+    return re.sub(r"\nif \(\$SelfTest\w+\) \{.*?\n\}\n", "\n", _read(), flags=re.S)
 
 
 def test_invoke_hermes_step_calls_drive_python_not_the_shim() -> None:
-    source = _read()
+    source = _handoff_source()
 
     invocations = re.findall(r"Invoke-HermesStep\s+(\$\w+)", source)
     assert invocations, (

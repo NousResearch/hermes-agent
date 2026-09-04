@@ -1,15 +1,23 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
-import { copyTextToClipboard, renameDesktopPath, revealDesktopPath, trashDesktopPath } from '@/lib/desktop-fs'
+import {
+  copyTextToClipboard,
+  isDesktopFsRemoteMode,
+  renameDesktopPath,
+  revealDesktopPath,
+  trashDesktopPath
+} from '@/lib/desktop-fs'
+import { downloadGatewayMediaFile } from '@/lib/media'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 // Shared file-row actions for BOTH trees (the file browser + the review/git
-// tree): reveal, copy path, rename, delete. Rename/delete route through a single
-// dialog set (driven by this atom, rendered once by `FileActionDialogs`) instead
-// of one dialog per row. After a successful mutation we bump the workspace tick
-// so every git-/fs-mirroring surface refreshes.
+// tree): reveal, copy path, download (remote), rename, delete. Rename/delete
+// route through a single dialog set (driven by this atom, rendered once by
+// `FileActionDialogs`) instead of one dialog per row. After a successful
+// mutation we bump the workspace tick so every git-/fs-mirroring surface
+// refreshes.
 
 export interface FileActionTarget {
   isDirectory: boolean
@@ -62,6 +70,27 @@ export async function copyFilePath(path: string): Promise<void> {
     notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.pathCopied') })
   } catch (error) {
     notifyError(error, translateNow('common.copyFailed'))
+  }
+}
+
+/** Remote Files panel can list gateway files but Reveal/Rename/Delete are local-only.
+ *  Download is the local-copy affordance. Folders stay out — `/api/fs/download`
+ *  streams a single file. */
+export function shouldOfferRemoteFileDownload(isDirectory: boolean, remote = isDesktopFsRemoteMode()): boolean {
+  return remote && !isDirectory
+}
+
+export async function downloadRemoteFile(path: string): Promise<void> {
+  try {
+    const result = await downloadGatewayMediaFile(path)
+
+    if (result.canceled || !result.saved) {
+      return
+    }
+
+    notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.downloadSaved') })
+  } catch (error) {
+    notifyError(error, translateNow('fileMenu.downloadFailed'))
   }
 }
 

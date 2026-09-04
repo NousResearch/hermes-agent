@@ -14,9 +14,10 @@ vi.mock('@/hermes', () => ({
 }))
 
 import { $pinnedSessionIds } from '@/store/layout'
-import { $sessions } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 
-import { resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
+import { $unconfirmedPinWrites, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -32,6 +33,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   $sessions.set([])
+  $cronSessions.set([])
+  $messagingSessions.set([])
   $pinnedSessionIds.set([])
   // The mirror/pending/unconfirmed maps are module-global, so one test's
   // bookkeeping would otherwise suppress the next test's PATCH (or fence out
@@ -42,6 +45,8 @@ beforeEach(() => {
 
 afterEach(() => {
   $sessions.set([])
+  $cronSessions.set([])
+  $messagingSessions.set([])
   $pinnedSessionIds.set([])
 })
 
@@ -102,6 +107,51 @@ describe('watchSessionPins', () => {
 })
 
 describe('watchSessionPins remote pull', () => {
+  it('adopts and durably unpins a backend-only messaging pin', async () => {
+    $messagingSessions.set([row('photon-pin', { pinned: true, profile: 'messages', source: 'photon' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['photon-pin'])
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('photon-pin', false, 'messages')
+  })
+
+  it('adopts and durably unpins a backend-only cron pin', async () => {
+    $cronSessions.set([row('cron-pin', { pinned: true, profile: 'jobs', source: 'cron' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['cron-pin'])
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('cron-pin', false, 'jobs')
+  })
+
+  it('routes a cross-slice unpin to the active profile', async () => {
+    $activeGatewayProfile.set('work')
+
+    try {
+      $sessions.set([row('shared', { pinned: true, profile: 'default' })])
+      $messagingSessions.set([row('shared', { pinned: true, profile: 'work', source: 'photon' })])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['shared'])
+      patch.mockClear()
+
+      $pinnedSessionIds.set([])
+      await flush()
+
+      expect(patch).toHaveBeenCalledWith('shared', false, 'work')
+    } finally {
+      $activeGatewayProfile.set('default')
+    }
+  })
+
   it('adopts a pin another app made', async () => {
     $sessions.set([row('remote', { pinned: true })])
     await flush()
@@ -289,5 +339,67 @@ describe('watchSessionPins remote pull', () => {
 
     expect($pinnedSessionIds.get()).toContain('failed')
     expect(patch).toHaveBeenCalledWith('failed', true, undefined)
+  })
+
+  it('does not oscillate when two profiles share a session id with conflicting pins', async () => {
+    // The cross-profile list can hold the same durable id twice with opposite
+    // `pinned` flags (copied/imported profile DBs). A profile-blind pull would
+    // pin then unpin the id in one pass and re-fire reconcile forever,
+    // overflowing nanostores' listenerQueue (RangeError: Invalid array length).
+    $sessions.set([
+      row('shared', { profile: 'default', pinned: true }),
+      row('shared', { profile: 'hcoder', pinned: false })
+    ])
+    await flush()
+
+    // Deterministic: exactly one row wins, so the local set settles and no
+    // runaway re-entrant reconcile occurs.
+    expect($pinnedSessionIds.get()).toEqual(['shared'])
+  })
+
+  it('publishes the fence so the sidebar can ignore the rows it covers', async () => {
+    // The Pinned section falls back to the server flag for pins the local set
+    // doesn't hold. Without the fence it reads a just-unpinned row's stale
+    // pinned=true as a foreign pin and re-lists the session.
+    $sessions.set([row('exposed', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('exposed')
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect($unconfirmedPinWrites.get().has('exposed')).toBe(true)
+
+    // Server catches up; nothing left to fence.
+    $sessions.set([row('exposed', { pinned: false })])
+    await flush()
+
+    expect($unconfirmedPinWrites.get().has('exposed')).toBe(false)
+  })
+
+  it('keeps the published fence reference stable across an unrelated refresh', async () => {
+    // The sidebar memoizes the Pinned section on this set; a fresh Set every
+    // session refresh would rebuild the list for nothing.
+    $sessions.set([row('quiet')])
+    await flush()
+
+    const before = $unconfirmedPinWrites.get()
+    $sessions.set([row('quiet'), row('another')])
+    await flush()
+
+    expect($unconfirmedPinWrites.get()).toBe(before)
+  })
+
+  it('prefers the active gateway profile when duplicate ids disagree', async () => {
+    $activeGatewayProfile.set('hcoder')
+    $sessions.set([
+      row('shared', { profile: 'default', pinned: true }),
+      row('shared', { profile: 'hcoder', pinned: false })
+    ])
+    await flush()
+
+    // The active profile's row is authoritative, so the pin is dropped.
+    expect($pinnedSessionIds.get()).toEqual([])
+    $activeGatewayProfile.set('default')
   })
 })

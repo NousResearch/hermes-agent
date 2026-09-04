@@ -8,6 +8,8 @@ import os
 import shutil
 import subprocess
 import pytest
+
+from hermes_cli import worktree_ops
 from pathlib import Path
 
 
@@ -845,7 +847,7 @@ class TestWorktreeLockReaping:
         import cli
         wt = self._mk(cli, git_repo, "hermes-dead", pid=999999)
         # sanity: this is the accumulation bug — remove --force alone can't do it
-        assert cli._worktree_lock_is_live(str(git_repo), str(wt)) == "dead"
+        assert worktree_ops._worktree_lock_is_live(str(git_repo), str(wt)) == "dead"
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "dead-locked clean worktree should be unlocked + reaped"
 
@@ -899,19 +901,19 @@ class TestWorktreeLockPredicate:
             ["git", "worktree", "add", str(p), "-b", "hermes/hermes-x", "HEAD"],
             cwd=git_repo, capture_output=True,
         )
-        assert cli._worktree_lock_is_live(str(git_repo), str(p)) is None
+        assert worktree_ops._worktree_lock_is_live(str(git_repo), str(p)) is None
 
 
 
     def test_foreign_lock_reason_returns_dead(self, git_repo):
         import cli
         p = self._mk_locked(git_repo, "hermes-foreign", "some other tool")
-        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
+        assert worktree_ops._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
 
     def test_bad_repo_root_fails_safe_to_live(self, tmp_path):
         import cli
         # Not a git repo -> git query fails -> must report "live" (never delete)
-        assert cli._worktree_lock_is_live(str(tmp_path), str(tmp_path / "x")) == "live"
+        assert worktree_ops._worktree_lock_is_live(str(tmp_path), str(tmp_path / "x")) == "live"
 
 
 class TestWidenedPruner:
@@ -1021,7 +1023,7 @@ class TestWidenedPruner:
             ["git", "worktree", "add", str(p), "-b", "wt/noremote", "HEAD"],
             cwd=repo, capture_output=True,
         )
-        assert cli._worktree_commits_all_merged_upstream(str(p)) is False
+        assert worktree_ops._worktree_commits_all_merged_upstream(str(p)) is False
 
 
     # -- preserved-work warning ----------------------------------------------
@@ -1050,10 +1052,10 @@ class TestMergeVerdictCache:
         wt, sha = self._mk(git_repo, "hermes-cachehit", commit=True)
         self._merge_upstream(git_repo, sha)
 
-        uncached = cli._worktree_commits_all_merged_upstream(str(wt))
+        uncached = worktree_ops._worktree_commits_all_merged_upstream(str(wt))
         cache = {}
-        cold = cli._worktree_commits_all_merged_upstream(str(wt), cache=cache)
-        warm = cli._worktree_commits_all_merged_upstream(str(wt), cache=cache)
+        cold = worktree_ops._worktree_commits_all_merged_upstream(str(wt), cache=cache)
+        warm = worktree_ops._worktree_commits_all_merged_upstream(str(wt), cache=cache)
 
         assert cache, "verdict should have been memoized"
         assert uncached is cold is warm is True
@@ -1070,7 +1072,7 @@ class TestMergeVerdictCache:
         self._merge_upstream(git_repo, sha)
 
         cache = {}
-        assert cli._worktree_commits_all_merged_upstream(str(wt), cache=cache) is True
+        assert worktree_ops._worktree_commits_all_merged_upstream(str(wt), cache=cache) is True
         key_after_merge = set(cache)
 
         # New local-only work lands in the worktree.
@@ -1078,7 +1080,7 @@ class TestMergeVerdictCache:
         subprocess.run(["git", "add", "more.txt"], cwd=wt, capture_output=True)
         subprocess.run(["git", "commit", "-m", "new work"], cwd=wt, capture_output=True)
 
-        assert cli._worktree_commits_all_merged_upstream(str(wt), cache=cache) is False
+        assert worktree_ops._worktree_commits_all_merged_upstream(str(wt), cache=cache) is False
         assert set(cache) != key_after_merge, "moved HEAD must produce a new key"
 
 
@@ -1086,12 +1088,13 @@ class TestMergeVerdictCache:
     def test_cache_is_bounded(self, monkeypatch, tmp_path):
         """The cache file must not grow without limit across sessions."""
         import cli
+        from hermes_cli import worktree_ops
         path = tmp_path / "verdicts.json"
-        monkeypatch.setattr(cli, "_worktree_merge_cache_path", lambda: path)
-        monkeypatch.setattr(cli, "_WORKTREE_MERGE_CACHE_MAX", 10)
+        monkeypatch.setattr(worktree_ops, "_worktree_merge_cache_path", lambda: path)
+        monkeypatch.setattr(worktree_ops, "_WORKTREE_MERGE_CACHE_MAX", 10)
 
-        cli._save_worktree_merge_cache({f"sha{i}..sha{i}:20": True for i in range(50)})
-        assert len(cli._load_worktree_merge_cache()) == 10
+        worktree_ops._save_worktree_merge_cache({f"sha{i}..sha{i}:20": True for i in range(50)})
+        assert len(worktree_ops._load_worktree_merge_cache()) == 10
 
 
 class TestPruneParallelEquivalence:
@@ -1150,7 +1153,7 @@ class TestPruneParallelEquivalence:
         # Phase B — an independent board (distinct branch names so creation
         # can't collide with phase A's leftover refs) run through a real pool.
         try:
-            cli._worktree_merge_cache_path().unlink()
+            worktree_ops._worktree_merge_cache_path().unlink()
         except Exception:
             pass
         board2 = self._board(git_repo, tag="b")
@@ -1176,9 +1179,271 @@ class TestPruneParallelEquivalence:
             def __init__(self, *a, **kw):
                 raise RuntimeError("cannot start thread")
 
-        monkeypatch.setattr(cli.concurrent.futures, "ThreadPoolExecutor", _Boom)
+        import concurrent.futures
+
+        monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _Boom)
         monkeypatch.setattr(cli.os, "cpu_count", lambda: 8)
 
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "serial fallback must still reap the merged tree"
 
+
+
+class TestShallowCloneDeepening:
+    """Shallow installer clones (`git clone --depth 1`) break the unpushed
+    guard: the shallow boundary disconnects an older worktree HEAD from
+    origin/*, so `git log HEAD --not --remotes` misreports already-public
+    commits as unpushed and every aged worktree is preserved forever
+    (real incident: 21 of 25 hermes-* trees stuck on a default install).
+
+    These build a REAL shallow clone over file:// and verify the pruner
+    deepens it and reaps the false-positive tree.
+    """
+
+    @staticmethod
+    def _run(cmd, cwd):
+        return subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True,
+        )
+
+    @classmethod
+    def _upstream(cls, tmp_path):
+        """Upstream repo with one commit (A). Returns its path."""
+        up = tmp_path / "upstream"
+        up.mkdir()
+        cls._run(["git", "init", "-b", "main"], up)
+        cls._run(["git", "config", "user.email", "test@test.com"], up)
+        cls._run(["git", "config", "user.name", "Test"], up)
+        (up / "README.md").write_text("# upstream\n")
+        cls._run(["git", "add", "."], up)
+        cls._run(["git", "commit", "-m", "A"], up)
+        return up
+
+    @classmethod
+    def _advance_upstream(cls, up, name):
+        (up / f"{name}.txt").write_text(f"{name}\n")
+        cls._run(["git", "add", "."], up)
+        cls._run(["git", "commit", "-m", name], up)
+
+    @classmethod
+    def _shallow_clone(cls, tmp_path, up):
+        clone = tmp_path / "shallow-clone"
+        subprocess.run(
+            ["git", "clone", "--depth", "1", f"file://{up}", str(clone)],
+            capture_output=True, text=True,
+        )
+        cls._run(["git", "config", "user.email", "test@test.com"], clone)
+        cls._run(["git", "config", "user.name", "Test"], clone)
+        return clone
+
+    @staticmethod
+    def _age(path, hours=100):
+        import time
+        t = time.time() - (hours * 3600)
+        os.utime(path, (t, t))
+
+    def _stuck_worktree(self, tmp_path):
+        """Build the incident shape: shallow clone at A, worktree at A,
+        upstream advances to B, shallow fetch moves origin/main to B.
+        Worktree HEAD (A) is now disconnected from origin/main (B)."""
+        import cli
+
+        up = self._upstream(tmp_path)
+        clone = self._shallow_clone(tmp_path, up)
+        assert cli._repo_is_shallow(str(clone)), "fixture must start shallow"
+
+        wt = clone / ".worktrees" / "hermes-shallowstuck"
+        (clone / ".worktrees").mkdir()
+        self._run(
+            ["git", "worktree", "add", str(wt), "-b", "hermes/hermes-shallowstuck", "HEAD"],
+            clone,
+        )
+
+        self._advance_upstream(up, "B")
+        # Same shape as the updater: shallow fetch of the new tip only.
+        self._run(["git", "fetch", "--depth", "1", "origin", "main"], clone)
+        self._run(
+            ["git", "update-ref", "refs/remotes/origin/main", "FETCH_HEAD"], clone,
+        )
+        self._age(wt)
+        return up, clone, wt
+
+    def test_shallow_disconnect_reproduces_false_unpushed(self, tmp_path):
+        """Sanity: without deepening, the primitive misreports unpushed."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        assert cli._worktree_has_unpushed_commits(str(wt)), (
+            "expected the shallow disconnect to look like unpushed commits — "
+            "if this stops reproducing, the fixture no longer exercises the bug"
+        )
+
+    def test_repo_is_shallow_detection(self, tmp_path, git_repo):
+        import cli
+
+        up = self._upstream(tmp_path)
+        clone = self._shallow_clone(tmp_path, up)
+        assert cli._repo_is_shallow(str(clone)) is True
+        assert cli._repo_is_shallow(str(git_repo)) is False
+        assert cli._repo_is_shallow(str(tmp_path / "nonexistent")) is False
+
+    def test_deepen_connects_history_and_clears_false_unpushed(self, tmp_path):
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        assert cli._worktree_has_unpushed_commits(str(wt))
+
+        assert worktree_ops._deepen_shallow_repo(str(clone)) is True
+        assert not cli._repo_is_shallow(str(clone))
+        assert not cli._worktree_has_unpushed_commits(str(wt)), (
+            "after deepening, the worktree's HEAD is an ancestor of "
+            "origin/main and must no longer count as unpushed"
+        )
+
+    def test_pruner_deepens_and_reaps_stuck_worktree(self, tmp_path):
+        """E2E: the startup pruner itself unshallows and reaps the tree."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        cli._prune_stale_worktrees(str(clone))
+        assert not cli._repo_is_shallow(str(clone)), "pruner should deepen"
+        assert not wt.exists(), (
+            "deepened history proves the tree is merged/public — reap it"
+        )
+
+    def test_deepen_offline_fails_soft_and_preserves(self, tmp_path):
+        """Unreachable remote: deepen fails, verdicts stay conservative."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        # Point origin somewhere that does not exist.
+        self._run(
+            ["git", "remote", "set-url", "origin", f"file://{tmp_path}/gone"],
+            clone,
+        )
+        assert worktree_ops._deepen_shallow_repo(str(clone), timeout=30) is False
+        cli._prune_stale_worktrees(str(clone))
+        assert wt.exists(), (
+            "offline deepen failure must fall back to preserving the tree"
+        )
+
+    def test_deepen_noop_on_full_clone(self, git_repo):
+        import cli
+        assert worktree_ops._deepen_shallow_repo(str(git_repo)) is True
+
+    def test_real_unpushed_work_survives_deepening(self, tmp_path):
+        """Deepening must not turn genuinely unpushed commits reapable."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        (wt / "real-work.txt").write_text("novel\n")
+        self._run(["git", "add", "real-work.txt"], wt)
+        self._run(["git", "commit", "-m", "real unpushed work"], wt)
+        self._age(wt)
+
+        cli._prune_stale_worktrees(str(clone))
+        assert wt.exists(), (
+            "genuinely unpushed commit must survive even after deepening"
+        )
+
+
+class TestPrMergedEscapeHatch:
+    """Rebase-merged PRs whose diff changed during salvage defeat ``git
+    cherry`` (patch-id mismatch), so the pruner asks GitHub whether the
+    branch's PR is MERGED. These tests stub the ``gh`` binary on PATH — the
+    contract is about how the pruner consumes the answer, not about GitHub.
+
+    Contract:
+    - gh reports a merged PR + tree is clean  -> reaped
+    - gh reports no merged PR                 -> preserved
+    - gh missing/failing                      -> preserved (fail safe)
+    - dirty tree                              -> never reaped regardless of gh
+    """
+
+    _age = staticmethod(TestWorktreeLockReaping._age)
+
+    @staticmethod
+    def _mk_diverged(repo, name, age_h=100):
+        """Worktree with a commit NOT patch-equivalent to anything upstream."""
+        p = repo / ".worktrees" / name
+        (repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+        (p / "salvaged.txt").write_text("diff that was reworked during salvage\n")
+        subprocess.run(["git", "add", "salvaged.txt"], cwd=p, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "salvaged work"], cwd=p, capture_output=True)
+        TestPrMergedEscapeHatch._age(p, age_h)
+        return p
+
+    @staticmethod
+    def _stub_gh(tmp_path, monkeypatch, stdout='[{"number": 1}]', exit_code=0):
+        gh = tmp_path / "bin" / "gh"
+        gh.parent.mkdir(parents=True, exist_ok=True)
+        gh.write_text(f"#!/bin/sh\nprintf '%s' '{stdout}'\nexit {exit_code}\n")
+        gh.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{gh.parent}:{os.environ['PATH']}")
+
+    def test_merged_pr_tree_is_reaped(self, git_repo, tmp_path, monkeypatch):
+        import cli
+        wt = self._mk_diverged(git_repo, "hermes-rebase-merged")
+        assert worktree_ops._worktree_commits_all_merged_upstream(str(wt)) is False, (
+            "precondition: cherry must NOT consider this merged — the PR "
+            "check is the only thing that can reap it"
+        )
+        self._stub_gh(tmp_path, monkeypatch)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), (
+            "clean tree whose branch has a MERGED PR is merged work — reap it"
+        )
+
+    def test_no_merged_pr_preserved(self, git_repo, tmp_path, monkeypatch):
+        import cli
+        wt = self._mk_diverged(git_repo, "hermes-pr-open")
+        self._stub_gh(tmp_path, monkeypatch, stdout="[]")
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "no merged PR -> still unpushed work, preserve"
+
+    def test_gh_failure_fails_safe(self, git_repo, tmp_path, monkeypatch):
+        import cli
+        wt = self._mk_diverged(git_repo, "hermes-gh-down")
+        self._stub_gh(tmp_path, monkeypatch, stdout="", exit_code=1)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "gh failure must preserve the tree (fail safe)"
+
+    def test_dirty_tree_never_reaped_even_with_merged_pr(
+        self, git_repo, tmp_path, monkeypatch
+    ):
+        import cli
+        wt = self._mk_diverged(git_repo, "hermes-dirty-merged")
+        (wt / "uncommitted.txt").write_text("in-flight\n")
+        self._age(wt, 100)
+        self._stub_gh(tmp_path, monkeypatch)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dirty guard outranks the PR-merged verdict"
+
+    def test_merged_verdict_memoized_by_branch_and_head(
+        self, git_repo, tmp_path, monkeypatch
+    ):
+        import cli
+        wt = self._mk_diverged(git_repo, "hermes-memo")
+        self._stub_gh(tmp_path, monkeypatch)
+        cache: dict = {}
+        assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is True
+        keys = [k for k in cache if k.startswith("pr-merged:")]
+        assert len(keys) == 1 and cache[keys[0]] is True
+        # Break gh: a cached True verdict must not re-consult it.
+        self._stub_gh(tmp_path, monkeypatch, stdout="", exit_code=1)
+        assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is True
+
+    def test_negative_verdict_not_cached(self, git_repo, tmp_path, monkeypatch):
+        import cli
+        wt = self._mk_diverged(git_repo, "hermes-nocache-neg")
+        self._stub_gh(tmp_path, monkeypatch, stdout="[]")
+        cache: dict = {}
+        assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is False
+        assert not [k for k in cache if k.startswith("pr-merged:")], (
+            "False must not be memoized — the PR can merge later with the "
+            "same (branch, head) key"
+        )

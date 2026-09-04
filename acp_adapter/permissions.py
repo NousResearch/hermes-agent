@@ -8,22 +8,14 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from itertools import count
 from typing import Callable
 
-from acp.schema import (
-    AllowedOutcome,
-    PermissionOption,
-)
+from acp.schema import AllowedOutcome, PermissionOption
 
 logger = logging.getLogger(__name__)
 
-# Maps ACP permission option ids to Hermes approval result strings.
-# Option ids are stable across both the ``allow_permanent=True`` and
-# ``allow_permanent=False`` paths even though the option list differs.
+# ACP permission option id -> Hermes approval result. Ids are stable across the
+# ``allow_permanent=True`` and ``False`` paths even though the option list differs.
 _OPTION_ID_TO_HERMES = {
-    "allow_once": "once",
-    "allow_session": "session",
-    "allow_always": "always",
-    "deny": "deny",
-    "deny_always": "deny",
+    "allow_once": "once", "allow_session": "session", "allow_always": "always", "deny": "deny", "deny_always": "deny"
 }
 
 _PERMISSION_REQUEST_IDS = count(1)
@@ -33,64 +25,41 @@ def _permission_option_supports_kind(kind: str) -> bool:
     """Return whether the installed ACP SDK accepts a permission option kind."""
     try:
         PermissionOption(option_id="__probe__", kind=kind, name="probe")
+        return True
     except Exception:
         return False
-    return True
 
 
 def _build_permission_options(
-    *, allow_permanent: bool, smart_denied: bool = False,
+    *, allow_permanent: bool, allow_session: bool = True, smart_denied: bool = False,
 ) -> list[PermissionOption]:
     """Return ACP options that match Hermes approval semantics."""
-    options = [PermissionOption(
-        option_id="allow_once", kind="allow_once", name="Allow once",
-    )]
-    if not smart_denied:
-        options.append(PermissionOption(
-            option_id="allow_session",
-            # ACP has no session-scoped kind, so use the closest persistent
-            # hint while keeping Hermes semantics in the option id.
-            kind="allow_always",
-            name="Allow for session",
-        ))
-    if allow_permanent and not smart_denied:
-        options.append(
-            PermissionOption(
-                option_id="allow_always",
-                kind="allow_always",
-                name="Allow always",
-            ),
-        )
+    # A gate that re-asks every time (allow_session=False, e.g. protected
+    # agent-instruction writes) collapses to the same two options as a Smart
+    # DENY override — offering a scope Hermes discards would re-prompt every write.
+    # See #81887.
+    once_only = smart_denied or not allow_session
+    options = [PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once")]
+    if not once_only:
+        # ACP has no session-scoped kind: closest persistent hint, Hermes semantics in the id.
+        options.append(PermissionOption(option_id="allow_session", kind="allow_always", name="Allow for session"))
+        if allow_permanent:
+            options.append(PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"))
     options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
-    if not smart_denied and _permission_option_supports_kind("reject_always"):
-        options.append(
-            PermissionOption(
-                option_id="deny_always",
-                kind="reject_always",
-                name="Deny always",
-            ),
-        )
+    if not once_only and _permission_option_supports_kind("reject_always"):
+        options.append(PermissionOption(option_id="deny_always", kind="reject_always", name="Deny always"))
     return options
 
 
 def _build_permission_tool_call(command: str, description: str):
-    """Return the ACP tool-call update attached to a permission request.
-
-    ``request_permission`` expects a ``ToolCallUpdate`` payload — produced
-    by ``_acp.update_tool_call`` — not a ``ToolCallStart``. Each request
-    gets a unique ``perm-check-N`` id so concurrent requests don't collide.
-    """
+    """Return the ``ToolCallUpdate`` (not ``ToolCallStart``) payload attached to a
+    permission request; unique ``perm-check-N`` ids keep concurrent requests apart."""
     import acp as _acp
 
-    tool_call_id = f"perm-check-{next(_PERMISSION_REQUEST_IDS)}"
-    title = f"{description}: {command}" if description else command
     content_text = f"{description}\n$ {command}" if description else f"$ {command}"
     return _acp.update_tool_call(
-        tool_call_id,
-        title=title,
-        kind="execute",
-        status="pending",
-        content=[_acp.tool_content(_acp.text_block(content_text))],
+        f"perm-check-{next(_PERMISSION_REQUEST_IDS)}", title=f"{description}: {command}" if description else command,
+        kind="execute", status="pending", content=[_acp.tool_content(_acp.text_block(content_text))],
         raw_input={"command": command, "description": description},
     )
 
@@ -99,84 +68,56 @@ def _map_outcome_to_hermes(outcome: object, *, allowed_option_ids: set[str]) -> 
     """Map an ACP permission outcome into Hermes approval strings."""
     if not isinstance(outcome, AllowedOutcome):
         return "deny"
-
-    option_id = outcome.option_id
-    if option_id not in allowed_option_ids:
-        logger.warning("Permission request returned unknown option_id: %s", option_id)
+    if outcome.option_id not in allowed_option_ids:
+        logger.warning("Permission request returned unknown option_id: %s", outcome.option_id)
         return "deny"
-    return _OPTION_ID_TO_HERMES.get(option_id, "deny")
+    return _OPTION_ID_TO_HERMES.get(outcome.option_id, "deny")
 
 
-def make_approval_callback(
-    request_permission_fn: Callable,
-    loop: asyncio.AbstractEventLoop,
-    session_id: str,
-    timeout: float = 60.0,
-) -> Callable[..., str]:
-    """
-    Return a Hermes-compatible approval callback that bridges to ACP.
+def await_permission(
+    request_permission_fn: Callable, loop: asyncio.AbstractEventLoop, session_id: str, *,
+    tool_call, options: list[PermissionOption], timeout: float, what: str,
+) -> tuple[object | None, bool]:
+    """Schedule ``request_permission`` on ``loop`` from a worker thread and block for the answer.
+    Returns ``(response, timed_out)``; ``(None, False)`` when scheduling or the request failed."""
+    from agent.async_utils import safe_schedule_threadsafe
 
-    The callback accepts ``command`` and ``description`` plus optional
-    keyword arguments such as ``allow_permanent`` used by
-    ``tools.approval.prompt_dangerous_approval()``.
+    coro = request_permission_fn(session_id=session_id, tool_call=tool_call, options=options)
+    future = safe_schedule_threadsafe(coro, loop, logger=logger, log_message=f"{what}: failed to schedule on loop")
+    if future is None:
+        return None, False
+    try:
+        return future.result(timeout=timeout), False
+    except FutureTimeout:
+        future.cancel()
+        logger.warning("%s timed out after %ss", what, timeout)
+        return None, True
+    except Exception as exc:
+        future.cancel()
+        logger.warning("%s failed: %s", what, exc)
+        return None, False
 
-    Args:
-        request_permission_fn: The ACP connection's ``request_permission`` coroutine.
-        loop: The event loop on which the ACP connection lives.
-        session_id: Current ACP session id.
-        timeout: Seconds to wait for a response before auto-denying.
-    """
 
-    def _callback(
-        command: str,
-        description: str,
-        *,
-        allow_permanent: bool = True,
-        smart_denied: bool = False,
-        **_: object,
-    ) -> str:
-        from agent.async_utils import safe_schedule_threadsafe
+def make_approval_callback(request_permission_fn: Callable, loop: asyncio.AbstractEventLoop,
+                           session_id: str, timeout: float = 60.0) -> Callable[..., str]:
+    """Return a Hermes approval callback (``command, description, **kw`` as used by
+    ``tools.approval.prompt_dangerous_approval()``) that bridges to the ACP
+    connection's ``request_permission`` coroutine on ``loop``; auto-denies after ``timeout`` s."""
 
-        options = _build_permission_options(
-            allow_permanent=allow_permanent,
-            smart_denied=smart_denied,
+    def _callback(command: str, description: str, *, allow_permanent: bool = True,
+                  allow_session: bool = True, smart_denied: bool = False, **_: object) -> str:
+        options = _build_permission_options(allow_permanent=allow_permanent, allow_session=allow_session,
+                                            smart_denied=smart_denied)
+        response, timed_out = await_permission(
+            request_permission_fn, loop, session_id, tool_call=_build_permission_tool_call(command, description),
+            options=options, timeout=timeout, what="Permission request",
         )
-
-        tool_call = _build_permission_tool_call(command, description)
-        coro = request_permission_fn(
-            session_id=session_id,
-            tool_call=tool_call,
-            options=options,
-        )
-        future = safe_schedule_threadsafe(
-            coro, loop,
-            logger=logger,
-            log_message="Permission request: failed to schedule on loop",
-        )
-        if future is None:
-            return "deny"
-
-        try:
-            response = future.result(timeout=timeout)
-        except FutureTimeout:
-            future.cancel()
-            logger.warning("Permission request timed out after %ss", timeout)
-            # Distinct from an explicit deny: the client never answered.
-            # tools.approval callers report this as "timed out without user
-            # response" instead of a user denial.
+        if timed_out:
+            # Distinct from an explicit deny: tools.approval reports "timed out
+            # without user response" instead of a user denial.
             return "timeout"
-        except Exception as exc:
-            future.cancel()
-            logger.warning("Permission request failed: %s", exc)
-            return "deny"
-
         if response is None:
             return "deny"
-
-        allowed_option_ids = {option.option_id for option in options}
-        return _map_outcome_to_hermes(
-            response.outcome,
-            allowed_option_ids=allowed_option_ids,
-        )
+        return _map_outcome_to_hermes(response.outcome, allowed_option_ids={option.option_id for option in options})
 
     return _callback

@@ -3,15 +3,21 @@ import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { parseErrorSurface } from '@/lib/error-surface'
+import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $projectTree } from '@/store/projects'
 import {
+  $cronSessions,
   $currentCwd,
+  $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
@@ -21,14 +27,18 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setMessagingSessions,
+  setSessionOwnerHint,
   setSessions,
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
 export { sessionMatchesStoredId }
+import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
 
@@ -139,9 +149,26 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim', 'reactions'] as const
+const COMPARED_FIELDS = [
+  'id',
+  'role',
+  'pending',
+  'error',
+  // Structured failure layer — drives the error card's title and action row,
+  // so a change (e.g. resume replay attaching the descriptor) must repaint.
+  'errorSurface',
+  'hidden',
+  'branchGroupId',
+  'interim',
+  'reactions',
+  'timestamp',
+  'completedAt',
+  // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
+  // must re-render (set once at completion; stable afterwards).
+  'durationS'
+] as const
 
-const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts', 'rowId'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -179,6 +206,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
     return false
   }
 
+  if (aPart.timestamp !== bPart.timestamp || aPart.completedAt !== bPart.completedAt) {
+    return false
+  }
+
   if (aPart.type === 'text' || aPart.type === 'reasoning') {
     return (aPart as { text: string }).text === (bPart as { text: string }).text
   }
@@ -202,8 +233,8 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   // audio, data-*), fall back to shallow primitive-key comparison — conservative:
   // if we're not sure, claim not-equal (one extra setMessages is harmless, but
   // skipping an update would break the UI).
-  const aPrimitive = aPart as Record<string, unknown>
-  const bPrimitive = bPart as Record<string, unknown>
+  const aPrimitive = aPart as unknown as Record<string, unknown>
+  const bPrimitive = bPart as unknown as Record<string, unknown>
   const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
   const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
 
@@ -234,8 +265,15 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.role !== b.role ||
     a.pending !== b.pending ||
     a.error !== b.error ||
+    // Structural compare — the descriptor arrives as a fresh object per
+    // resume/replay, so identity comparison would repaint forever.
+    (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
+    (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
+    (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
     a.hidden !== b.hidden ||
     a.branchGroupId !== b.branchGroupId ||
+    a.timestamp !== b.timestamp ||
+    a.completedAt !== b.completedAt ||
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
     (a.interim ?? false) !== (b.interim ?? false) ||
@@ -258,6 +296,23 @@ export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]):
   }
 
   return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
+}
+
+/**
+ * Keep the CURRENT array when the replacement is content-equivalent.
+ *
+ * The resume reconcilers create fresh `ChatMessage` objects via
+ * `toChatMessages` even when nothing changed. Publishing those unconditionally
+ * replaces the `$messages`/session-slice array with a new reference of fresh
+ * objects — and because `useRuntimeMessageRepository` keys its normalization
+ * cache (and React keys its rows) by object identity, every message in the
+ * window re-normalizes and remounts: full markdown re-parse + shiki
+ * re-highlight per row, on the main thread, per warm session switch (#95595).
+ * Returning `current` when the content is equivalent keeps array AND object
+ * identity, so the warm switch is O(1) paint.
+ */
+export function preserveEquivalentTranscript(current: ChatMessage[], next: ChatMessage[]): ChatMessage[] {
+  return chatMessageArraysEquivalent(current, next) ? current : next
 }
 
 export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
@@ -720,6 +775,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // the terminal frame may have been lost to a disconnect) — surface the
   // failure on the projected row instead of rendering the partial as healthy.
   const inflightError = projection.inflight?.error?.trim() ?? ''
+  const inflightErrorSurface = parseErrorSurface(projection.inflight?.error_surface)
   const queuedUser = projection.queued?.user?.trim() ?? ''
 
   if (
@@ -882,7 +938,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         role: 'assistant',
         parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
         pending: inflightStreaming,
-        ...(inflightError ? { error: inflightError } : {})
+        ...(inflightError ? { error: inflightError } : {}),
+        ...(inflightError && inflightErrorSurface ? { errorSurface: inflightErrorSurface } : {})
       })
     }
 
@@ -1132,19 +1189,99 @@ export const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
     .map(message => ({ content: chatMessageText(message), role: message.role, source: message }))
     .filter(({ content, role }) => content.trim() && (role === 'assistant' || role === 'user'))
 
+/**
+ * Choose the transcript used to seed an open-chat branch.
+ *
+ * The local renderer can hold a compacted model projection, while the REST
+ * transcript contains the complete display projection. Use the latter for a
+ * whole-chat branch. When branching from a clicked bubble, map that bubble by
+ * durable row id first and by same-role/text ordinal as a legacy fallback; if
+ * it cannot be mapped, keep the local prefix rather than silently choosing a
+ * different point in the conversation.
+ */
+export function selectBranchMessages(
+  localMessages: ChatMessage[],
+  authoritativeMessages: ChatMessage[] | null,
+  messageId?: string
+): BranchMessage[] {
+  const localIndex = messageId ? localMessages.findIndex(message => message.id === messageId) : -1
+
+  if (!authoritativeMessages?.length) {
+    return toBranchMessages(localMessages.slice(0, localIndex >= 0 ? localIndex + 1 : localMessages.length))
+  }
+
+  if (!messageId) {
+    return toBranchMessages(authoritativeMessages)
+  }
+
+  if (localIndex < 0) {
+    return toBranchMessages(localMessages)
+  }
+
+  const target = localMessages[localIndex]
+
+  let authoritativeIndex =
+    target.rowId === undefined
+      ? -1
+      : authoritativeMessages.findIndex(message => message.rowId !== undefined && message.rowId === target.rowId)
+
+  // Strip `@image:` directive lines the same way the persisted→ChatMessage
+  // conversion does (extractImageRefs lifts them into attachmentRefs), so a
+  // local optimistic bubble and its authoritative twin compare equal.
+  const comparableText = (message: ChatMessage) =>
+    textWithoutEmbeddedImages(chatMessageText(message))
+      .replace(/^@image:[^\n]*\n?/gm, '')
+      .trim()
+
+  if (authoritativeIndex < 0) {
+    const targetText = comparableText(target)
+
+    const targetOrdinal = localMessages
+      .slice(0, localIndex + 1)
+      .filter(message => message.role === target.role && comparableText(message) === targetText).length
+
+    let ordinal = 0
+
+    authoritativeIndex = authoritativeMessages.findIndex(message => {
+      if (message.role !== target.role || comparableText(message) !== targetText) {
+        return false
+      }
+
+      ordinal += 1
+
+      return ordinal === targetOrdinal
+    })
+  }
+
+  if (authoritativeIndex < 0) {
+    return toBranchMessages(localMessages.slice(0, localIndex + 1))
+  }
+
+  return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))
+}
+
 export function upsertOptimisticSession(
   created: SessionCreateResponse,
   id: string,
   title: string | null = null,
   preview: string | null = null,
   parentSessionId: string | null = null,
-  lastActive?: number
+  lastActive?: number,
+  owner?: null | SessionProfileRoute
 ) {
   const now = lastActive ?? Date.now() / 1000
-  // Stamp the profile the session was just created on (= the live gateway's
-  // profile) so the scoped sidebar shows the new row immediately instead of
-  // filtering it out as "default" until the aggregator re-fetches.
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  // Stamp the profile the session was just created on so the scoped sidebar
+  // shows the new row immediately instead of filtering it out as "default"
+  // until the aggregator re-fetches. An explicitly routed create ($newChatRoute
+  // / a tile's route) names its EXACT owner: the backend profile that route
+  // serves, on that route's connection. The live gateway's profile is only the
+  // owner for an unrouted create — in All-profiles / Bot routing the ambient
+  // profile stays on `default` while the session lives on another backend (and
+  // a concurrent source switch can move the active gateway before this row is
+  // inserted), so a row stamped `default` then misroutes every session-scoped
+  // RPC that resolves its owner off the row ("session not found" on turn two).
+  const profileKey = normalizeProfileKey(owner ? owner.targetProfile || owner.profile : $activeGatewayProfile.get())
+  const connectionId = owner?.connectionId.trim() || ''
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -1166,7 +1303,12 @@ export function upsertOptimisticSession(
     source: 'tui',
     started_at: now,
     title,
-    tool_call_count: 0
+    tool_call_count: 0,
+    ...(connectionId ? { connection_id: connectionId } : {})
+  }
+
+  if (owner) {
+    setSessionOwnerHint(id, owner)
   }
 
   setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
@@ -1184,6 +1326,70 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
   return (session?.message_count ?? 0) > 0
 }
 
+export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
+
+export function findListedSession(
+  storedSessionId: string
+): { session: SessionInfo; slice: ListedSessionSlice } | undefined {
+  const match = (session: SessionInfo) => sessionMatchesStoredId(session, storedSessionId)
+  const fromMessaging = $messagingSessions.get().find(match)
+
+  if (fromMessaging) {
+    return { session: fromMessaging, slice: 'messaging' }
+  }
+
+  const fromCron = $cronSessions.get().find(match)
+
+  if (fromCron) {
+    return { session: fromCron, slice: 'cron' }
+  }
+
+  const fromSessions = $sessions.get().find(match)
+
+  if (fromSessions) {
+    return { session: fromSessions, slice: 'sessions' }
+  }
+
+  return undefined
+}
+
+export function dropListedSession(storedSessionId: string): void {
+  const keep = (session: SessionInfo) => !sessionMatchesStoredId(session, storedSessionId)
+
+  setSessions(prev => prev.filter(keep))
+  setMessagingSessions(prev => prev.filter(keep))
+  setCronSessions(prev => prev.filter(keep))
+}
+
+export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
+  const target: ListedSessionSlice =
+    slice ??
+    (isMessagingSource(session.source)
+      ? 'messaging'
+      : normalizeSessionSource(session.source) === 'cron'
+        ? 'cron'
+        : 'sessions')
+
+  const prepend = (prev: SessionInfo[]) => [
+    session,
+    ...prev.filter(existing => !sessionMatchesStoredId(existing, session.id))
+  ]
+
+  if (target === 'messaging') {
+    setMessagingSessions(prepend)
+
+    return
+  }
+
+  if (target === 'cron') {
+    setCronSessions(prepend)
+
+    return
+  }
+
+  setSessions(prepend)
+}
+
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
@@ -1199,8 +1405,72 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+// Every session row reachable through the profile-scoped project tree —
+// preview rows on a collapsed project plus the drill-in lane rows. These are
+// the only rows guaranteed to name their owning profile (the gateway stamps
+// the request scope onto them), so owner resolution has to see them.
+function projectTreeSessions(): SessionInfo[] {
+  return $projectTree
+    .get()
+    .flatMap(project => [
+      ...(project.previewSessions ?? []),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    ])
+}
+
+// The best cached row for a stored id, across every list that can hold one.
+// "Best" means self-describing: the same conversation can appear both as an
+// ownerless legacy Recents copy and as a profile-stamped project-tree row, and
+// picking the ownerless one throws away the only routing information we have.
+export function cachedSessionRow(storedSessionId: string): SessionInfo | undefined {
+  const candidates = [
+    ...$sessions.get(),
+    ...$cronSessions.get(),
+    ...$messagingSessions.get(),
+    ...projectTreeSessions()
+  ].filter(session => sessionMatchesStoredId(session, storedSessionId))
+
+  return (
+    candidates.find(session => session.connection_id?.trim()) ??
+    candidates.find(session => session.profile?.trim()) ??
+    candidates[0]
+  )
+}
+
+export async function resolveStoredSession(
+  storedSessionId: string,
+  ownerRoute?: SessionProfileRoute
+): Promise<SessionInfo | undefined> {
+  const cached = cachedSessionRow(storedSessionId)
+
+  if (ownerRoute) {
+    const scope = {
+      connectionId: ownerRoute.connectionId,
+      profile: ownerRoute.targetProfile || ownerRoute.profile
+    }
+
+    const cachedOwnerMatches =
+      cached &&
+      cached.connection_id === ownerRoute.connectionId &&
+      (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
+
+    if (cached && cachedOwnerMatches) {
+      return cached
+    }
+
+    try {
+      const session = await getSession(storedSessionId, scope)
+      session.profile = normalizeProfileKey(ownerRoute.profile)
+      session.connection_id = ownerRoute.connectionId
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // An explicit owner is fail-closed. Probing the ambient or another
+      // profile would turn a stale route into a cross-connection open.
+      return undefined
+    }
+  }
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is
@@ -1212,17 +1482,19 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     return cached
   }
 
-  // Direct by-id on the live backend — one row lookup, no list scan. Covers
-  // single-profile users and any id on the active profile (e.g. an old session
-  // past the sidebar's recent window). 404 just means it's not on this profile.
-  try {
-    const session = await getSession(storedSessionId)
+  // Direct by-id on the active profile — one row lookup, no list scan. Electron
+  // routes an unscoped GET to the primary backend, which may not own the
+  // active profile. A 404 there used to skip that profile in the probes below,
+  // so the session was never found.
+  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
 
-    // Older backends omit `profile` on unscoped GETs; the serving backend is
-    // the active gateway's, so back-fill that rather than caching an unowned
-    // row. A present stamp is preserved: in app-global remote mode a bare hit
-    // can legitimately carry another profile's row (see the branch tests).
-    session.profile ||= normalizeProfileKey($activeGatewayProfile.get())
+  try {
+    const session = await getSession(storedSessionId, activeKey)
+
+    // Older backends can omit `profile`; this request targeted the active
+    // profile, so back-fill that rather than caching an unowned row. A present
+    // stamp is preserved for backend compatibility.
+    session.profile ||= activeKey
 
     upsertResolvedSession(session, storedSessionId)
 
@@ -1231,11 +1503,10 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     // Not on the active profile — fall through to the cross-profile probe.
   }
 
-  // Multi-profile only: probe each other profile by id (still one cheap lookup
-  // each) rather than pulling every profile's recent sessions. The first hit
-  // carries its owning `profile`, which routes the resume to the right backend.
-  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
-
+  // Multi-profile only: probe each remaining profile by id (still one cheap
+  // lookup each) rather than pulling every profile's recent sessions. The
+  // first hit carries its owning `profile`, which routes the resume to the
+  // right backend. The active profile was already tried above.
   const otherProfiles = $profiles
     .get()
     .map(profile => normalizeProfileKey(profile.name))
@@ -1282,6 +1553,25 @@ export async function resolveSessionProfile(storedSessionId: null | string): Pro
   const profile = (await resolveStoredSession(storedSessionId))?.profile?.trim()
 
   return profile || undefined
+}
+
+/**
+ * The OWNER of a stored session through the same cache → active-backend →
+ * cross-profile ladder, preferring the EXACT route when the resolved row is
+ * connection-tagged (unified-list splice, optimistic create row, a carried
+ * tag) over its bare profile. Session-scoped RPC dispatch uses this as the
+ * async rung after the sync ladder (tile route → hint → row) misses, so a
+ * registry-owned session never degrades to a profile-only route that dials a
+ * different socket than the one holding its runtime.
+ */
+export async function resolveSessionOwner(storedSessionId: null | string): Promise<SessionOwnerScope> {
+  if (!storedSessionId) {
+    return undefined
+  }
+
+  const row = await resolveStoredSession(storedSessionId)
+
+  return sessionOwnerRouteFromRow(row) ?? (row?.profile?.trim() || undefined)
 }
 
 type SessionRuntimeStatePatch = Partial<
@@ -1480,6 +1770,33 @@ export function isSessionGoneError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? '')
 
   return message.includes('404') || /session not found/i.test(message)
+}
+
+/**
+ * What to do when a resume's RPC and REST fallback BOTH came back
+ * gone-looking (#88540).
+ *
+ * A 404 is only proof of deletion when it came from the backend that owns
+ * the session. During (or moments after) a profile/connection switch the
+ * request can land on a backend that has never heard of the id — the
+ * cross-profile Bots-pane open is the reproducer: the route is written
+ * correctly, the resume races the gateway swap, both lookups 404 on the
+ * wrong backend, and the "genuinely gone" branch yanks the window to the
+ * blank new-chat route while the target session is perfectly alive.
+ *
+ * `'retry'` keeps the route and arms the bounded auto-retry (which re-runs
+ * the resume once the swap settles); `'draft'` is reserved for a session
+ * that is verifiably gone in calm conditions.
+ */
+export function goneSessionVerdict(options: {
+  /** The session was created by this window in this run — never discard. */
+  createdThisRun: boolean
+  /** A post-failure re-resolve still finds the row on SOME profile. */
+  stillListed: boolean
+  /** A profile swap or connection switch is in flight (or just targeted). */
+  switchInFlight: boolean
+}): 'draft' | 'retry' {
+  return options.createdThisRun || options.stillListed || options.switchInFlight ? 'retry' : 'draft'
 }
 
 /**

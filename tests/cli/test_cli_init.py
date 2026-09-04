@@ -73,10 +73,14 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
 class TestMaxTurnsResolution:
     """max_turns must always resolve to a positive integer, never None."""
 
-    def test_default_max_turns_is_integer(self):
+    def test_default_max_turns_is_unlimited(self):
+        # Default is now unlimited (max_turns caused more problems than it
+        # solved). Still a positive int (the sys.maxsize sentinel), so loop
+        # conditions like `count < max_iterations` keep working.
+        import sys
         cli = _make_cli()
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == 500
+        assert cli.max_turns == sys.maxsize
 
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)
@@ -150,14 +154,14 @@ class TestBusyInputMode:
 
 
 class TestPromptToolkitTerminalCompatibility:
-    def test_lf_enter_binds_to_submit_handler_posix(self):
-        """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter.
+    def test_lf_enter_binding_respects_multiline_shortcuts(self):
+        """Ctrl+J is reserved by default, with legacy LF-submit available as an opt-out.
 
-        On a bare local POSIX TTY (no SSH/WSL/WT/Ghostty) we keep c-j → submit so
-        Enter works on thin PTYs (docker exec, certain ssh configurations).
-        In WSL, SSH sessions, Windows Terminal, and Ghostty we leave c-j
-        unbound here so it can be used as the Ctrl+Enter newline keystroke
-        without conflicting with submit. See issue #22379.
+        Some thin POSIX PTYs deliver plain Enter as LF/c-j instead of CR/enter.
+        The default keeps c-j free for multiline input; disabling multiline
+        shortcuts restores c-j → submit on bare local POSIX terminals. Windows,
+        WSL, SSH sessions, Windows Terminal, and Ghostty always reserve c-j for
+        the Ctrl+Enter/Ctrl+J newline binding. See issue #22379.
 
         The native-Windows arm of this behaviour is
         ``test_windows_leaves_ctrl_j_unbound`` below — it has to run on a real
@@ -176,11 +180,24 @@ class TestPromptToolkitTerminalCompatibility:
         def submit_handler(event):
             return None
 
-        # Bare local POSIX (no SSH/WSL markers): both enter and c-j submit.
+        # Default: Enter submits while c-j stays free for the newline binding.
+        # (Runs on the POSIX CI job; the native-Windows arm is the marked test
+        # below, so no sys.platform fake is needed here.)
         with _patch.dict(_os.environ, {}, clear=True), \
              _patch("builtins.open", side_effect=OSError("no /proc")):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
+
+            # Legacy opt-out: bare POSIX LF/c-j submits for thin PTYs.
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(
+                kb,
+                submit_handler,
+                multiline_shortcuts_enabled=False,
+            )
             bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
             assert bindings[("c-m",)] is submit_handler
             assert bindings[("c-j",)] is submit_handler
@@ -429,6 +446,43 @@ class TestNestedDictModelDefaultPairing:
         assert cli.model == "nested-default-model"
         assert cli.requested_provider == "anthropic"
         assert cli.provider == "anthropic"
+
+    def test_whoami_command_is_dispatched_and_prints_cli_access(self, capsys):
+        """/whoami is advertised in classic CLI help and must not fall through.
+
+        Regression test: the command existed in the shared registry, so it
+        appeared in /help and completion, but classic CLI dispatch lacked a
+        matching branch and printed `Unknown command: /whoami`.
+        """
+        cli = _make_cli()
+
+        cli.process_command("/whoami")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "cli (local terminal)" in output
+        assert "Tier:" in output
+        assert "unrestricted" in output
+        assert "Slash commands: all available" in output
+
+    def test_provider_prefixed_startup_model_overrides_stale_provider(self):
+        cli = _make_cli(
+            config_overrides={
+                "model": {
+                    "default": "anthropic/claude-opus-4.6",
+                    "provider": "anthropic",
+                },
+                "providers": {
+                    "nous": {
+                        "base_url": "https://inference-api.nousresearch.com/v1",
+                    },
+                },
+            },
+            model="nous/deepseek-v4-pro",
+        )
+
+        assert cli.model == "deepseek-v4-pro"
+        assert cli.requested_provider == "nous"
 
 
 class TestRootLevelProviderOverride:

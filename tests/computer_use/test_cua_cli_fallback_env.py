@@ -12,7 +12,7 @@ secrets that ``_lifecycle_coro``'s primary MCP spawn already strips via
 import json
 from unittest.mock import MagicMock
 
-from tools.computer_use.cua_backend import _CuaDriverSession
+from tools.computer_use.cua_backend_session import _CuaDriverSession
 
 
 def _make_session() -> _CuaDriverSession:
@@ -34,7 +34,7 @@ def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "«redacted:sk-…»")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(
-        "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+        "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
         lambda: "/resolved/cua-driver",
     )
 
@@ -53,6 +53,8 @@ def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
     assert captured["env"] is not None, "subprocess.run must receive an explicit env="
     assert "ANTHROPIC_API_KEY" not in captured["env"]
     # Sanitization filters secrets, not everything — an ordinary var survives.
-    assert captured["env"].get("PATH") == "/usr/bin:/bin"
+    # Original PATH entries are preserved; the hermes console-script dir may
+    # be prepended (see _sanitize_subprocess_env, issue #92998).
+    assert captured["env"].get("PATH", "").endswith("/usr/bin:/bin")
 
 

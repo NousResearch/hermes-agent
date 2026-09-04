@@ -688,6 +688,7 @@ class _EmbeddedCuaDaemon:
     """
 
     _START_TIMEOUT_SECONDS = 15.0
+    _PROBE_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -831,7 +832,13 @@ class _EmbeddedCuaDaemon:
         self._stderr_thread.start()
 
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
+        last_probe_detail: Optional[str] = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # A launch through macOS `open` returns as soon as it has handed the
+            # app off, so exit 0 from that wrapper is a handoff, not a death.
             return_code = self._process.poll()
             if return_code is not None and (
                 not self._launch_via_app or return_code != 0
@@ -840,24 +847,40 @@ class _EmbeddedCuaDaemon:
                 raise RuntimeError(
                     f"embedded cua-driver exited during startup: {detail}"
                 )
+            probe_timeout = min(self._PROBE_TIMEOUT_SECONDS, remaining)
             try:
                 probe = subprocess.run(
                     [self._command, "status", "--socket", self.socket_path],
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
-                    timeout=2.0,
+                    timeout=probe_timeout,
                     env=env,
                 )
-            except (OSError, subprocess.SubprocessError):
+            except subprocess.TimeoutExpired:
                 probe = None
-            if probe is not None and probe.returncode == 0:
-                self._running = True
-                return
+                last_probe_detail = f"status probe timed out after {probe_timeout:.1f}s"
+            except OSError as exc:
+                probe = None
+                last_probe_detail = f"status probe failed: {exc}"
+            except subprocess.SubprocessError as exc:
+                probe = None
+                last_probe_detail = f"status probe failed: {exc}"
+            if probe is not None:
+                if probe.returncode == 0:
+                    self._running = True
+                    return
+                stderr = (probe.stderr or "").strip()
+                last_probe_detail = (
+                    f"status probe exited {probe.returncode}"
+                    + (f": {stderr}" if stderr else "")
+                )
             time.sleep(0.1)
 
         self.stop()
         detail = "; ".join(self._stderr_tail) or "daemon did not become ready"
+        if last_probe_detail:
+            detail = f"{detail}; last probe: {last_probe_detail}"
         raise RuntimeError(f"embedded cua-driver startup timed out: {detail}")
 
     def proxy_invocation(self) -> Tuple[str, List[str]]:

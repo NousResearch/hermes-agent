@@ -204,6 +204,135 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     assert proxy_args == ["mcp", "--embedded", "--socket", daemon.socket_path]
 
 
+def test_daemon_probe_timeout_scales_past_two_seconds():
+    """A healthy probe needing >2s (cua-driver 0.21 attestation) must not be
+    killed at a hardcoded 2s deadline (#93312)."""
+    from tools.computer_use import cua_backend
+
+    process = Mock()
+    process.poll.return_value = None
+    process.stderr = []
+
+    captured_timeouts = []
+
+    def _fake_run(command, **kwargs):
+        captured_timeouts.append(kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
+        cua_backend,
+        "_resolve_mcp_invocation",
+        return_value=("/opt/cua-driver", ["mcp"]),
+    ), patch.object(
+        cua_backend, "_cua_no_overlay", return_value=False,
+    ), patch.object(cua_backend.subprocess, "Popen", return_value=process), patch.object(
+        cua_backend.subprocess, "run", side_effect=_fake_run
+    ):
+        daemon.start()
+
+    assert captured_timeouts[0] > 2.0
+
+
+def test_daemon_startup_error_names_last_probe_failure():
+    """The startup error must say why the probe kept failing, not just report
+    daemon stderr as if the daemon itself never came up (#93312)."""
+    from tools.computer_use import cua_backend
+
+    process = Mock()
+    process.poll.return_value = None
+    process.stderr = []
+    process.wait.return_value = 0
+
+    def _fake_run(command, **kwargs):
+        if command[1] == "status":
+            raise cua_backend.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    daemon._START_TIMEOUT_SECONDS = 0.25
+    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
+        cua_backend,
+        "_resolve_mcp_invocation",
+        return_value=("/opt/cua-driver", ["mcp"]),
+    ), patch.object(
+        cua_backend, "_cua_no_overlay", return_value=False,
+    ), patch.object(cua_backend.subprocess, "Popen", return_value=process), patch.object(
+        cua_backend.subprocess, "run", side_effect=_fake_run
+    ):
+        with pytest.raises(RuntimeError, match="last probe: status probe timed out"):
+            daemon.start()
+
+
+def test_daemon_probe_timeout_clamps_to_remaining_deadline():
+    """Each probe's timeout must shrink toward the overall startup deadline
+    so a run of slow probes can't overshoot the 15s budget (#93312)."""
+    from tools.computer_use import cua_backend
+
+    process = Mock()
+    process.poll.return_value = None
+    process.stderr = []
+    process.wait.return_value = 0
+
+    captured_timeouts = []
+
+    def _fake_run(command, **kwargs):
+        if command[1] != "status":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        captured_timeouts.append(kwargs["timeout"])
+        raise cua_backend.subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    daemon._START_TIMEOUT_SECONDS = 0.35
+    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
+        cua_backend,
+        "_resolve_mcp_invocation",
+        return_value=("/opt/cua-driver", ["mcp"]),
+    ), patch.object(
+        cua_backend, "_cua_no_overlay", return_value=False,
+    ), patch.object(cua_backend.subprocess, "Popen", return_value=process), patch.object(
+        cua_backend.subprocess, "run", side_effect=_fake_run
+    ):
+        with pytest.raises(RuntimeError):
+            daemon.start()
+
+    assert len(captured_timeouts) >= 2
+    assert captured_timeouts == sorted(captured_timeouts, reverse=True)
+    assert captured_timeouts[-1] < captured_timeouts[0]
+
+
+def test_daemon_probe_survives_uncommon_subprocess_error():
+    """A SubprocessError subclass other than TimeoutExpired (e.g. a
+    CalledProcessError, if the probe call ever gains check=True) must be
+    treated as a failed probe, not crash start() with a raw traceback
+    (#93312)."""
+    from tools.computer_use import cua_backend
+
+    process = Mock()
+    process.poll.return_value = None
+    process.stderr = []
+    process.wait.return_value = 0
+
+    def _fake_run(command, **kwargs):
+        if command[1] == "status":
+            raise cua_backend.subprocess.SubprocessError("boom")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    daemon._START_TIMEOUT_SECONDS = 0.25
+    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
+        cua_backend,
+        "_resolve_mcp_invocation",
+        return_value=("/opt/cua-driver", ["mcp"]),
+    ), patch.object(
+        cua_backend, "_cua_no_overlay", return_value=False,
+    ), patch.object(cua_backend.subprocess, "Popen", return_value=process), patch.object(
+        cua_backend.subprocess, "run", side_effect=_fake_run
+    ):
+        with pytest.raises(RuntimeError, match="last probe: status probe failed: boom"):
+            daemon.start()
+
+
 def test_standard_backend_does_not_spawn_an_embedded_daemon():
     from tools.computer_use.cua_backend import CuaDriverBackend
 

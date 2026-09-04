@@ -14588,7 +14588,27 @@ def _respond(rid, params, key, *, allow_expired=False):
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
-    session = _sessions.get(params.get("session_id", ""))
+    requested_sid = params.get("session_id", "") or ""
+    session = _sessions.get(requested_sid)
+    if session is not None and session.get("_finalized"):
+        # A resume mints a fresh runtime for the same stored session while the
+        # superseded record lingers until finalization — a switch applied to
+        # it would silently no-op (#65590).
+        session = None
+    if key == "model" and session is None and requested_sid:
+        # A picker holding a superseded runtime id (resume/compaction rebind,
+        # WS reconnect) must not "succeed" against a phantom while the live
+        # session keeps the old model and the pill silently reverts (#65590).
+        # Re-resolve by stored session key; reject when nothing live matches
+        # so the client rolls back with a visible error instead.
+        found = _find_live_session_by_key(requested_sid, _profile_home(params.get("profile")))
+        if found is not None:
+            requested_sid, session = found
+            # Downstream reads params["session_id"] for agent builds, worker
+            # restarts and session.info emits — keep the healed runtime id.
+            params["session_id"] = requested_sid
+        else:
+            return _err(rid, 4001, "session not found")
 
     if key == "model":
         try:

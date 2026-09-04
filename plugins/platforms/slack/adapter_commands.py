@@ -30,6 +30,8 @@ class SlackCommandsMixin:
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
+        source.is_one_to_one = is_dm
+        source.message_is_edit = False
         event = _adapter.MessageEvent(
             text=text,
             message_type=(_adapter.MessageType.COMMAND if text.startswith("/") else _adapter.MessageType.TEXT),

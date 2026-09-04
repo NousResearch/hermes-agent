@@ -790,8 +790,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._should_process_message(data):
                 return None
             msg_type = self._classify_bridge_message(data)
-            source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
-                                       user_id=data.get("senderId"), user_name=data.get("senderName"))
+            raw_is_group = data.get("isGroup")
+            is_group = raw_is_group is True
+            source = self.build_source(
+                chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if is_group else "dm",
+                user_id=data.get("senderId"), user_name=data.get("senderName"),
+                is_bot=data.get("fromMe") is True and data.get("fromOwner") is not True)
+            source.is_one_to_one = raw_is_group is False
+            source.message_is_edit = bool(
+                data.get("isEdited") is True
+                or str(data.get("nativeType") or "").casefold() in {"editedmessage", "protocolmessage:message_edit"}
+            )
             cached_urls, media_types = await self._collect_bridge_media(data, msg_type)
             body = data.get("body", "")
             if data.get("isGroup"):
@@ -808,6 +817,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
             ) if v}
+            if source.message_is_edit:
+                metadata["message_is_edit"] = True
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.
             if data.get("fromOwner"):

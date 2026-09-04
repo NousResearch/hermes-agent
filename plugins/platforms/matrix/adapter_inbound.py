@@ -185,7 +185,13 @@ class MatrixInboundMixin:
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
-            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id,
+            is_bot=bool(sender and sender == self._user_id))
+        joined_member_count = getattr(identity, "joined_member_count", None)
+        source.is_one_to_one = bool(
+            chat_type == "dm" and joined_member_count is not None and joined_member_count <= 2
+        )
+        source.message_is_edit = False
         if thread_id:
             self._threads.mark(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)

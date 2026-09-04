@@ -814,6 +814,8 @@ class DiscordCommandsMixin:
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
         )
+        source.is_one_to_one = is_dm
+        source.message_is_edit = False
         msg_type = _adapter.MessageType.COMMAND if text.startswith("/") else _adapter.MessageType.TEXT
         channel_id = str(interaction.channel_id)
         return _adapter.MessageEvent(

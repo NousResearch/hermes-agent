@@ -409,6 +409,8 @@ class DiscordInboundMixin:
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
+        source.is_one_to_one = isinstance(message.channel, _adapter.discord.DMChannel)
+        source.message_is_edit = getattr(message, "edited_at", None) is not None
         media_urls, media_types, pending_text_injection = await self._collect_attachment_media(all_attachments)
         event_text = normalized_content
         if pending_text_injection:

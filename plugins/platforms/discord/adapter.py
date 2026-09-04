@@ -1532,7 +1532,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 timeout=None if ready_timeout <= 0 else ready_timeout,
             )
 
-            self._running = True
+            self._mark_connected()
             self._start_liveness_probe()
             # Plugin-registered native handlers (discord.py Bot — add_listener()/event hooks).
             self._wire_plugin_handlers(self._client)

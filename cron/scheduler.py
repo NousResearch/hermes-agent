@@ -1354,6 +1354,45 @@ class _CronJobConfig:
     cron_default_provider: str
 
 
+def _no_model_configured_message(
+    *,
+    job_name: str,
+    job_id: str,
+    job_model: Any,
+    env_model: str,
+    config_load_error: Optional[str] = None,
+) -> str:
+    """Explain why a cron job resolved no model, naming the real cause.
+
+    The loader downgrades any ``config.yaml`` failure to a WARNING and carries
+    on with defaults, so this raise can fire without the file ever being read.
+    Asserting ``model.default`` is "missing or empty" in that case sends the
+    operator to inspect config fields when the file's ownership, permissions or
+    YAML syntax is what actually needs fixing (#81420); the field is frequently
+    populated correctly in a file the service user simply cannot open.
+
+    The remedy follows the cause. ``hermes model <name>`` is dropped from the
+    unreadable branch on purpose: it writes to the very file that cannot be
+    read, so suggesting it sends the operator in a circle.
+    """
+    if config_load_error:
+        cause = f"config.yaml could not be read: {config_load_error}"
+        remedy = (
+            "Fix that file's ownership/permissions or its YAML syntax, or set a "
+            f"per-job model via `hermes cron edit {job_id} --model <name>`."
+        )
+    else:
+        cause = "config.yaml model.default missing or empty"
+        remedy = (
+            f"Set a per-job model via `hermes cron edit {job_id} --model <name>` "
+            "or set a default with `hermes model <name>`."
+        )
+    return (
+        f"Cron job '{job_name}' has no model configured "
+        f"(job.model={job_model!r}, HERMES_MODEL={env_model!r}, {cause}). {remedy}"
+    )
+
+
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
     HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so ``hermes cron edit --model``
@@ -1362,6 +1401,9 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     _cron_default_provider = ""
     _cfg: dict = {}
     _model_cfg: Any = {}
+    # Remembered so a later "no model configured" failure can name the real
+    # cause: an unreadable file says nothing about model.default.
+    _config_load_error: Optional[str] = None
     try:
         from hermes_cli.config import read_user_config_raw
         _cfg_path = str(_get_hermes_home() / "config.yaml")
@@ -1388,19 +1430,20 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                     if _global_model:
                         model = _global_model
     except Exception as e:
+        _config_load_error = f"{type(e).__name__}: {e}"
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
     # Fail fast: an empty model otherwise reaches the provider as an opaque 400.
     # See #23979.
     if not (isinstance(model, str) and model.strip()):
         raise RuntimeError(
-            f"Cron job '{job_name}' has no model configured "
-            f"(job.model={job.get('model')!r}, "
-            f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
-            "config.yaml model.default missing or empty). "
-            f"Set a per-job model via "
-            f"`hermes cron edit {job_id} --model <name>` or set a "
-            "default with `hermes model <name>`."
+            _no_model_configured_message(
+                job_name=job_name,
+                job_id=job_id,
+                job_model=job.get("model"),
+                env_model=os.getenv("HERMES_MODEL", ""),
+                config_load_error=_config_load_error,
+            )
         )
 
     with contextlib.suppress(Exception):

@@ -411,8 +411,9 @@ def _run_agent(
             # endpoints not in any catalog (local servers, custom proxies, etc.).
             try:
                 from hermes_cli import model_switch as _ms
-                _ms._ensure_direct_aliases()
-                direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
+                direct = _ms._direct_alias_snapshot().get(
+                    explicit_model.strip().lower()
+                )
             except Exception:
                 direct = None
             if direct is not None:

@@ -24,6 +24,7 @@ import http.client
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
@@ -536,6 +537,16 @@ _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 # Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
+# Serializes the cache's clear()+update() republish against readers. The
+# refresh cannot rebind the module attribute — callers hold this exact dict
+# (#16767) — so it empties and refills it, and a reader iterating .items()
+# across that window raises "dictionary changed size during iteration" or,
+# worse, silently observes the empty half and reports a live alias as missing.
+# Reachable from the gateway, which resolves models off the event loop via
+# asyncio.to_thread: two sessions running /model land on two threadpool
+# workers while any config write reloads the cache underneath them.
+_DIRECT_ALIAS_LOCK = threading.RLock()
+
 
 def _load_direct_aliases() -> dict[str, DirectAlias]:
     """Load direct aliases from config.yaml ``model_aliases:`` section.
@@ -678,23 +689,42 @@ def _ensure_direct_aliases() -> None:
     the module attribute. This keeps `from hermes_cli.model_switch import
     DIRECT_ALIASES` references valid in callers — rebinding would leave them
     pointing at a stale empty dict.
+
+    Held under `_DIRECT_ALIAS_LOCK` for its whole body, so a reader taking a
+    snapshot never observes the dict between the clear() and the update().
+    The config load runs inside the lock too: it is a cached read, and letting
+    two threads publish interleaved generations would defeat the point.
     """
     global _DIRECT_ALIAS_IDENTITY, _DIRECT_ALIAS_LOADED
-    identity = _direct_alias_source_identity()
-    if DIRECT_ALIASES and (
-        # Contents are not what we loaded — seeded or edited by a caller.
-        # Not ours to discard.
-        DIRECT_ALIASES != _DIRECT_ALIAS_LOADED
-        # Ours, and still the same config file at the same signature.
-        or (identity is not None and identity == _DIRECT_ALIAS_IDENTITY)
-    ):
-        return
-    loaded = _load_direct_aliases()
-    # clear()+update() rather than a rebind: callers hold this exact dict.
-    DIRECT_ALIASES.clear()
-    DIRECT_ALIASES.update(loaded)
-    _DIRECT_ALIAS_IDENTITY = identity
-    _DIRECT_ALIAS_LOADED = dict(loaded)
+    with _DIRECT_ALIAS_LOCK:
+        identity = _direct_alias_source_identity()
+        if DIRECT_ALIASES and (
+            # Contents are not what we loaded — seeded or edited by a caller.
+            # Not ours to discard.
+            DIRECT_ALIASES != _DIRECT_ALIAS_LOADED
+            # Ours, and still the same config file at the same signature.
+            or (identity is not None and identity == _DIRECT_ALIAS_IDENTITY)
+        ):
+            return
+        loaded = _load_direct_aliases()
+        # clear()+update() rather than a rebind: callers hold this exact dict.
+        DIRECT_ALIASES.clear()
+        DIRECT_ALIASES.update(loaded)
+        _DIRECT_ALIAS_IDENTITY = identity
+        _DIRECT_ALIAS_LOADED = dict(loaded)
+
+
+def _direct_alias_snapshot() -> dict[str, DirectAlias]:
+    """Refresh the cache, then return a stable copy of one whole generation.
+
+    Readers must not scan DIRECT_ALIASES directly: a refresh on another thread
+    mutates it in place, and iterating across that raises. Copying under the
+    lock gives the caller a dict nobody else writes to, so its own lookups stay
+    consistent for as long as it holds it.
+    """
+    with _DIRECT_ALIAS_LOCK:
+        _ensure_direct_aliases()
+        return dict(DIRECT_ALIASES)
 
 
 def direct_alias_api_key(alias: DirectAlias) -> str:
@@ -1401,16 +1431,21 @@ def resolve_alias(
     """
     key = raw_input.strip().lower()
 
+    # One snapshot for both lookups below: a refresh on another thread
+    # republishes DIRECT_ALIASES in place, so re-reading it between the exact
+    # match and the reverse scan can straddle two generations — and iterating
+    # it live raises "dictionary changed size during iteration".
+    direct_aliases = _direct_alias_snapshot()
+
     # Check direct aliases first (exact model+provider+base_url mappings)
-    _ensure_direct_aliases()
-    direct = DIRECT_ALIASES.get(key)
+    direct = direct_aliases.get(key)
     if direct is not None:
         return (direct.provider, direct.model, key)
 
     # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
     # "glm-4.7") route through direct aliases instead of falling through
     # to the catalog/OpenRouter.
-    for alias_name, da in DIRECT_ALIASES.items():
+    for alias_name, da in direct_aliases.items():
         if da.model.lower() == key:
             return (da.provider, da.model, alias_name)
 
@@ -2264,8 +2299,7 @@ def switch_model(
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
-        _ensure_direct_aliases()
-        _da = DIRECT_ALIASES.get(resolved_alias)
+        _da = _direct_alias_snapshot().get(resolved_alias)
         if _da is not None and _da.base_url:
             # Credentials above were resolved against the DEFAULT provider.
             # Carrying that key onto the alias's endpoint both 401s and ships

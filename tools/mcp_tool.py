@@ -586,7 +586,23 @@ _MAX_BACKOFF_SECONDS = 60
 # wakes on this cadence and attempts one revival probe. Without it a parked
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
-_PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+_PARKED_RETRY_INTERVAL = 300     # base seconds between parked self-probes
+# Upper bound for the parked self-probe interval. A server parked on a
+# permanent-looking failure (e.g. a stdio binary dying on missing
+# credentials) would otherwise crash-loop on every probe forever: each
+# wake spawns the process, it exits before the MCP handshake, and the
+# cycle repeats. The interval doubles after each failed probe (explicit
+# reconnects are unaffected — they fire immediately), so a chronically
+# dead server settles into at most one probe per _PARKED_RETRY_INTERVAL_MAX.
+_PARKED_RETRY_INTERVAL_MAX = 3600
+# Top rung of the doubling ladder: the streak counter stops growing here
+# because the interval is already pinned at _PARKED_RETRY_INTERVAL_MAX.
+_PARKED_PROBE_STREAK_CAP = max(
+    0,
+    math.ceil(
+        math.log2(_PARKED_RETRY_INTERVAL_MAX / _PARKED_RETRY_INTERVAL)
+    ),
+)
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # How long a tool call waits for a respawned stdio child after its subprocess
 # was found dead — a gateway restart kills every MCP stdio child,
@@ -2679,6 +2695,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked",
+        "_parked_probe_streak",
         "_inflight_tasks", "_reconnecting", "_suspect_reason",
         "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
         "_ever_connected",
@@ -2786,6 +2803,36 @@ class MCPServerTask:
         # back to ``list_tools`` (the pre-ping probe) so we neither spam pings
         # nor reconnect-loop. Reset on each fresh transport connection.
         self._ping_unsupported: bool = False
+        # Parked self-probe backoff state: consecutive failed probes since
+        # the last healthy session. Each failed probe doubles the wait up to
+        # _PARKED_RETRY_INTERVAL_MAX; a successful revival (or any healthy
+        # session) resets it. Explicit reconnects (``_reconnect_event``) are
+        # never delayed by this counter — they still fire immediately.
+        self._parked_probe_streak: int = 0
+
+    def _parked_probe_interval(self) -> float:
+        """Current wait between parked self-probes for this server.
+
+        Doubles from _PARKED_RETRY_INTERVAL per consecutive failed probe,
+        capped at _PARKED_RETRY_INTERVAL_MAX. Probing a dead server is not
+        free for stdio transports (each probe spawns the process), so a
+        server parked on a permanent-looking failure settles to one probe
+        per hour instead of one per 5 minutes, forever.
+
+        The streak itself is clamped at the doubling ladder's top rung:
+        past it the interval is pinned at the cap, so the counter stops
+        growing and the ``2 ** streak`` arithmetic stays tiny.
+
+        Returns a jittered value (+/- ``_BACKOFF_JITTER``), mirroring the
+        reconnect backoff: after a gateway restart, every parked server
+        wakes from the same base cadence, and without jitter they would
+        all self-probe in lockstep at 300s/600s/... — a thundering herd
+        of process spawns.
+        """
+        return _jittered(min(
+            _PARKED_RETRY_INTERVAL * (2 ** self._parked_probe_streak),
+            _PARKED_RETRY_INTERVAL_MAX,
+        ))
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -3204,6 +3251,9 @@ class MCPServerTask:
         if not self._session_proven:
             self._session_proven = True
             self._reconnect_retries = 0
+            # A proven session ends the parked-probe failure streak — the
+            # next park (if any) restarts the backoff ladder from the base.
+            self._parked_probe_streak = 0
             if self._was_parked:
                 self._was_parked = False
                 logger.warning(
@@ -3485,7 +3535,20 @@ class MCPServerTask:
                         pass
         if self._shutdown_event.is_set():
             return "shutdown"
+        explicit_reconnect = self._reconnect_event.is_set()
         self._reconnect_event.clear()
+        if not explicit_reconnect:
+            # Timed wake — this is a self-probe, not an explicit request.
+            # A probe that leads to another park (the server is still dead)
+            # must lengthen the next wait: bump the failure streak so the
+            # backoff ladder in _parked_probe_interval() doubles the
+            # interval. Explicit reconnects never touch the streak. The
+            # streak is clamped at the ladder's top rung — past it the
+            # interval is pinned at the cap, so the counter stops growing.
+            self._parked_probe_streak = min(
+                self._parked_probe_streak + 1,
+                _PARKED_PROBE_STREAK_CAP,
+            )
         return "reconnect"
 
     async def _run_stdio(self, config: dict):
@@ -4435,7 +4498,7 @@ class MCPServerTask:
                         self._deregister_tools()
                         self._reconnect_event.clear()
                         parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                            timeout=self._parked_probe_interval()
                         )
                         if parked == "shutdown":
                             break
@@ -4533,7 +4596,7 @@ class MCPServerTask:
                         self._deregister_tools()
                         self._reconnect_event.clear()
                         parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                            timeout=self._parked_probe_interval()
                         )
                         if parked == "shutdown":
                             return
@@ -4565,7 +4628,7 @@ class MCPServerTask:
                         self._deregister_tools()
                         self._reconnect_event.clear()
                         parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                            timeout=self._parked_probe_interval()
                         )
                         if parked == "shutdown":
                             return
@@ -4653,7 +4716,7 @@ class MCPServerTask:
                     self._deregister_tools()
                     self._reconnect_event.clear()
                     parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
+                        timeout=self._parked_probe_interval()
                     )
                     if parked == "shutdown":
                         return
@@ -4692,7 +4755,7 @@ class MCPServerTask:
                     self._deregister_tools()
                     self._reconnect_event.clear()
                     parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
+                        timeout=self._parked_probe_interval()
                     )
                     if parked == "shutdown":
                         return

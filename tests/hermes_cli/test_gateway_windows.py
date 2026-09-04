@@ -314,13 +314,17 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
-def test_gateway_vbs_script_is_console_less(monkeypatch):
-    """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
-    (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
+def test_gateway_vbs_script_is_console_less_and_propagates_child_exit(monkeypatch):
+    """The Scheduled Task launcher stays hidden while supervising Python.
+
+    Task Scheduler's RestartOnFailure policy only sees the VBS exit status. The
+    launcher must therefore wait for the gateway child and quit with that same
+    status instead of detaching and reporting success immediately.
+    """
     monkeypatch.setattr(
         gateway_windows,
         "_resolve_detached_python",
-        lambda exe: (r"C:\venv\Scripts\pythonw.exe", Path(r"C:\venv"), []),
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
     )
     content = gateway_windows._build_gateway_vbs_script(
         r"C:\venv\Scripts\python.exe",
@@ -330,10 +334,14 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     )
     assert "cmd.exe" not in content.lower()
     assert 'CreateObject("WScript.Shell")' in content
-    assert "pythonw.exe" in content
+    assert "python.exe" in content
+    assert "pythonw.exe" not in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert "exitCode = sh.Run" in content
+    assert ", 0, True" in content  # hidden window, wait for supervised child
+    assert "WScript.Quit exitCode" in content
+    assert ", 0, False" not in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content

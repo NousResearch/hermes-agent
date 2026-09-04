@@ -191,6 +191,23 @@ def start_loop_liveness_watchdog(
                 logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
             if stop_event.is_set():
                 return
+            try:
+                _write_watchdog_dump(
+                    get_shutdown_watchdog_dump_path(),
+                    delay_s=timeout * strikes,
+                    snapshot={
+                        "strikes": strikes,
+                        "probe_interval_s": interval,
+                        "probe_timeout_s": timeout,
+                        "exit_code": exit_code,
+                    },
+                    event="loop_liveness_watchdog_fired",
+                    emit_stderr=False,
+                )
+            except Exception:
+                logger.debug("Loop liveness durable dump failed", exc_info=True)
+            if stop_event.is_set():
+                return
             # Record the watchdog exit in the lifecycle sentinel so the next
             # boot reports "watchdog hard-exit" instead of misclassifying
             # this as an unclean SIGKILL/OOM death (NS-608).
@@ -317,6 +334,8 @@ def _write_watchdog_dump(
     *,
     delay_s: float,
     snapshot: Optional[Dict[str, Any]],
+    event: str = "shutdown_watchdog_fired",
+    emit_stderr: bool = True,
 ) -> None:
     """Best-effort faulthandler + metadata dump before hard-exit."""
     try:
@@ -325,7 +344,7 @@ def _write_watchdog_dump(
         return
 
     header = {
-        "event": "shutdown_watchdog_fired",
+        "event": event,
         "pid": os.getpid(),
         "delay_s": delay_s,
         "fired_at": datetime.now(timezone.utc).isoformat(),
@@ -347,15 +366,16 @@ def _write_watchdog_dump(
 
     # Also dump to stderr so journald/launchd capture it even if the file
     # write failed (wedged disk was one of the #66892 hypotheses).
-    try:
-        sys.stderr.write(
-            f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
-            f"(pid={os.getpid()}); dumping all thread stacks.\n"
-        )
-        sys.stderr.flush()
-        faulthandler.dump_traceback(all_threads=True)
-    except Exception:
-        pass
+    if emit_stderr:
+        try:
+            sys.stderr.write(
+                f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
+                f"(pid={os.getpid()}); dumping all thread stacks.\n"
+            )
+            sys.stderr.flush()
+            faulthandler.dump_traceback(all_threads=True)
+        except Exception:
+            pass
 
 
 def arm_shutdown_watchdog(

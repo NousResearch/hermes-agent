@@ -13,6 +13,7 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 - **Browserbase cloud mode** via [Browserbase](https://browserbase.com) as an alternative cloud browser provider with anti-bot tooling
 - **Browser Use mode** via the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use), the default browser driver for local Chrome and Browser Use cloud browsers
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
+- **KERNEL cloud mode** via the [KERNEL browser provider plugin](https://github.com/kernel/hermes-browser-plugin) for cloud browsers with stealth, persistent profiles, proxies, and live view
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
 - **Lightpanda local engine** via [Lightpanda](https://lightpanda.io) — a headless browser built from scratch in Zig for machines; instant start up, 16x lower memory and 9x faster than Chrome. Works in Browser Use mode (Hermes spawns it, no Chromium or Node needed) and with the built-in tools (automatic Chrome fallback for actions it doesn't support yet)
 - **Local Chromium-family CDP** — connect browser tools to your own Chrome, Brave, Chromium, or Edge instance using `/browser connect`
@@ -26,7 +27,7 @@ Pages are represented as **accessibility trees** (text-based snapshots), making 
 
 Key capabilities:
 
-- **Multi-provider cloud execution** — Browser Use, Browserbase, or Firecrawl — no local browser needed
+- **Multi-provider cloud execution** — Browser Use, Browserbase, Firecrawl, or KERNEL via its provider plugin — no local browser needed
 - **Local Chromium-family integration** — attach to your running Chrome, Brave, Chromium, or Edge browser via CDP for hands-on browsing
 - **Cloud anti-bot support** — Browser Use Cloud includes stealth, residential proxies, and CAPTCHA solving
 - **Persistent cloud profiles** — Browser Use Cloud can reuse cookies, localStorage, and saved passwords across sessions
@@ -66,7 +67,7 @@ BROWSERBASE_PROJECT_ID=your-project-id-here
 Get your credentials at [browserbase.com](https://browserbase.com).
 
 :::note Selecting the provider
-The `.env` keys above supply **credentials only**. The active cloud browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`browserbase`, `browser-use`, `camofox`, or `nous` for the Nous Subscription). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect from available credentials.
+The `.env` keys above supply **credentials only**. The active cloud browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`browserbase`, `browser-use`, `camofox`, `kernel` when its plugin is installed, or `nous` for the Nous Subscription). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect Browser Use or Browserbase from available credentials. KERNEL is not part of this autodetection; installing its plugin or adding `KERNEL_API_KEY` does not switch providers until you select `kernel` explicitly.
 :::
 
 ### Browser Use mode (default)
@@ -75,7 +76,7 @@ Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/b
 
 **This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through `uvx`), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
 
-The mode is a **driver** that composes with your configured browser backend: it drives your local Chrome, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
+The mode is a **driver** that composes with your configured browser backend: it drives your local Chrome, a Nous-subscription cloud browser, Browserbase, Firecrawl, KERNEL, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
 
 **Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state), and on cloud backends its own browser — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
 
@@ -123,6 +124,33 @@ FIRECRAWL_API_URL=http://localhost:3002
 # Session TTL in seconds (default: 300)
 FIRECRAWL_BROWSER_TTL=600
 ```
+
+### KERNEL cloud mode (plugin)
+
+KERNEL is available through its standalone [Hermes browser provider plugin](https://github.com/kernel/hermes-browser-plugin). Install and enable the plugin, then select KERNEL as the browser provider:
+
+```bash
+hermes plugins install kernel/hermes-browser-plugin --enable
+hermes config set browser.cloud_provider kernel
+```
+
+Add your [KERNEL API key](https://dashboard.onkernel.com/api-keys) to the active Hermes profile's `.env` file:
+
+```bash
+# Add to ~/.hermes/.env
+KERNEL_API_KEY=***
+```
+
+Optional settings:
+
+```bash
+KERNEL_STEALTH=false                         # Stealth is enabled by default
+KERNEL_PROXY_NAME=my-proxy                   # Attach a configured KERNEL proxy
+KERNEL_PROFILE_NAME=my-profile               # Load and save a persistent profile
+KERNEL_BASE_URL=https://api.onkernel.com     # Override the KERNEL API endpoint
+```
+
+The plugin creates a task-scoped KERNEL browser, connects Hermes through the CDP endpoint returned by KERNEL, and deletes the browser during normal or inactivity cleanup. No CDP-specific environment variable is required. It supports KERNEL stealth mode, named proxies, persistent profiles, and live view. See the [plugin README](https://github.com/kernel/hermes-browser-plugin#readme) for more details.
 
 ### Hybrid routing: cloud for public URLs, local for LAN/localhost
 

@@ -307,6 +307,14 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
 _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
 _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
+# A clean-exit protocol violation means the run did its work and skipped the
+# paperwork — the guidance already tells the retry to "verify it and report the
+# result via kanban_complete". Verifying it started with REDISCOVERING it: nothing
+# handed the retry what the previous run had changed, so each attempt re-derived
+# the same state. Measured on one install: 117 such runs across 49 tasks, 5.0 runs
+# per task, and 4 tasks that never recovered at all.
+_CTX_EVIDENCE_MAX_COMMITS = 5
+_CTX_EVIDENCE_TIMEOUT_S = 10
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
@@ -3815,6 +3823,77 @@ def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
     lines.append("")
 
 
+def _run_was_protocol_violation(run) -> bool:
+    """True when this closed run ended as a clean-exit-without-verdict.
+
+    Two readings because the two sources age differently: the durable marker
+    ``detect_crashed_workers`` copies into the run metadata, and the error text
+    for runs recorded before that marker existed.
+    """
+    meta = getattr(run, "metadata", None)
+    if isinstance(meta, dict) and meta.get("protocol_violation"):
+        return True
+    return "protocol violation" in (getattr(run, "error", "") or "")
+
+
+def _protocol_violation_evidence(task, run) -> list[str]:
+    """What the previous run left behind in the workspace, named for the retry.
+
+    Read-only, time-bounded, and silent on ANY failure: a worker prompt that
+    cannot be built is worse than one without this section, and this is a
+    convenience on top of guidance that already works.
+
+    ``--since`` filters on COMMITTER date, which is what "landed during that run"
+    means here — a commit authored earlier and committed by that run still counts,
+    and that is the case worth catching (an agent that stages for a while and
+    commits at the end).
+    """
+    path = (getattr(task, "workspace_path", None) or "").strip()
+    kind = getattr(task, "workspace_kind", None)
+    started = getattr(run, "started_at", None)
+    if not path or kind not in {"dir", "worktree"} or not started:
+        return []
+    try:
+        import subprocess
+
+        since = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(int(started)))
+
+        def _git(*args: str) -> str:
+            out = subprocess.run(
+                ("git", "-C", path) + args,
+                capture_output=True, text=True,
+                timeout=_CTX_EVIDENCE_TIMEOUT_S,
+            )
+            return out.stdout.strip() if out.returncode == 0 else ""
+
+        if not _git("rev-parse", "--is-inside-work-tree"):
+            return []
+        commits = _git("log", f"--since={since}", "--oneline",
+                       f"-n{_CTX_EVIDENCE_MAX_COMMITS}")
+        dirty = [ln for ln in _git("status", "--porcelain").splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+    if not commits and not dirty:
+        # Nothing landed. Saying so is the useful half: it tells the retry the
+        # work is still to do, instead of leaving it to hunt for work that was
+        # never there.
+        return ["_The previous run left no commit and no uncommitted change in "
+                f"`{path}` — treat the work as still to do._"]
+
+    out = ["**What the previous run left behind** (it exited without reporting, "
+           "so this is unverified — confirm before claiming it):"]
+    if commits:
+        out.append(f"Commits in `{path}` since that run started:")
+        out.extend(f"- `{ln}`" for ln in commits.splitlines())
+    if dirty:
+        shown = dirty[:_CTX_EVIDENCE_MAX_COMMITS]
+        out.append(f"Uncommitted in `{path}`: {len(dirty)} file(s)"
+                   + (" (first few)" if len(dirty) > len(shown) else ""))
+        out.extend(f"- `{ln}`" for ln in shown)
+    return out
+
+
 def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
     """Closed runs on this task (the active run is this worker), newest
     ``_CTX_MAX_PRIOR_ATTEMPTS`` in full, older ones as a one-line marker."""
@@ -3840,6 +3919,14 @@ def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str
         if meta_line:
             lines.append(meta_line)
         lines.append("")
+    # The most recent closed attempt ended clean-but-verdictless: name what it
+    # left in the workspace instead of asking the retry to go and find it.
+    if shown and _run_was_protocol_violation(shown[-1]):
+        evidencia = _protocol_violation_evidence(get_task(conn, task_id), shown[-1])
+        if evidencia:
+            lines.append("")
+            lines.extend(evidencia)
+            lines.append("")
 
 
 def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:

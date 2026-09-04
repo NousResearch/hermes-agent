@@ -13243,16 +13243,10 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   installContextMenuBridge(win)
-  // Deny every window-open request and NEVER open a URL as a side effect here.
-  // Trusted external links go through the audited `hermes:openExternal` IPC
-  // channel; the only content that reaches this handler is what we did not
-  // initiate — including untrusted HTML in sandboxed `allow-scripts` iframes.
-  // Opening `details.url` here is the GHSA-9f4c-93c8-jc8g (CVE-2026-70608)
-  // vector: a sandboxed iframe with no `allow-popups` and no user gesture can
-  // force the OS browser to an attacker URL. No fixed 40.x Electron exists, so
-  // we close it at the seam. See electron/window-open-policy.ts.
+  // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
+  // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
   win.webContents.setWindowOpenHandler(
-    createWindowOpenHandler(url => rememberLog(`[window-open] denied: ${url}`))
+    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
   )
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {

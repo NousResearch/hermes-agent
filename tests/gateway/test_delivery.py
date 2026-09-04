@@ -398,7 +398,59 @@ def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypat
     result = router._deliver_local(
         "完了 ✅ café", job_id="job1", job_name="日次レポート", metadata=None
     )
-
     written = Path(result["path"]).read_text(encoding="utf-8")
     assert "完了 ✅ café" in written
     assert "日次レポート" in written
+
+
+# ---------------------------------------------------------------------------
+# ntfy cron delivery routing (issue: cron ntfy:<topic> was pinned to the
+# adapter's fixed publish topic; must carry publish_topic = chat_id, the same
+# bridge send_message_tool._send_via_adapter already applies)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ntfy_cron_delivery_carries_publish_topic_for_target_topic(tmp_path, monkeypatch):
+    """A cron job delivered to `ntfy:<topic>` must reach that exact topic.
+
+    ntfy's adapter send() honors metadata.publish_topic before falling back
+    to the fixed configured publish topic, and the DeliveryRouter is the cron
+    live-adapter path — so the router must bridge chat_id -> publish_topic
+    exactly like send_message_tool does, or the delivery is silently pinned
+    to the configured home topic.
+    """
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    ntfy_platform = Platform("ntfy")
+    router = DeliveryRouter(GatewayConfig(), adapters={ntfy_platform: adapter})
+
+    await router._deliver_to_platform(
+        DeliveryTarget(platform=ntfy_platform, chat_id="alerts-channel"),
+        "disk 90%",
+        metadata={"job_id": "cron-ops"},
+    )
+
+    assert len(adapter.calls) == 1
+    call = adapter.calls[0]
+    assert call["chat_id"] == "alerts-channel"
+    assert call["metadata"]["publish_topic"] == "alerts-channel"
+    assert call["metadata"]["job_id"] == "cron-ops"
+
+
+@pytest.mark.asyncio
+async def test_non_ntfy_delivery_untouched_by_publish_topic_bridge(tmp_path, monkeypatch):
+    """The ntfy publish_topic bridge must not leak metadata into other platforms."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.SLACK: adapter})
+
+    await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.SLACK, chat_id="C123"),
+        "hello",
+        metadata={"job_id": "cron-1"},
+    )
+
+    assert len(adapter.calls) == 1
+    call = adapter.calls[0]
+    assert "publish_topic" not in call["metadata"]
+    assert call["metadata"]["job_id"] == "cron-1"

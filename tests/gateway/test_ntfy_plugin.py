@@ -223,6 +223,29 @@ class TestSend:
         posted_url = mock_client.post.call_args[0][0]
         assert posted_url.endswith("/hermes-out")
 
+    def test_send_honors_metadata_publish_topic_over_configured(self):
+        """An explicit metadata publish_topic (used by the send tool for
+        ntfy:<topic> targets) must reach that topic even when the adapter
+        also has a fixed publish topic configured."""
+        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "xyz789"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        result = _run(adapter.send(
+            "ignored-chat", "Disk at 90%",
+            metadata={"publish_topic": "alerts-channel"},
+        ))
+        assert result.success is True
+
+        posted_url = mock_client.post.call_args[0][0]
+        assert posted_url.endswith("/alerts-channel")
+
     def test_send_falls_back_to_subscribe_topic(self):
         adapter = self._make_adapter(topic="hermes-in")
 

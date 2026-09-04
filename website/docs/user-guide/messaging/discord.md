@@ -337,6 +337,7 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  suppress_link_previews: true    # Hide URL preview embeds on bot messages (default: true)
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -378,6 +379,25 @@ In **multi-bot threads** where users address one bot per turn, this default beco
 discord:
   require_mention: true
   thread_require_mention: true    # multi-bot setup
+```
+
+#### `discord.suppress_link_previews`
+
+**Type:** boolean — **Default:** `true`
+
+Discord unfurls URLs in bot messages into preview cards. Streamed answers that
+cite links — documentation lookups, search results, PR links — otherwise end up
+wrapped in unwanted embeds. When enabled (the default), the bot sets Discord's
+`SUPPRESS_EMBEDS` flag on the messages it sends, so no preview card is
+generated. Because the flag is set at send time and the streaming edit path
+never clears it, the suppression holds across the mid-stream edits the bot makes
+while a reply streams in.
+
+Set `suppress_link_previews: false` if you *want* preview cards on bot messages.
+
+```yaml
+discord:
+  suppress_link_previews: false   # keep URL preview embeds
 ```
 
 #### `discord.free_response_channels`

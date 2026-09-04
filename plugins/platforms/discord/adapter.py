@@ -1222,6 +1222,17 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Link-preview suppression. Discord unfurls URLs in bot messages into
+        # preview cards; the dependable lever is the per-message SUPPRESS_EMBEDS
+        # flag, set at send time via ``channel.send(suppress_embeds=...)``. The
+        # streaming edit path uses ``PartialMessage.edit(content=...)``, which
+        # sends no ``flags`` field and so preserves the suppression across every
+        # mid-stream edit (Discord only regenerates the embed when an edit
+        # actively clears the flag). Defaults on; operators who want previews
+        # set ``extra.suppress_link_previews: false``.
+        self._suppress_link_previews: bool = self._coerce_suppress_link_previews(
+            self.config.extra.get("suppress_link_previews", True)
+        )
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
@@ -1237,6 +1248,18 @@ class DiscordAdapter(BasePlatformAdapter):
         # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+
+    @staticmethod
+    def _coerce_suppress_link_previews(value: Any) -> bool:
+        """Coerce ``extra.suppress_link_previews`` to a bool (default on).
+
+        YAML already yields a real bool, but env/JSON overrides can arrive as
+        strings; treat the usual falsey spellings as off and everything else
+        (including a missing key, which arrives as the ``True`` default) as on.
+        """
+        if isinstance(value, str):
+            return value.strip().lower() not in ("false", "0", "no", "off", "")
+        return bool(value)
 
     def _config_value(
         self, key: str, default: Any, *, env_key: Optional[str] = None
@@ -3596,6 +3619,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        suppress_embeds=self._suppress_link_previews,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -3618,6 +3642,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            suppress_embeds=self._suppress_link_previews,
                         )
                     else:
                         raise
@@ -3872,6 +3897,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._last_overflow_preview.pop(_preview_key, None)
 
             try:
+                # PartialMessage.edit sends no ``flags`` field, so a link-preview
+                # embed suppressed at send time (see ``suppress_embeds`` on the
+                # send path) stays suppressed across these streaming edits —
+                # Discord only regenerates the embed when an edit clears the
+                # SUPPRESS_EMBEDS flag, which this content-only edit never does.
                 await msg.edit(content=formatted)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
@@ -3986,7 +4016,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 # overflow continuations stay threaded.
                 reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(
+                    content=chunk,
+                    reference=reference,
+                    suppress_embeds=self._suppress_link_previews,
+                )
             except Exception as send_err:
                 # Drop the reply anchor and retry once — a deleted/expired
                 # anchor (10008) or system-message reply (50035) shouldn't lose
@@ -3996,7 +4030,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(
+                        content=chunk,
+                        reference=None,
+                        suppress_embeds=self._suppress_link_previews,
+                    )
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",

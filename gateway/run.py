@@ -25110,6 +25110,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return False
 
+        # Desktop speaks for itself: the desktop app's useAutoSpeakReplies
+        # hook calls playSpeechText for the same reply, so a gateway voice
+        # message here makes every auto-TTS reply play twice (two independent
+        # synthesizations of the same text — logged as one "Generating speech"
+        # plus two "TTS audio saved" entries). The desktop path is the
+        # authoritative one for that surface; the gateway has no way to know
+        # whether the client spoke, so it must stay out of the way (#90297).
+        if event.source.platform.value == "desktop":
+            logger.debug(
+                "Auto voice reply skipped: desktop surface speaks locally (mode=%s chat=%s)",
+                voice_mode, chat_id,
+            )
+            return False
+
         # Dedup: agent already called TTS tool in THIS turn only
         last_user_idx = None
         for i, msg in enumerate(reversed(agent_messages)):

@@ -55,7 +55,7 @@ def _prompt_positive_int(title: str, current: int | None = None) -> int | None:
     while True:
         try:
             raw = input(f"{title}{suffix}: ").strip()
-        except (KeyboardInterrupt, EOFError):
+        except EOFError:
             return current
         if not raw:
             return current
@@ -129,6 +129,11 @@ def _edit_slot_parameters(
         model = str(slot.get("model") or "")
         reasoning_support = _model_supports_reasoning(provider, model)
         if reasoning_support is False:
+            if "reasoning_effort" in slot:
+                print(
+                    f"Note: {slot.get('provider')}:{model} does not support reasoning; "
+                    "dropping the existing reasoning_effort override."
+                )
             slot.pop("reasoning_effort", None)
         elif reasoning_support is True:
             effort_action = _prompt_choice(

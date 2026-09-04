@@ -5,7 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.moa_cmd import _pick_slot, cmd_moa
+import pytest
+
+from hermes_cli.moa_cmd import _pick_slot, _prompt_positive_int, cmd_moa
 
 
 CURRENT = {
@@ -137,7 +139,20 @@ def test_custom_max_tokens_reprompts_until_positive_integer(capsys):
     assert capsys.readouterr().out.count("positive integer") == 2
 
 
-def test_non_reasoning_slot_does_not_offer_reasoning_control():
+def test_custom_max_tokens_keyboard_interrupt_aborts_edit():
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2]
+    ), patch("builtins.input", side_effect=KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            _pick_slot(CURRENT)
+
+
+def test_custom_max_tokens_eof_keeps_current_value():
+    with patch("builtins.input", side_effect=EOFError):
+        assert _prompt_positive_int("Max tokens", 600) == 600
+
+
+def test_non_reasoning_slot_does_not_offer_reasoning_control(capsys):
     current = {**CURRENT, "model": "openai/gpt-4.1"}
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
         "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0]
@@ -146,6 +161,10 @@ def test_non_reasoning_slot_does_not_offer_reasoning_control():
 
     assert slot == {key: value for key, value in current.items() if key != "reasoning_effort"}
     prompt.assert_not_called()
+    assert (
+        "Note: openrouter:openai/gpt-4.1 does not support reasoning; "
+        "dropping the existing reasoning_effort override."
+    ) in capsys.readouterr().out
 
 
 def test_unknown_reasoning_capability_preserves_existing_override():

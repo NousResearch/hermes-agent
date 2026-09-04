@@ -671,6 +671,39 @@ def _estimate_chunk_bytes(chunk: Any) -> int:
     return size
 
 
+def _codex_wait_notice_deadline(
+    *,
+    stale_timeout: float,
+    ttfb_enabled: bool,
+    ttfb_timeout: float,
+    last_event_ts: Optional[float],
+    call_start: float,
+    idle_enabled: bool,
+    idle_timeout: float,
+    elapsed: float,
+) -> "tuple[str, float] | None":
+    """Identify the earliest enabled Codex watchdog on the call timeline.
+
+    Returns ``(label, deadline_seconds_since_call_start)`` for whichever
+    watchdog fires soonest, or ``None`` if none is enabled/finite or its
+    deadline has already passed.
+    """
+    deadlines: list[tuple[str, float]] = []
+    if math.isfinite(stale_timeout):
+        deadlines.append(("wall-clock stale", stale_timeout))
+    if last_event_ts is None:
+        if ttfb_enabled and math.isfinite(ttfb_timeout):
+            deadlines.append(("TTFB", ttfb_timeout))
+    elif idle_enabled and math.isfinite(idle_timeout):
+        deadlines.append(("stream idle", max(0.0, last_event_ts - call_start) + idle_timeout))
+    if not deadlines:
+        return None
+    label, deadline = min(deadlines, key=lambda d: d[1])
+    if deadline <= elapsed:
+        return None
+    return label, deadline
+
+
 def _codex_wait_notice_recovery(
     *,
     stale_timeout: float,
@@ -683,17 +716,19 @@ def _codex_wait_notice_recovery(
     elapsed: float,
 ) -> str:
     """Describe the earliest enabled Codex watchdog on the call timeline."""
-    deadlines: list[float] = []
-    if math.isfinite(stale_timeout):
-        deadlines.append(stale_timeout)
-    if last_event_ts is None:
-        if ttfb_enabled and math.isfinite(ttfb_timeout):
-            deadlines.append(ttfb_timeout)
-    elif idle_enabled and math.isfinite(idle_timeout):
-        deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
-    if not deadlines or min(deadlines) <= elapsed:
+    found = _codex_wait_notice_deadline(
+        stale_timeout=stale_timeout,
+        ttfb_enabled=ttfb_enabled,
+        ttfb_timeout=ttfb_timeout,
+        last_event_ts=last_event_ts,
+        call_start=call_start,
+        idle_enabled=idle_enabled,
+        idle_timeout=idle_timeout,
+        elapsed=elapsed,
+    )
+    if found is None:
         return ""
-    return f"; auto-reconnect at {int(min(deadlines))}s"
+    return f"; auto-reconnect at {int(found[1])}s"
 
 
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
@@ -1710,35 +1745,54 @@ def interruptible_api_call(agent, api_kwargs: dict):
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
     t.start()
     _poll_count = 0
+    _wait_notice_last_phase: Optional[str] = None
     while t.is_alive():
         t.join(timeout=0.3)
         _poll_count += 1
 
-        # Every ~30s: touch activity for the gateway inactivity monitor AND
-        # rewrite the live spinner/status line so CLI/TUI/Desktop users see
-        # what the agent is waiting on instead of an unexplained generic
-        # spinner (the "infinite thinking" complaint — the wait itself is
-        # usually a slow/overloaded provider, but the UI never said so).
+        # Every ~30s: touch activity for the gateway inactivity monitor.
+        # The visible spinner/status line is only rewritten the first time,
+        # when the wait moves from "no first byte yet" to "first byte seen,
+        # still idle" (a real state change), or once a watchdog deadline is
+        # imminent — repeating the same warning-like wording every 30s
+        # during an otherwise healthy request reads as sustained provider
+        # trouble when there is none (#92550).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
             try:
-                _recovery = _codex_wait_notice_recovery(
+                _last_event_ts = getattr(agent, "_codex_stream_last_event_ts", None)
+                _phase = "ttfb" if _last_event_ts is None else "idle"
+                _deadline = _codex_wait_notice_deadline(
                     stale_timeout=_stale_timeout,
                     ttfb_enabled=_ttfb_enabled,
                     ttfb_timeout=_ttfb_timeout,
-                    last_event_ts=getattr(
-                        agent, "_codex_stream_last_event_ts", None
-                    ),
+                    last_event_ts=_last_event_ts,
                     call_start=_call_start,
                     idle_enabled=_codex_idle_enabled,
                     idle_timeout=_codex_idle_timeout,
                     elapsed=_elapsed,
                 )
-                agent._emit_wait_notice(
-                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                    f"{int(_elapsed)}s with no response yet (provider may be slow "
-                    f"or overloaded{_recovery})"
-                )
+                _imminent = _deadline is not None and (_deadline[1] - _elapsed) <= 15.0
+                if _wait_notice_last_phase is None or _wait_notice_last_phase != _phase or _imminent:
+                    if _deadline is not None:
+                        _recovery = f"; {_deadline[0]} reconnect at {int(_deadline[1])}s"
+                    else:
+                        _recovery = ""
+                    _status = (
+                        "provider may be slow or overloaded"
+                        if _imminent
+                        else "no response yet"
+                    )
+                    agent._emit_wait_notice(
+                        f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                        f"{int(_elapsed)}s, {_status}{_recovery}"
+                    )
+                else:
+                    agent._touch_activity(
+                        f"waiting on {api_kwargs.get('model', 'the provider')} "
+                        f"({int(_elapsed)}s, no response yet)"
+                    )
+                _wait_notice_last_phase = _phase
             except Exception:
                 logger.debug("wait-notice construction failed", exc_info=True)
 

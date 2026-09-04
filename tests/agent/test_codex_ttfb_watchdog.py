@@ -317,6 +317,61 @@ def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
     assert "auto-reconnect" not in notices[0]
 
 
+def test_wait_notice_does_not_repeat_during_healthy_wait(monkeypatch):
+    """#92550: a second 30s tick with no watchdog state change and no
+    imminent deadline must not repeat the visible warning-like notice —
+    only the quiet activity touch fires, so a long-but-healthy request
+    doesn't read as sustained provider trouble."""
+    from agent import chat_completion_helpers as h
+
+    notices: list[str] = []
+    touches: list[str] = []
+    response = SimpleNamespace(ok=True)
+    agent = SimpleNamespace(
+        platform="desktop",
+        api_mode="chat_completions",
+        provider="moa",
+        _consecutive_stale_streams=0,
+        _interrupt_requested=False,
+        _compute_non_stream_stale_timeout=lambda _kwargs: float("inf"),
+        _touch_activity=touches.append,
+        _emit_wait_notice=notices.append,
+    )
+
+    class HeartbeatThread:
+        """Keep the synthetic worker alive through two heartbeats."""
+
+        def __init__(self, *, target, daemon):
+            self._polls = 0
+            self._target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            self._polls += 1
+            if self._polls == 201:
+                self._target()
+                return False
+            return True
+
+    monkeypatch.setattr(h.threading, "Thread", HeartbeatThread)
+    monkeypatch.setattr(
+        h,
+        "_dispatch_nonstreaming_api_request",
+        lambda *_args, **_kwargs: response,
+    )
+
+    result = h.interruptible_api_call(agent, {"model": "openai-xai-wide"})
+
+    assert result is response
+    assert len(notices) == 1
+    assert any("no response yet" in t for t in touches)
+
+
 def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
     """Status construction is fail-open even if its formatter breaks."""
     from agent import chat_completion_helpers as h
@@ -359,7 +414,7 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
     )
     monkeypatch.setattr(
         h,
-        "_codex_wait_notice_recovery",
+        "_codex_wait_notice_deadline",
         lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad display state")),
     )
 

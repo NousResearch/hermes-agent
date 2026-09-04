@@ -53,6 +53,15 @@ export function useBackgroundQueueDrain({
   const retryTimersRef = useRef<number[]>([])
   const [retryTick, setRetryTick] = useState(0)
 
+  // On mount, clear any failure counters carried over from a previous process.
+  // After an app restart all session runtimes are reaped; the backend is
+  // starting up fresh, so previous failure counts that tripped MAX_AUTO_DRAIN
+  // do NOT represent real send failures — they were rejections against a dead
+  // runtime.  Resetting on mount gives each entry a clean slate so the banner
+  // is not shown on the first interaction after a restart (#98015).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { drainFailuresRef.current.clear() }, [])
+
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     submitTextRef.current = submitText

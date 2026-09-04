@@ -126,6 +126,26 @@ class MemoryProvider(ABC):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count."""
 
+    def feature_capabilities(self) -> Dict[str, Any]:
+        """Optional default-on feature bundle advertised to the host."""
+        return {}
+
+    def on_turn_timing_start(self, turn_number: int, **kwargs) -> None:
+        """Open privacy-safe timing before normal turn setup."""
+
+    def on_turn_progress(self, turn_number: int, **kwargs) -> None:
+        """Observe a privacy-safe active/wait/rework phase transition."""
+
+    def on_turn_finish(self, turn_number: int, **kwargs) -> None:
+        """Close timing with a completed/failed/interrupted/incomplete outcome."""
+
+    def estimate_turn(self, **kwargs) -> Optional[Dict[str, Any]]:
+        """Return a structured aggregate estimate, or ``None`` when unavailable."""
+        return None
+
+    def abort_open_turns(self) -> None:
+        """Best-effort close of timing state during shutdown/session rotation."""
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """End-of-session extraction; fires only at real session boundaries, never per-turn."""
 

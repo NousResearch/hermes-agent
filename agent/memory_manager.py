@@ -586,6 +586,56 @@ class MemoryManager:
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._each_provider("on_turn_start failed", lambda p: p.on_turn_start(turn_number, message, **kwargs))
 
+    def feature_capabilities(self) -> Dict[str, Any]:
+        """Merge additive provider capabilities without making any one provider authoritative."""
+        merged: Dict[str, Any] = {}
+        for result in self._each_provider(
+            "feature_capabilities() failed", lambda p: p.feature_capabilities()
+        ):
+            if not isinstance(result, dict):
+                continue
+            for key, value in result.items():
+                if key == "contract_version":
+                    try:
+                        merged[key] = max(int(merged.get(key, 0)), int(value))
+                    except (TypeError, ValueError):
+                        continue
+                elif isinstance(value, bool):
+                    merged[key] = bool(merged.get(key)) or value
+        return merged
+
+    def on_turn_timing_start(self, turn_number: int, **kwargs) -> None:
+        self._each_provider(
+            "on_turn_timing_start failed",
+            lambda p: p.on_turn_timing_start(turn_number, **kwargs),
+        )
+
+    def on_turn_progress(self, turn_number: int, **kwargs) -> None:
+        self._each_provider(
+            "on_turn_progress failed", lambda p: p.on_turn_progress(turn_number, **kwargs)
+        )
+
+    def on_turn_finish(self, turn_number: int, **kwargs) -> None:
+        self._each_provider(
+            "on_turn_finish failed", lambda p: p.on_turn_finish(turn_number, **kwargs)
+        )
+
+    def estimate_turn(self, **kwargs) -> Optional[Dict[str, Any]]:
+        for result in self._each_provider(
+            "estimate_turn failed", lambda p: p.estimate_turn(**kwargs)
+        ):
+            if isinstance(result, dict) and result:
+                return result
+        return None
+
+    def abort_open_turns(self) -> None:
+        self._each_provider(
+            "abort_open_turns failed",
+            lambda p: p.abort_open_turns(),
+            providers=list(reversed(self._providers)),
+            level=logging.WARNING,
+        )
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
@@ -759,7 +809,8 @@ class MemoryManager:
         )
 
     def shutdown_all(self) -> None:
-        """Drain the background executor (bounded), then shut providers down in reverse order."""
+        """Close timing, drain background work, then shut providers down in reverse order."""
+        self.abort_open_turns()
         self._drain_sync_executor()
         self._each_provider("shutdown failed", lambda p: p.shutdown(), level=logging.WARNING,
                             providers=self._providers[::-1])

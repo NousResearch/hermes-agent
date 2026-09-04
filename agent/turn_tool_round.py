@@ -150,6 +150,10 @@ def run_tool_round(
             agent.stream_delta_callback(None)
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    from agent.turn_timing import progress_turn_timing
+    progress_turn_timing(
+        agent, "active", iteration=api_call_count, announce_remaining=True
+    )
 
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to

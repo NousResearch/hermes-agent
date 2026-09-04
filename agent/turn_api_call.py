@@ -65,7 +65,10 @@ def perform_api_call(
     interrupted: Any,
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
+    from agent.turn_timing import progress_turn_timing
+
     response = None
+    progress_turn_timing(agent, "wait", iteration=api_call_count)
 
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
@@ -131,6 +134,7 @@ def perform_api_call(
             api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
         )
     finally:
+        progress_turn_timing(agent, "active", iteration=api_call_count)
         with _bracket:
             if _model_request_active is not None:
                 _model_request_active.clear()

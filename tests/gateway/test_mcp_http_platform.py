@@ -191,3 +191,22 @@ async def test_chat_wait_reply_loop_over_real_streamable_http(monkeypatch):
     finally:
         await adapter.disconnect()
     assert _current_peer.get() == ""
+
+
+def test_adapter_opts_out_of_reply_streaming():
+    """wait_reply returns the whole reply, so the gateway must not stream it via edit_message
+    (a streamed finalize suppresses the notify-send the waiter depends on)."""
+    from plugins.platforms.mcp_http.adapter import McpHttpAdapter
+
+    assert McpHttpAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+
+def test_onboarding_notices_are_not_reported_as_activity():
+    from plugins.platforms.mcp_http.adapter import McpHttpAdapter
+
+    adapter = _adapter()
+    cid = "peer-x"
+    adapter._conv(cid, "peer")
+    adapter._record_progress(cid, "m1", "📬 No home channel is set for Mcp_Http. ...\nType /sethome to make this chat your home channel.")
+    adapter._record_progress(cid, "m2", "🔧 terminal: uptime")
+    assert list(adapter._conv(cid).progress) == ["🔧 terminal: uptime"]

@@ -127,6 +127,16 @@ class _Conv:
 
 
 class McpHttpAdapter(BasePlatformAdapter):
+    # The caller only ever sees the FINAL reply (wait_reply returns whole text), so partial token
+    # streaming buys nothing here. With editing "supported" the gateway streams the reply through
+    # edit_message(finalize=True) and then SUPPRESSES its notify-send, leaving the waiter with an
+    # empty reply. Declaring no-edit makes the gateway skip streaming for this platform and deliver
+    # the reply via send(notify=True). Tool-progress bubbles still arrive and are captured.
+    SUPPORTS_MESSAGE_EDITING = False
+
+    # Gateway onboarding notices mean nothing to an MCP caller (there is no chat to /sethome).
+    _NOISE_PREFIXES = ("📬 No home channel is set", "Type /sethome")
+
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("mcp_http"))
         self.settings = security.Settings.from_extra(getattr(config, "extra", {}) or {})
@@ -485,7 +495,7 @@ class McpHttpAdapter(BasePlatformAdapter):
     def _record_progress(self, cid: str, message_id: str, content: str) -> None:
         """Tool-progress bubble (a send without ``notify``, or an edit of one)."""
         text = (content or "").strip()
-        if not text:
+        if not text or text.startswith(self._NOISE_PREFIXES):
             return
         with self._lock:
             c = self._convs.get(cid)
@@ -498,6 +508,8 @@ class McpHttpAdapter(BasePlatformAdapter):
             new_lines = text[len(prev):].splitlines() if prev and text.startswith(prev) else text.splitlines()
             for line in new_lines:
                 line = line.strip()
+                if line.startswith(self._NOISE_PREFIXES):
+                    continue
                 if line and (not c.progress or c.progress[-1] != line):
                     c.progress.append(line[:200])
 

@@ -14,7 +14,10 @@ description: >-
   critical blocks stop at the human. This plugin drives only the FIRST hop:
   worker -> assessor. The assessor's first hop targets JOBSY (scope/AC/product,
   the board owner with the triage mandate in his SOUL); runtime/environment
-  faults go to Agent Smith (profile id `default`). The `switch` profile is never
+  faults AND card-authoring defects (a stale/self-contradictory card body that
+  demands an unproducible deliverable) go to Agent Smith (profile id `default`),
+  because repairing a card body is the orchestrator's lane, not a PM scope/AC
+  triage (2026-09-04 t_eaaa3434). The `switch` profile is never
   an escalation target — its only ownership is no_agent scheduled output, and a
   classify-and-stop switchboard must not close or assess build cards.
 

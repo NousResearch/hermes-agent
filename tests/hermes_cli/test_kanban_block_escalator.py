@@ -53,6 +53,24 @@ def test_reason_marker_routes_to_runtime_lane():
     assert mod._assessor_for("t3", "bob", "Acceptance criteria is ambiguous") == "jobsy"
 
 
+def test_card_defect_marker_routes_to_orchestrator_smith():
+    """A card-authoring/body-reconcile block routes to Smith, not Jobsy.
+
+    Rooted in the 2026-09-04 t_eaaa3434 loop: the reviewer blocked with
+    "reconcile the card body" (dead ACs, unproducible deliverable) and the
+    classifier dead-ended it to Jobsy, who cannot rewrite a card body — so
+    nobody woke the orchestrator. Repairing a stale/self-contradictory card
+    body is Smith's lane. Narrow: plain scope/AC wording stays with Jobsy.
+    """
+    mod = _load_plugin_module()
+    assert mod._assessor_for("t6", "rodge", "Card defect — needs Steve-o/orchestrator to reconcile the card body before this can clear") == "default"
+    assert mod._assessor_for("t7", "bob", "the card body is stale and lists dropped ACs") == "default"
+    assert mod._assessor_for("t8", "bob", "dead AC6 still listed, unproducible deliverable") == "default"
+    # A plain scope/AC question must NOT be captured as a card defect.
+    assert mod._assessor_for("t9", "bob", "Acceptance criteria is ambiguous") == "jobsy"
+    assert mod._assessor_for("t10", "bob", "What should the scope of this feature be?") == "jobsy"
+
+
 def test_loop_guard_never_returns_the_blocker():
     """A card blocked by the assessor itself climbs to the other tier."""
     mod = _load_plugin_module()

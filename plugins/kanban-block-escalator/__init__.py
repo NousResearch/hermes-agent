@@ -6,8 +6,11 @@ fleet escalation chain (worker -> assessor -> ... -> human for critical only).
 
 Escalation target is canonical and pinned here so it is versioned and
 testable: the first hop goes to Jobsy (the PM / board owner, who owns the
-scope/AC triage mandate per his SOUL); runtime/environment/profile faults go
-to Agent Smith (profile id ``default``). ``switch`` is deliberately NEVER an
+scope/AC triage mandate per his SOUL); runtime/environment/profile faults AND
+card-authoring defects — a body that is stale, self-contradictory, or demands
+a deliverable it cannot produce — go to Agent Smith (profile id ``default``),
+because repairing a card body is the orchestrator's lane, not a PM scope/AC
+triage (2026-09-04 t_eaaa3434 loop). ``switch`` is deliberately NEVER an
 escalation target — its only ownership is no_agent scheduled output, and it
 must not assess or close build cards.
 
@@ -40,6 +43,28 @@ RUNTIME_ASSESSOR = "default"  # Agent Smith's profile id
 # look like runtime faults.
 COST_ASSESSOR = "steve-o"
 _COST_MARKERS = ("max_cost", "cost cap", "cost_cap", "cumulative spend")
+
+# Signals that a block is a CARD-AUTHORING/body defect that needs the
+# ORCHESTRATOR (Smith) to reconcile the card, not Jobsy to assess product
+# scope. Rooted in the 2026-09-04 t_eaaa3434 loop: the reviewer blocked with
+# "reconcile the card body" (dead ACs still listed, an unproducible deliverable
+# demanded on a base that predates the harness) — the classifier defaulted that
+# to Jobsy, who cannot rewrite a dead card, so the block dead-ended and nobody
+# woke Smith until Richie did by hand. A body that is stale/self-contradictory
+# is repaired by rewriting the body, which is the orchestrator's lane. These
+# markers are deliberate and narrow (they must NOT catch "Acceptance criteria
+# is ambiguous", which stays Jobsy's scope/AC triage).
+_CARD_DEFECT_MARKERS = (
+    "card body",
+    "card defect",
+    "reconcile the card",
+    "reconcile the body",
+    "body is stale",
+    "stale card",
+    "dead ac",
+    "unproducible deliverable",
+    "acceptance criteria contradict",
+)
 
 # Signals that a block is a runtime/environment/profile fault (Smith's lane)
 # rather than a scope/AC/product decision (Jobsy's lane). Matched case-
@@ -119,7 +144,14 @@ def _assessor_for(task_id: str, assignee: str | None, reason: str | None) -> str
         # only profile allowed to adjudicate spend, so there is no other tier to
         # climb to. The loop guard below is deliberately skipped for this case.
         return COST_ASSESSOR
-    assessor = RUNTIME_ASSESSOR if any(m in text for m in _RUNTIME_MARKERS) else DEFAULT_ASSESSOR
+    if any(m in text for m in _CARD_DEFECT_MARKERS):
+        # A card whose body is stale/self-contradictory/reconcile-needed is the
+        # orchestrator's repair lane (rewrite the body), NOT a Jobsy scope/AC
+        # assessment. Rooted in the 2026-09-04 t_eaaa3434 loop where this
+        # defaulted to Jobsy and dead-ended — Smith must be woken to reconcile.
+        assessor = RUNTIME_ASSESSOR
+    else:
+        assessor = RUNTIME_ASSESSOR if any(m in text for m in _RUNTIME_MARKERS) else DEFAULT_ASSESSOR
 
     # Loop guard: never escalate a card back to the profile that blocked it.
     # If the block came from the assessor itself, climb to the other tier.
@@ -213,13 +245,26 @@ def on_block(task_id: str = "", assignee: str | None = None, reason: str | None 
         rec = _recurrences(task_id)
         last = (" This is the card's SECOND block of this kind — your last triage before it "
                 "goes to Richie. Narrow it or split it; do not simply retry.") if rec >= NON_COST_TRIAGE_LIMIT else ""
-        prompt = (
-            f"Assess the blocked kanban card {task_id} and unblock it if resolvable.{last} "
-            f"Block reason: {reason or '(none)'.strip()!r}. "
-            "Classify it (scope/AC vs runtime/env) and either resolve-and-unblock, "
-            "or escalate to the next agent up the chain. Only a genuinely critical "
-            "block (missing creds, owner decision, money) stops at Richie."
-        )
+        if assessor == RUNTIME_ASSESSOR and any(m in (reason or "").lower() for m in _CARD_DEFECT_MARKERS):
+            # Card-authoring defect: reconcile the body, don't just assess.
+            prompt = (
+                f"RECONCILE the kanban card {task_id} — it is blocked as a card-authoring "
+                f"defect, not a source defect. Block reason: {reason or '(none)'.strip()!r}. "
+                "Read the card's events and comment thread: the body is stale or self-"
+                "contradictory (dropped ACs still listed, an unproducible deliverable demanded, "
+                "or an orchestrator resolution never reconciled into the body). Rewrite the card "
+                "body so the live acceptance gate matches the actual scope, comment the "
+                "reconciliation, and unblock the card so its assigned worker/reviewer can "
+                "resume. Do NOT do the worker's job — repairing the body is the point."
+            )
+        else:
+            prompt = (
+                f"Assess the blocked kanban card {task_id} and unblock it if resolvable.{last} "
+                f"Block reason: {reason or '(none)'.strip()!r}. "
+                "Classify it (scope/AC vs runtime/env) and either resolve-and-unblock, "
+                "or escalate to the next agent up the chain. Only a genuinely critical "
+                "block (missing creds, owner decision, money) stops at Richie."
+            )
 
     try:
         # Fire-and-forget in a new session so the (short-lived) firing worker

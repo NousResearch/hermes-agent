@@ -11,7 +11,7 @@ from tools import group_relay as gr
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
-    (h / "profiles" / "pax").mkdir(parents=True)
+    (h / "profiles" / "researcher").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -22,7 +22,7 @@ def _result(envelope):
 
 
 def test_drain_returns_each_envelope_once(home):
-    env = gr.enqueue(home, room_id="rm", room_name="TraderChat", text="t", from_profile="pax", label="L")
+    env = gr.enqueue(home, room_id="rm", room_name="Launchpad", text="t", from_profile="researcher", label="L")
     first = _result(srv._methods["group_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in first["envelopes"]] == [env["id"]]
     assert _result(srv._methods["group_relay.outbox.drain"](2, {}))["envelopes"] == []
@@ -30,14 +30,14 @@ def test_drain_returns_each_envelope_once(home):
 
 def test_drain_uses_machine_root_from_profile_home(tmp_path, monkeypatch):
     root = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "pax"))
-    env = gr.enqueue(root, room_id="rm", room_name="n", text="t", from_profile="pax", label="L")
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "researcher"))
+    env = gr.enqueue(root, room_id="rm", room_name="n", text="t", from_profile="researcher", label="L")
     got = _result(srv._methods["group_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in got["envelopes"]] == [env["id"]]
 
 
 def test_reply_appends_lines_and_rejects_bad_input(home):
-    env = gr.enqueue(home, room_id="rm", room_name="n", text="t", from_profile="pax", label="L")
+    env = gr.enqueue(home, room_id="rm", room_name="n", text="t", from_profile="researcher", label="L")
     assert _result(srv._methods["group_relay.reply"](1, {"id": env["id"], "line": {"kind": "accepted", "thread": "x"}}))["ok"]
     assert _result(srv._methods["group_relay.reply"](2, {"id": env["id"], "line": {"kind": "reply", "member": "a", "text": "hi"}}))["ok"]
     lines, _ = gr.read_reply_lines(home, env["id"])
@@ -60,7 +60,7 @@ def test_outbox_signature_is_monotone(home, monkeypatch):
     monkeypatch.setattr(srv, "_watcher_home", lambda: home)
     monkeypatch.setattr(srv, "_group_relay_outbox_seen", 0)
     assert srv._group_relay_outbox_sig() is None
-    gr.enqueue(home, room_id="rm", room_name="n", text="t", from_profile="pax", label="L")
+    gr.enqueue(home, room_id="rm", room_name="n", text="t", from_profile="researcher", label="L")
     first = srv._group_relay_outbox_sig()
     assert first
     gr.claim_pending(home)  # outbox now empty; signature must not regress

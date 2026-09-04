@@ -25,8 +25,8 @@ interface Room {
 }
 
 const MEMBERS: RosterRow[] = [
-  { name: 'archie', title: '' } as RosterRow,
-  { name: 'socrates', title: '' } as RosterRow
+  { name: 'scout', title: '' } as RosterRow,
+  { name: 'helper', title: '' } as RosterRow
 ]
 
 async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
@@ -49,16 +49,16 @@ async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
 
   shared.setPluginCtx(scriptedStorage(gateway.storage))
 
-  // Seat two local bots in "TraderChat": roster rows whose meta lists the
+  // Seat two local bots in "Launchpad": roster rows whose meta lists the
   // group, exactly what groupChatMemberBots reads.
   data.$lastRoster.set(MEMBERS)
   data.$botMeta.set({
-    archie: { groups: ['TraderChat'] },
-    socrates: { groups: ['TraderChat'] }
+    scout: { groups: ['Launchpad'] },
+    helper: { groups: ['Launchpad'] }
   } as never)
   void membership
-  chat.updateGroupChat('TraderChat', current => {
-    current.roomId = 'rm-trader'
+  chat.updateGroupChat('Launchpad', current => {
+    current.roomId = 'rm-launch'
 
     return current
   })
@@ -72,7 +72,7 @@ const replyLines = (room: Room, id: string) =>
     .filter(call => call.params.id === id)
     .map(call => call.params.line as Record<string, unknown>)
 
-const isRunning = (room: Room) => room.chat.$groupChats.get().TraderChat?.running === true
+const isRunning = (room: Room) => room.chat.$groupChats.get().Launchpad?.running === true
 
 beforeEach(() => {
   runTimersInline()
@@ -83,23 +83,23 @@ describe('resolveRelayRoom', () => {
     const room = await loadRoom()
     const rooms = room.chat.$groupChats.get()
 
-    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'rm-trader', room_name: 'Wrong' }, rooms)?.name).toBe('TraderChat')
-    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'nope', room_name: 'TraderChat' }, rooms)?.name).toBe('TraderChat')
-    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'nope', room_name: 'traderchat' }, rooms)).toBeNull()
+    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'rm-launch', room_name: 'Wrong' }, rooms)?.name).toBe('Launchpad')
+    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'nope', room_name: 'Launchpad' }, rooms)?.name).toBe('Launchpad')
+    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'nope', room_name: 'launchpad' }, rooms)).toBeNull()
   })
 })
 
 describe('handleGroupRelayEnvelope', () => {
   it('sends on the user\'s behalf with via provenance, streams replies in the new thread, then done', async () => {
     const room = await loadRoom({
-      turn: ({ profile }) => (profile === 'archie' ? 'archie says hi' : '(pass)')
+      turn: ({ profile }) => (profile === 'scout' ? 'scout says hi' : '(pass)')
     })
 
     const ok = await room.relay.handleGroupRelayEnvelope({
       id: 'e1',
-      label: 'Pax via Discord',
-      room_id: 'rm-trader',
-      room_name: 'TraderChat',
+      label: 'Ada via Discord',
+      room_id: 'rm-launch',
+      room_name: 'Launchpad',
       text: 'What is the plan?'
     })
 
@@ -107,15 +107,15 @@ describe('handleGroupRelayEnvelope', () => {
     await drain(() => isRunning(room))
     await room.relay.tickGroupRelayWatchers()
 
-    const log = room.chat.$groupChats.get().TraderChat.log
-    expect(log[0].from).toEqual({ kind: 'user', name: 'You', via: 'Pax via Discord' })
+    const log = room.chat.$groupChats.get().Launchpad.log
+    expect(log[0].from).toEqual({ kind: 'user', name: 'You', via: 'Ada via Discord' })
     expect(log[0].text).toBe('What is the plan?')
 
     const lines = replyLines(room, 'e1')
-    expect(lines[0]).toMatchObject({ kind: 'accepted', group: 'TraderChat' })
+    expect(lines[0]).toMatchObject({ kind: 'accepted', group: 'Launchpad' })
     expect(lines[0].thread).toBe(log[0].thread)
     expect(lines.filter(l => l.kind === 'reply')).toEqual([
-      expect.objectContaining({ member: 'archie', text: 'archie says hi', thread: log[0].thread })
+      expect.objectContaining({ member: 'scout', text: 'scout says hi', thread: log[0].thread })
     ])
     expect(lines[lines.length - 1]).toMatchObject({ kind: 'done', status: 'settled', replies: 1 })
     expect(room.relay.groupRelayWatcherIds()).toEqual([])
@@ -124,10 +124,10 @@ describe('handleGroupRelayEnvelope', () => {
   it('never re-streams entries that predate the relay and ignores other threads', async () => {
     const room = await loadRoom({ turn: () => 'reply' })
 
-    room.chat.appendGroupChatEntry('TraderChat', { kind: 'member', name: 'socrates' }, 'old news', 'tmtm-old')
-    room.chat.appendGroupChatEntry('TraderChat', { kind: 'member', name: 'archie' }, 'other thread', 'tmtm-other')
+    room.chat.appendGroupChatEntry('Launchpad', { kind: 'member', name: 'helper' }, 'old news', 'tmtm-old')
+    room.chat.appendGroupChatEntry('Launchpad', { kind: 'member', name: 'scout' }, 'other thread', 'tmtm-other')
 
-    await room.relay.handleGroupRelayEnvelope({ id: 'e2', room_id: 'rm-trader', text: 'go' })
+    await room.relay.handleGroupRelayEnvelope({ id: 'e2', room_id: 'rm-launch', text: 'go' })
     await drain(() => isRunning(room))
     await room.relay.tickGroupRelayWatchers()
 
@@ -143,13 +143,13 @@ describe('handleGroupRelayEnvelope', () => {
   it('continues an existing Desktop thread only when the id is known; otherwise starts a new one', async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
 
-    room.chat.appendGroupChatEntry('TraderChat', { kind: 'user', name: 'You' }, 'earlier', 'tmtm-known')
+    room.chat.appendGroupChatEntry('Launchpad', { kind: 'user', name: 'You' }, 'earlier', 'tmtm-known')
 
-    await room.relay.handleGroupRelayEnvelope({ id: 'e3', room_id: 'rm-trader', text: 'follow-up', thread: 'tmtm-known' })
+    await room.relay.handleGroupRelayEnvelope({ id: 'e3', room_id: 'rm-launch', text: 'follow-up', thread: 'tmtm-known' })
     await drain(() => isRunning(room))
     expect(replyLines(room, 'e3')[0].thread).toBe('tmtm-known')
 
-    await room.relay.handleGroupRelayEnvelope({ id: 'e4', room_id: 'rm-trader', text: 'new topic', thread: 'discord-session-42' })
+    await room.relay.handleGroupRelayEnvelope({ id: 'e4', room_id: 'rm-launch', text: 'new topic', thread: 'discord-session-42' })
     await drain(() => isRunning(room))
     const minted = String(replyLines(room, 'e4')[0].thread)
     expect(minted).not.toBe('discord-session-42')
@@ -171,9 +171,9 @@ describe('handleGroupRelayEnvelope', () => {
   it('reports cancelled when a newer send supersedes the relay\'s round', async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
 
-    await room.relay.handleGroupRelayEnvelope({ id: 'e7', room_id: 'rm-trader', text: 'first' })
+    await room.relay.handleGroupRelayEnvelope({ id: 'e7', room_id: 'rm-launch', text: 'first' })
     // Composer send bumps the epoch before the watcher has observed the end.
-    room.chat.updateGroupChat('TraderChat', current => {
+    room.chat.updateGroupChat('Launchpad', current => {
       current.epoch = (current.epoch || 0) + 1
 
       return current
@@ -187,9 +187,9 @@ describe('handleGroupRelayEnvelope', () => {
   it('times out a watcher whose round never ends', async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
 
-    await room.relay.handleGroupRelayEnvelope({ id: 'e8', room_id: 'rm-trader', text: 'stuck' })
+    await room.relay.handleGroupRelayEnvelope({ id: 'e8', room_id: 'rm-launch', text: 'stuck' })
     // Hold the room "running" forever and jump the clock.
-    room.chat.updateGroupChat('TraderChat', current => {
+    room.chat.updateGroupChat('Launchpad', current => {
       current.running = true
 
       return current
@@ -214,7 +214,7 @@ describe('drainGroupRelayOutbox', () => {
 
         served = true
 
-        return { envelopes: [{ id: 'd1', room_id: 'rm-trader', text: 'via drain', label: 'CLI' }] }
+        return { envelopes: [{ id: 'd1', room_id: 'rm-launch', text: 'via drain', label: 'CLI' }] }
       }
 
       return base(method, params)
@@ -226,7 +226,7 @@ describe('drainGroupRelayOutbox', () => {
     await room.relay.tickGroupRelayWatchers()
     room.relay.stopGroupRelay()
 
-    const entry = room.chat.$groupChats.get().TraderChat.log.find(e => e.text === 'via drain')
+    const entry = room.chat.$groupChats.get().Launchpad.log.find(e => e.text === 'via drain')
     expect(entry).toMatchObject({ text: 'via drain', from: { kind: 'user', name: 'You', via: 'CLI' } })
     expect(replyLines(room, 'd1').pop()).toMatchObject({ kind: 'done' })
 

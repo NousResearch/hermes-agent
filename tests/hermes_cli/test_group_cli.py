@@ -24,7 +24,7 @@ from hermes_cli.subcommands import group as g
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     root = tmp_path / ".hermes"
-    for profile in ("pax", "archie"):
+    for profile in ("researcher", "scout"):
         (root / "profiles" / profile).mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
@@ -42,8 +42,8 @@ def mk_room(room_id="room-1", name="DevTeam", authority=None):
         room_id=room_id,
         name=name,
         members=[
-            {"member_id": "pax", "profile": "pax", "handle": "pax"},
-            {"member_id": "archie", "profile": "archie", "handle": "archie"},
+            {"member_id": "researcher", "profile": "researcher", "handle": "researcher"},
+            {"member_id": "scout", "profile": "scout", "handle": "scout"},
         ],
         authority_gateway_id=authority or hosted_rooms.local_authority_gateway_id(),
     )
@@ -90,13 +90,13 @@ def test_list_json_and_plain(home, capsys):
         "kind": "hosted",
         "name": "DevTeam",
         "room_id": "room-1",
-        "members": ["pax", "archie"],
+        "members": ["researcher", "scout"],
         "managed_here": True,
     }
     assert by_id["room-2"]["managed_here"] is False
     assert _run(["list"]) == 0
     out = capsys.readouterr().out
-    assert "DevTeam  [hosted] (room-1)  members: pax, archie" in out
+    assert "DevTeam  [hosted] (room-1)  members: researcher, scout" in out
     assert "[managed elsewhere]" in out
 
 
@@ -109,26 +109,26 @@ def test_list_empty(home, capsys):
 
 
 def test_create_hosted(home, capsys):
-    rc = _run(["create", "DevTeam", "--member", "pax", "--member", "archie", "--json"])
+    rc = _run(["create", "DevTeam", "--member", "researcher", "--member", "scout", "--json"])
     assert rc == 0
     out = _out_json(capsys)
     assert out["name"] == "DevTeam"
     assert out["room_id"].startswith("grp-")
     assert out["authority_gateway_id"] == hosted_rooms.local_authority_gateway_id()
-    assert [m["handle"] for m in out["members"]] == ["pax", "archie"]
+    assert [m["handle"] for m in out["members"]] == ["researcher", "scout"]
     # The new room is now resolvable and driven here.
     assert g.resolve_room("DevTeam").managed_here is True
 
 
 def test_create_default_profile_handle_is_hermes(home, capsys):
-    assert _run(["create", "X", "--member", "default", "--member", "pax", "--json"]) == 0
-    assert [m["handle"] for m in _out_json(capsys)["members"]] == ["hermes", "pax"]
+    assert _run(["create", "X", "--member", "default", "--member", "researcher", "--json"]) == 0
+    assert [m["handle"] for m in _out_json(capsys)["members"]] == ["hermes", "researcher"]
 
 
 def test_create_rejects_bad_roster(home, capsys):
-    assert _run(["create", "X", "--member", "pax"]) == 1
+    assert _run(["create", "X", "--member", "researcher"]) == 1
     assert "between 2 and 6" in capsys.readouterr().err
-    assert _run(["create", "X", "--member", "pax", "--member", "ghost"]) == 1
+    assert _run(["create", "X", "--member", "researcher", "--member", "ghost"]) == 1
     assert "ghost" in capsys.readouterr().err
 
 
@@ -137,8 +137,8 @@ def test_create_rejects_bad_roster(home, capsys):
 
 def test_send_appends_user_event_with_relay_attribution(home, capsys, monkeypatch):
     mk_room()
-    monkeypatch.setenv("HERMES_PROFILE", "pax")
-    rc = _run(["send", "DevTeam", "plan the release", "--as", "Pax via Discord", "--json"])
+    monkeypatch.setenv("HERMES_PROFILE", "researcher")
+    rc = _run(["send", "DevTeam", "plan the release", "--as", "Ada via Discord", "--json"])
     assert rc == 0
     out = _out_json(capsys)
     assert out["kind"] == "hosted" and out["room_id"] == "room-1"
@@ -148,8 +148,8 @@ def test_send_appends_user_event_with_relay_attribution(home, capsys, monkeypatc
     assert event["actor"] == {
         "kind": "user",
         "id": "cli",
-        "profile": "pax",
-        "display_name": "Pax via Discord",
+        "profile": "researcher",
+        "display_name": "Ada via Discord",
     }
     assert event["payload"] == {"text": "plan the release", "thread_id": "cli"}
     # Landed in the durable log with authority fencing intact.
@@ -297,23 +297,23 @@ def _activity(room, *, discussion_id, status="settled", reason="consensus", thre
 
 def _sent(room, text="go", key="k"):
     ref = g.resolve_room(room["room_id"])
-    return g.HostedTransport().send(ref, text=text, thread="cli", label="Pax", event_key=key)
+    return g.HostedTransport().send(ref, text=text, thread="cli", label="Ada", event_key=key)
 
 
 def test_wait_streams_committed_replies_and_exits_on_settled(home, capsys):
     room = mk_room()
     sent = _sent(room)
-    _member_turn(room, discussion_id=sent.message_id, member_id="archie", text="reply from archie", n=1)
-    _member_turn(room, discussion_id=sent.message_id, member_id="pax", text="", n=2, passed=True)
+    _member_turn(room, discussion_id=sent.message_id, member_id="scout", text="reply from scout", n=1)
+    _member_turn(room, discussion_id=sent.message_id, member_id="researcher", text="", n=2, passed=True)
     _activity(room, discussion_id=sent.message_id)
     got = []
     rc, summary = g.HostedTransport().wait(
         sent, timeout=5, poll_seconds=0.01, on_reply=lambda s, t: got.append((s, t))
     )
     assert rc == 0
-    assert got == [("@archie", "reply from archie")]
+    assert got == [("@scout", "reply from scout")]
     assert summary["status"] == "settled" and summary["reason"] == "consensus"
-    assert [r["handle"] for r in summary["replies"]] == ["archie"]
+    assert [r["handle"] for r in summary["replies"]] == ["scout"]
 
 
 def test_wait_ignores_uncommitted_member_message(home):
@@ -324,10 +324,10 @@ def test_wait_ignores_uncommitted_member_message(home):
         room_id="room-1",
         event_id="orphan",
         kind="message.member",
-        actor={"kind": "member", "id": "archie", "profile": "archie"},
+        actor={"kind": "member", "id": "scout", "profile": "scout"},
         payload={
             "discussion_event_id": sent.message_id,
-            "member_id": "archie",
+            "member_id": "scout",
             "member_index": 0,
             "round_index": 0,
             "task_id": "t",
@@ -350,11 +350,11 @@ def test_wait_does_not_stream_replies_from_other_discussions_or_threads(home):
         g.resolve_room("room-1"), text="other relay", thread="t2", label="Other", event_key="k-other"
     )
     # A committed reply to the OTHER discussion (different discussion id AND thread).
-    _member_turn(room, discussion_id=other.message_id, member_id="archie", text="for t2", thread="t2", n=1)
+    _member_turn(room, discussion_id=other.message_id, member_id="scout", text="for t2", thread="t2", n=1)
     # A committed reply whose thread matches ours but belongs to another discussion id.
-    _member_turn(room, discussion_id="user:stale", member_id="archie", text="stale", thread="cli", n=2)
+    _member_turn(room, discussion_id="user:stale", member_id="scout", text="stale", thread="cli", n=2)
     # Ours.
-    _member_turn(room, discussion_id=sent.message_id, member_id="archie", text="for us", n=3)
+    _member_turn(room, discussion_id=sent.message_id, member_id="scout", text="for us", n=3)
     _activity(room, discussion_id=sent.message_id)
     got = []
     rc, summary = g.HostedTransport().wait(sent, timeout=5, poll_seconds=0.01, on_reply=lambda s, t: got.append(t))
@@ -381,7 +381,7 @@ def test_wait_only_settles_on_own_discussion(home):
 def test_wait_times_out_with_partial_replies(home):
     room = mk_room()
     sent = _sent(room)
-    _member_turn(room, discussion_id=sent.message_id, member_id="archie", text="partial", n=1)
+    _member_turn(room, discussion_id=sent.message_id, member_id="scout", text="partial", n=1)
     got = []
     rc, summary = g.HostedTransport().wait(sent, timeout=0.05, poll_seconds=0.01, on_reply=lambda s, t: got.append(t))
     assert rc == 3 and got == ["partial"] and len(summary["replies"]) == 1
@@ -416,15 +416,15 @@ def test_send_wait_cli_output_and_exit_codes(home, capsys):
     key = "cli-wait"
     # Pre-seed the log so the CLI's own send (same key → same event) sees a finished discussion.
     sent = _sent(room, key=key)
-    _member_turn(room, discussion_id=sent.message_id, member_id="archie", text="done deal", n=1)
+    _member_turn(room, discussion_id=sent.message_id, member_id="scout", text="done deal", n=1)
     _activity(room, discussion_id=sent.message_id)
-    rc = _run(["send", "DevTeam", "go", "--event-id", key, "--as", "Pax", "--wait", "--poll", "0.01", "--timeout", "5"])
+    rc = _run(["send", "DevTeam", "go", "--event-id", key, "--as", "Ada", "--wait", "--poll", "0.01", "--timeout", "5"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "@archie: done deal" in out
+    assert "@scout: done deal" in out
     assert "[group DevTeam: settled (consensus), 1 replies]" in out
 
-    rc = _run(["send", "DevTeam", "go", "--event-id", key, "--as", "Pax", "--wait", "--poll", "0.01", "--timeout", "5", "--json"])
+    rc = _run(["send", "DevTeam", "go", "--event-id", key, "--as", "Ada", "--wait", "--poll", "0.01", "--timeout", "5", "--json"])
     assert rc == 0
     summary = _out_json(capsys)
     assert summary["status"] == "settled" and summary["replies"][0]["text"] == "done deal"
@@ -437,12 +437,12 @@ def test_send_wait_cli_output_and_exit_codes(home, capsys):
 def test_log_renders_committed_transcript_with_relay_attribution(home, capsys):
     room = mk_room()
     sent = _sent(room)
-    _member_turn(room, discussion_id=sent.message_id, member_id="archie", text="ack", n=1)
+    _member_turn(room, discussion_id=sent.message_id, member_id="scout", text="ack", n=1)
     assert _run(["log", "DevTeam", "--json"]) == 0
     rows = _out_json(capsys)
-    assert [(r["speaker"], r["text"]) for r in rows] == [("User (Pax)", "go"), ("@archie", "ack")]
+    assert [(r["speaker"], r["text"]) for r in rows] == [("User (Ada)", "go"), ("@scout", "ack")]
     assert _run(["log", "DevTeam", "--since", str(sent.seq)]) == 0
-    assert capsys.readouterr().out.strip() == "@archie: ack"
+    assert capsys.readouterr().out.strip() == "@scout: ack"
 
 
 # ── parser / dispatch ────────────────────────────────────────────────────────

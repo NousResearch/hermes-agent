@@ -85,6 +85,35 @@ class TestKnownPrefixes:
         assert redact_sensitive_text(text) == text
 
 
+class TestKeyDashboardUrls:
+    """OpenRouter-style ``/keys/<id>`` links are not vendor-prefix secrets.
+
+    The path identifier can still manage/revoke the credential on the
+    provider dashboard, so it must not survive redact_sensitive_text
+    (issue #102700).
+    """
+
+    def test_openrouter_keys_path_id_is_rewritten(self):
+        key_id = "or_key_" + "abcdef1234567890"
+        text = (
+            "HTTP 403: Key limit exceeded. Manage it using "
+            f"https://openrouter.ai/workspaces/default/keys/{key_id}"
+        )
+        result = redact_sensitive_text(text, force=True)
+        assert key_id not in result
+        assert "https://openrouter.ai/workspaces/default/keys/[redacted]" in result
+        assert "Key limit exceeded" in result
+
+    def test_api_keys_path_id_is_rewritten(self):
+        key_id = "keyid_" + "xyz9876543210"
+        text = f"see https://provider.example/v1/api-keys/{key_id}"
+        result = redact_sensitive_text(text, force=True)
+        assert key_id not in result
+        assert "/api-keys/[redacted]" in result
+
+    def test_unrelated_url_unchanged(self):
+        text = "docs at https://example.com/getting-started"
+        assert redact_sensitive_text(text, force=True) == text
 
 
 class TestEnvAssignments:

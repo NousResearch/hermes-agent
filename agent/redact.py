@@ -483,6 +483,18 @@ _URL_USERINFO_RE = re.compile(
     r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
 )
 
+# Provider key-dashboard URLs embed a key identifier in the path, e.g.
+# OpenRouter's ``https://openrouter.ai/workspaces/default/keys/<KEY_ID>``.
+# The identifier is often NOT a known vendor prefix (sk-/ghp_), so
+# _PREFIX_RE misses it. Unlike OAuth / magic-link query tokens, a
+# ``/keys/<id>`` or ``/api-keys/<id>`` path is never a round-trip workflow
+# URL — it is a manage/revoke link. Always rewrite the id segment.
+# Issue #102700 (cron jobs.json persisting these unsanitized in last_error).
+_KEY_DASHBOARD_URL_RE = re.compile(
+    r"(https?://[^\s<>\"']+?/)(api-keys|api_keys|keys)/([^\s<>\"'/?#]+)",
+    re.IGNORECASE,
+)
+
 # Strict provider-egress URL redaction accepts more URL-reference forms than
 # the display/log helpers above. Parameter delimiters stay in capture groups so
 # redaction preserves the original query/fragment layout byte-for-byte, while
@@ -712,6 +724,19 @@ def _redact_url_userinfo(text: str) -> str:
     """
     return _URL_USERINFO_RE.sub(
         lambda m: f"{m.group(1)}://{m.group(2)}:***@",
+        text,
+    )
+
+
+def _redact_key_dashboard_urls(text: str) -> str:
+    """Rewrite provider key-dashboard URLs so the key id cannot persist.
+
+    Keeps the host and ``/keys/`` (or ``/api-keys/``) prefix so the operator
+    can still tell *which* dashboard the error pointed at; replaces only the
+    identifier segment.
+    """
+    return _KEY_DASHBOARD_URL_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}/[redacted]",
         text,
     )
 
@@ -1039,19 +1064,28 @@ def redact_sensitive_text(
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
 
+    # Key-dashboard URLs (OpenRouter ``.../keys/<KEY_ID>``, etc.).
+    # Unconditional — a manage/revoke path is never a skill round-trip
+    # token, so this is NOT gated behind ``redact_url_credentials``.
+    # See _KEY_DASHBOARD_URL_RE / issue #102700.
+    if "keys/" in text.lower():
+        text = _redact_key_dashboard_urls(text)
+
     # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log
     # request targets) is intentionally OFF. Many legitimate workflows pass
     # opaque tokens through query strings — magic-link checkouts, OAuth
     # callbacks the agent is meant to follow, pre-signed share URLs — and
     # blanket-redacting param values by name breaks those skills mid-flow.
     # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
-    # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
-    # are still caught by _DB_CONNSTR_RE. The ONE userinfo case still redacted
-    # is the colon-less bare-token form ``scheme://TOKEN@host`` (#6396, handled
-    # by _URL_BARE_TOKEN_RE in the ``://`` block above): a bare credential in
-    # userinfo is never a round-trip workflow token (those live in the query
-    # string), so masking it can't break a skill. The ``user:pass@`` form is
-    # left to pass through per #34029.
+    # caught by _PREFIX_RE and _JWT_RE above. Key-dashboard path identifiers
+    # (``/keys/<id>``, ``/api-keys/<id>``) are rewritten just above. DB
+    # connection-string passwords are still caught by _DB_CONNSTR_RE. The ONE
+    # userinfo case still redacted is the colon-less bare-token form
+    # ``scheme://TOKEN@host`` (#6396, handled by _URL_BARE_TOKEN_RE in the
+    # ``://`` block above): a bare credential in userinfo is never a
+    # round-trip workflow token (those live in the query string), so masking
+    # it can't break a skill. The ``user:pass@`` form is left to pass through
+    # per #34029.
 
     if redact_url_credentials:
         text = _redact_strict_url_credentials(text)

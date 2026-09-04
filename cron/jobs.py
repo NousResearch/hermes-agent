@@ -41,6 +41,41 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from utils import atomic_replace, atomic_write_text
 
+# Bound on persisted error text. Long enough to keep the failure class
+# readable; short enough that a provider dump cannot bloat jobs.json.
+# Issue #102700 suggested ~800 chars (incidents.py uses 500 for signatures).
+_MAX_PERSISTED_ERROR_CHARS = 800
+
+
+def _sanitize_persisted_error(error: Optional[str]) -> Optional[str]:
+    """Redact secrets and bound length before writing error text to jobs.json.
+
+    ``jobs.json`` lives in the profile directory indefinitely — unlike a log
+    line, a raw provider error written here (e.g. an OpenRouter 403 whose
+    body embeds ``.../workspaces/.../keys/<KEY_ID>``) sits on disk until the
+    field is next overwritten. Mirrors ``cron.incidents._redact_error`` and
+    ``cron.delivery_queue._finish``. A redaction failure must never block
+    recording that a job failed (see issue #102700).
+    """
+    if error is None:
+        return None
+    text = str(error)
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+
+        text = redact_sensitive_text(
+            text, force=True, redact_url_credentials=True
+        )
+    except Exception:
+        logger.warning(
+            "Failed to redact sensitive text before persisting cron error",
+            exc_info=True,
+        )
+    return text[:_MAX_PERSISTED_ERROR_CHARS]
+
+
 # ``croniter`` compiles ~15 ms of regexes at import and only matters for
 # 5-field cron expressions. Resolve lazily; ``HAS_CRONITER`` stays a module
 # attribute (tests monkeypatch it, and a monkeypatched value wins because
@@ -2671,6 +2706,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
         )
 
+    # Sanitize error fields that land in jobs.json. The scheduler's
+    # interrupted-run path writes ``last_delivery_error`` through update_job
+    # (bypassing mark_job_run), so this is the chokepoint for that sibling.
+    if updates:
+        if "last_error" in updates and updates["last_error"] is not None:
+            updates["last_error"] = _sanitize_persisted_error(updates["last_error"])
+        if "last_delivery_error" in updates and updates["last_delivery_error"] is not None:
+            updates["last_delivery_error"] = _sanitize_persisted_error(
+                updates["last_delivery_error"]
+            )
+
     with _jobs_lock():
         jobs = load_jobs()
         for i, job in enumerate(jobs):
@@ -3129,7 +3175,7 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
             if job["id"] == job_id:
                 job["last_fire_error"] = {
                     "at": _hermes_now().isoformat(),
-                    "detail": str(detail or "")[:500],
+                    "detail": (_sanitize_persisted_error(str(detail or "")) or "")[:500],
                 }
                 jobs[i] = job
                 save_jobs(jobs)
@@ -3201,7 +3247,9 @@ def _mark_job_run_locked(
                     job["last_status"] = "delivery_failed"
                 else:
                     job["last_status"] = "ok"
-                job["last_error"] = error if not success else None
+                job["last_error"] = (
+                    _sanitize_persisted_error(error) if not success else None
+                )
                 # A healthy run means the configuration validates again — drop
                 # the preflight alert-dedup marker so a FUTURE config break
                 # re-alerts instead of being silently swallowed. Same contract
@@ -3224,7 +3272,7 @@ def _mark_job_run_locked(
                 else:
                     job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
                 # Track delivery failures separately — cleared on successful delivery
-                job["last_delivery_error"] = delivery_error
+                job["last_delivery_error"] = _sanitize_persisted_error(delivery_error)
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None

@@ -290,6 +290,91 @@ class TestRetrieval:
 
 
 # ---------------------------------------------------------------------------
+# CJK tokenization (#78985)
+# ---------------------------------------------------------------------------
+
+
+class TestCJKTokenization:
+    """The BM25 tokenizer must not silently drop CJK characters.
+
+    Without CJK support, Chinese/Japanese/Korean queries produce zero tokens
+    and ``search_catalog`` returns nothing — a core discoverability failure
+    for CJK users (#78985).
+    """
+
+    def test_tokenize_chinese(self):
+        from tools.tool_search import _tokenize
+        tokens = _tokenize("公众号")
+        assert len(tokens) >= 1, "Chinese query must produce at least one token"
+
+    def test_tokenize_japanese(self):
+        from tools.tool_search import _tokenize
+        tokens = _tokenize("ニュース")
+        assert len(tokens) >= 1, "Japanese query must produce at least one token"
+
+    def test_tokenize_korean(self):
+        from tools.tool_search import _tokenize
+        tokens = _tokenize("뉴스")
+        assert len(tokens) >= 1, "Korean query must produce at least one token"
+
+    def test_tokenize_mixed_ascii_cjk(self):
+        from tools.tool_search import _tokenize
+        tokens = _tokenize("github 公众号")
+        # Both the ASCII word and the CJK characters should be preserved.
+        assert "github" in tokens
+        cjk_tokens = [t for t in tokens if len(t) == 1 and ord(t) > 0x3000]
+        assert len(cjk_tokens) >= 1, \
+            "At least one CJK token must survive"
+
+    def test_tokenize_ascii_unchanged(self):
+        """CJK support must not break existing ASCII tokenization."""
+        from tools.tool_search import _tokenize
+        assert _tokenize("github issues") == ["github", "issues"]
+
+    def test_search_catalog_finds_cjk_description(self):
+        """A CJK query must match a tool whose description contains CJK text."""
+        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text, search_catalog
+        defs = [
+            _td("wechat_publish", "发布文章到微信公众号 (publish articles to WeChat Official Account)"),
+            _td("slack_send", "Post a message into a Slack channel"),
+        ]
+        catalog = []
+        for d in defs:
+            fn = d["function"]
+            e = CatalogEntry(
+                name=fn["name"], description=fn["description"],
+                schema=d, source="mcp", source_name="mcp-test",
+            )
+            e._tokens = _tokenize(_entry_search_text(d))
+            catalog.append(e)
+        hits = search_catalog(catalog, "公众号", limit=3)
+        names = [h.name for h in hits]
+        assert "wechat_publish" in names, \
+            "CJK query must find the tool with matching CJK description"
+
+    def test_search_catalog_cjk_no_false_match(self):
+        """A CJK query must not match a tool with only ASCII text."""
+        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text, search_catalog
+        defs = [
+            _td("slack_send", "Post a message into a Slack channel"),
+            _td("github_issue", "Open a new issue in a GitHub repository"),
+        ]
+        catalog = []
+        for d in defs:
+            fn = d["function"]
+            e = CatalogEntry(
+                name=fn["name"], description=fn["description"],
+                schema=d, source="mcp", source_name="mcp-test",
+            )
+            e._tokens = _tokenize(_entry_search_text(d))
+            catalog.append(e)
+        hits = search_catalog(catalog, "公众号", limit=3)
+        # No tool has CJK in its text, so BM25 should return nothing
+        # (the substring fallback only checks the name, which is ASCII).
+        assert hits == [], "CJK query must not match ASCII-only tools via BM25"
+
+
+# ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
 # ---------------------------------------------------------------------------
 

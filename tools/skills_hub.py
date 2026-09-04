@@ -2416,9 +2416,20 @@ class ClawHubSource(SkillSource):
             return merged
         return data
 
-    @staticmethod
-    def _query_terms(query: str) -> List[str]:
-        return [term for term in re.split(r"[^a-z0-9]+", query.lower()) if term]
+    # ASCII alphanumeric runs, plus individual CJK characters.  CJK languages
+    # (Chinese, Japanese, Korean) don't use spaces between words, so each
+    # character is its own token — the standard lightweight approach without
+    # pulling in a segmentation dependency (#78985).
+    _QUERY_TOKEN_RE = re.compile(
+        r"[a-z0-9]+"
+        r"|[\u4e00-\u9fff\u3400-\u4dbf]"   # CJK Unified Ideographs (+ Ext A)
+        r"|[\u3040-\u309f\u30a0-\u30ff]"   # Hiragana + Katakana
+        r"|[\uac00-\ud7af]"                # Hangul Syllables
+    )
+
+    @classmethod
+    def _query_terms(cls, query: str) -> List[str]:
+        return cls._QUERY_TOKEN_RE.findall(query.lower())
 
     @classmethod
     def _search_score(cls, query: str, meta: SkillMeta) -> int:

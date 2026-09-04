@@ -74,6 +74,21 @@ def _(rid, params: dict) -> dict:
     now = time.time()
     lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
 
+    # Config-gated bot-chat visibility (#hidden-flip, 2026-09-05):
+    # When plugins.hermes_bots.hide_bot_chats is false, suppress the
+    # hidden=true that the desktop bots panel passes to session.create.
+    # Normal user chats must never be hidden.  Falls back to hiding
+    # (the old default) if the config is unreadable.
+    try:
+        _cfg = _load_cfg()
+        _hide_bot_chats = (
+            (_cfg.get("plugins") or {})
+            .get("hermes_bots", {})
+            .get("hide_bot_chats", True)
+        )
+    except Exception:
+        _hide_bot_chats = True
+
     with _sessions_lock:
         _sessions[sid] = {
             "agent": None,
@@ -98,7 +113,7 @@ def _(rid, params: dict) -> dict:
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
-            "pending_hidden": is_truthy_value(params.get("hidden", False)),
+            "pending_hidden": is_truthy_value(params.get("hidden", False)) if _hide_bot_chats else False,
             "room_plumbing": is_truthy_value(params.get("room_plumbing", False)),
             "follow_profile_config": is_truthy_value(params.get("follow_profile_config", False)),
             "profile_home": str(profile_home) if profile_home is not None else None,
@@ -1526,7 +1541,10 @@ def _(rid, params: dict) -> dict:
     stored ids for chats that aren't live right now, and the live-only
     lookup silently failed those with 4001.
     """
-    hidden = is_truthy_value(params.get("hidden", True))
+    # Safety net (#hidden-flip, 2026-09-05): default to False so callers
+    # must explicitly pass hidden=true.  The old default (True) silently
+    # hid sessions when the RPC was invoked without the field.
+    hidden = is_truthy_value(params.get("hidden", False))
     session, err = _sess_nowait(params, rid)
     if session is not None:
         with _session_db(session) as db:

@@ -1390,6 +1390,11 @@ _MAX_KEEP_TOOL_IMAGES = 3
 _SMALL_CTX_WINDOW_LIMIT = 512_000
 _SMALL_CTX_THRESHOLD_PERCENT = 0.75
 
+# Dedupe repeated floor-override warnings: users on low-context models with low
+# configured thresholds would see the WARNING on every compaction-check pass.
+# Emit once per distinct (threshold, floor) pair per process lifetime.
+_WARNED_FLOOR_OVERRIDES: set[tuple[float, float]] = set()
+
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 
@@ -3406,7 +3411,18 @@ class ContextCompressor(ContextEngine):
         50% trigger already leaves ample post-compaction headroom.
         """
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
-            return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+            effective = max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+            if effective > threshold_percent:
+                key = (threshold_percent, effective)
+                if key not in _WARNED_FLOOR_OVERRIDES:
+                    logger.warning(
+                        "compression.threshold=%.2f raised to %.2f: small-context "
+                        "floor for models under %d tokens (configured value is "
+                        "kept in config but takes no effect)",
+                        threshold_percent, effective, _SMALL_CTX_WINDOW_LIMIT,
+                    )
+                    _WARNED_FLOOR_OVERRIDES.add(key)
+            return effective
         return threshold_percent
 
     @staticmethod

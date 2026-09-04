@@ -53,15 +53,16 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
-_CRON_DELIVERY_SUBJECT_RE = re.compile(r"^Cronjob Response:\s*(.+?)\s*$", re.MULTILINE)
-
-
-def _standalone_subject(message: str, delivery_date: str | None = None) -> str:
-    """Choose a fresh, dated subject for an independently delivered cron run."""
-    match = _CRON_DELIVERY_SUBJECT_RE.search(message)
-    if not match:
-        return "Hermes Agent"
-    return f"{match.group(1)} — {delivery_date or date.today().isoformat()}"
+def _cron_delivery_subject(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return a standalone subject only for an explicitly marked cron delivery."""
+    delivery = (metadata or {}).get("hermes_cron_delivery")
+    if not isinstance(delivery, dict):
+        return None
+    subject = str(delivery.get("subject") or "").strip()
+    if not subject:
+        return None
+    delivery_date = str(delivery.get("date") or date.today().isoformat()).strip()
+    return f"{subject} — {delivery_date}"
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -652,19 +653,19 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, metadata), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
+                   metadata: Optional[Dict[str, Any]] = None, attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        is_cron_delivery = _CRON_DELIVERY_SUBJECT_RE.search(body) is not None
-        if is_cron_delivery:
-            subject, original_msg_id = _standalone_subject(body), None
+        cron_subject = _cron_delivery_subject(metadata)
+        if cron_subject:
+            subject, original_msg_id = cron_subject, None
         else:
             subject = ctx.get("subject", "Hermes Agent")
             if not subject.startswith("Re:"):
@@ -691,9 +692,10 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
+                    metadata: Optional[Dict[str, Any]] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, metadata=metadata, attach_empty_body=True)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
@@ -761,7 +763,8 @@ class EmailAdapter(BasePlatformAdapter):
 
 
 # Plugin glue: register() exposes the platform via the registry; EMAIL_* env → PlatformConfig seeding stays in core.
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
+                           metadata=None):
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
@@ -772,7 +775,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", _standalone_subject(message)), ("Date", formatdate(localtime=True))):
+        subject = _cron_delivery_subject(metadata) or "Hermes Agent"
+        for key, value in (("From", address), ("To", chat_id), ("Subject", subject), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

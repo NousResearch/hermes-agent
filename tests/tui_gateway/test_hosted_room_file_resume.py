@@ -3,7 +3,7 @@
 import time
 
 from gateway import hosted_room_driver as driver
-from tests.tui_gateway.test_hosted_room_service import _server
+from tests.tui_gateway.hosted_room_service_fixtures import _server
 from tui_gateway.hosted_room_service import HostedRoomService
 
 

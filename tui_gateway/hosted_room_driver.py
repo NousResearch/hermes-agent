@@ -708,12 +708,27 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
+            # Only start_task's newly allocated, still-fenced generation proves freshness.
+            fresh_preflight_failure = (
+                getattr(exc, "dispatch_not_attempted", False) is True
+                and task.get("status") == "queued"
+                and task.get("execution_generation") == attempt.execution_generation - 1
+            )
+            local_transport_unavailable = (
+                transport is None and isinstance(exc, MemberTransportUnavailable)
+            )
             if transport is not None and attachment_staging_active and attachment_session_id is not None:
                 self._finish_attachment_staging_after_error(
                     transport=transport, profile=profile, session_id=attachment_session_id,
                     execution_generation=attempt.execution_generation, submit_attempted=submit_attempted,
-                    not_admitted=bool(getattr(exc, "not_admitted", False)))
-            if bool(getattr(exc, "not_admitted", False)):
+                    not_admitted=bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure)
+            if local_transport_unavailable or (
+                submit_attempted
+                and (
+                    bool(getattr(exc, "not_admitted", False))
+                    or fresh_preflight_failure
+                )
+            ):
                 try:
                     if task.get("payload", {}).get("target_member_id"):
                         deferred = state.defer_not_admitted_task(

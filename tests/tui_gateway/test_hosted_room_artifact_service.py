@@ -30,7 +30,6 @@ from gateway.hosted_room_artifacts import (
 )
 from tui_gateway.hosted_room_service import (
     HostedRoomService,
-    _RouteStatusPeerClient,
     _grant_revoke_is_terminal,
 )
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute

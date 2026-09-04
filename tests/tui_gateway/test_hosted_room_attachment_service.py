@@ -32,7 +32,7 @@ from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 
-from tests.tui_gateway.test_hosted_room_service import (
+from tests.tui_gateway.hosted_room_service_fixtures import (
     _append_room_event,
     _server,
     _wait_for,

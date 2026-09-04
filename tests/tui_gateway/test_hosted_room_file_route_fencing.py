@@ -10,7 +10,7 @@ import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
-from gateway import hosted_room_links, hosted_rooms
+from gateway import hosted_room_links, hosted_rooms, hosted_room_link_records
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog,
     catalog_mapping,
@@ -240,7 +240,7 @@ def test_late_output_cleanup_error_cannot_poison_replacement_health(
             routes.second._retire_failed_terminal_artifacts(
                 room=room, task=task, plan=plan
             )
-    stored = hosted_rooms.room_link_record(
+    stored = hosted_room_link_records.room_link_record(
         routes.first.db_path, room_id="room-1", member_id="member-peer"
     )
     assert stored["grant"] == routes.tokens["winner"]
@@ -345,7 +345,7 @@ def test_file_operation_refresh_uses_observed_grant_and_exact_cleanup(
     tracked = routes.second._tracked_peer_client("room-1", "member-peer", Peer())
     with pytest.raises(hosted_rooms.HostedRoomError, match="changed during reconnect"):
         getattr(tracked, operation)(grant=routes.tokens["aging"])
-    stored = hosted_rooms.room_link_record(
+    stored = hosted_room_link_records.room_link_record(
         routes.first.db_path, room_id="room-1", member_id="member-peer"
     )
     assert stored["grant"] == routes.tokens["winner"] and stored["status"] == "ready"

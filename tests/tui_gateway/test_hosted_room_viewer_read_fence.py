@@ -1,4 +1,4 @@
-"""Files-only viewer reads: native lifecycle and labelled optional composition."""
+"""Files viewer reads retain native lifecycle and composed route fences."""
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_rooms
+from gateway import hosted_room_driver, hosted_rooms
 from gateway.hosted_room_attachments import AttachmentError
 from tui_gateway.hosted_room_service import HostedRoomService
 import tui_gateway.server as server
@@ -18,9 +18,14 @@ class ViewerRPCRejected(RuntimeError):
     pass
 
 
-DENIED = (AttachmentError, hosted_rooms.HostedRoomError, ViewerRPCRejected)
+DENIED = (
+    AttachmentError,
+    hosted_room_driver.RoomUnavailableError,
+    hosted_rooms.HostedRoomError,
+    ViewerRPCRejected,
+)
 DATA = b"Files-only canonical bytes"
-OPTIONAL_TABLES = ("hosted_room_quarantine", "hosted_room_disband_fences")
+COMPOSED_FENCE_TABLES = ("hosted_room_quarantine", "hosted_room_disband_fences")
 
 
 @pytest.fixture
@@ -119,18 +124,26 @@ def _native_change(published, state):
 
 
 def _optional_composition_fence(published, table):
-    # These are composition witnesses, not APIs or schema shipped by Files018.
-    assert table in OPTIONAL_TABLES
+    assert table in COMPOSED_FENCE_TABLES
+    room = published.room
     with sqlite3.connect(published.service.db_path) as conn:
-        assert (
+        if table == "hosted_room_quarantine":
             conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                (table,),
-            ).fetchone()
-            is None
-        )
-        conn.execute(f"CREATE TABLE {table} (room_id TEXT PRIMARY KEY)")
-        conn.execute(f"INSERT INTO {table} VALUES (?)", ("room-1",))
+                "INSERT INTO hosted_room_quarantine VALUES (?, ?, ?)",
+                ("room-1", "test_viewer_fence", 1.0),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO hosted_room_disband_fences(
+                       room_id, authority_gateway_id, authority_epoch, started_at
+                   ) VALUES (?, ?, ?, ?)""",
+                (
+                    "room-1",
+                    room["authority_gateway_id"],
+                    room["authority_epoch"],
+                    1.0,
+                ),
+            )
 
 
 def _metadata_change(published, state):
@@ -156,7 +169,7 @@ def test_native_files_lifecycle_blocks_selected_viewer(published, mode, state):
 
 
 @pytest.mark.parametrize("mode", ["service", "rpc"])
-@pytest.mark.parametrize("table", OPTIONAL_TABLES)
+@pytest.mark.parametrize("table", COMPOSED_FENCE_TABLES)
 def test_optional_schema_composition_blocks_selected_viewer(published, mode, table):
     assert _read(published, mode) == DATA
     _optional_composition_fence(published, table)
@@ -198,7 +211,7 @@ def test_native_files_lifecycle_wins_during_blob_io(
 
 
 @pytest.mark.parametrize("mode", ["service", "rpc"])
-@pytest.mark.parametrize("table", OPTIONAL_TABLES)
+@pytest.mark.parametrize("table", COMPOSED_FENCE_TABLES)
 def test_optional_schema_composition_wins_during_blob_io(
     published, monkeypatch, mode, table
 ):
@@ -230,14 +243,19 @@ def test_exact_room_event_and_legacy_share_remain_readable(published, mode):
     assert _read(published, mode) == DATA
 
 
-def test_files_reads_do_not_install_optional_composition_schema(published):
+def test_files_reads_do_not_mutate_composition_fences(published):
+    with sqlite3.connect(published.service.db_path) as conn:
+        before = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in COMPOSED_FENCE_TABLES
+        }
     assert _read(published) == DATA
     with sqlite3.connect(published.service.db_path) as conn:
-        tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        after = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in COMPOSED_FENCE_TABLES
         }
-    assert tables.isdisjoint(OPTIONAL_TABLES)
+    assert before == after == {table: 0 for table in COMPOSED_FENCE_TABLES}
 
 
 def test_frozen_recipient_semantics_are_not_viewer_authorization(published):

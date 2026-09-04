@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
-from gateway import hosted_rooms
+from gateway import hosted_room_link_records
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, validate_room_link_url)
 from gateway.hosted_rooms_common import DbPath, compact_json, exact_fields, identifier
@@ -105,7 +105,7 @@ def _short_string(value: Any, field: str) -> str:
 
 
 def _link_rows(db_path: DbPath) -> list[dict[str, Any]]:
-    rows = hosted_rooms.list_room_link_records(db_path)
+    rows = hosted_room_link_records.list_room_link_records(db_path)
     if len(rows) > MAX_LINKS:
         raise HostedRoomPeerError("stored room link list is invalid")
     return rows
@@ -126,19 +126,42 @@ def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...
     return tuple(links), tuple(errors)
 
 
-def save_room_link(db_path: DbPath, link: StoredRoomLink) -> None:
-    hosted_rooms.upsert_room_link_record(db_path, record=link.as_record(), max_links=MAX_LINKS)
+def save_room_link(
+    db_path: Path | str,
+    link: StoredRoomLink,
+    *,
+    expected_grant_sha256: str | None = None,
+) -> None:
+    hosted_room_link_records.upsert_room_link_record(
+        db_path,
+        record=link.as_record(),
+        max_links=MAX_LINKS,
+        expected_grant_sha256=expected_grant_sha256,
+    )
     if os.name == "posix":
-        with contextlib.suppress(OSError):
+        try:
             Path(db_path).chmod(0o600)
+        except OSError:
+            pass
 
 
-def mark_room_link_status(db_path: DbPath, *, room_id: str, member_id: str, status: str) -> bool:
+def mark_room_link_status(
+    db_path: Path | str,
+    *,
+    room_id: str,
+    member_id: str,
+    status: str,
+    expected_grant_sha256: str | None = None,
+) -> bool:
     if status not in _STATUSES:
         raise HostedRoomPeerError("stored room link status is invalid")
-    return hosted_rooms.update_room_link_status(
-        db_path, room_id=_short_string(room_id, "room_id"), member_id=_short_string(member_id, "member_id"),
-        status=status)
+    return hosted_room_link_records.update_room_link_status(
+        db_path,
+        room_id=_short_string(room_id, "room_id"),
+        member_id=_short_string(member_id, "member_id"),
+        status=status,
+        expected_grant_sha256=expected_grant_sha256,
+    )
 
 
 def make_stored_link(
@@ -149,3 +172,19 @@ def make_stored_link(
         "room_id": room_id, "member_id": member_id, "target_url": target_url, "target_profile": target_profile,
         "grant": grant, "catalog": catalog.as_mapping(), "cancellation_scope_id": cancellation_scope_id,
         "trace_id": trace_id, "transport_security": transport_security, "status": "ready", "updated_at": time.time()})
+
+
+def load_room_link(
+    db_path: Path | str,
+    *,
+    room_id: str,
+    member_id: str,
+) -> StoredRoomLink | None:
+    """Load one exact persisted route without scanning unrelated rooms."""
+
+    row = hosted_room_link_records.room_link_record(
+        db_path,
+        room_id=_short_string(room_id, "room_id"),
+        member_id=_short_string(member_id, "member_id"),
+    )
+    return StoredRoomLink.from_record(row) if row is not None else None

@@ -10,6 +10,8 @@ import json
 import logging
 import re
 import socket
+import threading
+from collections import OrderedDict
 import time
 import urllib.error
 import urllib.parse
@@ -66,6 +68,14 @@ _REAUTHORIZATION_MESSAGES = {
 _BUDGET_MESSAGES = {
     "size": "peer{kind} response exceeded the RoomLink size limit",
     "time": "peer{kind} response exceeded the RoomLink time budget"}
+
+
+_AUTH_PROBE_COOLDOWN_SECONDS = 60.0
+_MAX_AUTH_PROBE_REJECTIONS = 64
+_AUTH_PROBE_ENDPOINTS = frozenset({
+    ("GET", "/v1/room-members/capabilities"),
+    ("POST", "/v1/room-members/grants/refresh"),
+})
 
 
 class _PeerResponseTooLarge(ValueError):
@@ -215,6 +225,12 @@ class PeerRunsHTTPClient:
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
             raise ValueError("peer API key is missing or too short")
+        profile = str(target_profile or "").strip()
+        if profile and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", profile) is None:
+            raise ValueError("peer target profile is invalid")
+        self._profile_prefix = (
+            f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
+        )
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
         profile = str(target_profile or "").strip()
         if profile and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", profile) is None:
@@ -232,6 +248,10 @@ class PeerRunsHTTPClient:
         self._recovery_backoff: dict[tuple[str, int], dict[str, Any]] = {}
         self._terminal_receipts: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
+        self._auth_probe_lock = threading.Lock()
+        self._auth_probe_rejections: OrderedDict[
+            tuple[str, str, str], tuple[float, str, int, str | None, bool]
+        ] = OrderedDict()
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
         """Attach the gateway-wide durable receipt store idempotently."""
@@ -297,15 +317,33 @@ class PeerRunsHTTPClient:
                     f"HermesRoom {room_grant}" if room_grant else f"Bearer {self.api_key}"),
                 "Content-Type": "application/json", "User-Agent": "Hermes-RoomLink/1.0",
                 **(headers or {})})
+        # Cache only scoped authorization probes, keyed by the credential actually sent.
+        auth_probe_key = None
+        if room_grant and (method, path) in _AUTH_PROBE_ENDPOINTS:
+            auth_probe_key = (
+                method, path, hashlib.sha256(request.get_header("Authorization", "").encode()).hexdigest()
+            )
+            self._check_auth_probe_cooldown(auth_probe_key)
         try:
             with _open_roomlink_url(request, timeout=self.timeout_seconds, reject_redirects=reject_redirects) as response:
                 raw = _read_body(
                     response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
                     ambiguous=ambiguous)
         except urllib.error.HTTPError as exc:
-            if reject_redirects and exc.code in {301, 302, 303, 307, 308}:
-                raise PeerRunsHTTPError("peer attachment request refused an HTTP redirect", status_code=exc.code) from exc
-            self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            try:
+                if reject_redirects and exc.code in {301, 302, 303, 307, 308}:
+                    raise PeerRunsHTTPError("peer attachment request refused an HTTP redirect", status_code=exc.code) from exc
+                self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            except PeerRunsHTTPError as failure:
+                # The classified error also covers bounded-body size/deadline failures.
+                if auth_probe_key is not None and exc.code in {401, 403}:
+                    self._remember_auth_probe_rejection(
+                        auth_probe_key, str(failure), exc.code, failure.error_code,
+                        retryable=failure.retryable,
+                    )
+                raise
+            finally:
+                exc.close()
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             not_admitted = ambiguous and _is_proven_pre_admission_failure(exc)
             raise PeerRunsHTTPError(
@@ -584,22 +622,61 @@ class PeerRunsHTTPClient:
                     "status_ttl_seconds": status_ttl_seconds})})
 
     def refresh_grant(
-        self, *, grant: str, ttl_seconds: float = 24 * 60 * 60,
-        capability_digest: str | None = None, execution_policy_digest: str | None = None,
+        self,
+        *,
+        grant: str,
+        ttl_seconds: float = 24 * 60 * 60,
+        capability_digest: str | None = None,
+        execution_policy_digest: str | None = None,
     ) -> Mapping[str, Any]:
         """Renew dispatch access only while its frozen authority is unchanged."""
-        refreshed = self._scoped_post(
-            "/v1/room-members/grants/refresh", grant, body={"ttl_seconds": ttl_seconds})
+        self._require_room_grant(grant)
+        refreshed = self._request(
+            "/v1/room-members/grants/refresh",
+            method="POST",
+            body={"ttl_seconds": ttl_seconds},
+            room_grant=grant,
+        )
         replacement = str(refreshed.get("grant") or "")
         if not replacement:
             raise PeerRunsHTTPError("peer returned no refreshed room grant")
-        # Persist only after the target proves the replacement authorizes the scoped endpoint.
-        probe = self.probe(grant=replacement)
-        error = digest_reauthorization_error(
-            GatewayRoomCatalog.from_mapping(probe.get("catalog")),
-            capability_digest=capability_digest, execution_policy_digest=execution_policy_digest)
-        if error is not None:
-            raise error
+        try:
+            # Persist only after the target proves the replacement can authorize
+            # the same scoped capability endpoint.
+            probe = self.probe(grant=replacement)
+            from gateway.hosted_room_peer import GatewayRoomCatalog
+
+            catalog = GatewayRoomCatalog.from_mapping(probe.get("catalog"))
+            if (
+                execution_policy_digest is not None
+                and catalog.execution_policy.policy_digest
+                != execution_policy_digest
+            ):
+                raise PeerRunsHTTPError(
+                    "peer room execution policy needs reauthorization",
+                    status_code=403,
+                    error_code="room_execution_policy_changed",
+                    not_admitted=True,
+                )
+            if (
+                capability_digest is not None
+                and catalog.catalog_digest != capability_digest
+            ):
+                raise PeerRunsHTTPError(
+                    "peer room capabilities need reauthorization",
+                    status_code=403,
+                    error_code="room_capability_catalog_changed",
+                    not_admitted=True,
+                )
+        except Exception:
+            try:
+                self.revoke_grant_exact(grant=replacement)
+            except Exception:
+                logger.warning(
+                    "Could not revoke an unpublished refreshed room grant",
+                    exc_info=True,
+                )
+            raise
         return {**refreshed, "catalog": probe.get("catalog")}
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
@@ -622,6 +699,40 @@ class PeerRunsHTTPClient:
         if not value or value in {"compat", "compatibility-only"}:
             raise PeerRunsHTTPError("a scoped room grant is required")
         return value
+
+    def revoke_grant_exact(self, *, grant: str) -> Mapping[str, Any]:
+        """Retire a single bearer, never the concurrent room grant replacing it."""
+        self._require_room_grant(grant)
+        return self._request(
+            "/v1/room-members/grants/revoke-exact",
+            method="POST",
+            body={},
+            room_grant=grant,
+        )
+
+    def _check_auth_probe_cooldown(self, key: tuple[str, str, str]) -> None:
+        with self._auth_probe_lock:
+            rejected = self._auth_probe_rejections.get(key)
+            if rejected is not None and self.clock() >= rejected[0]:
+                del self._auth_probe_rejections[key]
+                rejected = None
+        if rejected is not None:
+            _, message, status_code, error_code, retryable = rejected
+            raise PeerRunsHTTPError(
+                message, status_code=status_code, error_code=error_code, retryable=retryable
+            )
+
+    def _remember_auth_probe_rejection(
+        self, key: tuple[str, str, str], message: str, status_code: int, error_code: str | None,
+        *, retryable: bool = False,
+    ) -> None:
+        with self._auth_probe_lock:
+            self._auth_probe_rejections[key] = (
+                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, message, status_code, error_code, retryable
+            )
+            self._auth_probe_rejections.move_to_end(key)
+            while len(self._auth_probe_rejections) > _MAX_AUTH_PROBE_REJECTIONS:
+                self._auth_probe_rejections.popitem(last=False)
 
 
     def _put_attachment(

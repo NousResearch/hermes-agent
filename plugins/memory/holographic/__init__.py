@@ -295,6 +295,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 results = retriever.probe(
                     args["entity"],
                     category=args.get("category"),
+                    min_trust=float(args.get("min_trust", self._min_trust)),
                     limit=int(args.get("limit", 10)),
                 )
                 return json.dumps({"results": results, "count": len(results)})
@@ -303,6 +304,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 results = retriever.related(
                     args["entity"],
                     category=args.get("category"),
+                    min_trust=float(args.get("min_trust", self._min_trust)),
                     limit=int(args.get("limit", 10)),
                 )
                 return json.dumps({"results": results, "count": len(results)})
@@ -314,6 +316,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 results = retriever.reason(
                     entities,
                     category=args.get("category"),
+                    min_trust=float(args.get("min_trust", self._min_trust)),
                     limit=int(args.get("limit", 10)),
                 )
                 return json.dumps({"results": results, "count": len(results)})
@@ -321,6 +324,7 @@ class HolographicMemoryProvider(MemoryProvider):
             elif action == "contradict":
                 results = retriever.contradict(
                     category=args.get("category"),
+                    min_trust=float(args.get("min_trust", self._min_trust)),
                     limit=int(args.get("limit", 10)),
                 )
                 return json.dumps({"results": results, "count": len(results)})

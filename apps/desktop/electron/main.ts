@@ -232,6 +232,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { recoverLegacyMacosTccAnchor } from './macos-tcc-anchor-recovery'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -4585,11 +4586,49 @@ function readBootstrapMarker() {
 // or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
+let legacyMacosTccRecoveryAttempted = false
+
+function recoverLegacyMacosRuntimeBeforeProbe() {
+  if (!IS_MAC || legacyMacosTccRecoveryAttempted) {
+    return
+  }
+
+  legacyMacosTccRecoveryAttempted = true
+
+  const pythonPathEntries = [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)]
+
+  // Do not let shell-level Python overrides make a broken recorded source
+  // appear healthy. The only extra import paths needed here are the managed
+  // checkout and its own venv dependencies.
+  const probeEnv = {
+    PYTHONHOME: '',
+    PYTHONPATH: pythonPathEntries.join(path.delimiter),
+    PYTHONSTARTUP: '',
+    __PYVENV_LAUNCHER__: ''
+  }
+
+  const result = recoverLegacyMacosTccAnchor({
+    venvRoot: VENV_ROOT,
+    probePython: pythonPath => canImportHermesCli(pythonPath, { env: probeEnv })
+  })
+
+  if (result.status === 'recovered') {
+    rememberLog('[runtime] restored the Python symlink from the reverted macOS TCC anchor')
+  } else if (result.status === 'failed') {
+    rememberLog(`[runtime] legacy macOS TCC anchor recovery skipped safely (${result.reason})`)
+  }
+}
+
 function isActiveRuntimeUsable() {
   const venvPython = getVenvPython(VENV_ROOT)
+  const sourceRootUsable = isHermesSourceRoot(ACTIVE_HERMES_ROOT)
+
+  if (sourceRootUsable) {
+    recoverLegacyMacosRuntimeBeforeProbe()
+  }
 
   return (
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
+    sourceRootUsable &&
     fileExists(venvPython) &&
     canImportHermesCli(venvPython, {
       env: {

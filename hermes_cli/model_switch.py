@@ -2411,7 +2411,7 @@ def switch_model(
                     validation_headers
                     or (
                         _extra_headers_from_config(user_providers.get(target_provider))
-                        if user_providers and target_provider in user_providers
+                        if isinstance(user_providers, dict) and target_provider in user_providers
                         else None
                     )
                 )
@@ -2429,7 +2429,7 @@ def switch_model(
     # API /v1/models may not list cloud/aliased models even though the server supports them.
     if not validation.get("accepted"):
         override = False
-        if user_providers:
+        if isinstance(user_providers, dict):
             from hermes_cli.config import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
             for slug, cfg in user_providers.items():

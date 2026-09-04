@@ -196,6 +196,12 @@ if [ "$DEV_SANDBOX_INTERACTIVE" = true ]; then
   dev_mounts=(--dev /dev)
 fi
 
+# Every client inside the sandbox reaches the network through proxy.py, which
+# terminates TLS with a leaf minted from certs/ca.pem -- so ca.pem is the CA
+# they all have to trust, Node included. certs/real-ca.pem is the host's public
+# bundle and belongs to the proxy alone, for verifying the upstream it forwards
+# to; a client pointed at it rejects the proxy's leaf and hangs up, which shows
+# up in logs/proxy.log only as `SSLEOFError: UNEXPECTED_EOF_WHILE_READING`.
 exec bwrap \
   --unshare-pid \
   --die-with-parent --proc /proc --tmpfs /tmp \
@@ -216,7 +222,7 @@ exec bwrap \
   --setenv CURL_CA_BUNDLE /work/certs/ca.pem \
   --setenv SSL_CERT_FILE /work/certs/ca.pem \
   --setenv GIT_SSL_CAINFO /work/certs/ca.pem \
-  --setenv NODE_EXTRA_CA_CERTS /work/certs/real-ca.pem \
+  --setenv NODE_EXTRA_CA_CERTS /work/certs/ca.pem \
   --setenv OPENSSL_CONF /work/certs/openssl.cnf \
   --setenv HTTP_PROXY http://127.0.0.1:8080 \
   --setenv HTTPS_PROXY http://127.0.0.1:8080 \

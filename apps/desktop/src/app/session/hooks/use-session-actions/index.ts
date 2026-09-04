@@ -1591,19 +1591,25 @@ export function useSessionActions({
             ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
             : viewMessagesForReconcile()
 
-          // Tail page + previously backfilled prefix (same-session re-resume).
-          const graftedPrefetch = graftRefreshedTailOntoBackfill(
-            toChatMessages(prefetchedResult.messages),
-            previousMessages
-          )
+          // An empty REST page is not proof the transcript is empty — a just-
+          // reconnected VPS can race state.db and return zero rows while the
+          // view still holds the live conversation (#100970). Same guard as the
+          // warm activate path: only trust an empty page when the view is empty.
+          if (prefetchedResult.messages.length || previousMessages.length === 0) {
+            // Tail page + previously backfilled prefix (same-session re-resume).
+            const graftedPrefetch = graftRefreshedTailOntoBackfill(
+              toChatMessages(prefetchedResult.messages),
+              previousMessages
+            )
 
-          prefetchedTranscriptMessages = graftedPrefetch
-          localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
-          prefetchApplied = true
-          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
+            prefetchedTranscriptMessages = graftedPrefetch
+            localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
+            prefetchApplied = true
+            prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
 
-          if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
-            setMessages(localSnapshot)
+            if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+              setMessages(localSnapshot)
+            }
           }
         }
 
@@ -1671,7 +1677,14 @@ export function useSessionActions({
             ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
             : currentMessages
 
-          const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
+          // Cold resume requests omit_messages; reconciling against [] would
+          // rebuild the thread from an empty authority and drop completed turns
+          // that are still on screen after reconnect invalidated the warm map.
+          const resumedMessages = resumed.messages_omitted
+            ? appendLiveSessionProjection(previousMessages, resumed)
+            : resumed.messages.length || resumed.inflight || resumed.queued
+              ? reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
+              : previousMessages
 
           return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
         })()

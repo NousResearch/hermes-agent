@@ -410,3 +410,94 @@ class TestBulkUpload:
         mgr.sync(force=True)
         bulk_upload.assert_called_once()
         assert len(bulk_upload.call_args[0][0]) == 3
+
+
+class TestUnreadableFiles:
+    """Unreadable host files must not wedge the sync pipeline.
+
+    A single permanently-unreadable file previously failed the whole
+    transactional cycle on every sync: state rolled back, the rate-limit
+    clock never advanced, and every subsequent sync retried the full set
+    (a log-flooding retry storm where nothing else ever reaches the
+    remote).  Unreadable files are now skipped with a one-time warning and
+    picked up again automatically once readable.
+    """
+
+    @pytest.fixture
+    def unreadable_file(self, tmp_files, monkeypatch):
+        """Make ``skill_main.py`` appear unreadable to the sync manager."""
+        unreadable = {tmp_files["skill_main.py"]}
+        real_access = os.access
+
+        def fake_access(path, mode, *args, **kwargs):
+            if str(path) in unreadable and mode & os.R_OK:
+                return False
+            return real_access(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr("tools.environments.file_sync.os.access", fake_access)
+        return unreadable
+
+    def test_unreadable_skipped_others_sync(self, tmp_files, unreadable_file, caplog):
+        import logging
+
+        caplog.set_level(logging.WARNING, logger="tools.environments.file_sync")
+        upload = MagicMock()
+        mgr = _make_manager(tmp_files, upload=upload)
+
+        mgr.sync(force=True)
+
+        # Only the two readable files are uploaded
+        assert upload.call_count == 2
+        uploaded = [call.args[0] for call in upload.call_args_list]
+        assert tmp_files["skill_main.py"] not in uploaded
+        # Skipped file is not recorded as synced
+        assert mgr._unreadable_skipped == {tmp_files["skill_main.py"]}
+
+        # The unreadable file is warned about exactly once
+        warns = [
+            r for r in caplog.records if "skipping unreadable file" in r.getMessage()
+        ]
+        assert len(warns) == 1
+        assert tmp_files["skill_main.py"] in warns[0].getMessage()
+
+        # A second cycle commits nothing new and does not warn again
+        caplog.clear()
+        upload.reset_mock()
+        mgr.sync(force=True)
+        assert upload.call_count == 0
+        warns = [
+            r for r in caplog.records if "skipping unreadable file" in r.getMessage()
+        ]
+        assert len(warns) == 0
+
+    def test_unreadable_recovers_automatically(self, tmp_files, unreadable_file):
+        upload = MagicMock()
+        mgr = _make_manager(tmp_files, upload=upload)
+
+        mgr.sync(force=True)
+        assert upload.call_count == 2
+
+        # File becomes readable again — picked up on the next cycle
+        unreadable_file.clear()
+        upload.reset_mock()
+        mgr.sync(force=True)
+        assert upload.call_count == 1
+        assert upload.call_args[0][0] == tmp_files["skill_main.py"]
+        assert mgr._unreadable_skipped == set()
+
+    def test_bulk_upload_never_receives_unreadable(self, tmp_files, unreadable_file):
+        """The tar-over-SSH bulk path must never see the unreadable file."""
+        bulk_upload = MagicMock()
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_upload_fn=bulk_upload,
+        )
+
+        mgr.sync(force=True)
+
+        files_arg = bulk_upload.call_args[0][0]
+        host_paths = {host for host, _ in files_arg}
+        assert tmp_files["skill_main.py"] not in host_paths
+        assert len(host_paths) == 2

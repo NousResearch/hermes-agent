@@ -159,6 +159,7 @@ class FileSyncManager:
         self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
+        self._unreadable_skipped: set[str] = set()  # host paths skipped for being unreadable
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
@@ -171,6 +172,10 @@ class FileSyncManager:
 
         Transactional: state only committed if ALL operations succeed.
         On failure, state rolls back so the next cycle retries everything.
+        Files that cannot be read are skipped with a one-time warning
+        instead of failing the cycle, so one unreadable file cannot wedge
+        the whole pipeline (they are re-checked and pick up automatically
+        once readable).
         """
         with self._transaction_lock:
             self._sync_transaction(force=force)
@@ -195,8 +200,32 @@ class FileSyncManager:
                 continue
             if self._synced_files.get(remote_path) == file_key:
                 continue
+            if not os.access(host_path, os.R_OK):
+                # Unreadable file: the transport (e.g. tar-over-SSH) would
+                # fail on it, and because a failed cycle rolls back state
+                # without advancing the rate-limit clock, a single
+                # permanently-unreadable file wedges the whole pipeline:
+                # every subsequent sync retries the full set, nothing else
+                # ever reaches the remote, and the log floods.  Skip the
+                # file (warn once per unreadable episode) and keep syncing
+                # the rest; it is re-evaluated on every cycle and picks up
+                # automatically once it becomes readable again.
+                if host_path not in self._unreadable_skipped:
+                    self._unreadable_skipped.add(host_path)
+                    logger.warning(
+                        "file_sync: skipping unreadable file %s "
+                        "(will sync once it becomes readable)",
+                        host_path,
+                    )
+                continue
+            self._unreadable_skipped.discard(host_path)
             to_upload.append((host_path, remote_path))
             new_files[remote_path] = file_key
+
+        # Drop skip-bookkeeping for files that no longer exist in the set.
+        self._unreadable_skipped.intersection_update(
+            host_path for host_path, _ in current_files
+        )
 
         # --- Deletes: synced paths no longer in current set ---
         to_delete = [p for p in self._synced_files if p not in current_remote_paths]

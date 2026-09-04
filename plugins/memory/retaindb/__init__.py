@@ -44,6 +44,22 @@ _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
 
 
+def _guard_redirect(response, *args, **kwargs) -> None:
+    """Reject metadata redirects before requests follows them."""
+    try:
+        from tools.url_safety import is_always_blocked_url, redirect_target_from_response
+
+        target = redirect_target_from_response(response)
+        if target and is_always_blocked_url(target):
+            response.close()
+            raise RuntimeError("RetainDB redirect target is always blocked")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        response.close()
+        raise RuntimeError("RetainDB redirect safety check failed") from exc
+
+
 def _load_retaindb_config() -> Dict[str, Any]:
     """Return the ``memory.retaindb`` block from config.yaml (empty on any error).
 
@@ -228,6 +244,7 @@ class _Client:
             json=json_body if method.upper() not in {"GET", "DELETE"} else None,
             headers=self._headers(path),
             timeout=timeout,
+            hooks={"response": [_guard_redirect]},
         )
         try:
             payload = resp.json()
@@ -316,7 +333,14 @@ class _Client:
         fields = {"path": remote_path, "scope": scope.upper()}
         if project_id:
             fields["project_id"] = project_id
-        resp = requests.post(url, files={"file": (filename, io.BytesIO(data), mime_type)}, data=fields, headers=headers, timeout=30)
+        resp = requests.post(
+            url,
+            files={"file": (filename, io.BytesIO(data), mime_type)},
+            data=fields,
+            headers=headers,
+            timeout=30,
+            hooks={"response": [_guard_redirect]},
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -333,7 +357,13 @@ class _Client:
         import requests
         token = self.api_key.replace("Bearer ", "").strip()
         url = f"{self.base_url}/v1/files/{quote(file_id, safe='')}/content"
-        resp = requests.get(url, headers={"Authorization": f"Bearer {token}", "x-sdk-runtime": "hermes-plugin"}, timeout=30, allow_redirects=True)
+        headers = {"Authorization": f"Bearer {token}", "x-sdk-runtime": "hermes-plugin"}
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=30,
+            hooks={"response": [_guard_redirect]},
+        )
         resp.raise_for_status()
         return resp.content
 
@@ -572,6 +602,23 @@ class RetainDBMemoryProvider(MemoryProvider):
             or _DEFAULT_BASE_URL
         )
         base_url = re.sub(r"/+$", "", base_url_raw)
+
+        # Self-hosted RetainDB is allowed on LAN/loopback, but cloud-metadata
+        # and other always-blocked targets must never become the API base
+        # (salvage of incomplete #4984 which incorrectly used full is_safe_url
+        # and would break intentional private deployments).
+        try:
+            from tools.url_safety import is_always_blocked_url
+
+            if is_always_blocked_url(base_url):
+                logger.warning(
+                    "RETAINDB_BASE_URL '%s' targets an always-blocked address; "
+                    "resetting to the default endpoint.",
+                    base_url,
+                )
+                base_url = _DEFAULT_BASE_URL
+        except Exception as exc:
+            logger.debug("RetainDB base URL always-blocked check skipped: %s", exc)
 
         # Project resolution: RETAINDB_PROJECT > config.yaml project > hermes-<profile> > "default"
         # If unset, the API auto-creates and uses the "default" project — no config required.

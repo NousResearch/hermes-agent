@@ -1984,6 +1984,31 @@ export const en: Translations = {
     }
   },
 
+  profileLock: {
+    sectionLabel: 'Passcode lock',
+    lockedStatus: 'Requires a passcode to open in this app.',
+    unlockedStatus: 'No passcode — anyone who opens the app can read this profile.',
+    setPasscode: 'Set passcode…',
+    changePasscode: 'Change passcode…',
+    removePasscode: 'Remove passcode',
+    setTitle: 'Set a passcode for this profile',
+    newPasscodeLabel: 'Passcode',
+    confirmPasscodeLabel: 'Confirm passcode',
+    passcodePlaceholder: 'Enter passcode',
+    passcodeTooShort: 'Passcode must be at least 4 characters.',
+    passcodeMismatch: 'Passcodes do not match.',
+    savePasscode: 'Save passcode',
+    removeConfirmTitle: 'Remove this passcode?',
+    removeConfirmBody: profile => `“${profile}” will open without a passcode from now on.`,
+    failedSave: 'Could not save the passcode.',
+    gateTitle: 'Profile locked',
+    gatePrompt: profile => `“${profile}” is locked. Enter its passcode to keep reading.`,
+    gatePlaceholder: 'Enter passcode',
+    unlock: 'Unlock',
+    wrongPasscode: 'Incorrect passcode. Try again.',
+    passcodeLabel: 'Passcode'
+  },
+
   profiles: {
     close: 'Close profiles',
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',

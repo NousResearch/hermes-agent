@@ -11623,6 +11623,8 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
         reconnect: () => ensureRegistryBackend(id, profile),
+        tracker: remoteLiveness,
+        remoteBaseUrl: existing.remoteBaseUrl ?? null,
         retire: async (error: any) => {
           // A late failure from an old descriptor must never tear down a newer
           // entry that another caller has already installed.
@@ -15667,54 +15669,6 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
   return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
 })
-
-// Transactional update for a Desktop-managed SSH install. Unlike the generic
-// fleet fan-out below, this path owns the remote serve lifecycle: it gates new
-// dials, drains only exact Desktop-owned processes, runs the launcher outside
-// those serves, proves the correlated receipt, and restores every prior scope.
-async function requestManagedSshUpdate(rawId) {
-  const connectionId = String(rawId || '').trim()
-  const existing = managedConnectionUpdates.get(connectionId)
-
-  if (existing) {
-    return existing
-  }
-
-  const correlationId = crypto.randomUUID()
-  const registry = readDesktopConnectionsRegistry()
-  const source = registry.connections.find(connection => connection.id === connectionId)
-
-  if (!source) {
-    return refusedManagedSshUpdate(connectionId, correlationId, `No connection with id "${connectionId}".`)
-  }
-
-  if (source.kind !== 'ssh') {
-    return refusedManagedSshUpdate(
-      connectionId,
-      correlationId,
-      'Only registered Desktop-managed SSH connections can use this update lifecycle.'
-    )
-  }
-
-  if (!managedConnectionUpdateGate.claim(connectionId, correlationId)) {
-    return refusedManagedSshUpdate(connectionId, correlationId, 'A managed update is already in progress.')
-  }
-
-  const operation = (async () => {
-    try {
-      return await updateManagedSshConnection(source, correlationId)
-    } catch (error: any) {
-      return refusedManagedSshUpdate(connectionId, correlationId, String(error?.message || error))
-    } finally {
-      managedConnectionUpdateGate.release(connectionId, correlationId)
-      managedConnectionUpdates.delete(connectionId)
-    }
-  })()
-
-  managedConnectionUpdates.set(connectionId, operation)
-
-  return operation
-}
 
 ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
 

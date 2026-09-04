@@ -848,7 +848,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
     agent._touch_activity("waiting for non-streaming API response")
 
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
-    t.start()
+    try:
+        t.start()
+    except RuntimeError as thread_err:
+        from tools.thread_exhaustion import is_thread_exhaustion_error
+        if is_thread_exhaustion_error(thread_err):
+            # OS refused to create a new thread — agent is out of threads.
+            # Reraise immediately; error_classifier will mark it non-retryable.
+            raise
+        # Other RuntimeError — not thread exhaustion, re-raise as-is
+        raise
     _poll_count = 0
     while t.is_alive():
         t.join(timeout=0.3)
@@ -2622,7 +2631,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         t = threading.Thread(
             target=_context_thread_target(_bedrock_call), daemon=True
         )
-        t.start()
+        try:
+            t.start()
+        except RuntimeError as thread_err:
+            from tools.thread_exhaustion import is_thread_exhaustion_error
+            if is_thread_exhaustion_error(thread_err):
+                # OS refused to create a new thread — agent is out of threads.
+                # Reraise immediately; error_classifier will mark it non-retryable.
+                raise
+            # Other RuntimeError — not thread exhaustion, re-raise as-is
+            raise
         while t.is_alive():
             t.join(timeout=0.3)
             if agent._interrupt_requested:
@@ -4021,7 +4039,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
-    t.start()
+    try:
+        t.start()
+    except RuntimeError as thread_err:
+        from tools.thread_exhaustion import is_thread_exhaustion_error
+        if is_thread_exhaustion_error(thread_err):
+            # OS refused to create a new thread — agent is out of threads.
+            # Reraise immediately; error_classifier will mark it non-retryable.
+            raise
+        # Other RuntimeError — not thread exhaustion, re-raise as-is
+        raise
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
     while t.is_alive():

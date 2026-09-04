@@ -68,6 +68,9 @@ class FailoverReason(enum.Enum):
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
+    # Resource exhaustion
+    thread_exhaustion = "thread_exhaustion"  # OS thread creation failed — agent out of threads, NOT retryable
+
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
@@ -835,6 +838,18 @@ def classify_api_error(
         )
         if classified is not None:
             return classified
+
+    # Thread exhaustion — OS refused to create a new thread. Retrying will
+    # reproduce the identical failure. Fail fast so the agent surfaces the
+    # resource constraint instead of burning max_retries.
+    from tools.thread_exhaustion import is_thread_exhaustion_error
+
+    if is_thread_exhaustion_error(error):
+        return _result(
+            FailoverReason.thread_exhaustion,
+            retryable=False,
+            should_fallback=False,
+        )
 
     # Local MoA config drift is deterministic: a persisted session can retain
     # a preset name that was later renamed/deleted. Retrying the same lookup

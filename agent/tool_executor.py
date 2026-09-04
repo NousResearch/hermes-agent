@@ -170,6 +170,17 @@ def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
     return "cannot schedule new futures after interpreter shutdown" in str(exc)
 
 
+def _is_thread_exhaustion_submit_error(exc: RuntimeError) -> bool:
+    """Return True if exc is a RuntimeError from executor.submit() hitting thread exhaustion.
+    
+    ThreadPoolExecutor.submit() can raise RuntimeError when the underlying
+    threading.Thread.start() call fails due to OS thread exhaustion. This is
+    a sibling of the interpreter-shutdown guard above.
+    """
+    from tools.thread_exhaustion import is_thread_exhaustion_error
+    return is_thread_exhaustion_error(exc)
+
+
 def _emit_terminal_post_tool_call(
     agent,
     *,
@@ -951,6 +962,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             submit_index,
                         )
                     except RuntimeError as submit_error:
+                        if _is_thread_exhaustion_submit_error(submit_error):
+                            # OS thread exhaustion — agent is out of threads. Reraise
+                            # immediately; error_classifier will mark it non-retryable.
+                            raise
                         if not _is_interpreter_shutdown_submit_error(submit_error):
                             raise
                         skipped_calls = runnable_calls[submit_index:]

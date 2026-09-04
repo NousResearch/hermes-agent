@@ -46,6 +46,11 @@ BOLD='\033[1m'
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+# Export so child processes spawned by the installer (skills_sync.py, the
+# setup wizard's python, ...) resolve the same home instead of silently
+# falling back to the platform default. Launcher templates below also bake
+# the value in for runtime (#89231).
+export HERMES_HOME
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
 # explicit directory — if so we never override it.
@@ -2091,6 +2096,7 @@ setup_path() {
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+export HERMES_HOME="\${HERMES_HOME:-$HERMES_HOME}"
 exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "\$@"
 EOF
     else
@@ -2098,6 +2104,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+export HERMES_HOME="\${HERMES_HOME:-$HERMES_HOME}"
 exec "$HERMES_BIN" "\$@"
 EOF
     fi
@@ -2114,6 +2121,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+export HERMES_HOME="\${HERMES_HOME:-$HERMES_HOME}"
 exec "$HERMES_BIN" "$INSTALL_DIR/run_agent.py" "\$@"
 EOF
     else
@@ -2121,6 +2129,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+export HERMES_HOME="\${HERMES_HOME:-$HERMES_HOME}"
 exec "$HERMES_BIN" run_agent.py "\$@"
 EOF
     fi
@@ -2139,6 +2148,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+export HERMES_HOME="\${HERMES_HOME:-$HERMES_HOME}"
 exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" acp "\$@"
 EOF
     else
@@ -2146,6 +2156,7 @@ EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
+export HERMES_HOME="\${HERMES_HOME:-$HERMES_HOME}"
 exec "$HERMES_BIN" acp "\$@"
 EOF
     fi
@@ -2314,7 +2325,7 @@ SOUL_EOF
 
     log_success "Configuration directory ready: ~/.hermes/"
 
-    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
+    # Seed bundled skills into $HERMES_HOME/skills/ (manifest-based, one-time per skill)
     if [ "$NO_SKILLS" = true ]; then
         # Blank-slate install: write the opt-out marker and skip seeding.
         # skills_sync.py and `hermes update` both honor this marker, so the
@@ -2326,14 +2337,14 @@ SOUL_EOF
         log_info "Skipping bundled skills (--no-skills). Wrote $HERMES_HOME/.no-bundled-skills"
         log_info "  Future 'hermes update' runs will not inject bundled skills. Delete the marker to opt back in."
     else
-        log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
+        log_info "Syncing bundled skills to $HERMES_HOME/skills/ ..."
         if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-            log_success "Skills synced to ~/.hermes/skills/"
+            log_success "Skills synced to $HERMES_HOME/skills/"
         else
             # Fallback: simple directory copy if Python sync fails
             if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
                 cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-                log_success "Skills copied to ~/.hermes/skills/"
+                log_success "Skills copied to $HERMES_HOME/skills/"
             fi
         fi
     fi

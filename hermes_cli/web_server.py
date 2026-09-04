@@ -439,6 +439,38 @@ async def _lifespan(app: "FastAPI"):
     # Desktop's 10-second WebSocket ready-probe to time out (GH-73083).
     _warm_gateway_module()
 
+    # Register declarative shell hooks + outbound webhooks from config.yaml.
+    # This ``serve`` backend is the process that actually drives Desktop
+    # chat turns (tui_gateway.ws over /api/ws) — it is a SEPARATE process
+    # from `hermes gateway run` and from the plain CLI, and until this fix
+    # it was the one startup path that never called
+    # agent.shell_hooks.register_from_config(). Any post_tool_call /
+    # pre_tool_call shell hook configured under `hooks:` (e.g. the
+    # second-brain housekeeper's vault-write gate) silently never fired for
+    # interactive Desktop sessions even though `hermes hooks doctor` reported
+    # it healthy — doctor only checks the script/allowlist, not which
+    # running processes actually registered it. No TTY here, so consent
+    # resolves the same way gateway/run.py does: accept_hooks=False and let
+    # register_from_config fall back to HERMES_ACCEPT_HOOKS /
+    # hooks_auto_accept — never block server startup on a prompt.
+    try:
+        from hermes_cli.config import load_config as _load_hooks_config
+        from agent.shell_hooks import register_from_config as _register_shell_hooks
+
+        _hooks_cfg = _load_hooks_config()
+        _register_shell_hooks(_hooks_cfg, accept_hooks=False)
+
+        from agent.outbound_webhooks import (
+            register_from_config as _register_outbound_webhooks,
+        )
+
+        _register_outbound_webhooks(_hooks_cfg)
+    except Exception:
+        _log.debug(
+            "shell-hook registration failed at dashboard/serve startup",
+            exc_info=True,
+        )
+
     # Snapshot the checkout revision at boot so risky lazy-import paths (the
     # model picker) can detect when `hermes update` replaced the code
     # underneath this long-lived process and refuse with a clear "restart

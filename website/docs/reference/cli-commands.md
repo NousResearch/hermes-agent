@@ -90,6 +90,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
+| `hermes usage` | Show official OAuth quota windows (Codex, Claude, OpenRouter, Nous). |
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes import-agent` | Import a Claude Code (`~/.claude`) or Codex CLI (`~/.codex`) setup. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
@@ -1595,6 +1596,23 @@ hermes insights [--days N] [--source platform]
 |--------|-------------|
 | `--days <n>` | Analyze the last `n` days (default: 30). |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
+
+## `hermes usage`
+
+```bash
+hermes usage [provider] [--json]
+```
+
+Show first-party subscription quota windows for signed-in OAuth providers.
+
+| Argument | Description |
+|----------|-------------|
+| `provider` | Optional id or alias (`openai-codex` / `codex`, `anthropic` / `claude`, `openrouter`, `nous`). Omit to list official sources. |
+| `--json` | Print a script-friendly JSON report. |
+
+Official sources today: Codex (5h + weekly), Claude OAuth, OpenRouter credits, Nous Portal credits. Providers without a public quota API (including SuperGrok / `xai-oauth`) print `unsupported` instead of a guessed number. Failures are `unavailable` and do not change the exit code, except an unknown provider name exits `2`.
+
+`hermes auth status <provider>` and `hermes status --all` reuse the same snapshot for a one-line summary. This is the official remaining allowance, not the local token totals from `hermes insights` or `/usage` session stats.
 
 ## `hermes claw`
 

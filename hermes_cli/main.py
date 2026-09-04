@@ -508,6 +508,7 @@ from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
@@ -13347,6 +13348,13 @@ def cmd_insights(args):
                 pass
 
 
+def cmd_usage(args):
+    """Show official OAuth quota windows."""
+    from hermes_cli.usage_cmd import usage_command
+
+    raise SystemExit(usage_command(args))
+
+
 def cmd_monitoring(args):
     """Gateway monitoring status: health & diagnostics export posture."""
     from hermes_cli.config import load_config
@@ -14984,6 +14992,7 @@ def main():
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
+    build_usage_parser(subparsers, cmd_usage=cmd_usage)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
 
     # =========================================================================

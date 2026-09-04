@@ -72,23 +72,26 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     return None
 
 
-def _format_reset(dt: Optional[datetime]) -> str:
+def _format_reset(dt: Optional[datetime], *, include_local: bool = True) -> str:
     if not dt:
         return "unknown"
     local_dt = dt.astimezone()
     delta = dt - _utc_now()
     total_seconds = int(delta.total_seconds())
     if total_seconds <= 0:
-        return f"now ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
-    hours, rem = divmod(total_seconds, 3600)
-    minutes = rem // 60
-    if hours >= 24:
-        days, hours = divmod(hours, 24)
-        rel = f"in {days}d {hours}h"
-    elif hours > 0:
-        rel = f"in {hours}h {minutes}m"
+        rel = "now"
     else:
-        rel = f"in {minutes}m"
+        hours, rem = divmod(total_seconds, 3600)
+        minutes = rem // 60
+        if hours >= 24:
+            days, hours = divmod(hours, 24)
+            rel = f"in {days}d {hours}h"
+        elif hours > 0:
+            rel = f"in {hours}h {minutes}m"
+        else:
+            rel = f"in {minutes}m"
+    if not include_local:
+        return rel
     return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
 
 
@@ -881,13 +884,93 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+OFFICIAL_USAGE_PROVIDERS = ("openai-codex", "anthropic", "openrouter", "nous")
+
+USAGE_PROVIDER_ALIASES = {
+    "codex": "openai-codex",
+    "chatgpt": "openai-codex",
+    "openai": "openai-codex",
+    "claude": "anthropic",
+    "or": "openrouter",
+    "portal": "nous",
+    "grok": "xai-oauth",
+    "xai": "xai-oauth",
+}
+
+UNSUPPORTED_USAGE_REASONS = {
+    "xai-oauth": "no official quota API",
+    "xai": "no official quota API",
+}
+
+
+def normalize_usage_provider(provider: Optional[str]) -> str:
+    cleaned = str(provider or "").strip().lower()
+    return USAGE_PROVIDER_ALIASES.get(cleaned, cleaned)
+
+
+def _fetch_nous_account_usage() -> Optional[AccountUsageSnapshot]:
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        tok = (get_provider_auth_state("nous") or {}).get("access_token")
+        if not (isinstance(tok, str) and tok.strip()):
+            return None
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        return build_nous_credits_snapshot(get_nous_portal_account_info(force_fresh=True))
+    except Exception:
+        return None
+
+
+def snapshot_to_dict(snapshot: AccountUsageSnapshot) -> dict[str, Any]:
+    windows = []
+    for window in snapshot.windows:
+        remaining = None
+        if window.used_percent is not None:
+            remaining = max(0, round(100.0 - float(window.used_percent)))
+        windows.append(
+            {
+                "name": window.label,
+                "used_percent": window.used_percent,
+                "remaining_percent": remaining,
+                "reset_at": window.reset_at.isoformat() if window.reset_at else None,
+                "detail": window.detail,
+            }
+        )
+    return {
+        "provider": snapshot.provider,
+        "status": "ok",
+        "plan": snapshot.plan,
+        "source": snapshot.source,
+        "fetched_at": snapshot.fetched_at.isoformat(),
+        "windows": windows,
+        "details": list(snapshot.details),
+    }
+
+
+def compact_account_usage_line(snapshot: AccountUsageSnapshot) -> str:
+    parts: list[str] = []
+    for window in snapshot.windows:
+        if window.used_percent is None:
+            continue
+        remaining = max(0, round(100.0 - float(window.used_percent)))
+        bit = f"{window.label} {remaining}% left"
+        if window.reset_at:
+            bit += f", resets {_format_reset(window.reset_at, include_local=False)}"
+        elif window.detail:
+            bit += f" · {window.detail}"
+        parts.append(bit)
+    parts.extend(snapshot.details)
+    return " · ".join(parts)
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    normalized = str(provider or "").strip().lower()
+    normalized = normalize_usage_provider(provider)
     if normalized in {"", "auto", "custom"}:
         return None
     try:
@@ -897,6 +980,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "nous":
+            return _fetch_nous_account_usage()
     except Exception:
         return None
     return None

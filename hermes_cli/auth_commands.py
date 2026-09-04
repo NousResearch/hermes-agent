@@ -634,6 +634,14 @@ def auth_status_command(args) -> None:
         value = status.get(key)
         if value:
             print(f"  {key}: {value}")
+    try:
+        from hermes_cli.usage_cmd import compact_usage_line
+
+        usage_line = compact_usage_line(provider)
+    except Exception:
+        usage_line = None
+    if usage_line:
+        print(f"  usage: {usage_line}")
 
 
 def auth_logout_command(args) -> None:

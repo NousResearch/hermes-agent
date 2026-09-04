@@ -27,6 +27,39 @@ from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
+def _prefetch_usage_lines(enabled: bool) -> dict[str, str]:
+    """Fetch official quota lines in parallel for ``hermes status --all``.
+
+    Existing provider timeouts stay at 10–15s; running them concurrently
+    keeps ``--all`` from stacking four serial HTTP waits.
+    """
+    if not enabled:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hermes_cli.usage_cmd import compact_usage_line
+
+    providers = ("nous", "openai-codex", "anthropic", "openrouter")
+    out: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(providers)) as pool:
+        futures = {pool.submit(compact_usage_line, name): name for name in providers}
+        for future, name in futures.items():
+            try:
+                line = future.result()
+            except Exception:
+                line = None
+            if line:
+                out[name] = line
+    return out
+
+
+def _maybe_print_usage(provider: str, cache: dict[str, str]) -> None:
+    """Fail-open quota line for ``hermes status --all``."""
+    line = cache.get(provider)
+    if line:
+        print(f"    Usage:      {line}")
+
+
 def check_mark(ok: bool) -> str:
     if ok:
         return color("✓", Colors.GREEN)
@@ -167,6 +200,7 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
+    usage_cache = _prefetch_usage_lines(bool(getattr(args, "all", False)))
 
     # Values may be a single env var name (str) or a tuple of alternates (first found wins).
     keys: dict[str, str | tuple[str, ...]] = {
@@ -213,11 +247,14 @@ def show_status(args):
         has_key = bool(value)
         display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
+        if name == "OpenRouter":
+            _maybe_print_usage("openrouter", usage_cache)
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     anthropic_display = redact_key(anthropic_value)
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
+    _maybe_print_usage("anthropic", usage_cache)
 
     # =========================================================================
     # Auth Providers (OAuth)
@@ -296,6 +333,7 @@ def show_status(args):
         print(f"    Refresh:    {refresh_label}")
     if nous_error:
         print(f"    Error:      {nous_error}")
+    _maybe_print_usage("nous", usage_cache)
 
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(
@@ -310,6 +348,7 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+    _maybe_print_usage("openai-codex", usage_cache)
 
     qwen_logged_in = bool(qwen_status.get("logged_in"))
     print(

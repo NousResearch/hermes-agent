@@ -227,3 +227,34 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
 
     assert result.status == "unavailable"
     assert "hermes auth" in result.message
+
+
+def test_fetch_account_usage_accepts_codex_alias(monkeypatch, codex_usage_payload):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: {"api_key": "alias-token", "base_url": "https://chatgpt.com/backend-api/codex"},
+    )
+    snapshot = account_usage.fetch_account_usage("codex")
+    assert snapshot is not None
+    assert snapshot.provider == "openai-codex"
+    assert calls[0]["headers"]["Authorization"] == "Bearer alias-token"
+
+
+def test_fetch_account_usage_nous_dispatches(monkeypatch):
+    from datetime import datetime, timezone
+
+    expected = account_usage.AccountUsageSnapshot(
+        provider="nous",
+        source="portal-account",
+        fetched_at=datetime.now(timezone.utc),
+        details=("Subscription credits: $1.00",),
+    )
+    monkeypatch.setattr(account_usage, "_fetch_nous_account_usage", lambda: expected)
+    assert account_usage.fetch_account_usage("portal") is expected

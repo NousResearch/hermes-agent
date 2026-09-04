@@ -49,6 +49,25 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     return "ollama" in host.split(".")
 
 
+# Relays whose model pools intermittently mis-translate the OpenAI top-level
+# ``reasoning_effort`` field. Observed on api.b.ai (glm-5.3-flash): the relay
+# round-robins across several upstream nodes and some of them translate
+# ``reasoning_effort`` into ``thinking: {"type": "disabled"}``, which the model
+# rejects with HTTP 400 code 400001 "该模型始终思考，不支持关闭思考；请使用 low、
+# high 或 max" (~40% of calls, body-independent — replaying the identical body
+# alternates 400/200 with the round-robin). The OpenAI-style ``reasoning``
+# object form is accepted by every node in the pool (0/20 failures vs 4/10 with
+# the top-level field). Endpoints listed here get their enabled+effort control
+# emitted as ``extra_body.reasoning`` instead of top-level ``reasoning_effort``.
+def _needs_reasoning_object_form(base_url: str | None) -> bool:
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return host == "b.ai" or host.endswith(".b.ai")
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -95,9 +114,17 @@ class CustomProfile(ProviderProfile):
                 # but respects the top-level reasoning_effort field (#25758).
                 # Always emit reasoning_effort="none"; only add think=False
                 # when the URL is actually Ollama.
-                top_level["reasoning_effort"] = "none"
-                if _looks_like_ollama_endpoint(ctx.get("base_url")):
-                    extra_body["think"] = False
+                if _needs_reasoning_object_form(ctx.get("base_url")):
+                    # Always-thinking models behind b.ai-style relays reject
+                    # any "disable thinking" wire form with HTTP 400 400001
+                    # ("该模型始终思考，不支持关闭思考"). Omit the control and
+                    # let the server default (thinking on) apply — the only
+                    # non-error outcome for these models.
+                    pass
+                else:
+                    top_level["reasoning_effort"] = "none"
+                    if _looks_like_ollama_endpoint(ctx.get("base_url")):
+                        extra_body["think"] = False
             elif _effort:
                 # Clamp the internal ladder onto the widest OpenAI-compatible
                 # wire vocabulary (shared policy in agent.reasoning_effort) —
@@ -108,9 +135,14 @@ class CustomProfile(ProviderProfile):
                     clamp_effort,
                 )
 
-                top_level["reasoning_effort"] = clamp_effort(
-                    _effort, OPENAI_COMPAT_WIRE_EFFORTS
-                )
+                _clamped = clamp_effort(_effort, OPENAI_COMPAT_WIRE_EFFORTS)
+                if _needs_reasoning_object_form(ctx.get("base_url")):
+                    # b.ai-style relay: top-level reasoning_effort intermittently
+                    # 400s (see _needs_reasoning_object_form). Send the
+                    # object form instead, which every pool node accepts.
+                    extra_body["reasoning"] = {"enabled": True, "effort": _clamped}
+                else:
+                    top_level["reasoning_effort"] = _clamped
 
         return extra_body, top_level
 

@@ -30,9 +30,10 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Mapping, Optional, List, Tuple, Set
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -4733,96 +4734,133 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
         os.environ[key] = value
 
 
-def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env."""
+@contextmanager
+def _env_write_lock(env_path: Path):
+    """Serialize ``.env`` read-modify-write transactions across processes."""
+    lock_path = env_path.with_name(".env.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def save_env_values(values: Mapping[str, Optional[str]]) -> bool:
+    """Atomically update or remove several values in ``~/.hermes/.env``.
+
+    ``None`` removes a key. Validation and managed-scope checks happen before
+    the lock is acquired, so the batch either reaches one atomic replacement
+    or leaves the file untouched.
+    """
     if is_managed():
-        managed_error(f"set {key}")
-        return
-    # Managed scope guard: a managed env key can't be set by the user — the
-    # managed .env wins at load anyway. Distinct from is_managed() above.
+        managed_error("update environment values")
+        return False
     from hermes_cli import managed_scope
 
-    if managed_scope.is_env_managed(key):
-        managed_dir = managed_scope.get_managed_dir()
-        src = (managed_dir / ".env") if managed_dir else "the managed scope"
-        print(
-            f"Cannot set {key}: it is managed by your administrator ({src}) "
-            f"and cannot be changed.",
-            file=sys.stderr,
-        )
-        return
-    validate_env_var_name_for_write(key)
-    value = value.replace("\n", "").replace("\r", "")
-    # API keys / tokens must be ASCII — strip non-ASCII with a warning.
-    value = _check_non_ascii_credential(key, value)
+    prepared: Dict[str, Optional[str]] = {}
+    for key, value in values.items():
+        validate_env_var_name_for_write(key)
+        if managed_scope.is_env_managed(key):
+            managed_dir = managed_scope.get_managed_dir()
+            src = (managed_dir / ".env") if managed_dir else "the managed scope"
+            print(
+                f"Cannot set {key}: it is managed by your administrator ({src}) "
+                f"and cannot be changed.",
+                file=sys.stderr,
+            )
+            return False
+        if value is not None:
+            value = value.replace("\n", "").replace("\r", "")
+            value = _check_non_ascii_credential(key, value)
+        prepared[key] = value
+
     ensure_hermes_home()
     env_path = get_env_path()
-
-    # On Windows, open() defaults to the system locale (cp1252) which can
-    # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     write_kw = {"encoding": "utf-8"}
 
-    lines = []
-    if env_path.exists():
-        with open(env_path, **read_kw) as f:
-            lines = f.readlines()
-        # Normalize safe line formatting without interpreting values as syntax.
-        lines = _sanitize_env_lines(lines)
+    with _CONFIG_LOCK, _env_write_lock(env_path):
+        lines = []
+        if env_path.exists():
+            with open(env_path, **read_kw) as f:
+                lines = _sanitize_env_lines(f.readlines())
 
-    serialized_value = _quote_env_value(value)
+        found: set[str] = set()
+        rewritten = []
+        for line in lines:
+            matched = next(
+                (key for key in prepared if _env_line_defines_key(line, key)),
+                None,
+            )
+            if matched is None:
+                rewritten.append(line)
+                continue
+            if matched in found or prepared[matched] is None:
+                continue
+            rewritten.append(f"{matched}={_quote_env_value(prepared[matched] or '')}\n")
+            found.add(matched)
 
-    # Find and update or append. Match both ``KEY=`` and the bash-compatible
-    # ``export KEY=`` form — load_env() parses export lines (#6659), so a
-    # user-added ``export GITHUB_TOKEN=...`` shows as set in every UI. If the
-    # writer didn't match it, a save would append a SECOND line and a later
-    # delete of that line would silently resurrect the old exported value
-    # (#40041: "token detected but cannot be replaced through the UI").
-    found = False
-    for i, line in enumerate(lines):
-        if _env_line_defines_key(line, key):
-            lines[i] = f"{key}={serialized_value}\n"
-            found = True
-            break
+        if rewritten and not rewritten[-1].endswith("\n"):
+            rewritten[-1] += "\n"
+        for key, value in prepared.items():
+            if value is not None and key not in found:
+                rewritten.append(f"{key}={_quote_env_value(value)}\n")
 
-    if not found:
-        # Ensure there's a newline at the end of the file before appending
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.append(f"{key}={serialized_value}\n")
-    
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-    # Preserve original permissions so Docker volume mounts aren't clobbered.
-    original_mode = None
-    if env_path.exists():
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-    try:
-        with os.fdopen(fd, 'w', **write_kw) as f:
-            f.writelines(lines)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
-        # instead of letting _secure_file unconditionally tighten to 0600.
-        if original_mode is not None:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
+        )
+        original_mode = None
+        if env_path.exists():
             try:
-                os.chmod(env_path, original_mode)
+                original_mode = stat.S_IMODE(env_path.stat().st_mode)
             except OSError:
                 pass
-        else:
-            _secure_file(env_path)
-    except BaseException:
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "w", **write_kw) as f:
+                f.writelines(rewritten)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, env_path)
+            if original_mode is not None:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
+            else:
+                _secure_file(env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
-    _publish_env_value(key, value)
+    for key, value in prepared.items():
+        _publish_env_value(key, value)
     invalidate_env_cache()
+    return True
+
+
+def save_env_value(key: str, value: str):
+    """Save or update a value in ~/.hermes/.env."""
+    save_env_values({key: value})
 
 
 def custom_endpoint_key_env(identity: str) -> str:

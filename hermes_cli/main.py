@@ -12588,6 +12588,13 @@ def cmd_dashboard_register(args):
     _impl(args)
 
 
+def cmd_dashboard_password(args):
+    """Set or rotate dashboard username/password authentication."""
+    from hermes_cli.dashboard_password import cmd_dashboard_password as _impl
+
+    _impl(args)
+
+
 def cmd_gateway_enroll(args):
     """Enroll a self-hosted gateway with a relay connector."""
     from hermes_cli.gateway_enroll import cmd_gateway_enroll as _impl
@@ -15037,6 +15044,7 @@ def main():
         subparsers,
         cmd_dashboard=cmd_dashboard,
         cmd_dashboard_register=cmd_dashboard_register,
+        cmd_dashboard_password=cmd_dashboard_password,
     )
 
 

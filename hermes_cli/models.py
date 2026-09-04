@@ -3760,6 +3760,38 @@ def _openrouter_variant_base(model_id: str) -> Optional[str]:
         return base
     return None
 
+
+# OpenRouter dashboard presets are account-scoped server-side objects
+# (created in the OpenRouter dashboard), referenced as ``@preset/<slug>`` or
+# combined with a base model as ``<model>@preset/<slug>``. They never appear
+# in ``/models`` listings — OpenRouter resolves and validates the slug at
+# request time. (#97907)
+_OPENROUTER_PRESET_MARKER = "@preset/"
+_PRESET_SLUG_RE = re.compile(r"[A-Za-z0-9._~-]+")
+
+
+def _split_openrouter_preset(model_id: str) -> tuple[str, Optional[str]]:
+    """Split an OpenRouter dashboard preset reference into base and suffix.
+
+    Returns ``(base_model, suffix)`` where ``suffix`` is ``"@preset/<slug>"``
+    when exactly one marker is present and the slug is non-empty:
+
+      ``@preset/<slug>``        → ``("", "@preset/<slug>")`` — bare preset
+      ``<model>@preset/<slug>`` → ``("<model>", "@preset/<slug>")``
+      anything else             → ``(model_id, None)`` — not a preset form
+
+    Multiple markers (``a@preset/x@preset/y``) are not a defined OpenRouter
+    form and return ``(model_id, None)`` so callers keep their existing
+    behavior for ordinary identifiers. A single marker with an empty slug
+    (``@preset/``) IS returned as a preset form — the caller's slug-charset
+    check rejects it with the preset contract.
+    """
+    text = model_id or ""
+    if text.count(_OPENROUTER_PRESET_MARKER) != 1:
+        return text, None
+    base, _, slug = text.partition(_OPENROUTER_PRESET_MARKER)
+    return base, f"{_OPENROUTER_PRESET_MARKER}{slug}"
+
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
 # would be listed here (tried only as a last resort for bare short-alias
 # resolution, after every native-vendor catalog, so they never hijack an alias
@@ -7261,6 +7293,37 @@ def validate_requested_model(
         }
 
     if normalized == "custom" or normalized.startswith("custom:"):
+        # OpenRouter dashboard presets are server-side objects that never
+        # appear in a /models listing — probing cannot confirm them, and the
+        # resulting "not found" warning embeds the raw catalog URL (which
+        # messaging platforms happily link-preview). Handle them structurally
+        # instead: OpenRouter validates the slug at request time. (#97907)
+        _preset_base, _preset_suffix = _split_openrouter_preset(requested)
+        if _preset_suffix is not None:
+            if _PRESET_SLUG_RE.fullmatch(_preset_suffix[len(_OPENROUTER_PRESET_MARKER):]) is None:
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        f"OpenRouter preset slugs must be non-empty URL-safe "
+                        f"identifiers using only letters, digits, '.', '_', "
+                        f"'~', or '-' (got `{_preset_suffix}`)."
+                    ),
+                }
+            if not _preset_base:
+                # Bare ``@preset/<slug>`` — nothing to validate locally.
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": (
+                        f"Accepted OpenRouter preset reference `{requested}`. "
+                        f"Presets are resolved server-side by OpenRouter at "
+                        f"request time."
+                    ),
+                }
+
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
             probe = probe_api_models(
@@ -7277,7 +7340,13 @@ def validate_requested_model(
             )
         api_models = probe.get("models")
         if api_models is not None:
-            if requested_for_lookup in set(api_models):
+            # For ``<model>@preset/<slug>``, validate the BASE model against
+            # the listing and keep the preset suffix verbatim on the persisted
+            # / corrected id — the suffix is a server-side reference, not a
+            # catalog entry, and the fuzzy corrector would otherwise strip it
+            # (same rule as the ``:nitro`` routing-variant handling).
+            _lookup = _preset_base if _preset_suffix else requested_for_lookup
+            if _lookup in set(api_models):
                 return {
                     "accepted": True,
                     "persist": True,
@@ -7286,17 +7355,18 @@ def validate_requested_model(
                 }
 
             # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            auto = get_close_matches(_lookup, api_models, n=1, cutoff=0.9)
             if auto:
+                corrected = f"{auto[0]}{_preset_suffix}" if _preset_suffix else auto[0]
                 return {
                     "accepted": True,
                     "persist": True,
                     "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    "corrected_model": corrected,
+                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
                 }
 
-            suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
+            suggestions = get_close_matches(_lookup, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)

@@ -21,7 +21,6 @@ from typing import Dict
 
 from hermes_constants import display_hermes_home
 from utils import atomic_replace
-from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -81,11 +80,19 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
 
 
 def _get_webhook_config() -> dict:
-    """Load webhook platform config. Returns {} if not configured."""
+    """Project the gateway's effective webhook config for CLI consumers."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        return cfg_get(cfg, "platforms", "webhook", default={})
+        from gateway.webhook_config import resolve_effective_webhook_config
+
+        effective = resolve_effective_webhook_config()
+        extra = {"host": effective.host, "port": effective.port}
+        if effective.global_secret_ref:
+            extra["secret_ref"] = effective.global_secret_ref
+        return {
+            "enabled": effective.enabled,
+            "extra": extra,
+            "source_map": dict(effective.source_map),
+        }
     except Exception:
         return {}
 

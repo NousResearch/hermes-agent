@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Info,
+  Lock,
   PlugZap,
   QrCode,
   Radio,
@@ -26,6 +27,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
+import { managedChannelControls } from "@/lib/managed-channels";
 import type {
   MessagingPlatform,
   MessagingPlatformEnvVar,
@@ -135,6 +137,9 @@ export default function ChannelsPage() {
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
     "hermes gateway start",
   );
+  const [managedBy, setManagedBy] = useState<{ label: string; url: string | null } | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
@@ -165,6 +170,7 @@ export default function ChannelsPage() {
         setPlatforms(res.platforms);
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+        setManagedBy(res.managed_by ?? null);
       })
       .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
@@ -290,9 +296,10 @@ export default function ChannelsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setEnd, restarting]);
 
+  const unmanaged = useMemo(() => platforms.filter((p) => !p.managed), [platforms]);
   const configured = useMemo(
-    () => platforms.filter((p) => p.configured).length,
-    [platforms],
+    () => unmanaged.filter((p) => p.configured).length,
+    [unmanaged],
   );
 
   if (loading) {
@@ -343,11 +350,35 @@ export default function ChannelsPage() {
         </Card>
       )}
 
-      <p className="text-xs text-muted-foreground">
-        {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; the
-        gateway connects each enabled channel on its next restart.
-      </p>
+      {managedBy && (
+        <Card className="border-border">
+          <CardContent className="flex flex-wrap items-center gap-2 p-4 text-sm text-muted-foreground">
+            <Lock className="h-4 w-4 shrink-0" />
+            <span>
+              Some channels are managed in {managedBy.label} and can only be changed there.
+            </span>
+            {managedBy.url && (
+              <a
+                href={managedBy.url}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                Open {managedBy.label}
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {unmanaged.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {configured} of {unmanaged.length} channels configured. Credentials are
+          written to <code className="font-courier">{envPath}</code>; the
+          gateway connects each enabled channel on its next restart.
+        </p>
+      )}
 
       {/* Config modal */}
       {editing && (
@@ -528,10 +559,14 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const controls = managedChannelControls(platform);
+          const badge = controls.showNativeState
+            ? stateBadge(platform.state)
+            : { tone: "secondary" as const, label: "Managed" };
           const busy = togglingId === platform.id;
-          const StateIcon =
-            platform.state === "connected"
+          const StateIcon = !controls.showNativeState
+            ? Lock
+            : platform.state === "connected"
               ? CheckCircle2
               : platform.state === "fatal" || platform.state === "startup_failed"
                 ? AlertTriangle
@@ -562,42 +597,63 @@ export default function ChannelsPage() {
                       <span className="text-xs text-muted-foreground">
                         {platform.description}
                       </span>
-                      {platform.error_message && (
+                      {controls.showNativeState && platform.error_message && (
                         <span className="text-xs text-destructive">
                           {platform.error_message}
+                        </span>
+                      )}
+                      {controls.managed && (
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Lock className="h-3 w-3 shrink-0" />
+                          Managed in {controls.managed.label}
+                          {controls.managed.url && (
+                            <a
+                              href={controls.managed.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-primary hover:underline"
+                            >
+                              Open
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          )}
                         </span>
                       )}
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
-                    <div className="flex items-center gap-1.5">
-                      {busy ? (
-                        <Spinner className="text-sm" />
-                      ) : (
-                        <Switch
-                          checked={platform.enabled}
-                          onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`Enable ${platform.name}`}
-                        />
-                      )}
-                    </div>
-                    <Button
-                      ghost
-                      size="sm"
-                      onClick={() => handleTest(platform)}
-                      disabled={testingId === platform.id}
-                      prefix={
-                        testingId === platform.id ? (
-                          <Spinner />
+                    {controls.showToggle && (
+                      <div className="flex items-center gap-1.5">
+                        {busy ? (
+                          <Spinner className="text-sm" />
                         ) : (
-                          <PlugZap className="h-4 w-4" />
-                        )
-                      }
-                    >
-                      Test
-                    </Button>
-                    {platform.id !== "telegram" && (
+                          <Switch
+                            checked={platform.enabled}
+                            onCheckedChange={() => void handleToggle(platform)}
+                            aria-label={`Enable ${platform.name}`}
+                          />
+                        )}
+                      </div>
+                    )}
+                    {controls.showTest && (
+                      <Button
+                        ghost
+                        size="sm"
+                        onClick={() => handleTest(platform)}
+                        disabled={testingId === platform.id}
+                        prefix={
+                          testingId === platform.id ? (
+                            <Spinner />
+                          ) : (
+                            <PlugZap className="h-4 w-4" />
+                          )
+                        }
+                      >
+                        Test
+                      </Button>
+                    )}
+                    {controls.showConfigure && platform.id !== "telegram" && (
                       <Button
                         size="sm"
                         className="uppercase"
@@ -609,7 +665,7 @@ export default function ChannelsPage() {
                     )}
                   </div>
                 </div>
-                {platform.id === "telegram" && (
+                {controls.showOnboarding && platform.id === "telegram" && (
                   <TelegramOnboardingPanel
                     onManualSetup={() => openConfig(platform)}
                     onChanged={load}
@@ -619,7 +675,7 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
-                {platform.id === "whatsapp" && (
+                {controls.showOnboarding && platform.id === "whatsapp" && (
                   <WhatsAppOnboardingPanel
                     onChanged={load}
                     onRestartNeeded={() => setRestartNeeded(true)}

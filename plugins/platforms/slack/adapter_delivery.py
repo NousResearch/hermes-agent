@@ -1,6 +1,7 @@
 """Slack delivery methods; SDK and mutable dependencies remain on the facade."""
 
 import logging
+from gateway.native_document_guard import check_document_fallback
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from gateway.platforms.base import SendResult
@@ -955,6 +956,8 @@ class SlackDeliveryMixin:
         except Exception as e:  # pragma: no cover - defensive logging
             _adapter.logger.error(
                 "[%s] Failed to send %s %s: %s", self.name, kind, file_path, e, exc_info=True)
+            if kind == "document":
+                check_document_fallback()
             return await self._send_failure_notice(
                 chat_id, caption, failure_notice, reply_to, metadata)
 

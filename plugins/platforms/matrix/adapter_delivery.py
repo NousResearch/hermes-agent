@@ -1,6 +1,7 @@
 """Matrix delivery methods; runtime dependencies remain on the adapter facade."""
 
 from __future__ import annotations
+from gateway.native_document_guard import check_document_fallback
 
 from typing import Any, Dict, Optional
 from gateway.platforms.base import SendResult
@@ -326,6 +327,7 @@ class MatrixDeliveryMixin:
         if not p.exists():
             # file_path is host-local; never echo it into chat.
             _adapter.logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
+            check_document_fallback()
             text = "⚠️ Couldn't deliver the attachment."
             return await self.send(room_id, f"{caption}\n{text}" if caption else text, reply_to)
         try:

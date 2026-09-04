@@ -14,3 +14,13 @@ No new compatibility-pointer imports or re-export wrappers are required.
 The extraction starts from composed-main `4b5d412c3b`, preserving its streaming,
 credentials, formatting, command parsing and threading behavior. Native ingress
 provenance is added separately from the structural change.
+
+`adapter_events.py` retains the raw edit indication before Slack normalizes the
+envelope and carries existing bot-user classification into `SessionSource`.
+`adapter_commands.py` preserves native slash argument bytes, thread/trigger context,
+and the invoker ContextVar while recording native one-to-one evidence. These
+transport facts are not serialized into stored sessions.
+
+The document-only upload-error branch in `adapter_delivery.py` checks the shared
+`gateway.native_document_guard` before producing an ordinary text notice. It does
+not add the separate BasePlatformAdapter guard or a bridge delivery consumer.

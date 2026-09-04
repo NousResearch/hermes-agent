@@ -89,4 +89,55 @@ describe('resolveSpokenReply', () => {
     expect(assistantReplyOrdinal(nextTurn, 'assistant-stream-2')).toBe(1)
     expect(spoken?.ordinal).toBe(0)
   })
+
+  it('uses durable history when a stale snapshot marks an older durable reply', () => {
+    const current = [assistant('durable-1'), assistant('durable-2')]
+    markAssistantIdSpoken('s', current, 'durable-2')
+
+    const stale = [assistant('durable-1')]
+    markAssistantIdSpoken('s', stale, 'durable-1')
+
+    expect(resolveSpokenReply('s', stale)).toEqual({ id: 'durable-1', ordinal: 0 })
+    expect(resolveSpokenReply('s', current)).toEqual({ id: 'durable-2', ordinal: 1 })
+  })
+
+  it('lets a new low-ordinal live reply become consumed after compaction', () => {
+    const beforeCompaction = [
+      assistant('durable-1'),
+      assistant('durable-2'),
+      assistant('durable-3')
+    ]
+
+    markAssistantIdSpoken('s', beforeCompaction, 'durable-3')
+
+    const compacted = [assistant('assistant-stream-new')]
+    markAssistantIdSpoken('s', compacted, 'assistant-stream-new')
+
+    expect(spokenReplyOf('s')).toEqual({ id: 'assistant-stream-new', ordinal: 0 })
+    expect(resolveSpokenReply('s', compacted)).toEqual({ id: 'assistant-stream-new', ordinal: 0 })
+  })
+
+  it('keeps repeated notifications for the same durable reply consumed', () => {
+    const messages = [assistant('durable-1')]
+    markAssistantIdSpoken('s', messages, 'durable-1')
+    markAssistantIdSpoken('s', messages, 'durable-1')
+
+    expect(resolveSpokenReply('s', messages)).toEqual({ id: 'durable-1', ordinal: 0 })
+  })
+
+  it('leaves a later distinct durable reply speakable', () => {
+    const first = [assistant('durable-1')]
+    markAssistantIdSpoken('s', first, 'durable-1')
+
+    const later = [assistant('durable-1'), assistant('durable-2')]
+    expect(resolveSpokenReply('s', later)).toEqual({ id: 'durable-1', ordinal: 0 })
+    expect(later.at(-1)?.id).not.toBe(resolveSpokenReply('s', later)?.id)
+  })
+
+  it('keeps the existing live-to-durable rewrite consumed', () => {
+    markAssistantIdSpoken('s', [assistant('assistant-stream-1')], 'assistant-stream-1')
+
+    expect(resolveSpokenReply('s', [assistant('durable-1')])).toEqual({ id: 'durable-1', ordinal: 0 })
+    expect(spokenReplyOf('s')).toEqual({ id: 'durable-1', ordinal: 0 })
+  })
 })

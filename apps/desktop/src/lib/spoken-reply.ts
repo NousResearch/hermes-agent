@@ -23,8 +23,10 @@ export interface SpokenReplyMessage {
 }
 
 const NO_SESSION = '\0'
+const MAX_SPOKEN_DURABLE_IDS_PER_SESSION = 64
 
 const lastSpokenBySession = new Map<string, SpokenReplyAnchor>()
+const spokenDurableIdsBySession = new Map<string, Set<string>>()
 
 export function isLiveTailReplyId(id: string): boolean {
   return id.startsWith('assistant-stream-') || id.startsWith('inflight-assistant-')
@@ -32,6 +34,31 @@ export function isLiveTailReplyId(id: string): boolean {
 
 function sessionKey(sessionId: string | null | undefined): string {
   return sessionId ?? NO_SESSION
+}
+
+function rememberSpokenDurableId(sessionId: string | null | undefined, id: string): void {
+  if (isLiveTailReplyId(id)) {
+    return
+  }
+
+  const key = sessionKey(sessionId)
+  const ids = spokenDurableIdsBySession.get(key) ?? new Set<string>()
+
+  // Refresh repeated notifications in the bounded insertion-ordered history.
+  ids.delete(id)
+  ids.add(id)
+
+  while (ids.size > MAX_SPOKEN_DURABLE_IDS_PER_SESSION) {
+    const oldest = ids.values().next().value
+
+    if (oldest === undefined) {
+      break
+    }
+
+    ids.delete(oldest)
+  }
+
+  spokenDurableIdsBySession.set(key, ids)
 }
 
 export function assistantReplyOrdinal(messages: readonly SpokenReplyMessage[], id: string): number {
@@ -94,6 +121,7 @@ export function spokenReplyOf(sessionId: string | null | undefined): SpokenReply
 }
 
 function markSpokenReply(sessionId: string | null | undefined, anchor: SpokenReplyAnchor): void {
+  rememberSpokenDurableId(sessionId, anchor.id)
   lastSpokenBySession.set(sessionKey(sessionId), anchor)
 }
 
@@ -123,9 +151,45 @@ export function resolveSpokenReply(
     markSpokenReply(sessionId, next)
   }
 
-  return next
+  // When this mounted composer has an older snapshot, answer from the bounded
+  // durable history without regressing the session's forward frontier.
+  const durableIds = spokenDurableIdsBySession.get(sessionKey(sessionId))
+  let latestDurable: SpokenReplyAnchor | null = null
+
+  if (durableIds) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+
+      if (message.role !== 'assistant' || message.hidden || !durableIds.has(message.id)) {
+        continue
+      }
+
+      latestDurable = { id: message.id, ordinal: assistantReplyOrdinal(messages, message.id) }
+
+      break
+    }
+  }
+
+  if (!next) {
+    return latestDurable
+  }
+
+  const nextOrdinal = assistantReplyOrdinal(messages, next.id)
+
+  if (nextOrdinal < 0) {
+    return latestDurable ?? next
+  }
+
+  // Live ids remain governed by the existing ordinal rewrite frontier. For
+  // durable rows, the newest consumed id present in this snapshot wins.
+  if (isLiveTailReplyId(next.id) || !latestDurable || nextOrdinal >= latestDurable.ordinal) {
+    return next
+  }
+
+  return latestDurable
 }
 
 export function clearSpokenRepliesForTests(): void {
   lastSpokenBySession.clear()
+  spokenDurableIdsBySession.clear()
 }

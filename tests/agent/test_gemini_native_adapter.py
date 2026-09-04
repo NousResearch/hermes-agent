@@ -400,6 +400,56 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
+def test_stream_event_translation_disambiguates_parallel_same_name_calls_by_id():
+    """Gemini 3+ stamps each distinct function call with a stable, unique
+    ``id`` (see ``gemini_requires_tool_call_ids``). Several DIFFERENT calls
+    to the SAME tool name arriving in separate SSE chunks (each chunk
+    carrying a single part, so ``part_index`` is always 0 within that
+    chunk) must not collide onto one slot and have their JSON arguments
+    concatenated -- regression test for that exact failure mode."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    calls = [
+        ("call_aaa", {"entity_id": "input_number.phosphate_po4", "value": 0.03}),
+        ("call_bbb", {"entity_id": "input_number.aquarium_kh_carbonate_hardness", "value": 9.0}),
+        ("call_ccc", {"entity_id": "input_number.nitrate_no3", "value": 12.0}),
+    ]
+
+    chunks = []
+    for call_id, args in calls:
+        event = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"functionCall": {"id": call_id, "name": "ha_call_service", "args": args}}
+                        ]
+                    },
+                }
+            ]
+        }
+        chunks.extend(
+            translate_stream_event(event, model="gemini-3.1-flash-lite", tool_call_indices=tool_call_indices)
+        )
+
+    deltas = [c.choices[0].delta.tool_calls[0] for c in chunks if c.choices[0].delta.tool_calls]
+
+    # Each call gets its own index and its own id -- no collision.
+    assert {d.index for d in deltas} == {0, 1, 2}
+    assert {d.id for d in deltas} == {"call_aaa", "call_bbb", "call_ccc"}
+
+    # Each delta's arguments are independently valid JSON, not a
+    # concatenation of multiple calls' JSON payloads.
+    by_index: dict = {}
+    for d in deltas:
+        by_index.setdefault(d.index, "")
+        by_index[d.index] += d.function.arguments
+    assert len(by_index) == 3
+    for argstr in by_index.values():
+        json.loads(argstr)  # raises if this is a concatenated blob
+
+
 def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
     from agent.gemini_native_adapter import build_gemini_request
 

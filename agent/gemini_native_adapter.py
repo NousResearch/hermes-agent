@@ -923,9 +923,29 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+            fc_id = str(fc["id"]) if isinstance(fc.get("id"), str) and fc.get("id") else None
+            # Correlate streamed functionCall parts across SSE chunks.
+            #
+            # Gemini 3+ stamps each distinct function call with a stable,
+            # unique `id` (gemini_requires_tool_call_ids()) -- use THAT to
+            # key the slot when present, since it uniquely identifies the
+            # call regardless of tool name.
+            #
+            # Older Gemini (2.x) omits `id`, so fall back to the
+            # (part_index, name, thought_signature) heuristic. That
+            # heuristic is unsafe on its own for models that DO support
+            # parallel tool calls: `part_index` is the position within the
+            # CURRENT chunk's parts[] (which resets to 0 for a chunk that
+            # carries a single part), so two DIFFERENT calls to the SAME
+            # tool name (e.g. several `ha_call_service` calls in one turn)
+            # collide onto one slot and their JSON `arguments` get
+            # concatenated into one unparseable blob. Only reachable when
+            # fc_id is unavailable, i.e. pre-Gemini-3 models that don't
+            # advertise parallel-call ids in the first place.
             call_key = json.dumps(
                 {
-                    "part_index": part_index,
+                    "id": fc_id,
+                    "part_index": part_index if fc_id is None else None,
                     "name": name,
                     "thought_signature": thought_signature,
                 },
@@ -935,11 +955,7 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),
-                    "id": (
-                        str(fc["id"])
-                        if isinstance(fc.get("id"), str) and fc.get("id")
-                        else f"call_{uuid.uuid4().hex[:12]}"
-                    ),
+                    "id": fc_id or f"call_{uuid.uuid4().hex[:12]}",
                     "last_arguments": "",
                 }
                 tool_call_indices[call_key] = slot

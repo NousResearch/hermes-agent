@@ -2702,6 +2702,54 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     return str(value or reason or "provider failure").replace("_", " ")
 
 
+def _declared_fallback_api_mode(provider: str, base_url: str, model: str) -> str:
+    """Return the wire protocol *provider* declares for itself, or "".
+
+    Consulted only when :func:`try_activate_fallback`'s own detection chain
+    left ``api_mode`` at the bare ``chat_completions`` default. Two authorities
+    the primary path already honours, in precedence order:
+
+    1. the provider's ``config.yaml`` block — custom providers pin their wire
+       there with ``api_mode``, which ``determine_api_mode`` cannot see because
+       ``resolve_user_provider`` only reads the ``transport`` key;
+    2. :func:`hermes_cli.providers.determine_api_mode`, which folds in host
+       mandates plus the provider registry/plugin transport.
+
+    Returns "" for "no opinion" so the caller keeps its own default.
+    """
+    provider_key = (provider or "").strip().lower()
+    if provider_key:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            configured = (load_config_readonly() or {}).get("providers") or {}
+            if isinstance(configured, dict):
+                for name, entry in configured.items():
+                    if str(name).strip().lower() != provider_key:
+                        continue
+                    if isinstance(entry, dict):
+                        declared = str(entry.get("api_mode") or "").strip()
+                        if declared:
+                            return declared
+                    break
+        except Exception:
+            logger.debug(
+                "Fallback api_mode: config lookup failed for %s",
+                provider, exc_info=True,
+            )
+    try:
+        from hermes_cli.providers import determine_api_mode
+
+        resolved = str(determine_api_mode(provider, base_url, model) or "").strip()
+    except Exception:
+        logger.debug(
+            "Fallback api_mode: determine_api_mode failed for %s",
+            provider, exc_info=True,
+        )
+        return ""
+    return resolved if resolved and resolved != "chat_completions" else ""
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -2917,6 +2965,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 and base_url_host_matches(fb_base_url, "amazonaws.com")
             ):
                 fb_api_mode = "bedrock_converse"
+
+            if fb_api_mode == "chat_completions":
+                # Nothing above matched, so this is the bare default rather
+                # than a deliberate resolution. Ask the provider what wire it
+                # actually speaks before shipping OpenAI-wire traffic at an
+                # endpoint that may reject it outright. Without this a provider
+                # that works as the primary model silently degrades the moment
+                # it is demoted into the fallback chain: Volcengine Ark's
+                # coding plan declares anthropic_messages via its plugin
+                # profile, and /chat/completions on that host 404s.
+                _declared = _declared_fallback_api_mode(
+                    fb_provider, fb_base_url, fb_model,
+                )
+                if _declared:
+                    fb_api_mode = _declared
 
         old_model = agent.model
         old_provider = agent.provider

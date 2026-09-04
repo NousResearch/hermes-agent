@@ -751,6 +751,22 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
     }
 }
 
+# Absolute wall-clock ceiling for any step. The idle watchdog above only
+# fires after StepIdleTimeoutSeconds of *silence*; a descendant that trickles
+# a byte every few minutes (or a gateway IPC hang that never writes at all
+# but keeps the parent python.exe alive) defeats it and strands the hand-off
+# forever — the exact #102283 failure where the log ends at `running: python
+# ... update` with no exit code, no result file, and a 16-day zombie holding
+# the venv shim. An absolute deadline guarantees the hand-off always reaches
+# its finally block (result file + relaunch + marker cleanup).
+$script:StepTotalTimeoutSeconds = 3600
+if ($env:HERMES_UPDATE_STEP_TOTAL_SECONDS) {
+    $parsedTotal = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_STEP_TOTAL_SECONDS, [ref]$parsedTotal) -and $parsedTotal -gt 0) {
+        $script:StepTotalTimeoutSeconds = $parsedTotal
+    }
+}
+
 # Silence on the pipes is NOT silence in the update. `hermes update` captures
 # the (very loud) Electron/vite build into logs/update.log instead of its own
 # stdout (hermes_cli/update_cmd.py, the update-log tee), so a real update is
@@ -1058,6 +1074,8 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $lastProgressAt = Get-Date
     $progressLogStamp = Get-StepProgressLogStamp
     $stalled = $false
+    $stepStartedAt = Get-Date
+    $stepDeadline = $stepStartedAt.AddSeconds($script:StepTotalTimeoutSeconds)
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
@@ -1072,6 +1090,22 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
             } elseif ((Get-Date) -ge $abandonAt) {
                 $abandoned = $true
                 break
+            }
+        } elseif (-not $stalled -and (Get-Date) -ge $stepDeadline) {
+            # Absolute ceiling: even a step that trickles forever (one byte per
+            # idle window) would defeat the silence watchdog and strand the
+            # hand-off with no result file and a zombie python.exe holding the
+            # venv lock (#102283). Kill the whole job tree and fail the step so
+            # the finally block can write the result, run marker self-heal, and
+            # relaunch the Desktop.
+            $elapsedTotal = [Math]::Round(((Get-Date) - $stepStartedAt).TotalSeconds)
+            Write-HandoffLog ("{0}!| step exceeded absolute deadline ({1}s elapsed, budget {2}s); cancelling its process tree." -f $Tag, $elapsedTotal, $script:StepTotalTimeoutSeconds)
+            $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
+            if (-not $stalled) {
+                Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
+                $script:TreeSafeToFinalize = $false
+                [HermesUpdateJob]::Close($job)
+                throw "Unable to quiesce stalled update process tree (total timeout)"
             }
         } elseif (-not $stalled -and $job -ne [IntPtr]::Zero -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
             # Quiet pipes are how a healthy `hermes update` looks for 40+

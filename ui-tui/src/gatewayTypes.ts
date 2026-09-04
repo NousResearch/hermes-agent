@@ -94,6 +94,9 @@ export interface ConfigDisplayConfig {
    *  Raw YAML: callers must runtime-validate entries. */
   status_bar?: { fields?: unknown }
   streaming?: boolean
+  /** Write OSC 0/1/2 terminal tab/window titles as the TUI runs. Default true;
+   *  set false to leave a tmux/zellij pane name untouched. */
+  terminal_title?: boolean
   thinking_mode?: string
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
    *  honors on its user/assistant labels (#41531). */

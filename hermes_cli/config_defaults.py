@@ -1530,6 +1530,11 @@ DEFAULT_CONFIG = {
         # panel repaint. Set false to keep scrollback untouched.
         "persist_prompts": True,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        # The Ink TUI writes OSC 0/1/2 terminal titles (session/model/cwd) as it
+        # runs, which overwrites a tmux/zellij pane or tab name set by the user.
+        # Set false to leave the terminal title untouched (TUI only — the
+        # classic CLI never sets the terminal title).
+        "terminal_title": True,
         # File-mutation verifier footer.  When true (default), the agent
         # appends a one-line advisory to its final response whenever a
         # write_file / patch call failed during the turn and was never

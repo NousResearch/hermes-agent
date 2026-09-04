@@ -119,6 +119,19 @@ describe('applyDisplay', () => {
     expect(s.sections).toEqual({})
   })
 
+  it('defaults display.terminal_title on and honors an explicit false (#102608)', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().terminalTitle).toBe(true)
+
+    applyDisplay({ config: { display: { terminal_title: false } } }, setBell)
+    expect($uiState.get().terminalTitle).toBe(false)
+
+    applyDisplay({ config: { display: { terminal_title: true } } }, setBell)
+    expect($uiState.get().terminalTitle).toBe(true)
+  })
+
   it('uses documented mouse_tracking with legacy tui_mouse fallback', () => {
     const setBell = vi.fn()
 

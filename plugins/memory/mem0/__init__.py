@@ -24,6 +24,8 @@ setup`):
                        store. When unset, the gateway-native id (e.g. Telegram
                        numeric id, Discord snowflake) is used instead.
   agent_id           — Agent identifier (default: hermes)
+  recall_mode        - Recall policy: "hybrid" (default), "context", or
+                       "tools"
 
 The matching MEM0_MODE / MEM0_USER_ID / MEM0_AGENT_ID environment variables are
 still read as a backward-compatible fallback, but mem0.json is the canonical
@@ -33,6 +35,7 @@ home for these non-secret settings.
 from __future__ import annotations
 
 import atexit
+from copy import deepcopy
 import json
 import logging
 import os
@@ -42,6 +45,7 @@ from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
 from agent.secret_scope import get_secret
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -60,6 +64,16 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # wrote this exact placeholder) still allow gateway-native ids to flow
 # through instead of silently overriding them with the placeholder.
 _DEFAULT_USER_ID = "hermes-user"
+
+_RECALL_MODE_CHOICES = ("hybrid", "context", "tools")
+_VALID_RECALL_MODES = frozenset(_RECALL_MODE_CHOICES)
+
+
+def _normalize_recall_mode(value: Any) -> str:
+    """Return a supported recall mode, defaulting safely to hybrid."""
+    if isinstance(value, str) and value in _VALID_RECALL_MODES:
+        return value
+    return "hybrid"
 
 
 def _is_client_error(exc: Exception) -> bool:
@@ -186,6 +200,22 @@ DELETE_SCHEMA = {
     },
 }
 
+_HYBRID_SEARCH_DESCRIPTION = (
+    "Search the user's memories by meaning when the injected context is absent "
+    "or insufficient, when the needed query depends on prior conversation "
+    "state, or when a genuine multi-hop question needs targeted follow-up "
+    "searches. Use injected context first when it is available; vary the "
+    "wording for distinct follow-up searches."
+)
+
+_TOOLS_SEARCH_DESCRIPTION = (
+    "Search the user's memories by meaning for facts, preferences, history, "
+    "or other context needed to answer the current question. No automatic "
+    "context is injected in this mode, so call this when an answer may "
+    "depend on information outside the chat window. For multi-hop questions, "
+    "vary the wording and run targeted follow-up searches as needed."
+)
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -198,7 +228,14 @@ class Mem0MemoryProvider(MemoryProvider):
     """
 
     def __init__(self):
-        self._config = None
+        # Configuration, including recall policy, is captured before the
+        # provider can be registered with MemoryManager. The manager asks for
+        # schemas during registration, so resolving this in initialize() would
+        # make routing disagree with the provider after config changes.
+        self._config = _load_config()
+        self._recall_mode = _normalize_recall_mode(
+            self._config.get("recall_mode")
+        )
         self._backend = None
         self._mode = "platform"
         self._api_key = ""
@@ -225,13 +262,12 @@ class Mem0MemoryProvider(MemoryProvider):
         return "mem0"
 
     def is_available(self) -> bool:
-        cfg = _load_config()
-        mode = cfg.get("mode", "platform")
+        mode = self._config.get("mode", "platform")
         if mode == "oss":
-            return bool(cfg.get("oss", {}).get("vector_store"))
+            return bool(self._config.get("oss", {}).get("vector_store"))
         # Platform needs an api_key; self-hosted needs a host (api_key optional
         # when the server runs with AUTH_DISABLED).
-        return bool(cfg.get("api_key") or cfg.get("host"))
+        return bool(self._config.get("api_key") or self._config.get("host"))
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -249,8 +285,7 @@ class Mem0MemoryProvider(MemoryProvider):
         atomic_json_write(config_path, existing, mode=0o600)
 
     def get_config_schema(self):
-        cfg = _load_config()
-        mode = cfg.get("mode", "platform")
+        mode = self._config.get("mode", "platform")
         api_key_required = mode != "oss"
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
@@ -258,6 +293,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
+            {"key": "recall_mode", "description": "Memory recall mode", "default": "hybrid", "choices": list(_RECALL_MODE_CHOICES)},
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -335,7 +371,6 @@ class Mem0MemoryProvider(MemoryProvider):
             )
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        self._config = _load_config()
         self._mode = self._config.get("mode", "platform")
         self._api_key = self._config.get("api_key", "")
         self._host = self._config.get("host", "")
@@ -395,24 +430,47 @@ class Mem0MemoryProvider(MemoryProvider):
             mode_label = "platform (cloud API)"
         # Rerank is a Mem0 Platform feature only.
         rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
-        return (
-            "# Mem0 Memory\n"
-            f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
-            "You have persistent memory of this user from past conversations. "
-            "You should call mem0_search before answering anything that could depend "
-            "on prior context (the user's preferences, facts, history, people, "
-            "projects, or earlier decisions) — do not rely on the chat window "
-            "alone, and do not assume you have no memory.\n"
-            "For multi-part or multi-hop questions, run several searches with "
-            "different wording/angles and follow-up searches on what the first "
-            "results surface; one search is rarely enough. Keep searching until "
-            "you have every fact the question needs before you answer.\n"
+        tools = (
             "Tools: mem0_search to find memories, mem0_add to store facts, "
             f"mem0_update and mem0_delete to manage by ID.{rerank_note}"
         )
+        if self._recall_mode == "context":
+            guidance = (
+                "Relevant memory may be injected for the current question. "
+                "Use injected context when available; if no memory context is "
+                "present, answer from the conversation and other available "
+                "information. No Mem0 tools are available in this mode."
+            )
+            tools = ""
+        elif self._recall_mode == "tools":
+            guidance = (
+                "No automatic context injection is performed. Use mem0_search "
+                "when an answer may depend on the user's preferences, facts, "
+                "history, people, projects, or earlier decisions; do not assume "
+                "memory is available without a tool result."
+            )
+        else:
+            guidance = (
+                "Use injected context first when it is available for the current "
+                "question. Use mem0_search when the injected context is absent "
+                "or insufficient, when the needed query depends on prior "
+                "conversation state, or when a genuine multi-hop question needs "
+                "targeted follow-up searches."
+            )
+
+        return (
+            "# Mem0 Memory\n"
+            f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
+            f"{guidance}"
+            + (f"\n{tools}" if tools else "")
+        )
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        self._start_prefetch(message)
+        if self._recall_mode == "tools":
+            return
+        clean_message = extract_user_instruction_from_skill_message(message)
+        if clean_message:
+            self._start_prefetch(clean_message)
 
     def _consume_prefetch_result(self, query: str) -> str | None:
         with self._prefetch_lock:
@@ -424,6 +482,8 @@ class Mem0MemoryProvider(MemoryProvider):
             return result
 
     def _start_prefetch(self, query: str) -> None:
+        if self._recall_mode == "tools":
+            return
         if not query or self._backend is None or self._is_breaker_open():
             return
         backend = self._backend
@@ -462,6 +522,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall memories for the CURRENT question with a short hot-path wait."""
+        if self._recall_mode == "tools":
+            return ""
         cached = self._consume_prefetch_result(query)
         if cached is not None:
             return cached
@@ -512,7 +574,17 @@ class Mem0MemoryProvider(MemoryProvider):
             self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
+        if self._recall_mode == "context":
+            return []
+
+        search_description = (
+            _TOOLS_SEARCH_DESCRIPTION
+            if self._recall_mode == "tools"
+            else _HYBRID_SEARCH_DESCRIPTION
+        )
+        schemas = deepcopy([SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA])
+        schemas[0]["description"] = search_description
+        return schemas
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._backend is None:

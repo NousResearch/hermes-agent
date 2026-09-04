@@ -5,6 +5,7 @@ import threading
 import time
 import pytest
 
+from agent.memory_manager import MemoryManager
 import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
 
@@ -261,6 +262,241 @@ class TestMem0V3Config:
         assert "mem0_conclude" not in block
 
 
+class TestMem0RecallModes:
+    """Recall policy is resolved once and gates only the provider edges."""
+
+    def _provider(self, monkeypatch, tmp_path, mode, backend=None):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"recall_mode": mode}), encoding="utf-8"
+        )
+        provider = Mem0MemoryProvider()
+        if backend is not None:
+            provider._create_backend = lambda: backend
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        return provider
+
+    @pytest.mark.parametrize(
+        "configured",
+        [None, "unsupported", {"mode": "context"}],
+    )
+    def test_invalid_or_missing_mode_defaults_to_hybrid(
+        self, monkeypatch, tmp_path, configured
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        config = {} if configured is None else {"recall_mode": configured}
+        (tmp_path / "mem0.json").write_text(json.dumps(config), encoding="utf-8")
+
+        provider = Mem0MemoryProvider()
+
+        assert provider._recall_mode == "hybrid"
+
+    @pytest.mark.parametrize(
+        ("mode", "expected_tools"),
+        [("context", []), ("tools", ["mem0_search", "mem0_add", "mem0_update", "mem0_delete"])],
+    )
+    def test_manager_registration_uses_mode_before_initialize(
+        self, monkeypatch, tmp_path, mode, expected_tools
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"recall_mode": mode}), encoding="utf-8"
+        )
+        provider = Mem0MemoryProvider()
+        manager = MemoryManager()
+
+        # MemoryManager builds its routing table before provider initialization.
+        manager.add_provider(provider)
+
+        assert [schema["name"] for schema in manager.get_all_tool_schemas()] == expected_tools
+        assert {name: manager.has_tool(name) for name in expected_tools} == {
+            name: True for name in expected_tools
+        }
+        if mode == "context":
+            assert not manager.has_tool("mem0_search")
+
+    def test_context_mode_prefetches_current_query_without_tools(self, monkeypatch, tmp_path):
+        backend = FakeBackend(
+            search_results=[{"id": "m1", "memory": "user prefers dark mode"}]
+        )
+        provider = self._provider(monkeypatch, tmp_path, "context", backend)
+
+        assert provider.get_tool_schemas() == []
+        provider.on_turn_start(1, "what theme do I like?")
+        provider._prefetch_thread.join(timeout=1)
+
+        result = provider.prefetch("what theme do I like?")
+
+        assert "user prefers dark mode" in result
+        assert [call[1] for call in backend.captured if call[0] == "search"] == [
+            "what theme do I like?"
+        ]
+
+    def test_skill_expansion_prefetches_clean_current_query_once(
+        self, monkeypatch, tmp_path
+    ):
+        backend = FakeBackend(
+            search_results=[{"id": "m1", "memory": "release triage preference"}]
+        )
+        provider = self._provider(monkeypatch, tmp_path, "hybrid", backend)
+        manager = MemoryManager()
+        manager.add_provider(provider)
+        expanded = (
+            '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating '
+            "they want you to follow its instructions. The full skill content is loaded below.]\n\n"
+            "# Skill Creator\n\nLarge skill body.\n\n"
+            "The user has provided the following instruction alongside the skill invocation: "
+            "make a skill for release triage"
+        )
+
+        manager.on_turn_start(1, expanded)
+        provider._prefetch_thread.join(timeout=1)
+        result = manager.prefetch_all(expanded)
+
+        assert "release triage preference" in result
+        assert [call[1] for call in backend.captured if call[0] == "search"] == [
+            "make a skill for release triage"
+        ]
+
+    def test_bare_skill_expansion_starts_no_prefetch(self, monkeypatch, tmp_path):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "unused"}])
+        provider = self._provider(monkeypatch, tmp_path, "context", backend)
+        expanded = (
+            '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating '
+            "they want you to follow its instructions. The full skill content is loaded below.]\n\n"
+            "# Skill Creator\n\nLarge skill body, no user instruction."
+        )
+
+        provider.on_turn_start(1, expanded)
+
+        assert provider._prefetch_thread is None
+        assert backend.captured == []
+
+    @pytest.mark.parametrize("failure", ["empty", "error", "breaker"])
+    def test_context_mode_failures_inject_nothing_and_do_not_retry(
+        self, monkeypatch, tmp_path, failure
+    ):
+        class FailingBackend(FakeBackend):
+            def search(self, query, *, filters, top_k=10, rerank=True):
+                self.captured.append(
+                    ("search", query, {"filters": filters, "top_k": top_k, "rerank": rerank})
+                )
+                if failure == "error":
+                    raise ConnectionError("offline")
+                return []
+
+        backend = FailingBackend()
+        provider = self._provider(monkeypatch, tmp_path, "context", backend)
+        if failure == "breaker":
+            provider._consecutive_failures = mem0_plugin._BREAKER_THRESHOLD
+            provider._breaker_open_until = time.monotonic() + 60
+
+        provider.on_turn_start(1, "what theme do I like?")
+        if provider._prefetch_thread is not None:
+            provider._prefetch_thread.join(timeout=1)
+
+        assert provider.prefetch("what theme do I like?") == ""
+        expected_searches = 0 if failure == "breaker" else 1
+        assert len([call for call in backend.captured if call[0] == "search"]) == expected_searches
+
+    def test_context_mode_timeout_injects_nothing_without_backstop(
+        self, monkeypatch, tmp_path
+    ):
+        release = threading.Event()
+        entered = threading.Event()
+
+        class SlowBackend(FakeBackend):
+            def search(self, query, *, filters, top_k=10, rerank=True):
+                self.captured.append(
+                    ("search", query, {"filters": filters, "top_k": top_k, "rerank": rerank})
+                )
+                entered.set()
+                release.wait(timeout=1)
+                return [{"id": "m1", "memory": "too late"}]
+
+        backend = SlowBackend()
+        provider = self._provider(monkeypatch, tmp_path, "context", backend)
+        monkeypatch.setattr(mem0_plugin, "_PREFETCH_WAIT_SECS", 0.01)
+
+        try:
+            assert provider.prefetch("what theme do I like?") == ""
+            assert entered.wait(timeout=1)
+            assert len([call for call in backend.captured if call[0] == "search"]) == 1
+        finally:
+            release.set()
+            provider._prefetch_thread.join(timeout=1)
+
+    def test_tools_mode_never_starts_automatic_prefetch(self, monkeypatch, tmp_path):
+        backend = FakeBackend(
+            search_results=[{"id": "m1", "memory": "user prefers dark mode"}]
+        )
+        provider = self._provider(monkeypatch, tmp_path, "tools", backend)
+
+        provider.on_turn_start(1, "what theme do I like?")
+        provider._start_prefetch("what theme do I like?")
+
+        assert provider.prefetch("what theme do I like?") == ""
+        assert provider._prefetch_thread is None
+        assert backend.captured == []
+
+    @pytest.mark.parametrize("mode", ["hybrid", "tools"])
+    def test_search_schema_is_mode_specific_without_mutating_global(
+        self, monkeypatch, tmp_path, mode
+    ):
+        provider = self._provider(monkeypatch, tmp_path, mode, FakeBackend())
+        original = json.loads(json.dumps(mem0_plugin.SEARCH_SCHEMA))
+
+        first = provider.get_tool_schemas()
+        second = provider.get_tool_schemas()
+
+        assert first == second
+        assert first[0] is not mem0_plugin.SEARCH_SCHEMA
+        assert mem0_plugin.SEARCH_SCHEMA == original
+        if mode == "hybrid":
+            assert "injected context" in first[0]["description"]
+        else:
+            assert "automatic context" in first[0]["description"]
+
+    @pytest.mark.parametrize("mode", ["hybrid", "context", "tools"])
+    def test_system_prompt_guidance_matches_mode(self, monkeypatch, tmp_path, mode):
+        provider = self._provider(monkeypatch, tmp_path, mode, FakeBackend())
+
+        first = provider.system_prompt_block()
+        second = provider.system_prompt_block()
+
+        assert first == second
+        if mode == "hybrid":
+            assert "Use injected context first" in first
+            assert "before answering anything" not in first
+        elif mode == "context":
+            assert "Use injected context when available" in first
+            assert "memory was consulted" not in first
+        else:
+            assert "No automatic context injection" in first
+            assert "mem0_search" in first
+
+    def test_recall_mode_stays_frozen_when_config_changes_before_initialize(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        config_path = tmp_path / "mem0.json"
+        config_path.write_text(json.dumps({"recall_mode": "context"}), encoding="utf-8")
+        provider = Mem0MemoryProvider()
+        config_path.write_text(json.dumps({"recall_mode": "tools"}), encoding="utf-8")
+        provider._create_backend = lambda: None
+
+        provider.initialize("test-session")
+
+        assert provider._recall_mode == "context"
+        assert provider.get_tool_schemas() == []
+
+
 class TestMem0ModeSwitch:
 
     def test_default_mode_is_platform(self, monkeypatch, tmp_path):
@@ -407,5 +643,3 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
-
-

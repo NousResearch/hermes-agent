@@ -231,6 +231,31 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_completion_callback_runs_after_event_is_queued():
+    called = threading.Event()
+    saw_event = []
+
+    def callback(result):
+        saw_event.append(not process_registry.completion_queue.empty())
+        assert result["summary"] == "advance coordinator"
+        called.set()
+
+    ad.dispatch_async_delegation(
+        goal="coordinator stage",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="test-model",
+        session_key="",
+        runner=lambda: {"status": "completed", "summary": "advance coordinator"},
+        completion_callback=callback,
+        max_async_children=3,
+    )
+
+    assert called.wait(timeout=5)
+    assert saw_event == [True]
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",

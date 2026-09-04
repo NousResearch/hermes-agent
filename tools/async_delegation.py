@@ -771,6 +771,7 @@ def dispatch_async_delegation(
     origin_ui_session_id: str = "",
     origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
+    completion_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     progress_fn: Optional[Callable[[], tuple]] = None,
 ) -> Dict[str, Any]:
@@ -805,6 +806,10 @@ def dispatch_async_delegation(
         token past the stale threshold marks the delegation stuck (see the
         stale-detection block at the top of this module). When omitted, the
         delegation is not monitored.
+    completion_callback
+        Optional internal continuation invoked after the durable completion
+        event is queued. Coordinator callers use this to advance their state
+        machine; ordinary delegation keeps the existing advisory chat event.
     max_async_children
         Concurrency cap. When at capacity the dispatch is REJECTED (the caller
         should fall back to sync or tell the user) rather than queued, so a
@@ -839,6 +844,7 @@ def dispatch_async_delegation(
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
+        "completion_callback": completion_callback,
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -911,8 +917,14 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
     if claimed is None:
         return
     event_record, _interrupt_fn = claimed
+    callback = event_record.pop("completion_callback", None)
 
     _push_completion_event(event_record, result, status)
+    if callable(callback):
+        try:
+            callback(result)
+        except Exception:
+            logger.exception("Async delegation %s completion callback failed", delegation_id)
     _finish_finalization(delegation_id, status)
 
 
@@ -1468,7 +1480,7 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             item = {
                 k: v
                 for k, v in r.items()
-                if k not in {"interrupt_fn", "progress_fn"}
+                if k not in {"interrupt_fn", "progress_fn", "completion_callback"}
                 and not k.startswith("_")
             }
             status = r.get("status")

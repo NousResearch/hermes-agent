@@ -70,6 +70,13 @@ def test_artifact_retry_observes_route_repaired_by_other_service(
         attachments=True,
     )
     writer = HostedRoomService(_server(), db_path=db)
+    revoked = []
+
+    def revoke_exact(client, *, grant):
+        revoked.append((client.base_url, grant))
+        return {"revoked": True}
+
+    monkeypatch.setattr(PeerRunsHTTPClient, "revoke_grant_exact", revoke_exact)
     writer.local_profiles = lambda: ("ops",)
     writer.create_room(
         room_id="room-1",
@@ -195,6 +202,7 @@ def test_artifact_retry_observes_route_repaired_by_other_service(
     used.clear()
 
     register(new_grant)
+    assert revoked == [("https://peer.example.test", old_grant)]
     assert (
         hosted_room_links.load_room_link(
             db, room_id="room-1", member_id="member-reviewer"

@@ -1255,6 +1255,37 @@ class TestKillallKillSignals:
             assert dangerous is False, cmd
 
 
+class TestKillSignalFlag:
+    """Hardline floor for `kill -s KILL` / `kill --signal KILL` (parallel to killall -s).
+
+    The plain `kill` command with `-s/--signal KILL|SIGKILL|9` is a bypass
+    for the `pkill -9` / `killall -s KILL` rules that was previously uncovered.
+    """
+
+    def test_kill_signal_flag_flagged_as_hardline(self):
+        for cmd in (
+            "kill -s KILL -1",
+            "kill -s SIGKILL -1",
+            "kill -s 9 -1",
+            "kill --signal KILL -1",
+            "kill --signal SIGKILL -1",
+            "kill --signal 9 -1",
+            "kill -s KILL 12345",
+            "kill --signal SIGKILL 12345",
+        ):
+            is_hardline, desc = detect_hardline_command(cmd)
+            assert is_hardline is True, cmd
+            assert "kill" in desc.lower(), cmd
+            # The description mentions the signal flag format (-s/--signal)
+            assert ("-s" in desc or "--signal" in desc) and "kill" in desc.lower(), cmd
+
+    def test_kill_non_kill_signals_are_not_hardline(self):
+        """`kill -s TERM` / `kill -15` are normal signals, not hardline."""
+        for cmd in ("kill -s TERM 12345", "kill -15 12345", "kill --signal TERM 12345"):
+            is_hardline, _ = detect_hardline_command(cmd)
+            assert is_hardline is False, cmd
+
+
 class TestFindExecdir:
     """Inspired by Claude Code 2.1.113 tightening of find rules.
 

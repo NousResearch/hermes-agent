@@ -9221,6 +9221,19 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
+    # This function is shared by the inline TUI/Desktop builder and the
+    # isolated compute host.  Both callers bind the session's profile before
+    # entering here, so register against that profile's plugin manager rather
+    # than the backend process's launch profile.  Registration is idempotent.
+    try:
+        from agent.shell_hooks import register_from_config as register_shell_hooks
+
+        register_shell_hooks(cfg, accept_hooks=False)
+    except Exception:
+        logger.warning(
+            "shell-hook registration failed for TUI/Desktop profile",
+            exc_info=True,
+        )
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
 
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)

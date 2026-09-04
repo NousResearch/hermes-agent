@@ -47,6 +47,7 @@ from tools.environments.local import (
     _resolve_safe_cwd,
     _sanitize_subprocess_env,
     _windows_to_msys_path,
+    _normalize_nul_redirections,
     hermes_subprocess_env,
 )
 
@@ -332,3 +333,74 @@ class TestWrapCommandWindowsNativeCwd:
         script = captured["script"]
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script
+
+
+# ---------------------------------------------------------------------------
+# _normalize_nul_redirections — cmd.exe NUL redirection must not reach Git Bash
+# ---------------------------------------------------------------------------
+
+class TestNormalizeNulRedirections:
+    def test_rewrites_fd_numbered_redirect(self):
+        # The exact production shape from issue #103244.
+        assert _normalize_nul_redirections(
+            'rg foo "C:/definitely-does-not-exist" 2>NUL || true'
+        ) == 'rg foo "C:/definitely-does-not-exist" 2>/dev/null || true'
+
+    def test_rewrites_lowercase_bare_and_append_forms(self):
+        assert _normalize_nul_redirections(
+            "gh issue view 1 2>nul || true"
+        ) == "gh issue view 1 2>/dev/null || true"
+        assert _normalize_nul_redirections(
+            "gh pr diff 1 --stat >NUL"
+        ) == "gh pr diff 1 --stat >/dev/null"
+        assert _normalize_nul_redirections("cmd >>NUL") == "cmd >>/dev/null"
+
+    def test_rewrites_space_separated_target(self):
+        assert _normalize_nul_redirections("cmd 2> NUL") == "cmd 2>/dev/null"
+
+    def test_quoted_text_is_untouched(self):
+        for quoted in ('echo "2>NUL"', "echo '2>NUL'", 'echo ">nul done"'):
+            assert _normalize_nul_redirections(quoted) == quoted
+
+    def test_escaped_redirect_stays_literal(self):
+        # ``\>`` is a literal character, not a redirection operator.
+        assert _normalize_nul_redirections("echo 2\\>NUL") == "echo 2\\>NUL"
+
+    def test_lookalike_filenames_are_untouched(self):
+        for cmd in ("cat NUL.txt", "echo x > NULs", "echo y > NUL.tmp", "ls NULL"):
+            assert _normalize_nul_redirections(cmd) == cmd
+
+    def test_redirect_inside_substitution_is_rewritten(self):
+        # A redirect inside $(...) is a real redirect for the subshell — it
+        # pollutes the workspace exactly like a top-level one.
+        assert _normalize_nul_redirections(
+            "echo $(rg foo /c/missing 2>NUL)"
+        ) == "echo $(rg foo /c/missing 2>/dev/null)"
+
+    def test_string_without_nul_is_returned_unchanged(self):
+        cmd = "echo hello > /dev/null"
+        assert _normalize_nul_redirections(cmd) == cmd
+
+
+@pytest.mark.windows_only
+class TestRunBashNormalizesNulRedirections:
+    def test_nul_redirect_is_rewritten_before_spawn(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            return object()
+
+        monkeypatch.setattr(local_mod.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+        monkeypatch.setattr(LocalEnvironment, "_recover_cwd", lambda self: None)
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+
+        env._run_bash('rg foo "C:/definitely-does-not-exist" 2>NUL || true')
+
+        script = captured["args"][-1]
+        assert "2>/dev/null" in script
+        assert "2>NUL" not in script

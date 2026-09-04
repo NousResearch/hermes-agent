@@ -124,11 +124,12 @@ def main():
         hits = collections.defaultdict(set)
         email_hits = collections.defaultdict(set)
 
-        msgs = git(repo, "log", "--all", "--format=%H%x00%B%x00", binary=True)
-        for chunk in msgs.split(b"\x00\x00"):
-            parts = chunk.strip(b"\n\x00").split(b"\x00", 1)
-            if len(parts) == 2:
-                scan_bytes(parts[1], hits, f"commit-msg {parts[0][:10].decode()}")
+        # -z separates commits with NUL; each record is "<hash>\n<body>".
+        msgs = git(repo, "log", "--all", "-z", "--format=%H%n%B", binary=True)
+        for rec in msgs.split(b"\x00"):
+            sha, _, body = rec.partition(b"\n")
+            if sha and body.strip():
+                scan_bytes(body, hits, f"commit-msg {sha[:10].decode()}")
         tags = git(repo, "tag", "-l", "--format=%(objectname) %(contents)", binary=True)
         if tags.strip():
             scan_bytes(tags, hits, "tag-messages")

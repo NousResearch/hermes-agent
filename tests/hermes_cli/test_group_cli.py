@@ -26,6 +26,7 @@ def home(tmp_path, monkeypatch):
         (root / "profiles" / profile).mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     return root
 
 
@@ -463,3 +464,90 @@ def test_transport_registry_dedupes_by_kind():
     before = len(g.transports())
     g.register_transport(g.HostedTransport())
     assert len(g.transports()) == before
+
+
+# ── session-bound thread continuity ──────────────────────────────────────────
+
+
+def test_hosted_thread_follows_session(home, capsys, monkeypatch):
+    mk_room()
+    monkeypatch.setenv("HERMES_SESSION_ID", "20260903_1200_abc")
+    assert _run(["send", "DevTeam", "first", "--json"]) == 0
+    t1 = _out_json(capsys)["thread"]
+    assert t1 == g.thread_id("s-20260903_1200_abc")
+    assert _run(["send", "DevTeam", "second", "--json"]) == 0
+    assert _out_json(capsys)["thread"] == t1
+    # A different session gets its own thread.
+    monkeypatch.setenv("HERMES_SESSION_ID", "20260903_1300_xyz")
+    assert _run(["send", "DevTeam", "other", "--json"]) == 0
+    assert _out_json(capsys)["thread"] != t1
+    # --new-thread from the first session breaks its binding... to a fresh derived label
+    monkeypatch.setenv("HERMES_SESSION_ID", "20260903_1200_abc")
+    assert _run(["send", "DevTeam", "restart", "--new-thread", "--json"]) == 0
+    assert _out_json(capsys)["thread"] == t1  # hosted label is session-derived, so same label is correct
+    # --session overrides the env; --thread overrides everything.
+    assert _run(["send", "DevTeam", "x", "--session", "S2", "--json"]) == 0
+    assert _out_json(capsys)["thread"] == g.thread_id("s-S2")
+    assert _run(["send", "DevTeam", "x", "--thread", "explicit", "--json"]) == 0
+    assert _out_json(capsys)["thread"] == "explicit"
+
+
+def test_no_session_uses_shared_cli_thread(home, capsys, monkeypatch):
+    mk_room()
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    assert _run(["send", "DevTeam", "x", "--json"]) == 0
+    assert _out_json(capsys)["thread"] == "cli"
+
+
+def test_bindings_file_is_bounded_and_survives_corruption(home, monkeypatch):
+    mk_room()
+    ref = g.resolve_room("DevTeam")
+    monkeypatch.setattr(g, "_THREAD_BINDINGS_MAX", 3)
+    for i in range(5):
+        g.bind_thread(ref, f"s{i}", f"t{i}")
+    assert g.bound_thread(ref, "s0") is None and g.bound_thread(ref, "s4") == "t4"
+    g._bindings_path().write_text("{not json")
+    assert g.bound_thread(ref, "s4") is None
+    g.bind_thread(ref, "s9", "t9")  # rewrites cleanly
+    assert g.bound_thread(ref, "s9") == "t9"
+    g.forget_thread(ref, "s9")
+    assert g.bound_thread(ref, "s9") is None
+
+
+def test_bind_thread_is_safe_under_concurrent_writers(home):
+    """Many writers, each binding its own session: no binding may be lost."""
+    import multiprocessing as mp
+
+    mk_room()
+    ref = g.resolve_room("DevTeam")
+
+    def worker(i, home_path):
+        import os as _os
+
+        _os.environ["HERMES_HOME"] = home_path
+        from hermes_cli.subcommands import group as gg
+
+        gg.bind_thread(ref, f"sess-{i}", f"t{i}")
+
+    ctx = mp.get_context("fork")
+    procs = [ctx.Process(target=worker, args=(i, str(home))) for i in range(24)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(10)
+    for i in range(24):
+        assert g.bound_thread(ref, f"sess-{i}") == f"t{i}", i
+    # No temp files left behind, lock file is harmless.
+    leftovers = [p.name for p in g._bindings_path().parent.iterdir() if p.name.startswith(".bindings-")]
+    assert leftovers == []
+
+
+def test_explicit_thread_does_not_rebind_session(home, capsys, monkeypatch):
+    mk_room()
+    monkeypatch.setenv("HERMES_SESSION_ID", "S")
+    assert _run(["send", "DevTeam", "a", "--json"]) == 0
+    own = _out_json(capsys)["thread"]
+    assert _run(["send", "DevTeam", "b", "--thread", "elsewhere", "--json"]) == 0
+    assert _out_json(capsys)["thread"] == "elsewhere"
+    assert _run(["send", "DevTeam", "c", "--json"]) == 0
+    assert _out_json(capsys)["thread"] == own

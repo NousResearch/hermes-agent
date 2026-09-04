@@ -2923,6 +2923,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -3243,6 +3244,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
+            "reasoning_callback": reasoning_callback,
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
@@ -3458,6 +3460,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
+                # Reasoning-capable providers stream thinking separately from
+                # assistant text on every SSE surface exposed by this server.
+                "reasoning_streaming": True,
                 "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(
                     self,
@@ -4946,10 +4951,17 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta:
                 _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _reasoning(delta: str) -> None:
+            """Emit live model reasoning separately from assistant text."""
+            if delta:
+                _enqueue("reasoning.delta", {"message_id": message_id, "delta": delta})
+
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
-            if event_type == "reasoning.available":
-                _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
-            elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
+            # ``reasoning.available`` is derived from completed assistant
+            # content and may contain the final answer.  Live reasoning is
+            # delivered through ``_reasoning`` above instead of the legacy
+            # synthetic ``_thinking`` tool event.
+            if event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
@@ -4968,6 +4980,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     ephemeral_system_prompt=system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_delta,
+                    reasoning_callback=_reasoning,
                     tool_progress_callback=_tool_progress,
                     active_run_id=run_id,
                     gateway_session_key=gateway_session_key,
@@ -5328,6 +5341,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put_threadsafe(delta)
 
+            def _on_reasoning(delta):
+                """Keep reasoning out of ``delta.content`` for SSE clients."""
+                if delta:
+                    _stream_q.put_threadsafe(("__reasoning__", delta))
+
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
             # (e.g. internal/filtered tools) is silently dropped instead of
@@ -5391,6 +5409,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -5588,6 +5607,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
+                Tagged tuples ``("__reasoning__", delta)`` are sent as
+                ``delta.reasoning_content`` chunks.
                 Tagged tuples ``("__tool_progress__", payload)`` are sent
                 as a custom ``event: hermes.tool.progress`` SSE event so
                 frontends can display them without storing the markers in
@@ -5596,6 +5617,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"reasoning_content": item[1]},
+                            "finish_reason": None,
+                        }],
+                    }
+                    await response.write(_sse_frame(reasoning_chunk))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -5819,6 +5851,13 @@ class APIServerAdapter(BasePlatformAdapter):
         message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
         message_output_index: Optional[int] = None
         message_opened = False
+        # Keep reasoning in a dedicated Responses output item so clients can
+        # render it live without mixing it into assistant answer text.
+        reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+        reasoning_output_index: Optional[int] = None
+        reasoning_parts: List[str] = []
+        reasoning_item: Optional[Dict[str, Any]] = None
+        reasoning_opened = False
 
         async def _write_event(event_type: str, data: Dict[str, Any]) -> None:
             nonlocal sequence_number
@@ -5874,6 +5913,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 return
             incomplete_text = "".join(final_text_parts) or final_response_text
             incomplete_items: List[Dict[str, Any]] = list(emitted_items)
+            if reasoning_item is not None and reasoning_parts:
+                # Materialize accumulated reasoning only at the persistence
+                # boundary; live deltas remain O(1) per callback.
+                reasoning_text = "".join(reasoning_parts)
+                incomplete_reasoning = {
+                    **reasoning_item,
+                    "summary": [{"type": "summary_text", "text": reasoning_text}],
+                    "content": [{"type": "reasoning_text", "text": reasoning_text}],
+                }
+                incomplete_items = [
+                    incomplete_reasoning if item is reasoning_item else item
+                    for item in incomplete_items
+                ]
             if incomplete_text:
                 incomplete_items.append({
                     "type": "message",
@@ -5927,6 +5979,65 @@ class APIServerAdapter(BasePlatformAdapter):
                     "type": "response.output_item.added",
                     "output_index": message_output_index,
                     "item": item,
+                })
+
+            async def _open_reasoning_item() -> None:
+                """Create the Responses reasoning item before its first delta."""
+                nonlocal reasoning_opened, reasoning_output_index, reasoning_item, output_index
+                if reasoning_opened:
+                    return
+                reasoning_opened = True
+                reasoning_output_index = output_index
+                output_index += 1
+                reasoning_item = {
+                    "id": reasoning_item_id,
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "summary": [],
+                    "content": [],
+                }
+                emitted_items.append(reasoning_item)
+                await _write_event("response.output_item.added", {
+                    "type": "response.output_item.added",
+                    "output_index": reasoning_output_index,
+                    "item": dict(reasoning_item),
+                })
+
+            async def _emit_reasoning_delta(delta_text: str) -> None:
+                """Emit one live Responses reasoning delta."""
+                await _open_reasoning_item()
+                reasoning_parts.append(delta_text)
+                await _write_event("response.reasoning_text.delta", {
+                    "type": "response.reasoning_text.delta",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "content_index": 0,
+                    "delta": delta_text,
+                })
+
+            async def _close_reasoning_item() -> None:
+                """Finalize the reasoning item before the assistant message."""
+                if not reasoning_opened or reasoning_item is None:
+                    return
+                reasoning_text = "".join(reasoning_parts)
+                reasoning_item["status"] = "completed"
+                reasoning_item["summary"] = [
+                    {"type": "summary_text", "text": reasoning_text}
+                ]
+                reasoning_item["content"] = [
+                    {"type": "reasoning_text", "text": reasoning_text}
+                ]
+                await _write_event("response.reasoning_text.done", {
+                    "type": "response.reasoning_text.done",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "content_index": 0,
+                    "text": reasoning_text,
+                })
+                await _write_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": reasoning_output_index,
+                    "item": dict(reasoning_item),
                 })
 
             async def _emit_text_delta(delta_text: str) -> None:
@@ -6067,6 +6178,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__" and isinstance(payload, str) and payload:
+                        await _emit_reasoning_delta(payload)
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -6150,11 +6263,28 @@ class APIServerAdapter(BasePlatformAdapter):
                     await _emit_text_delta(agent_final)
                 if agent_final and not final_response_text:
                     final_response_text = agent_final
+                # Providers that expose reasoning only on the completed
+                # message still get a Responses reasoning item. Live deltas
+                # are authoritative and suppress this fallback to avoid
+                # duplicating or augmenting the streamed text.
+                if isinstance(result, dict) and not reasoning_parts:
+                    turn_start = self._response_messages_turn_start_index(
+                        conversation_history, user_message, result
+                    )
+                    completed_reasoning = self._extract_reasoning_text(
+                        result, start_index=turn_start
+                    )
+                    if completed_reasoning:
+                        await _emit_reasoning_delta(completed_reasoning)
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
                     agent_error = _redact_api_error_text(result["error"])
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = _redact_api_error_text(e)
+
+            # Finalize reasoning before the assistant message to keep output
+            # item ordering deterministic for Responses clients.
+            await _close_reasoning_item()
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -6500,6 +6630,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put_threadsafe(delta)
 
+            def _on_reasoning(delta):
+                """Queue live reasoning separately from assistant text."""
+                if delta:
+                    _stream_q.put_threadsafe(("__reasoning__", delta))
+
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 """Queue non-start tool progress events if needed in future.
 
@@ -6533,6 +6668,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
@@ -7251,6 +7387,26 @@ class APIServerAdapter(BasePlatformAdapter):
         return out
 
     @staticmethod
+    def _extract_reasoning_text(result: Dict[str, Any], start_index: int = 0) -> str:
+        """Return completed-message reasoning for providers without live deltas.
+
+        Live ``reasoning_callback`` output is authoritative when available;
+        this helper is only a compatibility fallback for older providers that
+        expose reasoning on the completed assistant message.
+        """
+        messages = result.get("messages", []) if isinstance(result, dict) else []
+        if start_index > 0:
+            messages = messages[start_index:]
+        parts: List[str] = []
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                parts.append(reasoning)
+        return "\n\n".join(parts)
+
+    @staticmethod
     def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
         """
         Build the output item array from the agent's messages.
@@ -7258,9 +7414,13 @@ class APIServerAdapter(BasePlatformAdapter):
         Walks *result["messages"]* starting at *start_index* and emits:
         - ``function_call`` items for each tool_call on assistant messages
         - ``function_call_output`` items for each tool-role message
+        - at most one aggregated ``reasoning`` item for assistant reasoning
         - a final ``message`` item with the assistant's text reply
         """
         items: List[Dict[str, Any]] = []
+        reasoning_text = APIServerAdapter._extract_reasoning_text(
+            result, start_index=start_index
+        )
         messages = result.get("messages", [])
         if start_index > 0:
             messages = messages[start_index:]
@@ -7291,6 +7451,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", ""),
                 })
+
+        if reasoning_text:
+            items.append({
+                "id": f"rs_{uuid.uuid4().hex[:24]}",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{"type": "summary_text", "text": reasoning_text}],
+                "content": [{"type": "reasoning_text", "text": reasoning_text}],
+            })
 
         # Final assistant message
         final = result.get("final_response", "")
@@ -7389,6 +7558,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -7433,6 +7603,9 @@ class APIServerAdapter(BasePlatformAdapter):
         If *active_run_id* is supplied, the same live agent is registered in
         ``_active_run_agents`` while the turn is running so API clients can
         call run-scoped control endpoints such as ``/v1/runs/{run_id}/steer``.
+
+        *reasoning_callback* receives provider reasoning deltas independently
+        from *stream_delta_callback*, which only carries assistant answer text.
         """
         loop = asyncio.get_running_loop()
         # Capture before hopping to the executor — ContextVars do not follow
@@ -7465,6 +7638,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
                         stream_delta_callback=stream_delta_callback,
+                        reasoning_callback=reasoning_callback,
                         tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,

@@ -4422,30 +4422,31 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
 
-    # --- Drop tool results with a missing/empty tool_call_id ---
+    # --- Drop tool results with a missing/empty tool_call_id and sanitize empty name ---
     # The positional pairing walk below also catches this shape (an id-less
     # result expands to zero variants, matches no declared call, and is
     # dropped as a positional orphan), but keep the explicit early filter so
     # the distinct failure mode keeps its own log line and the guarantee
     # doesn't silently depend on the walk's internals: a result with no
     # ``tool_call_id`` at all is a schema violation strict OpenAI-compatible
-    # providers reject outright. ``repair_message_sequence``'s
-    # Pass 1 already drops this shape (`if tc_id and tc_id in
-    # known_tool_ids`) when it runs first on the same list, but any caller
-    # that reaches this function without going through
-    # ``repair_message_sequence`` first has no such guard. Drop explicitly
-    # here so this "final chokepoint" claim (see module docstring) actually
-    # holds regardless of caller (#78071).
+    # providers reject outright. Also sanitize ``name`` on tool messages: an
+    # empty string or None under ``name`` violates the OpenAPI identifier schema
+    # (regex ^[a-zA-Z0-9_-]+$) and causes HTTP 400 on OpenAI, Azure, and vLLM.
     _pre_id_filter_count = len(messages)
-    messages = [
-        m for m in messages
-        if not (m.get("role") == "tool" and not (m.get("tool_call_id") or "").strip())
-    ]
-    if len(messages) != _pre_id_filter_count:
+    cleaned_messages = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool":
+            if not (m.get("tool_call_id") or "").strip():
+                continue
+            if "name" in m and not (isinstance(m.get("name"), str) and m["name"].strip()):
+                m = {k: v for k, v in m.items() if k != "name"}
+        cleaned_messages.append(m)
+    if len(cleaned_messages) != _pre_id_filter_count:
         _ra().logger.debug(
             "Pre-call sanitizer: dropped %d tool result(s) with missing/empty tool_call_id",
-            _pre_id_filter_count - len(messages),
+            _pre_id_filter_count - len(cleaned_messages),
         )
+    messages = cleaned_messages
 
     # --- Positional tool_call <-> tool_result pairing ---
     # Strict OpenAI-compatible providers (DeepSeek v4, Kimi) enforce the
@@ -4484,12 +4485,15 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         for key in sorted(declared_calls):
             tc, _variants = declared_calls[key]
             cid = coalesce_tool_call_id(tc) or key
-            paired.append({
+            name = _ra().AIAgent._get_tool_call_name_static(tc)
+            stub: Dict[str, Any] = {
                 "role": "tool",
-                "name": _ra().AIAgent._get_tool_call_name_static(tc),
                 "content": "[Result unavailable — see context summary above]",
                 "tool_call_id": cid,
-            })
+            }
+            if isinstance(name, str) and name.strip():
+                stub["name"] = name.strip()
+            paired.append(stub)
             added_stubs += 1
         declared_calls.clear()
 

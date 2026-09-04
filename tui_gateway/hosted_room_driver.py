@@ -606,7 +606,15 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            # Only start_task's newly allocated, still-fenced generation proves freshness.
+            fresh_preflight_failure = (
+                getattr(exc, "dispatch_not_attempted", False) is True
+                and task.get("status") == "queued"
+                and task.get("execution_generation") == attempt.execution_generation - 1
+            )
+            if submit_attempted and (
+                bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure
+            ):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:

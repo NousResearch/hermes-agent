@@ -462,6 +462,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
+    p_list.add_argument("--all", action="store_true",
+                        help="List tasks across ALL boards (cross-board query). "
+                             "Each result is prefixed with its board slug.")
     p_list.add_argument("--mine", action="store_true",
                         help="Filter by $HERMES_PROFILE as assignee")
     p_list.add_argument("--assignee", default=None)
@@ -1742,6 +1745,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
+    if getattr(args, "all", False):
+        return _cmd_list_all_boards(args, assignee=assignee)
     with kb.connect_closing() as conn:
         # Cheap "mini-dispatch": recompute ready so list output reflects
         # dependencies that may have cleared since the last dispatcher tick.
@@ -1780,6 +1785,60 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     for t in tasks:
         print(_fmt_task_line(t))
+    return 0
+
+
+def _cmd_list_all_boards(args: argparse.Namespace, *, assignee: Optional[str]) -> int:
+    """Cross-board ``kanban list --all``.
+
+    Iterates every board on disk, lists tasks from each under the shared
+    filters, tags each result with its board slug, and aggregates.
+    """
+    boards = []
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"kanban list --all: failed to enumerate boards: {exc}", file=sys.stderr)
+        return 1
+
+    results: list[tuple[str, kb.Task]] = []
+    for meta in boards:
+        slug = meta.get("slug")
+        if not slug:
+            continue
+        try:
+            with kb.connect_closing(board=slug) as conn:
+                kb.recompute_ready(conn)
+                tasks = kb.list_tasks(
+                    conn,
+                    assignee=assignee,
+                    status=args.status,
+                    tenant=args.tenant,
+                    session_id=args.session,
+                    include_archived=args.archived,
+                    order_by=getattr(args, "sort", None),
+                    workflow_template_id=args.workflow_template_id,
+                    current_step_key=args.current_step_key,
+                )
+        except Exception as exc:  # pragma: no cover - one bad board shouldn't abort the rest
+            print(f"kanban list --all: board {slug!r} failed: {exc}", file=sys.stderr)
+            continue
+        for t in tasks:
+            results.append((slug, t))
+
+    if getattr(args, "json", False):
+        payload = [
+            {**_task_to_dict(t), "board": slug}
+            for slug, t in results
+        ]
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    if not results:
+        print("(no matching tasks across boards)")
+        return 0
+    for slug, t in results:
+        print(f"[{slug}] {_fmt_task_line(t)}")
     return 0
 
 

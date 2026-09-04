@@ -70,6 +70,44 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_list_all_cross_board_json(kanban_home):
+    """`kanban list --all --json` aggregates tasks across all boards and
+    tags each row with its board slug (issue #54464)."""
+    kb.create_board("alpha")
+    kb.create_board("beta")
+
+    with kb.connect_closing(board="default") as conn:
+        kb.create_task(conn, title="default task", assignee="alice")
+    with kb.connect_closing(board="alpha") as conn:
+        kb.create_task(conn, title="alpha task", assignee="alice")
+    with kb.connect_closing(board="beta") as conn:
+        kb.create_task(conn, title="beta task", assignee="bob")
+
+    raw = kc.run_slash("list --all --json")
+    payload = json.loads(raw)
+
+    titles = {(row.get("board"), row.get("title")) for row in payload}
+    assert ("default", "default task") in titles
+    assert ("alpha", "alpha task") in titles
+    assert ("beta", "beta task") in titles
+
+
+def test_kanban_list_all_cross_board_text(kanban_home):
+    """Text output prefixes each row with its board slug."""
+    kb.create_board("alpha")
+    with kb.connect_closing(board="alpha") as conn:
+        kb.create_task(conn, title="alpha task", assignee="alice")
+
+    out = kc.run_slash("list --all")
+    assert "[alpha]" in out and "alpha task" in out
+
+
+def test_kanban_list_all_no_matches(kanban_home):
+    kb.create_board("alpha")
+    out = kc.run_slash("list --all --status running")
+    assert "no matching tasks across boards" in out
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

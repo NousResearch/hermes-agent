@@ -1,4 +1,4 @@
-import type { DesktopWallpaperAsset, DesktopWallpaperSelectResult } from '@/global'
+import type { DesktopWallpaperAsset } from '@/global'
 import { writeJson } from '@/lib/storage'
 import {
   DEFAULT_WALLPAPER_PREFERENCES,
@@ -21,7 +21,6 @@ import {
   manualPalette,
   persistPreferences,
   preferencesWithPalette,
-  readWallpaperPreferences,
   refreshWallpaper,
   schedulePreferences,
   wallpaperPaletteRequestIsCurrent,
@@ -176,41 +175,6 @@ export function resetWallpaperPreferences(): void {
   $wallpaper.set({ ...state, error: false, paletteStatus: 'idle', preferences })
 }
 
-async function preferencesWithImportedPalette(
-  profile: string,
-  preferences: WallpaperPreferences,
-  result: DesktopWallpaperSelectResult
-): Promise<{ paletteStatus: 'error' | 'ready'; preferences: WallpaperPreferences }> {
-  const asset = result.asset
-
-  if (!asset) {
-    return { paletteStatus: 'error', preferences }
-  }
-
-  if (result.palette) {
-    const imported = sanitizeWallpaperPreferences({
-      ...preferences,
-      palette: result.palette,
-      paletteSource: asset.version || asset.url
-    })
-
-    if (imported.palette) {
-      return { paletteStatus: 'ready', preferences: imported }
-    }
-  }
-
-  try {
-    const analyzed = await preferencesWithPalette(profile, preferences, asset)
-
-    return {
-      paletteStatus: analyzed?.palette ? 'ready' : 'error',
-      preferences: analyzed ?? preferences
-    }
-  } catch {
-    return { paletteStatus: 'error', preferences }
-  }
-}
-
 export async function selectWallpaper(): Promise<void> {
   const state = $wallpaper.get()
   const bridge = window.hermesDesktop?.wallpaper
@@ -230,10 +194,12 @@ export async function selectWallpaper(): Promise<void> {
   try {
     const result = await bridge.select(profile)
 
+    if (!wallpaperRequestIsCurrent(generation, profile)) {
+      return
+    }
+
     if (result.canceled) {
-      if (wallpaperRequestIsCurrent(generation, profile)) {
-        $wallpaper.set({ ...$wallpaper.get(), status: priorStatus })
-      }
+      $wallpaper.set({ ...$wallpaper.get(), status: priorStatus })
 
       return
     }
@@ -244,14 +210,32 @@ export async function selectWallpaper(): Promise<void> {
 
     await decodeWallpaperAsset(result.asset)
 
-    const current = $wallpaper.get()
-    const priorPreferences = current.profile === profile ? current.preferences : readWallpaperPreferences(profile)
+    if (!wallpaperRequestIsCurrent(generation, profile)) {
+      return
+    }
+
+    // Import already sampled the image in main. Keep that cache even when
+    // adaptive colors are off, so enabling them later needs no second read.
+    let imported = sanitizeWallpaperPreferences({
+      ...$wallpaper.get().preferences,
+      enabled: true,
+      palette: result.palette ?? null,
+      paletteSource: result.asset.version || result.asset.url
+    })
+
+    if (imported.adaptiveTheme && imported.paletteMode === 'auto' && !imported.palette) {
+      imported = (await preferencesWithPalette(profile, imported, result.asset).catch(() => null)) ?? imported
+
+      if (!wallpaperRequestIsCurrent(generation, profile)) {
+        return
+      }
+    }
 
     let preferences = sanitizeWallpaperPreferences({
-      ...priorPreferences,
+      ...$wallpaper.get().preferences,
       enabled: true,
-      palette: null,
-      paletteSource: ''
+      palette: imported.palette,
+      paletteSource: imported.palette ? imported.paletteSource : ''
     })
 
     let paletteStatus: 'error' | 'idle' | 'ready' = 'idle'
@@ -264,15 +248,8 @@ export async function selectWallpaper(): Promise<void> {
         })
         paletteStatus = 'ready'
       } else {
-        const imported = await preferencesWithImportedPalette(profile, preferences, result)
-
-        preferences = imported.preferences
-        paletteStatus = imported.paletteStatus
+        paletteStatus = preferences.palette ? 'ready' : 'error'
       }
-    }
-
-    if (!wallpaperRequestIsCurrent(generation, profile)) {
-      return
     }
 
     cancelScheduledPreferences(profile)

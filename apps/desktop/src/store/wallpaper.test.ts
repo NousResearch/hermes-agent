@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DEFAULT_WALLPAPER_PREFERENCES, wallpaperStorageKey } from '@/lib/wallpaper'
+import { deferred } from '@/test/deferred'
 
 const wallpaperAsset = { url: 'hermes-wallpaper://asset/37a8eec1ce19687d132fe290?v=1&token=secret', version: '1' }
 
@@ -18,7 +19,7 @@ const getWallpaper = vi.fn(async () => wallpaperAsset)
 const selectWallpaper = vi.fn()
 const removeWallpaper = vi.fn()
 const decodeImage = vi.fn(() => decodePromise)
-const extractPalette = vi.fn(() => ({ accent: '#e63658', dominant: '#84888e' }))
+const extractPalette = vi.fn(async () => ({ accent: '#e63658', dominant: '#84888e' }))
 
 function flushFrame(): void {
   const callbacks = frameCallbacks.splice(0)
@@ -368,6 +369,126 @@ describe('wallpaper startup loading', () => {
       },
       status: 'ready'
     })
+  })
+
+  it.each(['refresh', 'select'] as const)('stops obsolete %s work at the next async boundary', async operation => {
+    const store = await loadWallpaperStore(true, { adaptiveTheme: true })
+    const run = () => (operation === 'refresh' ? store.refreshWallpaper() : store.selectWallpaper())
+    const importing = { asset: wallpaperAsset, canceled: false }
+    const read = deferred<typeof wallpaperAsset>()
+    const selected = deferred<typeof importing>()
+
+    getWallpaper.mockReturnValueOnce(read.promise)
+    selectWallpaper.mockReturnValueOnce(selected.promise)
+    const reading = run()
+
+    profile.set('another-profile')
+    const inactivePreferences = window.localStorage.getItem(wallpaperStorageKey('default'))
+
+    read.resolve(wallpaperAsset)
+    selected.resolve(importing)
+    resolveDecode()
+    await reading
+
+    expect(decodeImage).not.toHaveBeenCalled()
+    expect(extractPalette).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem(wallpaperStorageKey('default'))).toBe(inactivePreferences)
+
+    profile.set('default')
+    const decoding = deferred()
+
+    decodeImage.mockReturnValueOnce(decoding.promise)
+    selectWallpaper.mockResolvedValueOnce(importing)
+    const loading = run()
+
+    await vi.waitFor(() => expect(decodeImage).toHaveBeenCalledOnce())
+    profile.set('another-profile')
+    decoding.resolve()
+    await loading
+
+    expect(extractPalette).not.toHaveBeenCalled()
+    expect(store.$wallpaper.get()).toMatchObject({ asset: null, profile: 'another-profile' })
+    expect(window.localStorage.getItem(wallpaperStorageKey('default'))).toBe(inactivePreferences)
+  })
+
+  it.each(['refresh', 'select'] as const)(
+    'merges %s palette results without reverting newer controls',
+    async operation => {
+      const store = await loadWallpaperStore(true, { adaptiveTheme: true })
+      const analysis = deferred<{ accent: string; dominant: string }>()
+      const palette = { accent: '#e63658', dominant: '#84888e' }
+      const manual = { accent: '#2468ac', dominant: '#465768' }
+
+      extractPalette.mockReturnValueOnce(analysis.promise)
+      selectWallpaper.mockResolvedValueOnce({ asset: wallpaperAsset, canceled: false })
+      resolveDecode()
+      const loading = operation === 'refresh' ? store.refreshWallpaper() : store.selectWallpaper()
+
+      await vi.waitFor(() => expect(extractPalette).toHaveBeenCalledOnce())
+      store.setWallpaperPreferences({ opacity: 72 })
+      await store.setWallpaperPaletteMode('manual')
+      store.setWallpaperPreferences({ manualPalette: manual })
+      analysis.resolve(palette)
+      await loading
+
+      expect(store.$wallpaper.get()).toMatchObject({
+        asset: wallpaperAsset,
+        paletteStatus: 'ready',
+        preferences: { manualPalette: manual, opacity: 72, palette, paletteMode: 'manual' },
+        status: 'ready'
+      })
+      expect(store.$wallpaperThemePalette.get()).toEqual(manual)
+      expect(JSON.parse(window.localStorage.getItem(wallpaperStorageKey('default'))!)).toMatchObject({
+        manualPalette: manual,
+        opacity: 72,
+        paletteMode: 'manual'
+      })
+    }
+  )
+
+  it('does not restore a reset profile when its old palette request finishes', async () => {
+    const store = await loadWallpaperStore(true, { adaptiveTheme: true })
+    const analysis = deferred<{ accent: string; dominant: string }>()
+
+    extractPalette.mockReturnValueOnce(analysis.promise)
+    resolveDecode()
+    const loading = store.refreshWallpaper()
+
+    await vi.waitFor(() => expect(extractPalette).toHaveBeenCalledOnce())
+    profileResetCallback?.('default')
+    analysis.resolve({ accent: '#e63658', dominant: '#84888e' })
+    await loading
+
+    expect(window.localStorage.getItem(wallpaperStorageKey('default'))).toBeNull()
+    expect(store.$wallpaper.get()).toMatchObject({ asset: null, preferences: DEFAULT_WALLPAPER_PREFERENCES })
+  })
+
+  it('caches import colors even before adaptive theming is enabled', async () => {
+    const palette = { accent: '#e63658', dominant: '#84888e' }
+
+    selectWallpaper.mockResolvedValueOnce({ asset: wallpaperAsset, canceled: false, palette })
+    const store = await loadWallpaperStore(false)
+
+    resolveDecode()
+    await store.selectWallpaper()
+    expect(store.$wallpaperThemePalette.get()).toBeNull()
+    await store.setWallpaperAdaptiveTheme(true)
+
+    expect(extractPalette).not.toHaveBeenCalled()
+    expect(store.$wallpaperThemePalette.get()).toEqual(palette)
+    store.cancelScheduledPreferences('default')
+  })
+
+  it('keeps coalesced edits when revisiting a profile before the storage write', async () => {
+    const store = await loadWallpaperStore(true)
+
+    store.setWallpaperPreferences({ opacity: 72 })
+    profile.set('another-profile')
+    profile.set('default')
+
+    expect(store.$wallpaper.get().preferences.opacity).toBe(72)
+    expect(store.readWallpaperPreferences('default').opacity).toBe(72)
+    store.cancelScheduledPreferences('default')
   })
 
   it('removes local preferences when main resets a deleted or newly recreated profile', async () => {

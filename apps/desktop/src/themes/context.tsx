@@ -50,7 +50,17 @@ const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
 const normalizeSkin = (name: string | null): string =>
-  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+  // LOCAL PATCH (darkside-boot-paint): do NOT drop names that don't resolve in
+  // the registry yet. Backend skins (custom YAML skins from the CLI side, e.g.
+  // `darkside`) only register into $backendThemes when the gateway connects —
+  // which is AFTER the boot paint and after normalizeSkin first runs at
+  // module scope. Rewriting them to DEFAULT_SKIN_NAME here erased the stored
+  // preference on every relaunch, so a backend-skin choice never survived a
+  // restart. deriveTheme() already falls back to the nous seed for unresolvable
+  // names, so an unknown name paints safely until the backend registers it;
+  // `activeTheme`'s memo re-derives when $backendThemes changes. Only truly
+  // retired names are normalized away.
+  !name || RETIRED_SKINS.has(name) ? DEFAULT_SKIN_NAME : name
 
 /**
  * A stored mode, or `system` when there isn't one.

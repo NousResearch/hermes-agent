@@ -7890,8 +7890,11 @@ def _run_one_job_body(
                 # time for one run would skip a fire or auto-delete the job
                 # early.
                 try:
-                    from cron.jobs import update_job
-                    update_job(job["id"], {"last_delivery_error": delivery_error})
+                    from cron.jobs import update_job, _sanitize_persisted_error
+                    update_job(
+                        job["id"],
+                        {"last_delivery_error": _sanitize_persisted_error(delivery_error)},
+                    )
                 except Exception as _rec_err:
                     logger.debug(
                         "Failed recording delivery_error for interrupted job %s: %s",

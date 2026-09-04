@@ -249,6 +249,16 @@ def finish_execution(
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
+    if detail is not None:
+        # executions.db is a durable SQLite store (survives restarts, same
+        # exposure class as jobs.json) — sanitize raw error text before it
+        # lands on disk (issue #102700). Best-effort: import failure must
+        # never block recording the terminal execution state.
+        try:
+            from cron.jobs import _sanitize_persisted_error
+            detail = _sanitize_persisted_error(detail)
+        except Exception:
+            pass
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions

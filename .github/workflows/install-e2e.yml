@@ -89,11 +89,10 @@ jobs:
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
     steps:
-      # This job only reads tag names and trees, so take the cheap
-      # checkout: no blobs (filter), no other files (sparse), but DO fetch
-      # tags -- they are the whole input, and the default shallow checkout
-      # has none.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # This job only reads tag names and runs one script, so take the cheap
+      # checkout: no blobs (filter), no other files (sparse), but DO fetch tags
+      # -- they are the whole input, and the default shallow checkout has none.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           filter: blob:none
           fetch-tags: true

@@ -17,6 +17,7 @@ import pytest
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
+    _flatten_search_content,
     _format_timestamp,
     _is_compacted_message,
     _resolve_to_parent,
@@ -1156,3 +1157,51 @@ class TestNewResetLineageBrowse:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
 
+
+
+# --- multimodal content: inline images must not be hydrated verbatim --------
+
+_JPEG_DATA_URI = "data:image/jpeg;base64," + ("/9j/4AAQ" * 200_000)  # ~1.6 MB, like one phone photo
+
+
+def test_flatten_search_content_replaces_inline_images_with_placeholder():
+    blocks = [
+        {"type": "text", "text": "Add this bottle to my cellar."},
+        {"type": "image_url", "image_url": {"url": _JPEG_DATA_URI}},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A" * 5000}},
+    ]
+    flat = _flatten_search_content(blocks)
+    assert flat.startswith("Add this bottle to my cellar.")
+    assert "[image/jpeg omitted:" in flat and "KB inline data]" in flat
+    assert "[image/png omitted:" in flat
+    assert len(flat) < 300
+    # Strings and None pass through unchanged.
+    assert _flatten_search_content("plain") == "plain"
+    assert _flatten_search_content(None) is None
+    # A short http(s) image reference is kept, not hidden behind a placeholder.
+    ref = _flatten_search_content([{"type": "image_url", "image_url": {"url": "https://x/y.png"}}])
+    assert ref == "[image_url: https://x/y.png]"
+
+
+def test_session_search_full_detail_does_not_return_inline_image_payloads(db):
+    """A hit in a session with a photo used to hydrate the whole base64 image
+    (multi-MB per result); the result must stay text-sized with a placeholder."""
+    now = int(time.time())
+    db.create_session("s_photo", source="discord")
+    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                     (now - 600, "Wine cellar", "s_photo"))
+    db.append_message("s_photo", role="user", content=[
+        {"type": "text", "text": "Add this Barolo to the cellar, rack 3."},
+        {"type": "image_url", "image_url": {"url": _JPEG_DATA_URI}},
+    ])
+    db.append_message("s_photo", role="assistant", content="Added the Barolo to rack 3.")
+    db.append_message("s_photo", role="user", content="Thanks, Barolo it is.")
+    db.end_session("s_photo", "completed")
+    db._conn.commit()
+
+    result = json.loads(session_search(query="Barolo", detail="full", db=db))
+    assert result.get("success") is True and result.get("count", 0) >= 1
+    raw = json.dumps(result)
+    assert "base64,/9j/" not in raw
+    assert "[image/jpeg omitted:" in raw
+    assert len(raw) < 20_000

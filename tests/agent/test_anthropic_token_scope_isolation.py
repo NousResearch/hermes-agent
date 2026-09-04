@@ -50,8 +50,8 @@ def _pin_file_and_pool_sources():
     This isolates the three os.getenv() call sites (sources 1, 2, 5) so each
     test exercises exactly the env-var reading behaviour under scope control.
     """
-    with patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None), \
-         patch("agent.anthropic_adapter._resolve_anthropic_pool_token", return_value=None):
+    with patch("agent.anthropic_credentials.read_claude_code_credentials", return_value=None), \
+         patch("agent.anthropic_credentials._resolve_anthropic_pool_token", return_value=None):
         yield
 
 

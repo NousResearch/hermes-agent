@@ -209,6 +209,47 @@ def _normalize_slack_parent_command(
     return normalized, normalized_type
 
 
+def _media_types_from_wire(raw: Dict[str, Any]) -> list[str]:
+    """Per-attachment MIME types, aligned to ``media_urls`` BY URL.
+
+    INVARIANT: the returned list is ALWAYS the same length as ``media_urls``
+    (padded with ``""``), or empty when there are no urls. Consumers index the
+    two lists by the same ``i`` (``_event_media_type_at``) AND concatenate them
+    pairwise (``merge_pending_message_event`` extends both), so a short
+    ``media_types`` is not a harmless absence — on a merge it shifts every
+    subsequent entry onto the wrong url.
+
+    Resolution is BY URL LOOKUP, never by position: ``media_urls`` (legacy,
+    flat) and ``media`` (rich, Phase 2) are independent wire fields that may
+    disagree in order, and a length check alone accepts a reordered pair —
+    attaching one attachment's MIME to another's url, which silently
+    mis-routes it. A url with no matching ``media[]`` entry keeps its slot as
+    ``""`` and falls back to message-level classification.
+    """
+    urls = raw.get("media_urls")
+    if not isinstance(urls, list) or not urls:
+        return []
+    media = raw.get("media")
+    mime_by_url: dict[str, str] = {}
+    if isinstance(media, list):
+        for m in media:
+            if isinstance(m, dict):
+                url = m.get("url")
+                if isinstance(url, str) and url:
+                    mime_by_url[url] = m.get("mime") or ""
+    # One slot per url, ALWAYS — even with no media[] at all (all ""), so the
+    # parallel-array invariant holds for every consumer.
+    types = [mime_by_url.get(u, "") if isinstance(u, str) else "" for u in urls]
+    missing = sum(1 for t in types if not t)
+    if missing and mime_by_url:
+        logger.debug(
+            "relay inbound: %d/%d media_urls had no matching media[] mime",
+            missing,
+            len(types),
+        )
+    return types
+
+
 def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
@@ -306,6 +347,23 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         reply_to_author_name=(raw.get("reply_to") or {}).get("author"),
         reply_to_is_own_message=bool((raw.get("reply_to") or {}).get("is_own", False)),
         media_urls=raw.get("media_urls") or [],
+        # Per-attachment MIME types, parallel to media_urls, from the
+        # connector's rich media[] array. run.py's per-attachment classifiers
+        # (_event_media_type_at) consult media_types[i] FIRST and only fall
+        # back to the message-level type when it's empty — so this mapping is
+        # what lets a relayed image/document/audio attachment route exactly
+        # like its native-adapter equivalent (and what makes a kind:"voice"
+        # attachment STT-eligible). Entries without a mime keep positional
+        # alignment with an empty string.
+        #
+        # media_urls and media[] are independent wire fields. Today's
+        # connector builds both from the same list, but a malformed or
+        # future producer could disagree — and a LENGTH MISMATCH would
+        # silently misassociate a MIME with the wrong URL (worse than no
+        # MIME at all: it mis-routes an attachment). Fail safe: map only
+        # when the two agree, otherwise leave media_types empty and let the
+        # message-level type drive classification (pre-fix behaviour).
+        media_types=_media_types_from_wire(raw),
         # Surrounding channel/group CONTEXT the connector attached for this
         # addressed turn (design relay-channel-context): a read-only, oldest→
         # newest list of nearby non-addressed messages (Model A pull / Model B
@@ -344,6 +402,16 @@ class PassthroughForward:
     path: str
     headers: list[tuple[str, str]]
     body: bytes
+    # The HERMES profile this interaction is routed to (multiplex mode).
+    # Mirrors the ``profile`` field _event_from_wire already carries on the
+    # ``inbound`` frame's SessionSource (#60586) — the connector stamps it
+    # when NAS resolves the target profile for a Team-Gateway interaction;
+    # absent for a single-profile gateway, where it stays None and session
+    # keys keep the legacy ``agent:main`` namespace. Without this, a Discord
+    # slash-command/button/modal relayed through the passthrough plane always
+    # fell back to agent:main even when the equivalent plain message would
+    # have been routed to the correct profile.
+    profile: Optional[str] = None
 
 
 def _passthrough_from_wire(raw: Dict[str, Any]) -> PassthroughForward:
@@ -373,6 +441,7 @@ def _passthrough_from_wire(raw: Dict[str, Any]) -> PassthroughForward:
         path=str(raw.get("path", "")),
         headers=headers,
         body=body,
+        profile=raw.get("profile"),
     )
 
 

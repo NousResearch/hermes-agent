@@ -441,6 +441,7 @@ def _maybe_apply_moa_cache_control(
         from agent.prompt_caching import (
             apply_anthropic_cache_control,
             effective_cache_ttl,
+            envelope_tool_part_cache_markers_supported,
         )
 
         # Prefer an explicit kwarg, then a snapshot on the runtime dict
@@ -471,6 +472,11 @@ def _maybe_apply_moa_cache_control(
                 model=runtime.get("model") or "",
             ),
             native_anthropic=native_layout,
+            # LiteLLM-style envelope routes forward part-level markers into
+            # tool_result.content[] → non-retryable 400 (#89886).
+            tool_part_markers=envelope_tool_part_cache_markers_supported(
+                runtime.get("provider") or "", runtime.get("base_url") or ""
+            ),
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
         logger.debug("MoA cache_control decoration skipped: %s", exc)

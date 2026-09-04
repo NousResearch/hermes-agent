@@ -32,7 +32,7 @@ _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
     # Terminal + process management
-    "terminal", "process",
+    "terminal", "process_manage",
     # NOTE: the desktop GUI affordances (read_terminal, open_preview, …) are
     # deliberately NOT here, for the same reason as the `project` tools below:
     # they only work where a GUI renderer can answer them. They live in the
@@ -56,7 +56,7 @@ _HERMES_CORE_TOOLS = [
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo_list", "memory",
     # NOTE: the desktop Project tools (project_list/create/switch) are
     # deliberately NOT here. They only make sense where a GUI can follow the
     # move, so they live in the `project` toolset and are enabled solely by the
@@ -69,7 +69,7 @@ _HERMES_CORE_TOOLS = [
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
-    "cronjob",
+    "cronjob_manage",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -169,7 +169,7 @@ TOOLSETS = {
 
     "terminal": {
         "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process_manage"],
         "includes": []
     },
     
@@ -193,7 +193,7 @@ TOOLSETS = {
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
-        "tools": ["cronjob"],
+        "tools": ["cronjob_manage"],
         "includes": []
     },
     
@@ -212,7 +212,7 @@ TOOLSETS = {
     
     "todo": {
         "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
+        "tools": ["todo_list"],
         "includes": []
     },
     
@@ -236,8 +236,14 @@ TOOLSETS = {
 
     "project": {
         "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
-        "tools": ["project_list", "project_create", "project_switch"],
+        "tools": ["desktop_project"],
         "includes": []
+    },
+
+    "bot_room": {
+        "description": "Verified text-only Group Chat turn capabilities",
+        "tools": [],
+        "includes": [],
     },
 
     # Affordances that only exist because a GUI renderer is on the other end of
@@ -253,10 +259,10 @@ TOOLSETS = {
         "description": "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
         "tools": [
             "read_terminal", "close_terminal",
-            "open_preview", "close_preview", "read_preview", "drive_preview", "annotate_preview",
+            "desktop_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp", "tour",
+            "setup_mcp", "gui_tour", "show_tip",
         ],
         "includes": []
     },
@@ -363,7 +369,7 @@ TOOLSETS = {
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process_manage"],
         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
@@ -386,7 +392,7 @@ TOOLSETS = {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -395,7 +401,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
-            "todo", "memory",
+            "todo_list", "memory",
             "session_search", "clarify",
             "execute_code", "delegate_task",
         ],
@@ -419,7 +425,7 @@ TOOLSETS = {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -428,7 +434,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
-            "todo", "memory",
+            "todo_list", "memory",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -441,7 +447,7 @@ TOOLSETS = {
             # Web
             "web_search", "web_extract",
             # Terminal + process management
-            "terminal", "process",
+            "terminal", "process_manage",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
@@ -455,13 +461,13 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
             # Planning & memory
-            "todo", "memory",
+            "todo_list", "memory",
             # Session history search
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management
-            "cronjob",
+            "cronjob_manage",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 

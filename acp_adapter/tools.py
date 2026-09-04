@@ -274,13 +274,27 @@ def _format_todo_result(result: Optional[str]) -> Optional[str]:
         "cancelled": "✗",
     }
     lines = ["**Todo list**", ""]
-    for item in data["todos"]:
-        if not isinstance(item, dict):
-            continue
+    todos = [t for t in data["todos"] if isinstance(t, dict)]
+    ids = {str(t.get("id") or "") for t in todos}
+
+    def _depth(item: Dict[str, Any]) -> int:
+        depth, seen = 0, set()
+        node: Optional[Dict[str, Any]] = item
+        by_id = {str(t.get("id") or ""): t for t in todos}
+        while node is not None:
+            parent = str(node.get("parent") or "")
+            if not parent or parent not in ids or parent in seen:
+                break
+            seen.add(parent)
+            depth += 1
+            node = by_id.get(parent)
+        return min(depth, 4)
+
+    for item in todos:
         status = str(item.get("status") or "pending")
         content = str(item.get("content") or item.get("id") or "").strip()
         if content:
-            lines.append(f"- {icon.get(status, '•')} {content}")
+            lines.append(f"{'  ' * _depth(item)}- {icon.get(status, '•')} {content}")
     if summary:
         cancelled = summary.get("cancelled", 0)
         lines.extend([

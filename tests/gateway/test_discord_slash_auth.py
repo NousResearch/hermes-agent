@@ -3,7 +3,7 @@
 Slash invocations (``_run_simple_slash``, ``_handle_thread_create_slash``)
 historically bypassed every gate ``on_message`` enforces — DISCORD_ALLOWED_USERS,
 DISCORD_ALLOWED_ROLES, DISCORD_ALLOWED_CHANNELS, DISCORD_IGNORED_CHANNELS.
-Any guild member could invoke ``/background``, ``/restart``, etc. as the
+Any guild member could invoke ``/bg``, ``/restart``, etc. as the
 operator. ``_check_slash_authorization`` mirrors all four gates one-for-one.
 
 These tests pin the security-correct behavior so the bypass cannot regress.
@@ -213,7 +213,7 @@ async def test_no_allowlist_allows_with_gateway_allow_all(adapter, monkeypatch):
 async def test_allowed_user_passes(adapter):
     adapter._allowed_user_ids = {"100200300"}
     interaction = _make_interaction("100200300")
-    assert await adapter._check_slash_authorization(interaction, "/background hi") is True
+    assert await adapter._check_slash_authorization(interaction, "/bg hi") is True
     interaction.response.send_message.assert_not_awaited()
 
 
@@ -256,7 +256,7 @@ async def test_channel_not_in_allowlist_rejected(adapter, monkeypatch, caplog):
     monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111,2222")
     interaction = _make_interaction("100200300", channel_id=9999)
     with caplog.at_level(logging.WARNING):
-        assert await adapter._check_slash_authorization(interaction, "/background hi") is False
+        assert await adapter._check_slash_authorization(interaction, "/bg hi") is False
     assert any("DISCORD_ALLOWED_CHANNELS" in r.message for r in caplog.records)
 
 
@@ -284,7 +284,7 @@ async def test_unauthorized_attempt_notifies_telegram(adapter):
     adapter._allowed_user_ids = {"100200300"}
 
     interaction = _make_interaction("999999999")
-    await adapter._check_slash_authorization(interaction, "/background hi")
+    await adapter._check_slash_authorization(interaction, "/bg hi")
 
     # Notify is fire-and-forget — let the scheduled task run.
     await asyncio.sleep(0)
@@ -295,7 +295,7 @@ async def test_unauthorized_attempt_notifies_telegram(adapter):
     assert chat_id == "987654321"
     assert "Unauthorized" in msg
     assert "999999999" in msg
-    assert "/background hi" in msg
+    assert "/bg hi" in msg
     assert "DISCORD_ALLOWED_USERS" in msg
 
 

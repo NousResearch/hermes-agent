@@ -5,17 +5,19 @@ flagged ``flow: "pkce"`` — anthropic and minimax-oauth — and the
 dispatcher ``start_oauth_login`` hardcoded ``_start_anthropic_pkce()``
 for any pkce-flagged provider. So clicking "Login" next to MiniMax in
 the dashboard's Keys tab silently launched the Anthropic/Claude OAuth
-flow.
+flow. The Anthropic dashboard flow was later removed entirely because
+Hermes must not mint subscription OAuth tokens from an unattended HTTP
+endpoint; only the approved external CLI path remains.
 
 The fix:
   1. Catalog entry for minimax-oauth changed from ``flow: "pkce"`` to
      ``flow: "device_code"`` (the actual UX is verification URI + user
      code + background poll, with PKCE as a security extension).
   2. New MiniMax branch added to ``_start_device_code_flow``.
-  3. Dispatcher tightened: pkce branch now requires
-     ``provider_id == "anthropic"``, so any future PKCE provider added
-     without an explicit branch gets a clean ``400 Unsupported flow``
-     instead of silently launching Anthropic OAuth.
+  3. Anthropic's catalog entry changed to ``flow: "external"`` and its
+     dashboard start/submit routes now reject the removed flow. Any future
+     provider added without an explicit flow gets a clean error instead of
+     silently launching Anthropic OAuth.
 
 These tests pin the corrected behavior.
 """
@@ -171,6 +173,48 @@ def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypa
         ws._oauth_sessions.pop(session_id, None)
 
 
+def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
+    tmp_path, monkeypatch
+):
+    """A named-profile OAuth session must reject default-profile retargeting."""
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "worker").mkdir(parents=True)
+    session_id, _session = ws._new_oauth_session(
+        "xai-oauth", "device_code", profile="worker"
+    )
+    try:
+        poll_resp = client.get(
+            f"/api/providers/oauth/xai-oauth/poll/{session_id}",
+            headers=HEADERS,
+        )
+        assert poll_resp.status_code == 400, poll_resp.text
+        assert "profile" in poll_resp.text.lower()
+
+        cancel_resp = client.delete(
+            f"/api/providers/oauth/sessions/{session_id}",
+            headers=HEADERS,
+        )
+        assert cancel_resp.status_code == 400, cancel_resp.text
+        assert "profile" in cancel_resp.text.lower()
+        assert session_id in ws._oauth_sessions
+
+        correct_poll = client.get(
+            f"/api/providers/oauth/xai-oauth/poll/{session_id}?profile=worker",
+            headers=HEADERS,
+        )
+        assert correct_poll.status_code == 200, correct_poll.text
+
+        correct_cancel = client.delete(
+            f"/api/providers/oauth/sessions/{session_id}?profile=worker",
+            headers=HEADERS,
+        )
+        assert correct_cancel.status_code == 200, correct_cancel.text
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 
 
 def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
@@ -271,7 +315,7 @@ def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch
             )
 
     saved = []
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _make_profile_home(tmp_path, monkeypatch, profile="coder")
     monkeypatch.setattr(httpx, "Client", _Client)
     monkeypatch.setattr(auth_mod, "_save_codex_tokens", lambda tokens: saved.append(tokens))
 
@@ -280,7 +324,10 @@ def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch
     def fake_sleep(_interval):
         # Simulate a real concurrent DELETE /api/providers/oauth/sessions/{sid}
         # firing while the worker is asleep between polls.
-        resp = client.delete(f"/api/providers/oauth/sessions/{sid}", headers=HEADERS)
+        resp = client.delete(
+            f"/api/providers/oauth/sessions/{sid}?profile=coder",
+            headers=HEADERS,
+        )
         assert resp.status_code == 200, resp.text
 
     monkeypatch.setattr(ws.time, "sleep", fake_sleep)
@@ -369,7 +416,10 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
 
     def _fire_delete():
         delete_started.set()
-        client.delete(f"/api/providers/oauth/sessions/{sid}", headers=HEADERS)
+        client.delete(
+            f"/api/providers/oauth/sessions/{sid}?profile=coder",
+            headers=HEADERS,
+        )
         delete_finished.set()
 
     monkeypatch.setattr(auth_mod, "_save_codex_tokens", fake_save)
@@ -396,7 +446,7 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     assert sid not in ws._oauth_sessions
 
 
-def test_cancel_oauth_session_marks_dict_cancelled_before_popping():
+def test_cancel_oauth_session_marks_dict_cancelled_before_popping(tmp_path, monkeypatch):
     """The DELETE endpoint must flag the session dict before removing it.
 
     A background worker holds its own reference to the same dict object;
@@ -405,6 +455,7 @@ def test_cancel_oauth_session_marks_dict_cancelled_before_popping():
     """
     from hermes_cli import web_server as ws
 
+    _make_profile_home(tmp_path, monkeypatch, profile="coder")
     session_id = "cancel-flag-test"
     ws._oauth_sessions[session_id] = {
         "session_id": session_id,
@@ -418,7 +469,7 @@ def test_cancel_oauth_session_marks_dict_cancelled_before_popping():
     worker_ref = ws._oauth_sessions[session_id]
 
     resp = client.delete(
-        f"/api/providers/oauth/sessions/{session_id}",
+        f"/api/providers/oauth/sessions/{session_id}?profile=coder",
         headers=HEADERS,
     )
 
@@ -488,6 +539,35 @@ def test_xai_oauth_listed_as_device_code_flow():
     assert "xai-oauth" in providers
     assert providers["xai-oauth"]["flow"] == "device_code"
     assert "grok" in providers["xai-oauth"]["name"].lower()
+
+
+def test_anthropic_dashboard_oauth_is_removed_and_external():
+    """Anthropic subscription OAuth is not minted by the dashboard anymore."""
+    from hermes_cli import web_server as ws
+
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    assert providers["anthropic"]["flow"] == "external"
+    assert providers["anthropic"]["cli_command"] == "hermes auth add anthropic"
+
+    before_sessions = set(ws._oauth_sessions)
+    start_resp = client.post(
+        "/api/providers/oauth/anthropic/start",
+        headers=HEADERS,
+    )
+    assert start_resp.status_code == 400, start_resp.text
+    assert "external CLI" in start_resp.text
+    assert "claude.ai" not in start_resp.text
+
+    submit_resp = client.post(
+        "/api/providers/oauth/anthropic/submit",
+        headers=HEADERS,
+        json={"session_id": "unused", "code": "unused"},
+    )
+    assert submit_resp.status_code == 400, submit_resp.text
+    assert "not supported" in submit_resp.text
+    assert set(ws._oauth_sessions) == before_sessions
 
 
 def test_accounts_offers_every_oauth_provider_from_catalog():

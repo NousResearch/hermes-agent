@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import os
 from pathlib import Path
 
 import pytest
@@ -122,21 +123,23 @@ def _iter_which_calls(tree: ast.AST):
 
 def _source_files() -> list[Path]:
     files: list[Path] = []
-    for path in REPO_ROOT.rglob("*.py"):
-        rel = path.relative_to(REPO_ROOT)
-        if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
-            continue
-        # Skip packaging copies of the source tree (sdist extractions like
-        # hermes_agent-0.20.5/, build/ and *.egg-info dirs). CI jobs that
-        # build the wheel leave one in the workspace; scanning it re-finds
-        # every already-exempted call site under a versioned path prefix
-        # that can never match an _ALLOWED key, failing the guard on code
-        # that was never touched. A dir is a packaging copy iff its top
-        # level carries PKG-INFO (sdist/egg metadata) or it is a build/
-        # dist output directory.
-        if rel.parts and _is_packaging_copy(rel.parts[0]):
-            continue
-        files.append(path)
+    # os.walk instead of Path.rglob: rglob raises FileNotFoundError when a
+    # directory vanishes mid-scan — a sibling CI job's sdist extraction
+    # (hermes_agent-<version>/) gets created and deleted concurrently, and
+    # that TOCTOU failed this guard on runs 33531869442/33455779041-era
+    # workspaces. os.walk tolerates vanishing dirs (onerror=None), and
+    # pruning exempt/packaging dirs at the top level also skips their
+    # subtrees entirely.
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        rel_dir = Path(dirpath).relative_to(REPO_ROOT)
+        if rel_dir == Path("."):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _EXEMPT_DIRS and not _is_packaging_copy(d)
+            ]
+        for fname in filenames:
+            if fname.endswith(".py"):
+                files.append(Path(dirpath) / fname)
     return files
 
 

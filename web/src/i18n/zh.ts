@@ -672,6 +672,12 @@ export const zh: TranslationOverlay = {
     fallbackJobTitle: '定时任务',
     continuityDescription: '连续运行：每次运行都能看到上一次的输出（用于去重或从中断处继续）',
     missedScheduledFire: '错过计划触发（{time}）：',
+    lastResults: {
+      ok: '执行成功',
+      delivery_failed: '投递失败',
+      blocked_config: '配置阻止执行',
+      error: '执行失败'
+    },
     views: {
       jobs: '任务',
       blueprints: '蓝图'
@@ -1048,6 +1054,8 @@ export const zh: TranslationOverlay = {
     copyCliCommand: '复制 CLI 命令（用于外部/备用方式）',
     connect: '连接',
     sessionExpires: '会话将在 {time} 后过期',
+    sessionExpiredNoError:
+      '登录已过期，且未能连接到服务商。这通常意味着已打开标签页中的登录流程卡住了（服务端问题）——请在该标签页完成登录，然后点击重试。若仍然失败，请改用 API 密钥或 CLI。',
     expiresMinutes: '{count} 分钟后过期',
     expiresHours: '{count} 小时后过期',
     expiresDays: '{count} 天后过期',

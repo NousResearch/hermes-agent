@@ -702,6 +702,12 @@ export const en: Translations = {
     fallbackJobTitle: 'Cron job',
     continuityDescription: "continuity: each run sees the previous run's output (dedupe, pick up where it left off)",
     missedScheduledFire: 'missed scheduled fire ({time}):',
+    lastResults: {
+      ok: 'Succeeded',
+      delivery_failed: 'Delivery failed',
+      blocked_config: 'Blocked by configuration',
+      error: 'Run failed'
+    },
     views: {
       jobs: 'Jobs',
       blueprints: 'Blueprints'
@@ -1086,6 +1092,8 @@ export const en: Translations = {
     copyCliCommand: 'Copy CLI command (for external / fallback)',
     connect: 'Connect',
     sessionExpires: 'Session expires in {time}',
+    sessionExpiredNoError:
+      'Sign-in expired without reaching the provider. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then click Retry. If it keeps failing, use an API key or the CLI fallback instead.',
     expiresMinutes: 'expires in {count} min',
     expiresHours: 'expires in {count} h',
     expiresDays: 'expires in {count} d',

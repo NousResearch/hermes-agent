@@ -147,12 +147,19 @@ def packaged_gui_app_paths() -> "list[Path]":
         data = os.environ.get("XDG_DATA_HOME")
         data_base = Path(data) if data else (home / ".local" / "share")
         paths += [
-            # The launcher entry `hermes desktop` installs. Its icon lives
-            # in the checkout, not in the installed app.
+            # The launcher entry `hermes desktop` installs. Its icon is
+            # also copied into the hicolor tree (see
+            # linux_desktop_entry._install_icon_to_hicolor) — remove
+            # every size dir the installer could have written.
             desktop_entry_path(),
             # Some packaged builds emit this casing.
             data_base / "applications" / "Hermes.desktop",
+            data_base / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png",
         ]
+        # Fixed-size hicolor dirs the installer may have written (resized
+        # panel sizes plus leftover native-size copies from older builds).
+        for size in ("24x24", "32x32", "48x48", "256x256", "512x512", "1024x1024"):
+            paths.append(data_base / "icons" / "hicolor" / size / "apps" / "hermes.png")
     return paths
 
 
@@ -230,7 +237,9 @@ def _remove_path(path: Path) -> bool:
     return False
 
 
-def uninstall_gui(hermes_home: "Path | None" = None, *, remove_userdata: bool = True) -> "list[Path]":
+def uninstall_gui(
+    hermes_home: "Path | None" = None, *, remove_userdata: bool = True
+) -> "list[Path]":
     """Remove the desktop GUI's artifacts, leaving the agent + user data intact.
 
     Removes:

@@ -43,6 +43,7 @@ _spawn_hermes_action = late("_spawn_hermes_action")
 _toolset_model_catalog = late("_toolset_model_catalog")
 load_config = late("load_config")
 save_config = late("save_config")
+run_in_threadpool = late("run_in_threadpool")
 
 # Live proxies for web_server-owned module state (mutations/monkeypatches
 # on web_server remain authoritative; resolved at operation time).
@@ -90,7 +91,7 @@ async def get_toolsets(profile: Optional[str] = None):
             features = get_nous_subscription_features(config)
         return config, toolset_rows, enabled_by_platform, features
 
-    config, toolset_rows, enabled_by_platform, features = await asyncio.to_thread(_read)
+    config, toolset_rows, enabled_by_platform, features = await run_in_threadpool(_read)
     result = []
     for name, label, desc in toolset_rows:
         try:

@@ -142,16 +142,26 @@ export const MAX_DURATION_WIDTH = Math.max(
 // `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
+export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean, hasVerbOverride = false): number => {
   const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  const verb = showVerb || hasVerbOverride ? 1 + VERB_PAD_LEN : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
   return indicatorFrameWidth(style) + verb + duration
 }
 
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function FaceTicker({
+  color,
+  startedAt,
+  style,
+  verbOverride
+}: {
+  color: string
+  startedAt?: null | number
+  style: IndicatorStyle
+  verbOverride?: string
+}) {
   const { locale, verbs } = useI18n()
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * verbs.length))
@@ -161,8 +171,11 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
   // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling.
+  // timer dangling. A frozen override (idle compaction) always shows the
+  // verb so "compacting…" is visible even in unicode style (#97239).
   const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const freezeVerb = Boolean(verbOverride)
+  const displayVerb = freezeVerb || showVerb
 
   useEffect(() => {
     // An overlay is painted OVER the status rule (the modal widget slot, or a
@@ -180,9 +193,10 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
 
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+    // Verb timer is gated on `displayVerb` — `unicode` style hides the verb
+    // entirely, so cycling `verbTick` would be an avoidable re-render. A
+    // frozen override does not rotate.
+    const verb = displayVerb && !freezeVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
       clearInterval(glyph)
@@ -192,11 +206,11 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, isOccluded, showVerb])
+  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = verbs[verbTick % verbs.length] ?? ''
-  const verbSegment = showVerb ? ` ${shouldEllipsisVerb(locale) ? `${verb}…` : padVerb(verb)}` : ''
+  const verb = verbOverride ?? verbs[verbTick % verbs.length] ?? ''
+  const verbSegment = displayVerb ? ` ${shouldEllipsisVerb(locale) ? `${verb}…` : padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -324,10 +338,13 @@ export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent 
 export interface StatusBarSegments {
   bar: boolean
   bg: boolean
+  cacheHit: boolean
   compactCtx: boolean
   compressions: boolean
   duration: boolean
+  latency: boolean
   subagents: boolean
+  tps: boolean
   voice: boolean
 }
 
@@ -341,7 +358,10 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    cacheHit: w >= 96,
+    latency: w >= 104,
+    tps: w >= 110
   }
 }
 
@@ -508,7 +528,9 @@ export function StatusRuleView({
   cwdLabel,
   cols,
   busy,
+  compacting = false,
   status,
+  statusBarFields = null,
   statusColor,
   model,
   modelFast,
@@ -534,17 +556,24 @@ export function StatusRuleView({
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
 
+  // display.status_bar.fields visibility gate (same key + names as the
+  // classic CLI bar). null = user hasn't customized → everything shows.
+  const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
+
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
-  const ctxLabel = usage.context_max
-    ? segs.compactCtx
-      ? `${fmtK(usage.context_used ?? 0)} ${i18n.t('usage.tokensShort')}`
-      : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
-    : usage.total > 0
-      ? `${fmtK(usage.total)} ${i18n.t('usage.tokensShort')}`
+  const ctxLabel =
+    ok('context_detail') || ok('context_pct')
+      ? usage.context_max
+        ? segs.compactCtx
+          ? `${fmtK(usage.context_used ?? 0)} ${i18n.t('usage.tokensShort')}`
+          : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+        : usage.total > 0
+          ? `${fmtK(usage.total)} ${i18n.t('usage.tokensShort')}`
+          : ''
       : ''
 
-  const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
+  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
   const statusText = i18n.tStatus(status)
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
@@ -559,7 +588,7 @@ export function StatusRuleView({
         (voiceTts ? ' [tts]' : '')
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
-  const showBattery = !!battery && battery.available && battery.percent != null
+  const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
   const batteryText = showBattery ? batteryLabel(battery!) : ''
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
@@ -582,7 +611,7 @@ export function StatusRuleView({
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
   const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, compacting)
     : showNotice
       ? noticeReserve
       : stringWidth(statusText)
@@ -595,7 +624,7 @@ export function StatusRuleView({
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
-  const rightLabel = sessionTitle ? ` ${sessionTitle} ` : cwdLabel
+  const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
@@ -639,9 +668,10 @@ export function StatusRuleView({
   // result re-enters as a fresh turn later. When idle with work still in flight,
   // spell out that the agent resumes on its own — no spinner, nothing to poll.
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
-  const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+  const showSubagents =
+    segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
-  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+  const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
@@ -649,10 +679,22 @@ export function StatusRuleView({
   const showIdle =
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
-  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(compressionText))
-  const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showCompressions =
+    segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(compressionText))
+
+  // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
+  // CLI bar (PR #98250). The server omits the keys when no data exists (zero
+  // cache reads, Codex app-server with no latency), so these self-hide.
+  const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
+  const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
+  const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
+  const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
+  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
+  const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
+
+  const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(bgText))
+  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(bgText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
@@ -691,7 +733,12 @@ export function StatusRuleView({
             </Text>
           ) : null}
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+            <FaceTicker
+              color={statusColor}
+              startedAt={turnStartedAt}
+              style={indicatorStyle}
+              verbOverride={compacting ? i18n.tStatus('compacting') : undefined}
+            />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {statusText}
@@ -756,6 +803,34 @@ export function StatusRuleView({
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
               {compressionText}
             </Text>
+          </Text>
+        ) : null}
+        {showCacheHit ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text
+              color={
+                usage.cache_hit_pct! >= 70
+                  ? t.color.statusGood
+                  : usage.cache_hit_pct! >= 40
+                    ? t.color.statusWarn
+                    : t.color.muted
+              }
+            >
+              {cacheHitText}
+            </Text>
+          </Text>
+        ) : null}
+        {showLatency ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {latencyText}
+          </Text>
+        ) : null}
+        {showTps ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {tpsText}
           </Text>
         ) : null}
         {showVoice ? (
@@ -916,6 +991,8 @@ interface StatusRuleProps {
   lastTurnEndedAt?: null | number
   liveSessionCount: number
   busy: boolean
+  // Context compaction in progress — FaceTicker freezes on "compacting".
+  compacting?: boolean
   cols: number
   cwdLabel: string
   model: string
@@ -926,6 +1003,9 @@ interface StatusRuleProps {
   sessionStartedAt?: null | number
   sessionTitle?: string
   status: string
+  // display.status_bar.fields — segment visibility filter shared with the
+  // classic CLI bar. null = defaults (everything shows).
+  statusBarFields?: null | ReadonlySet<string>
   statusColor: string
   t: Theme
   turnStartedAt?: null | number

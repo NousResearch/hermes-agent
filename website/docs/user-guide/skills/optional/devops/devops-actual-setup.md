@@ -15,7 +15,7 @@ Set up Actual Computer (actual.inc) inference in Hermes.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/actual-setup` |
-| Path | `optional-skills/devops/actual-setup` |
+| Path | `optional-skills/devops\actual-setup` |
 | Version | `2.0.0` |
 | Author | shl0ms + Hermes Agent |
 | License | MIT |

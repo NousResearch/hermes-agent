@@ -62,13 +62,14 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
     _ssrf_redirect_guard,
-    cache_document_from_bytes,
-    cache_image_from_bytes,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
 )
 from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.media_cache import ext_for_mime
@@ -363,6 +364,8 @@ class QQAdapter(BasePlatformAdapter):
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
             logger.info("[%s] Connected", self._log_tag)
+            # Plugin-registered native handlers (ctx.register_platform_handler).
+            self._wire_plugin_handlers(None)
             return True
         except Exception as exc:
             message = f"QQ startup failed: {exc}"
@@ -494,7 +497,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
         # local patch, so QQ can regress to direct-connect timeouts after update.
-        self._session = aiohttp.ClientSession(trust_env=True)
+        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
         ws_proxy = (
             os.getenv("WSS_PROXY")
             or os.getenv("wss_proxy")
@@ -1827,7 +1830,7 @@ class QQAdapter(BasePlatformAdapter):
                 use_mimetypes=True,
                 fallback=".jpg",
             ) or ".jpg"
-            return cache_image_from_bytes(data, ext)
+            return await cache_image_from_bytes_async(data, ext)
         elif content_type == "voice" or content_type.startswith("audio/"):
             # QQ voice messages are typically .amr or .silk format.
             # Convert to .wav using ffmpeg so STT engines can process it.
@@ -1838,7 +1841,7 @@ class QQAdapter(BasePlatformAdapter):
                 or Path(urlparse(url).path).name
                 or "qq_attachment"
             )
-            return cache_document_from_bytes(data, filename)
+            return await cache_document_from_bytes_async(data, filename)
 
     @staticmethod
     def _is_voice_content_type(content_type: str, filename: str) -> bool:
@@ -2338,9 +2341,9 @@ class QQAdapter(BasePlatformAdapter):
                     source_url[:60],
                     ext,
                 )
-                return cache_document_from_bytes(audio_data, f"qq_voice{ext}")
+                return await cache_document_from_bytes_async(audio_data, f"qq_voice{ext}")
         except Exception:
-            return cache_document_from_bytes(audio_data, f"qq_voice{ext}")
+            return await cache_document_from_bytes_async(audio_data, f"qq_voice{ext}")
         finally:
             try:
                 os.unlink(src_path)
@@ -2351,7 +2354,7 @@ class QQAdapter(BasePlatformAdapter):
         try:
             wav_data = Path(wav_path).read_bytes()
             os.unlink(wav_path)
-            return cache_document_from_bytes(wav_data, "qq_voice.wav")
+            return await cache_document_from_bytes_async(wav_data, "qq_voice.wav")
         except Exception as exc:
             logger.debug("[%s] Failed to read converted wav: %s", self._log_tag, exc)
             return None
@@ -2545,7 +2548,7 @@ class QQAdapter(BasePlatformAdapter):
                     )
                     await asyncio.sleep(delay)
 
-        error_msg = str(last_exc) if last_exc else "Unknown error"
+        error_msg = (str(last_exc) or type(last_exc).__name__) if last_exc else "Unknown error"
         logger.error("[%s] Send failed: %s", self._log_tag, error_msg)
         retryable = not any(
             k in error_msg.lower() for k in ("invalid", "forbidden", "not found")
@@ -2661,7 +2664,7 @@ class QQAdapter(BasePlatformAdapter):
             logger.error(
                 "[%s] send_with_keyboard failed: %s", self._log_tag, exc
             )
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
     async def send_approval_request(
             self,
@@ -3013,7 +3016,7 @@ class QQAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("[%s] Media send failed: %s", self._log_tag, exc)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
     async def _upload_local_file(
             self,

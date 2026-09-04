@@ -198,6 +198,14 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   restoreAttempted = true
   await waitForInitialConnection()
 
+  // The user got there first: a source they picked while boot was settling
+  // (statusbar switcher, fleet profile rail) is not drift to "restore" over.
+  // The launch preference only decides where a window lands when nobody has
+  // said otherwise yet.
+  if (switchRevision > 0 || pendingTarget !== null) {
+    return registry
+  }
+
   // Residual drift: a window can be live on a source the registry cannot name
   // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
   // read-only userData that rejected the healed write). $activeConnectionId is
@@ -252,7 +260,13 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * switch. Every await is bounded; a commit that stalls after the wipe lowers
  * the barrier and repaints the source that is still active.
  */
-export async function selectConnection(connectionId: string): Promise<void> {
+export interface SelectConnectionOptions {
+  /** Land on this profile of the target source instead of the one last used
+   *  there. The fleet profile rail passes the exact square the user clicked. */
+  profile?: null | string
+}
+
+export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
   const registry = $connectionsRegistry.get()
   const targetConnection = registry?.connections.find(connection => connection.id === connectionId)
 
@@ -268,7 +282,12 @@ export async function selectConnection(connectionId: string): Promise<void> {
 
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
-  const targetProfile = normalizeProfileKey($lastProfileByConnection.get()[connectionId] ?? 'default')
+  const explicitProfile = String(options.profile ?? '').trim()
+
+  const targetProfile = normalizeProfileKey(
+    explicitProfile || ($lastProfileByConnection.get()[connectionId] ?? 'default')
+  )
+
   const targetKey = `${connectionId}::${targetProfile}`
 
   const targetIsActive = () => {

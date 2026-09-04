@@ -205,6 +205,9 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [101, 202])
     monkeypatch.setattr(
+        gateway_mod, "find_windows_gateway_services", lambda **_k: []
+    )
+    monkeypatch.setattr(
         gateway_mod,
         "find_profile_gateway_processes",
         lambda **_k: [profile_proc],
@@ -229,7 +232,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     monkeypatch.setattr(
         status_mod,
         "terminate_pid",
-        lambda pid, force=False: terminated.append((pid, force)),
+        lambda pid, force=False, **kwargs: terminated.append((pid, force)),
     )
 
     token = cli_main._pause_windows_gateways_for_update()
@@ -260,6 +263,292 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     # An unmapped PID whose argv we captured is respawnable, so we must NOT
     # tell the user to restart it manually.
     assert "Restart manually after update" not in captured
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_and_resume_windows_gateway_service(
+    _winp,
+    monkeypatch,
+    tmp_path,
+):
+    """A real Windows service is stopped before venv mutation and restarted
+    afterward instead of spawning a competing detached gateway."""
+    import hermes_cli.gateway as gateway_mod
+    import hermes_cli.update_cmd as update_cmd
+
+    profile_home = tmp_path / "profiles" / "default"
+    profile_home.mkdir(parents=True)
+    profile_proc = SimpleNamespace(profile="default", path=profile_home, pid=101)
+    service = SimpleNamespace(
+        name="HermesGateway",
+        profile="default",
+        service_pid=11,
+        service_create_time=11.0,
+        gateway_pid=101,
+        gateway_create_time=101.0,
+        descendant_pids=frozenset({11, 22, 101}),
+        descendant_identities=((22, 22.0), (101, 101.0)),
+    )
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(
+        gateway_mod, "find_profile_gateway_processes", lambda **_k: [profile_proc]
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "find_windows_gateway_services",
+        lambda **_k: [service],
+        raising=False,
+    )
+    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+
+    stopped = []
+    started = []
+    monkeypatch.setattr(
+        update_cmd,
+        "_stop_windows_gateway_service",
+        lambda name, **_kwargs: stopped.append(name),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        update_cmd,
+        "_start_windows_gateway_service",
+        lambda name: started.append(name),
+        raising=False,
+    )
+    monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_cold_start_windows_gateway_after_update",
+        lambda: (_ for _ in ()).throw(AssertionError("service resume must not cold-start")),
+    )
+
+    token = cli_main._pause_windows_gateways_for_update()
+    assert token == {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [],
+        "unmapped": [],
+        "services": ["HermesGateway"],
+        "expected_services": ["HermesGateway"],
+        "restarted_services": [],
+        "service_profiles": {"HermesGateway": "default"},
+    }
+    assert stopped == ["HermesGateway"]
+
+    cli_main._resume_windows_gateways_after_update(token)
+    assert started == ["HermesGateway"]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateway_service_failure_restores_every_attempted_service(
+    _winp,
+    monkeypatch,
+):
+    """A service that times out after accepting stop is restarted too."""
+    import hermes_cli.gateway as gateway_mod
+    import hermes_cli.update_cmd as update_cmd
+
+    services = [
+        SimpleNamespace(name="HermesGateway", service_pid=11, service_create_time=11.0, gateway_pid=101, gateway_create_time=101.0, descendant_identities=()),
+        SimpleNamespace(name="HermesGatewayPicasso", service_pid=22, service_create_time=22.0, gateway_pid=202, gateway_create_time=202.0, descendant_identities=()),
+    ]
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(
+        gateway_mod, "find_windows_gateway_services", lambda **_k: services
+    )
+
+    def fake_stop(name, **_kwargs):
+        if name == "HermesGatewayPicasso":
+            raise RuntimeError("simulated stop timeout")
+
+    restarted = []
+    monkeypatch.setattr(update_cmd, "_stop_windows_gateway_service", fake_stop)
+    monkeypatch.setattr(
+        update_cmd,
+        "_restore_windows_gateway_service",
+        lambda name: restarted.append(name),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="HermesGatewayPicasso"):
+        cli_main._pause_windows_gateways_for_update()
+
+    assert restarted == ["HermesGatewayPicasso", "HermesGateway"]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateway_service_surfaces_rollback_start_failure(
+    _winp,
+    monkeypatch,
+):
+    import hermes_cli.gateway as gateway_mod
+    import hermes_cli.update_cmd as update_cmd
+
+    services = [
+        SimpleNamespace(name="HermesGateway", service_pid=11, service_create_time=11.0, gateway_pid=101, gateway_create_time=101.0, descendant_identities=()),
+        SimpleNamespace(name="HermesGatewayPicasso", service_pid=22, service_create_time=22.0, gateway_pid=202, gateway_create_time=202.0, descendant_identities=()),
+    ]
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(
+        gateway_mod, "find_windows_gateway_services", lambda **_k: services
+    )
+
+    def fake_stop(name, **_kwargs):
+        if name == "HermesGatewayPicasso":
+            raise RuntimeError("simulated stop timeout")
+
+    def fake_start(name):
+        if name == "HermesGateway":
+            raise RuntimeError("simulated rollback start failure")
+
+    monkeypatch.setattr(update_cmd, "_stop_windows_gateway_service", fake_stop)
+    monkeypatch.setattr(
+        update_cmd,
+        "_restore_windows_gateway_service",
+        fake_start,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="rollback failures: HermesGateway"):
+        cli_main._pause_windows_gateways_for_update()
+
+
+def test_restore_windows_gateway_service_waits_out_stop_pending(monkeypatch):
+    import hermes_cli.update_cmd as update_cmd
+
+    statuses = iter(["stop_pending", "stopped"])
+    service = SimpleNamespace(status=lambda: next(statuses))
+    fake_psutil = SimpleNamespace(win_service_get=lambda _name: service)
+    restarted = []
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(update_cmd._time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        update_cmd,
+        "_start_windows_gateway_service",
+        lambda name: restarted.append(name),
+    )
+
+    update_cmd._restore_windows_gateway_service("HermesGateway")
+
+    assert restarted == ["HermesGateway"]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_aborts_when_service_discovery_is_indeterminate(
+    _winp,
+    monkeypatch,
+):
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(
+        gateway_mod,
+        "find_windows_gateway_services",
+        lambda **_k: (_ for _ in ()).throw(RuntimeError("SCM scan indeterminate")),
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "find_gateway_pids",
+        lambda **_k: (_ for _ in ()).throw(
+            AssertionError("ordinary gateway teardown must not begin")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="SCM scan indeterminate"):
+        cli_main._pause_windows_gateways_for_update()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_aborts_when_gateway_pid_discovery_is_indeterminate(
+    _winp,
+    monkeypatch,
+):
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "find_windows_gateway_services", lambda **_k: [])
+    monkeypatch.setattr(
+        gateway_mod,
+        "find_gateway_pids",
+        lambda **_k: (_ for _ in ()).throw(RuntimeError("PID discovery failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="PID discovery failed"):
+        cli_main._pause_windows_gateways_for_update()
+
+
+def test_stop_windows_gateway_service_waits_for_original_descendants(
+    monkeypatch,
+):
+    """SCM STOPPED is insufficient while the original process identity lives."""
+    import hermes_cli.update_cmd as update_cmd
+
+    service = SimpleNamespace(status=lambda: "stopped")
+    fake_psutil = SimpleNamespace(
+        win_service_get=lambda _name: service,
+        Process=lambda pid: SimpleNamespace(create_time=lambda: 12.5),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        update_cmd.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    with pytest.raises(RuntimeError, match="process tree"):
+        update_cmd._stop_windows_gateway_service(
+            "HermesGateway",
+            expected_processes=((123, 12.5),),
+            timeout=0,
+        )
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_windows_gateway_service_failure_stays_retryable(
+    _winp,
+    monkeypatch,
+):
+    import hermes_cli.update_cmd as update_cmd
+
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped": [],
+        "services": ["HermesGateway"],
+    }
+    monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
+    monkeypatch.setattr(
+        update_cmd,
+        "_start_windows_gateway_service",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("simulated start failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="HermesGateway"):
+        cli_main._resume_windows_gateways_after_update(token)
+
+    assert token["resume_needed"] is True
+    assert token["services"] == ["HermesGateway"]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_windows_gateway_launcher_refresh_failure_stays_retryable(
+    _winp,
+    monkeypatch,
+):
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped": [],
+        "services": ["HermesGateway"],
+    }
+    monkeypatch.setattr(
+        cli_main,
+        "_refresh_windows_gateway_launchers",
+        lambda: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        cli_main._resume_windows_gateways_after_update(token)
+
+    assert token["resume_needed"] is True
+    assert token["services"] == ["HermesGateway"]
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +660,9 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [worker_pid])
     monkeypatch.setattr(
+        gateway_mod, "find_windows_gateway_services", lambda **_k: []
+    )
+    monkeypatch.setattr(
         gateway_mod, "find_profile_gateway_processes", lambda **_k: [profile_proc]
     )
     monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
@@ -400,7 +692,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     monkeypatch.setattr(
         status_mod,
         "terminate_pid",
-        lambda pid, force=False: terminated.append(int(pid)),
+        lambda pid, force=False, **kwargs: terminated.append(int(pid)),
     )
 
     cli_main._pause_windows_gateways_for_update()
@@ -463,6 +755,52 @@ def test_leftover_holders_that_are_all_gateways_are_nominated(monkeypatch):
     ]
 
     assert cli_main._leftover_pausable_gateway_pids(matches) == [300, 301]
+
+
+def test_plain_update_refuses_to_tree_kill_its_gateway_ancestor(
+    monkeypatch, capsys
+):
+    """#98814: terminal-launched update must survive to report the refusal."""
+    import hermes_cli.gateway as gateway_cli
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: pid == 300,
+    )
+
+    refused = update_cmd._refuse_gateway_ancestor_tree_kill(
+        [300, 301], gateway_mode=False
+    )
+
+    assert refused is True
+    output = capsys.readouterr().out
+    assert "taskkill /T" in output
+    assert "`/update`" in output
+    assert "separate terminal" in output
+
+
+def test_gateway_handoff_keeps_leftover_gateway_recovery(monkeypatch, capsys):
+    """The detached `/update` hand-off still owns leftover gateway cleanup."""
+    import hermes_cli.gateway as gateway_cli
+    import hermes_cli.update_cmd as update_cmd
+
+    ancestry_checks = []
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: ancestry_checks.append(pid) or True,
+    )
+
+    assert (
+        update_cmd._refuse_gateway_ancestor_tree_kill(
+            [300], gateway_mode=True
+        )
+        is False
+    )
+    assert ancestry_checks == []
+    assert capsys.readouterr().out == ""
 
 
 def test_one_non_gateway_holder_keeps_the_hard_refusal(monkeypatch):
@@ -720,5 +1058,69 @@ def test_update_gate_still_aborts_on_non_gateway_concurrent(
     assert "--force" in captured
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_update_impl_refuses_before_terminating_gateway_ancestor(
+    _winp, monkeypatch, capsys
+):
+    """#98814: the live holder path must gate the destructive call itself."""
+    import gateway.status as status_mod
+    import hermes_cli.gateway as gateway_cli
+
+    holder = (
+        300,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main gateway run",
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: pid == 300,
+    )
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=None
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", return_value=None
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=None
+    ), patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=[holder]
+    ), patch.object(
+        cli_main, "_leftover_pausable_gateway_pids", return_value=[300]
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update"
+    ) as resume, patch.object(
+        status_mod, "terminate_pid"
+    ) as terminate:
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    assert excinfo.value.code == 2
+    terminate.assert_not_called()
+    resume.assert_called_once_with(None)
+    output = capsys.readouterr().out
+    assert "taskkill /T" in output
+    assert "`/update`" in output
+
+
+def test_stop_service_refuses_pid_reuse_before_sc_stop(monkeypatch):
+    import hermes_cli.update_cmd as update_cmd
+
+    fake_psutil = SimpleNamespace(
+        win_service_get=lambda _name: SimpleNamespace(
+            status=lambda: "running", pid=lambda: 11
+        ),
+        Process=lambda _pid: SimpleNamespace(create_time=lambda: 99.0),
+    )
+    calls = []
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(update_cmd.subprocess, "run", lambda *_a, **_k: calls.append(True))
+
+    with pytest.raises(RuntimeError, match="identity changed"):
+        update_cmd._stop_windows_gateway_service(
+            "HermesGateway", expected_service_identity=(11, 11.0)
+        )
+
+    assert calls == []
 
 

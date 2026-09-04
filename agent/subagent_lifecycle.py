@@ -17,6 +17,7 @@ import math
 import secrets
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from concurrent.futures import Future, TimeoutError
 from typing import Any, Callable, Mapping, Optional
@@ -171,8 +172,19 @@ _ACTIVE_PARENT_AGENT: contextvars.ContextVar[Any] = contextvars.ContextVar(
 
 @contextmanager
 def bind_subagent_parent(parent_agent: Any):
-    """Bind the host-owned parent for the current agent turn."""
-    token = _ACTIVE_PARENT_AGENT.set(parent_agent)
+    """Bind the host-owned parent for the current agent turn.
+
+    Stored as a weakref: every asyncio Handle/Future scheduled from the turn
+    (LSP reader loops, kernel pipes, ...) snapshots the Context, and those
+    snapshots outlive the turn. A strong ref there pinned finished delegate
+    children — each of which binds itself here for its own turn — in the
+    parent process heap for the life of the background loop.
+    """
+    try:
+        ref = weakref.ref(parent_agent)
+    except TypeError:
+        ref = lambda: parent_agent  # noqa: E731 — non-weakrefable test doubles
+    token = _ACTIVE_PARENT_AGENT.set(ref)
     try:
         yield
     finally:
@@ -181,7 +193,8 @@ def bind_subagent_parent(parent_agent: Any):
 
 def get_active_subagent_parent() -> Any:
     """Return the parent bound to this execution context, if any."""
-    return _ACTIVE_PARENT_AGENT.get()
+    ref = _ACTIVE_PARENT_AGENT.get()
+    return ref() if ref is not None else None
 
 
 class SubagentLifecycleService:

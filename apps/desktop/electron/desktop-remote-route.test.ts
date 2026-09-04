@@ -305,3 +305,90 @@ test('local route does not inherit an unrelated registry SSH connection', () => 
 test('local config without overrides returns null', () => {
   assert.equal(resolveDesktopRemoteRoute({ config: { mode: 'local' }, registry: registry('local', []) }), null)
 })
+
+// --- Registry-primary transport gating (#91564 / #90316) ---
+//
+// "Make primary" on a registered remote gateway only writes connections.json;
+// the v1 config.mode stays 'local'. The route resolver must still expose that
+// remote transport, or startHermes() spawns a loopback `hermes serve` the
+// desktop never uses (duplicated MCP sets, port squat, respawn-on-poll).
+
+test('falls back to a REMOTE registry primary when the v1 mode is local (#91564/#90316)', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('gw-b', [
+      { id: 'gw-b', kind: 'remote', label: 'Gateway B', url: 'https://gw-b.test', authMode: 'token', token: tokenB }
+    ])
+  })
+
+  assert.equal(route?.kind, 'remote')
+  assert.equal(route?.source, 'registry')
+  assert.equal(route?.connectionId, 'gw-b')
+  assert.equal((route as any)?.url, 'https://gw-b.test')
+  assert.deepEqual((route as any)?.token, tokenB)
+})
+
+test('falls back to a CLOUD registry primary when the v1 mode is local', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('cloud-1', [
+      {
+        id: 'cloud-1',
+        kind: 'cloud',
+        label: 'Hermes Cloud',
+        url: 'https://agent.hermes.cloud',
+        authMode: 'oauth',
+        org: 'nous'
+      }
+    ])
+  })
+
+  assert.equal(route?.kind, 'cloud')
+  assert.equal(route?.source, 'registry')
+  assert.equal((route as any)?.authMode, 'oauth')
+  assert.equal((route as any)?.org, 'nous')
+})
+
+test('falls back to an SSH registry primary when the v1 mode is local', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('spark', [
+      { id: 'spark', kind: 'ssh', label: 'Spark', host: 'spark1', user: 'tek', port: 2222, token: tokenA }
+    ])
+  })
+
+  assert.equal(route?.kind, 'ssh')
+  assert.equal(route?.source, 'registry')
+  assert.equal(route?.connectionId, 'spark')
+  assert.equal((route as any)?.ssh?.host, 'spark1')
+  assert.equal((route as any)?.ssh?.port, 2222)
+})
+
+test('a LOCAL registry primary keeps resolving local (null route)', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('local', [
+      { id: 'gw-b', kind: 'remote', label: 'Gateway B', url: 'https://gw-b.test', authMode: 'token', token: tokenB }
+    ])
+  })
+
+  assert.equal(route, null)
+})
+
+test('the v1 global remote still outranks the registry primary', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'remote', remote: { url: 'https://global.test', authMode: 'token', token: tokenA } },
+    profile: null,
+    registry: registry('gw-b', [
+      { id: 'global', kind: 'remote', label: 'Global', url: 'https://global.test', token: tokenA },
+      { id: 'gw-b', kind: 'remote', label: 'Gateway B', url: 'https://gw-b.test', authMode: 'token', token: tokenB }
+    ])
+  })
+
+  assert.equal(route?.source, 'settings')
+  assert.equal((route as any)?.url, 'https://global.test')
+})

@@ -1108,6 +1108,76 @@ def _windows_runtime_holders() -> tuple[bool, str]:
     return False, ""
 
 
+def _windows_runtime_self_lock(live: Path) -> tuple[bool, str]:
+    """Detect the one holder the generic scan above is blind to: THIS process.
+
+    ``_detect_venv_python_processes`` excludes the calling process and its
+    ancestors on purpose — a CLI ``hermes update`` itself runs from the
+    venv python — which is correct for the dependency-sync path, where only
+    a *loaded* ``.pyd`` image blocks the rewrite and a fresh child process
+    dodges it.  For the whole-venv park rename that exemption is fatal:
+    Windows keeps the image of any executable a running process was started
+    from mapped until that process exits, so a directory containing the
+    updater's own ``python.exe`` (or a waiting ``hermes.exe`` launcher
+    ancestor) can never be renamed from inside the updater.  The retry loop
+    in ``_cut_over_candidate`` cannot help against that — the lock is
+    structural, not transient (#93032).
+
+    No-op off Windows: POSIX renames work fine while this process maps
+    files from the renamed tree (open FDs and mmaps keep inodes alive).
+    """
+    if platform.system() != "Windows":
+        return False, ""
+    try:
+        live_res = str(live.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        live_res = str(live).lower().rstrip(os.sep) + os.sep
+
+    def _under_live(path_value: str | None) -> bool:
+        if not path_value:
+            return False
+        try:
+            resolved = str(Path(path_value).resolve()).lower()
+        except (OSError, ValueError):
+            resolved = str(path_value).lower()
+        return resolved.startswith(live_res)
+
+    try:
+        exe = sys.executable
+    except Exception:
+        exe = None
+    if _under_live(exe):
+        return True, (
+            f"the updater itself runs from the live venv it must replace "
+            f"({exe}); Windows cannot rename a directory while a process "
+            "executes from inside it"
+        )
+    # Belt-and-braces: the venv\Scripts\hermes.exe launcher stays mapped
+    # while it waits for this child, so an ancestor started from the venv
+    # blocks the rename too.
+    try:
+        import psutil
+
+        try:
+            parents = psutil.Process().parents()
+        except Exception:
+            parents = []
+        for anc in parents:
+            try:
+                anc_exe = anc.exe()
+            except Exception:
+                continue
+            if _under_live(anc_exe):
+                return True, (
+                    f"ancestor process PID {anc.pid} runs from the live venv "
+                    f"({anc_exe}); Windows cannot rename a directory while a "
+                    "process executes from inside it"
+                )
+    except Exception:
+        pass
+    return False, ""
+
+
 def _uv_version_string(uv_bin: str) -> str:
     """Return ``uv --version`` output, or ``""`` when it cannot be read."""
     try:
@@ -1273,6 +1343,34 @@ def repair_vulnerable_runtime(
         return RuntimeRepairResult(
             "skipped",
             detail,
+            sqlite_before=current.sqlite_version_string,
+        )
+
+    self_locked, self_detail = _windows_runtime_self_lock(live)
+    if self_locked:
+        # Structural, not transient: this process maps the live venv's own
+        # executable, so the park rename fails the same way on every run and
+        # no number of retries converges. Defer BEFORE provisioning — a
+        # candidate staged for a cutover that can never run only leaks an
+        # incomplete generation (#93032).
+        print(f"  ⚠ SQLite runtime repair deferred: {self_detail}.")
+        print(
+            "    Retrying `hermes update` from inside this venv cannot help: "
+            "the mapped executable is released only when this process exits."
+        )
+        print(
+            "    To complete the repair, run the updater from an interpreter "
+            "that lives outside this venv, e.g.:"
+        )
+        print(f"      cd {root}")
+        print("      <system Python> -m hermes_cli.main update")
+        print(
+            "    Sessions stay protected meanwhile: Hermes keeps databases "
+            "out of WAL mode on this SQLite build."
+        )
+        return RuntimeRepairResult(
+            "skipped",
+            self_detail,
             sqlite_before=current.sqlite_version_string,
         )
 

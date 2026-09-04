@@ -1119,6 +1119,19 @@ def _provider_request(
             for key, value in headers.items()
             if str(key).lower() not in _RELAY_INTERNAL_PROVIDER_HEADERS
         }
+    # Relay's managed-call trace header maps to ``extra_headers`` for known SDK
+    # adapters and custom requests that already use that container. Other
+    # native transports receive protocol kwargs directly and may reject a new
+    # SDK-only argument. Preserve non-trace middleware headers as before.
+    supports_extra_headers = (
+        _relay_protocol(metadata) is not None or "extra_headers" in original
+    )
+    if headers and not supports_extra_headers:
+        headers = {
+            key: value
+            for key, value in headers.items()
+            if str(key).lower() != "traceparent"
+        }
     if headers:
         final["extra_headers"] = {
             **dict(final.get("extra_headers") or {}),

@@ -993,11 +993,31 @@ class TestOpenRouterPaidLaneGuard:
     """Issue #75803: auxiliary auto-chain OpenRouter fallback must be
     configurable and never silently engage a PAID model."""
 
-    def test_free_only_skips_paid_default_model(self, monkeypatch):
-        """free_only=true + default (paid) model → OpenRouter skipped."""
+    def test_free_only_allows_builtin_default_model(self, monkeypatch):
+        """free_only=true + built-in default → allowed (default is :free now, #81952).
+
+        Before the #81952 purge the built-in default was a PAID SKU and this
+        test asserted the free_only gate skipped it. The default itself is now
+        a :free model, so the gate passes it; the paid-model gating behavior is
+        covered by test_free_only_skips_paid_configured_model below.
+        """
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+            client, model = _try_openrouter()
+        assert client is mock_client
+        assert model == _OPENROUTER_MODEL
+
+    def test_free_only_skips_paid_configured_model(self, monkeypatch):
+        """free_only=true + user-configured PAID model → OpenRouter skipped."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True,
+                                               "openrouter_model": "google/gemini-3.6-flash"}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _try_openrouter()
         assert client is None
@@ -1042,31 +1062,82 @@ class TestOpenRouterPaidLaneGuard:
         assert model is None
         mock_openai.assert_not_called()
 
-    def test_paid_lane_warns_once(self, monkeypatch, caplog):
-        """Engaging the default paid model logs a WARNING (once per model)."""
-        import logging
-        from agent.auxiliary_client import _paid_lane_warned
-        _paid_lane_warned.discard(_OPENROUTER_MODEL)
+    def test_resolver_forwards_explicit_free_model_to_gate(self, monkeypatch):
+        """The concrete OpenRouter route gates the caller's model, not its default."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {}}), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+            client, model = resolve_provider_client(
+                "openrouter", model="nvidia/nemotron-3-ultra-550b-a55b:free"
+            )
+
+        assert client is mock_client
+        assert model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    def test_free_only_gate_does_not_mark_openrouter_unhealthy(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy:
+            client, model = resolve_provider_client(
+                "openrouter", model="google/gemini-3.6-flash"
+            )
+
+        assert client is None
+        assert model is None
+        mark_unhealthy.assert_not_called()
+
+    def test_free_only_gate_reports_policy_not_credentials(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True}}), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            resolve_provider_client("openrouter", model="google/gemini-3.6-flash")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("free_only" in message and "google/gemini-3.6-flash" in message
+                   for message in messages)
+        assert not any("credentials" in message for message in messages)
+
+    def test_paid_lane_warns_once(self, monkeypatch, caplog):
+        """Engaging a user-configured PAID model logs a WARNING (once per model).
+
+        (#81952: the BUILT-IN default is a :free SKU now, so the paid lane can
+        only engage via an explicit auxiliary.openrouter_model choice.)
+        """
+        import logging
+        from agent.auxiliary_client import _paid_lane_warned
+        _paid_model = "google/gemini-3.6-flash"
+        _paid_cfg = {"auxiliary": {"openrouter_model": _paid_model}}
+        _paid_lane_warned.discard(_paid_model)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
             with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
                 client, model = _try_openrouter()
         assert client is mock_client
-        assert model == _OPENROUTER_MODEL
+        assert model == _paid_model
         assert any("PAID lane engaged" in r.getMessage() for r in caplog.records)
         # Second call logs nothing new.
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {}}), \
+             patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             caplog.clear()
             with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
                 _try_openrouter()
         assert not any("PAID lane engaged" in r.getMessage() for r in caplog.records)
-        _paid_lane_warned.discard(_OPENROUTER_MODEL)
+        _paid_lane_warned.discard(_paid_model)
 
     def test_is_free_model(self):
         from agent.auxiliary_client import _is_free_model
@@ -2047,6 +2118,139 @@ class TestTransientTransportRetry:
         assert primary.chat.completions.create.call_count == 1
         assert fb_client.chat.completions.create.call_count == 1
 
+    def test_vision_skips_same_provider_retry_on_timeout(self):
+        """Vision is on the interactive critical path: the turn holding the
+        image cannot answer, and because turns are serialised the following
+        user messages stall behind it. A full-budget timeout must therefore
+        fall straight through to fallback rather than spending a second
+        ``timeout`` window on the same provider (same reasoning as #54465).
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = _Timeout("Request timed out.")
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://api.openai.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            # Vision resolves its client through resolve_vision_provider_client(),
+            # not _get_cached_client(); the retry block under test is shared.
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("openrouter", primary, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(fb_client, "fb-model", "openai"),
+            ),
+        ):
+            result = call_llm(task="vision", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        assert primary.chat.completions.create.call_count == 1
+        assert fb_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_vision_skips_same_provider_retry_on_timeout_async(self):
+        """Async twin of the sync guard: tools/vision_tools.py drives
+        ``async_call_llm``, so the skip must hold on the async site too."""
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create = AsyncMock(
+            side_effect=_Timeout("Request timed out.")
+        )
+        expected = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("openrouter", primary, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(MagicMock(), "fb-model", "configured-fallback"),
+            ),
+            patch(
+                "agent.auxiliary_client._to_async_client",
+                return_value=(MagicMock(), "fb-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._call_fallback_candidate_async",
+                new=AsyncMock(return_value=expected),
+            ),
+        ):
+            result = await async_call_llm(
+                task="vision", messages=[{"role": "user", "content": "hi"}]
+            )
+        assert result == expected
+        assert primary.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_progress_timeout_still_retries_same_provider_async(self):
+        """A stillborn stream (no-progress window, zero output) is cheap: it
+        keeps the same-provider retry on the async site, mirroring sync."""
+        primary = MagicMock()
+        primary.base_url = "https://chatgpt.com/backend-api/codex"
+        primary.chat.completions.create = AsyncMock(side_effect=[
+            TimeoutError(
+                "Codex auxiliary Responses stream produced no output within "
+                "60.0s (no-progress timeout, 60.2s elapsed)"
+            ),
+            {"retried": True},
+        ])
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("openrouter", primary, "some-model"),
+            ),
+        ):
+            result = await async_call_llm(
+                task="vision", messages=[{"role": "user", "content": "hi"}]
+            )
+        assert result == {"retried": True}
+        assert primary.chat.completions.create.call_count == 2
+
+    def test_non_critical_task_still_retries_same_provider_on_timeout(self):
+        """The skip is scoped to critical-path tasks. Everything else keeps the
+        existing one-shot same-provider retry, so this is not a blanket change.
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = [
+            _Timeout("Request timed out."),
+            {"retried": True},
+        ]
+
+        p1, p2, p3 = self._patches(primary)
+        with p1, p2, p3:
+            result = call_llm(task="title", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"retried": True}
+        # Same provider was retried once — unchanged behaviour off the critical path.
+        assert primary.chat.completions.create.call_count == 2
+
     def test_timeout_forwards_failed_model_to_configured_chain(self):
         """A timeout is model-specific, so call_llm must forward the failed
         model to the configured chain (failed_model=<model>, not None). This
@@ -2539,17 +2743,20 @@ class TestAuxiliaryAuthRefreshRetry:
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
-            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value={
+            # Anthropic credential sourcing lives in agent/anthropic_credentials.py;
+            # patch it at that definition site so both the direct call here and
+            # the re-read inside ``_refresh_oauth_token`` see the same stub.
+            patch("agent.anthropic_credentials.read_claude_code_credentials", return_value={
                 "accessToken": "expired-token",
                 "refreshToken": "refresh-token",
                 "expiresAt": 0,
             }),
-            patch("agent.anthropic_adapter.refresh_anthropic_oauth_pure", return_value={
+            patch("agent.anthropic_credentials.refresh_anthropic_oauth_pure", return_value={
                 "access_token": "fresh-token",
                 "refresh_token": "refresh-token-2",
                 "expires_at_ms": 9999999999999,
             }) as mock_refresh_oauth,
-            patch("agent.anthropic_adapter._write_claude_code_credentials") as mock_write,
+            patch("agent.anthropic_credentials._write_claude_code_credentials") as mock_write,
         ):
             from agent.auxiliary_client import _refresh_provider_credentials
 
@@ -2963,6 +3170,28 @@ class TestCodexAdapterPromptCacheKey:
             {"role": "user", "content": "hi"},
         ])
         assert "prompt_cache_retention" not in captured
+
+    def test_codex_backend_forwards_auxiliary_service_tier(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://chatgpt.com/backend-api/codex",
+            model="gpt-5.6-luna",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"service_tier": "priority"},
+        )
+        assert captured["service_tier"] == "priority"
+
+    def test_xai_backend_drops_auxiliary_service_tier(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.x.ai/v1",
+            model="grok-4.6",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"service_tier": "priority"},
+        )
+        assert "service_tier" not in captured
 
     @pytest.mark.parametrize("base_url", [
         "https://api.openai.com/v1",

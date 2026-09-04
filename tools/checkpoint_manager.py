@@ -1098,7 +1098,10 @@ class CheckpointManager:
         With ``safe=True`` (full-directory restores only), files the user
         hand-edited after Hermes' last write — per the agent-write ledger —
         are left untouched, and only Hermes-authored changes are reverted.
-        The result gains ``skipped_user_edits`` listing the preserved paths.
+        The result gains ``skipped_user_edits`` listing the preserved paths,
+        ``skipped_oversize`` listing paths kept because the size cap excluded
+        them from every checkpoint, and — only when a delete failed —
+        ``failed_deletes`` listing paths that could not be removed.
         """
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
@@ -1146,6 +1149,7 @@ class CheckpointManager:
                         "directory": abs_dir,
                         "restored_files": [],
                         "skipped_user_edits": skipped_user_edits,
+                        "skipped_oversize": [],
                     }
 
         # Take a pre-rollback snapshot so you can undo the undo.
@@ -1184,7 +1188,9 @@ class CheckpointManager:
                     if target.is_file() or target.is_symlink():
                         target.unlink()
                 except OSError as exc:
-                    logger.debug("Safe restore: could not remove %s: %s", rel, exc)
+                    logger.warning(
+                        "Safe restore: could not remove %s: %s", rel, exc,
+                    )
                     failed_deletes.append(rel)
             if not checkout_targets:
                 ok, stdout, err = True, "", ""
@@ -1229,8 +1235,9 @@ class CheckpointManager:
                 rel for rel in restore_paths if rel not in not_restored
             ]
             result["skipped_user_edits"] = skipped_user_edits
-            if kept_oversize:
-                result["skipped_oversize"] = kept_oversize
+            result["skipped_oversize"] = kept_oversize
+            if failed_deletes:
+                result["failed_deletes"] = failed_deletes
         return result
 
     def get_working_dir_for_path(self, file_path: str) -> str:

@@ -108,12 +108,18 @@ class FalImageGenProvider(ImageGenProvider):
             _model_id, meta = _it._resolve_fal_model()
         except Exception:  # noqa: BLE001
             return {"modalities": ["text"], "max_reference_images": 0}
+        # Clarity Upscaler chains on explicit request for any FAL model.
         if meta.get("edit_endpoint"):
             return {
                 "modalities": ["text", "image"],
                 "max_reference_images": int(meta.get("max_reference_images") or 1),
+                "supports_upscale": True,
             }
-        return {"modalities": ["text"], "max_reference_images": 0}
+        return {
+            "modalities": ["text"],
+            "max_reference_images": 0,
+            "supports_upscale": True,
+        }
 
     def generate(
         self,

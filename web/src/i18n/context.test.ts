@@ -123,6 +123,14 @@ describe('Dashboard i18n framework', () => {
     expect(simplified.kanban.commentHintTitle).toContain('kanban_show()')
   })
 
+  it('localizes scheduler result states added by the current cron contract', () => {
+    const simplified = resolveTranslations('zh')
+
+    expect(simplified.cron.lastResults.delivery_failed).toBe('投递失败')
+    expect(simplified.cron.lastResults.blocked_config).toBe('配置阻止执行')
+    expect(simplified.cron.lastResults.error).toBe('执行失败')
+  })
+
   it('falls back per missing leaf for an arbitrary independent locale pack', () => {
     const catalog = resolveTranslationOverlay({
       common: { save: 'Localized save' }

@@ -28,6 +28,7 @@ from tools.skills_hub import (
     unified_search,
     append_audit_log,
     quarantine_bundle,
+    _referenced_support_paths,
 )
 
 
@@ -145,6 +146,19 @@ class TestTrustLevelFor:
                 "from GitHubSource.DEFAULT_TAPS — its skills will not be "
                 "browsable via `hermes skills browse`."
             )
+
+
+class TestGitHubSourceFileFetch:
+    def test_quotes_decoded_support_path_before_contents_api_fetch(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        src._github_get = MagicMock(return_value=None)
+
+        src._fetch_file_bytes("owner/repo", "skill/references/foo#bar.md")
+
+        assert src._github_get.call_args.args[0] == (
+            "https://api.github.com/repos/owner/repo/contents/"
+            "skill/references/foo%23bar.md"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +368,58 @@ class TestUrlSource:
     def _source(self):
         return UrlSource()
 
+    @pytest.mark.parametrize(
+        "glob_reference",
+        [
+            "references/*.md",
+            "references/file?",
+            "references/file?.md",
+            "references/agent.v?.md",
+            "references/data.file?.md",
+            "references/backup.2026?.md",
+            "references/file?x.md",
+            "references/agent.v?x.md",
+            "references/file?[ab].md",
+            "references/file??.md",
+            "references/[ab].md",
+            "references/%2A.md",
+            "references/file%3F.md",
+            "references/%5Bab%5D.md",
+        ],
+    )
+    def test_support_path_extraction_ignores_glob_shaped_prose(
+        self, glob_reference
+    ):
+        skill_md = f"""
+See [the web reference](references/web.md) for details.
+Complex cases are documented under `{glob_reference}`.
+"""
+
+        assert _referenced_support_paths(skill_md) == {"references/web.md"}
+
+    @pytest.mark.parametrize(
+        ("reference", "expected"),
+        [
+            ("templates/report.md?raw=1", "templates/report.md"),
+            ("references/LICENSE?download", "references/LICENSE"),
+            ("references/LICENSE?raw", "references/LICENSE"),
+            ("references/guide.md?view", "references/guide.md"),
+            ("references/guide.md?inline", "references/guide.md"),
+            ("references/guide.md?plain", "references/guide.md"),
+            ("references/guide.md?preview-mode", "references/guide.md"),
+            ("references/guide.md?view&inline&theme=dark", "references/guide.md"),
+            ("references/LICENSE?plain&download=1", "references/LICENSE"),
+            ("references/LICENSE?.well-known=1", "references/LICENSE"),
+            ("references/guide.md#usage", "references/guide.md"),
+            ("references/my%20guide.md", "references/my guide.md"),
+            ("references/foo%23bar.md", "references/foo#bar.md"),
+        ],
+    )
+    def test_support_path_extraction_preserves_concrete_url_suffixes(
+        self, reference, expected
+    ):
+        assert _referenced_support_paths(f"Use `{reference}`.") == {expected}
+
     # ── _matches ────────────────────────────────────────────────────────
     def test_matches_bare_md_url(self):
         assert self._source()._matches("https://example.com/path/SKILL.md") is True
@@ -378,6 +444,38 @@ class TestUrlSource:
 
     # ── fetch ───────────────────────────────────────────────────────────
 
+
+    @patch("tools.skills_hub._ssrf_safe_http_get")
+    def test_fetch_skips_missing_support_file_instead_of_aborting(self, mock_get):
+        # One referenced support file 404s; the other is reachable. The
+        # install should still succeed with the file that could be fetched,
+        # rather than aborting the whole fetch (regression for a bug where
+        # any single missing companion file failed the entire URL install).
+        skill_md = (
+            "---\n"
+            "name: my-skill\n"
+            "description: Has support files.\n"
+            "---\n\n"
+            "See `references/good.md` and `references/missing.md`.\n"
+        )
+
+        def _side_effect(url, **kwargs):
+            if url.endswith("SKILL.md"):
+                return MagicMock(status_code=200, text=skill_md)
+            if url.endswith("references/good.md"):
+                return MagicMock(status_code=200, content=b"good content")
+            if url.endswith("references/missing.md"):
+                return MagicMock(status_code=404)
+            raise AssertionError(f"unexpected URL: {url}")
+
+        mock_get.side_effect = _side_effect
+
+        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+        assert bundle.files["SKILL.md"] == skill_md
+        assert bundle.files["references/good.md"] == b"good content"
+        assert "references/missing.md" not in bundle.files
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
@@ -1158,11 +1256,27 @@ class TestInstallPathSafety:
     """
 
     @pytest.fixture
-    def isolated_skills_dir(self, tmp_path, monkeypatch):
+    def isolated_skills_dir(self, tmp_path):
+        import tools.skills_hub as hub
+
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        monkeypatch.setattr("tools.skills_hub.SKILLS_DIR", skills_dir)
-        return skills_dir
+        # SKILLS_DIR is a PEP 562 dynamic attribute (resolved per-access via
+        # module __getattr__). monkeypatch.setattr must NOT be used here: it
+        # captures __getattr__'s live-resolved Path as the "original" value
+        # and re-installs it as a REAL module attribute on teardown, which
+        # permanently shadows dynamic resolution — every later test in the
+        # process then sees this test's tmp dir as the skills root. Set the
+        # override attribute directly and delete it on teardown so the
+        # module returns to dynamic resolution.
+        setattr(hub, "SKILLS_DIR", skills_dir)
+        try:
+            yield skills_dir
+        finally:
+            try:
+                delattr(hub, "SKILLS_DIR")
+            except AttributeError:
+                pass
 
     @pytest.fixture
     def patch_lock_file(self, monkeypatch):
@@ -1804,3 +1918,70 @@ class TestLoadHermesIndex:
 
         data = hub._load_hermes_index()
         assert data == {"skills": [{"name": "stale"}]}
+
+
+# ---------------------------------------------------------------------------
+# Referenced-path extraction & missing support files (regression: a prose
+# glob or a repo-only dev tool referenced in SKILL.md must not abort install)
+# ---------------------------------------------------------------------------
+
+
+class TestReferencedSupportPaths:
+    def test_ignores_globs_placeholders_and_truncated_tokens(self):
+        md = (
+            "Load `references/type-*.md` before drawing, and "
+            "`references/type-<name>.md` for the matching type.\n"
+            "Real files: [flowchart](references/type-flowchart.md) and "
+            "`references/type-architecture.md`.\n"
+        )
+        assert _referenced_support_paths(md) == {
+            "references/type-flowchart.md",
+            "references/type-architecture.md",
+        }
+
+    def test_keeps_real_backtick_references(self):
+        md = "Run `python3 scripts/self_check.py <file>` and see `references/guide.md`.\n"
+        assert _referenced_support_paths(md) == {
+            "scripts/self_check.py",
+            "references/guide.md",
+        }
+
+
+class TestGitHubSourceFetchMissingReferencedFile:
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        return GitHubSource(auth=auth)
+
+    def test_fetch_skips_missing_referenced_file_and_keeps_the_rest(self):
+        md = (
+            "---\nname: demo\ndescription: demo\n---\n\n"
+            "See [guide](references/guide.md) and `references/missing.md`.\n"
+        )
+        tree_entries = [
+            {"path": "skills/demo/references/guide.md", "type": "blob", "mode": "100644"},
+        ]
+        source = self._source()
+        with patch.object(source, "_fetch_file_content", return_value=md), \
+             patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
+             patch.object(source, "_fetch_file_bytes", return_value=b"# guide"):
+            bundle = source.fetch("owner/repo/skills/demo")
+
+        assert bundle is not None
+        assert bundle.name == "demo"
+        # The present referenced file is bundled…
+        assert bundle.files["references/guide.md"] == b"# guide"
+        # …and the missing one is warned about and skipped, not fatal.
+        assert "references/missing.md" not in bundle.files
+
+
+class TestUrlSourceFetchMissingReferencedFile:
+    def test_fetch_skips_missing_referenced_file(self):
+        md = "---\nname: demo\ndescription: demo\n---\n\nSee `references/missing.md`.\n"
+        source = UrlSource()
+        with patch.object(source, "_fetch_text", return_value=md), \
+             patch.object(source, "_fetch_bytes", return_value=None):
+            bundle = source.fetch("https://example.com/skills/demo/SKILL.md")
+
+        assert bundle is not None
+        assert bundle.name == "demo"
+        assert "references/missing.md" not in bundle.files

@@ -61,7 +61,6 @@ from tools.computer_use.backend import (
     ComputerUseBackend,
     UIElement,
 )
-from tools.computer_use.browser_route import CuaTypedBrowserRoute
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +218,7 @@ _NON_APP_WINDOW_TITLE_PREFIXES = (
 # Setting it to "0" disables telemetry; absence => the binary's own default
 # (telemetry ON upstream).
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
+_CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
 def _computer_use_cfg() -> Dict[str, Any]:
@@ -310,26 +310,6 @@ def _cua_capability_manifest() -> Optional[str]:
     return raw.strip()
 
 
-def _cua_grant_existing_profile() -> bool:
-    """True when the user pre-authorized existing-profile browser attachment.
-
-    Reads ``computer_use.grant_existing_profile`` (default False). This is
-    cua-driver's trusted-launcher grant. Hermes passes
-    ``--grant existing-profile`` when it launches the standard-mode runtime.
-    On macOS it also selects a private socket so the newly configured
-    CuaDriver.app runtime cannot collide with an already-running default
-    daemon. The setting never applies to bounded mode, where the reviewed
-    capability manifest owns authorization.
-
-    It DOES apply to unrestricted mode. An approval bypass (``--yolo``,
-    ``-z``) is consent to skip prompts, not consent to read an existing
-    browser profile's live pages, cookies, and storage, so the host-side
-    floor in ``CuaTypedBrowserRoute.prepare`` enforces this key even when the
-    private unrestricted daemon would answer the prepare.
-    """
-    return bool(_computer_use_cfg().get("grant_existing_profile", False))
-
-
 def _manifest_is_mode_independent(path: str) -> bool:
     """True when this capability manifest may accompany any permission mode.
 
@@ -361,36 +341,6 @@ def _manifest_is_mode_independent(path: str) -> bool:
     return isinstance(version, int) and not isinstance(version, bool) and version >= 3
 
 
-def _standard_runtime_launch_args(
-    args: List[str],
-    *,
-    grant_existing_profile: bool,
-    platform: str,
-    socket_path: Optional[str] = None,
-) -> Tuple[List[str], Optional[str]]:
-    """Return MCP args and any private runtime socket owned by this transport.
-
-    Windows and Linux run the standard runtime in the MCP process, so the
-    launch grant can be passed directly. macOS proxies through CuaDriver.app;
-    a grant must therefore launch a fresh app daemon on a private socket
-    instead of trying to reconfigure the default daemon.
-
-    ``platform`` is explicit so this policy can be tested as a pure function
-    on every CI host.
-    """
-    result = list(args)
-    if not grant_existing_profile:
-        return result, None
-    result.extend(["--grant", "existing-profile"])
-    if platform != "darwin":
-        return result, None
-    private_socket = socket_path or os.path.join(
-        tempfile.gettempdir(), f"hermes-cua-standard-{uuid.uuid4().hex[:12]}.sock"
-    )
-    result.extend(["--socket", private_socket])
-    return result, private_socket
-
-
 def _computer_use_max_image_dimension() -> Optional[int]:
     """Longest-edge cap for cua-driver screenshots, or None to leave unset.
 
@@ -407,15 +357,20 @@ def _computer_use_max_image_dimension() -> Optional[int]:
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Return the environment dict for spawning cua-driver.
 
-    Starts from ``base_env`` (defaults to ``os.environ``) and, when telemetry
-    is disabled (the default), injects ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``.
-    When the user has opted in, the var is left untouched so cua-driver uses
-    its own default. Used by every cua-driver spawn site (MCP backend, status,
-    doctor, install) so the policy is applied consistently.
+    Starts from ``base_env`` (defaults to ``os.environ``), applies the Hermes
+    telemetry policy, and bridges an explicit native-Wayland config opt-in only
+    when the child has a Wayland display. Used by every cua-driver spawn site
+    so CLI and gateway runtimes share one policy.
     """
     env = dict(base_env if base_env is not None else os.environ)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    if (
+        sys.platform == "linux"
+        and env.get("WAYLAND_DISPLAY")
+        and bool(_computer_use_cfg().get("native_wayland", False))
+    ):
+        env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
 
@@ -602,11 +557,12 @@ def _resolve_cua_driver_app_path(driver_cmd: str) -> Optional[str]:
     chain never validated. If the resolved driver does not live inside an
     app bundle, the caller fails closed with install guidance.
     """
+    resolved_driver_cmd = os.path.realpath(driver_cmd)
     marker = ".app/Contents/MacOS/"
-    marker_index = driver_cmd.find(marker)
+    marker_index = resolved_driver_cmd.find(marker)
     if marker_index < 0:
         return None
-    candidate = driver_cmd[: marker_index + len(".app")]
+    candidate = resolved_driver_cmd[: marker_index + len(".app")]
     executable = os.path.join(candidate, "Contents", "MacOS", "cua-driver")
     if os.path.isfile(executable) and os.access(executable, os.X_OK):
         return candidate
@@ -614,11 +570,11 @@ def _resolve_cua_driver_app_path(driver_cmd: str) -> Optional[str]:
 
 
 # The only bundle identity the private daemon may launch through, and the
-# team that signs official cua-driver releases. Exact matches only: a
+# teams that sign official cua-driver releases. Exact matches only: a
 # suffixed identifier ("com.trycua.driver.evil") or a different non-empty
 # team is an impostor bundle, not a variant.
 _CUA_DRIVER_BUNDLE_ID = "com.trycua.driver"
-_CUA_DRIVER_TEAM_ID = "4YEC26S9KF"
+_CUA_DRIVER_TEAM_IDS = ("4YEC26S9KF", "YCK386LBJ7")
 
 
 def _validate_cua_driver_app_signature(app_path: str) -> None:
@@ -627,7 +583,7 @@ def _validate_cua_driver_app_signature(app_path: str) -> None:
     Launching via ``/usr/bin/open`` hands LaunchServices whatever bundle sits
     at the path, so the TCC-identity fix must not become a launcher for
     arbitrary apps: require ``codesign -dv`` to report EXACTLY
-    ``Identifier=com.trycua.driver`` and the expected TeamIdentifier.
+    ``Identifier=com.trycua.driver`` and an expected TeamIdentifier.
     ``TeamIdentifier=not set`` (unsigned/ad-hoc dev builds) is allowed only
     when ``computer_use.allow_unsigned_driver: true`` is set in config.yaml —
     the escape hatch for local driver development, never the default. Raises
@@ -665,13 +621,13 @@ def _validate_cua_driver_app_signature(app_path: str) -> None:
             f"CuaDriver.app at {app_path} has identifier {identifier!r}, "
             f"expected {_CUA_DRIVER_BUNDLE_ID!r}; refusing to launch it."
         )
-    if team == _CUA_DRIVER_TEAM_ID:
+    if team in _CUA_DRIVER_TEAM_IDS:
         return
     if team in ("", "not set") and _computer_use_cfg().get("allow_unsigned_driver") is True:
         return
     raise RuntimeError(
-        f"CuaDriver.app at {app_path} is signed by team {team!r}, expected "
-        f"{_CUA_DRIVER_TEAM_ID!r}; refusing to launch it. (Set "
+        f"CuaDriver.app at {app_path} is signed by team {team!r}, expected one of "
+        f"{_CUA_DRIVER_TEAM_IDS!r}; refusing to launch it. (Set "
         "computer_use.allow_unsigned_driver: true in config.yaml only for "
         "local unsigned driver builds.)"
     )
@@ -1717,10 +1673,6 @@ class _CuaDriverSession:
         # Used to revive a logical ended-session rejection without
         # recursive call_tool re-entry or backend-owned state (#71166).
         self._declared_session_id: Optional[str] = None
-        # A macOS standard-mode launch grant belongs to the app daemon that
-        # receives it. Select and own a private endpoint so an existing
-        # default daemon cannot reject or silently miss the requested grant.
-        self._owned_standard_runtime_socket: Optional[str] = None
         self._transport_generation = 0
         self._transport_reset_callback: Optional[Any] = None
 
@@ -1764,13 +1716,6 @@ class _CuaDriverSession:
                 child_env = self._embedded_daemon.child_env()
             else:
                 command, args = _resolve_mcp_invocation(driver_cmd)
-                args, owned_socket = _standard_runtime_launch_args(
-                    args,
-                    grant_existing_profile=_cua_grant_existing_profile(),
-                    platform=sys.platform,
-                    socket_path=self._owned_standard_runtime_socket,
-                )
-                self._owned_standard_runtime_socket = owned_socket
                 child_env = cua_driver_child_env()
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
@@ -1879,17 +1824,8 @@ class _CuaDriverSession:
         with self._lock:
             if self._started:
                 return
-            # A previous transport may have died without taking down its
-            # private app daemon. Stop that exact endpoint before relaunching
-            # with --grant; grants cannot modify an already-running runtime.
-            if self._owned_standard_runtime_socket is not None:
-                self._stop_owned_standard_runtime_locked()
             self._bridge.start()
-            try:
-                self._start_lifecycle_locked()
-            except Exception:
-                self._stop_owned_standard_runtime_locked()
-                raise
+            self._start_lifecycle_locked()
             self._started = True
 
     def _start_lifecycle_locked(self) -> None:
@@ -1935,11 +1871,9 @@ class _CuaDriverSession:
     def stop(self) -> None:
         with self._lock:
             if not self._started:
-                self._stop_owned_standard_runtime_locked()
                 return
             self._started = False
             self._stop_lifecycle_locked()
-            self._stop_owned_standard_runtime_locked()
 
     def set_transport_reset_callback(self, callback: Any) -> None:
         """Register a synchronous cache invalidation hook for transport swaps."""
@@ -1953,34 +1887,6 @@ class _CuaDriverSession:
             callback()
         except Exception as exc:
             logger.debug("cua-driver transport reset callback failed: %s", exc)
-
-    def _stop_owned_standard_runtime_locked(self) -> None:
-        """Stop the exact private macOS app daemon launched for a grant."""
-        socket_path = getattr(self, "_owned_standard_runtime_socket", None)
-        if not socket_path:
-            return
-        self._owned_standard_runtime_socket = None
-        driver_command = resolve_cua_driver_cmd()
-        if driver_command:
-            from tools.environments.local import _sanitize_subprocess_env
-
-            try:
-                subprocess.run(
-                    [driver_command, "stop", "--socket", socket_path],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=3.0,
-                    creationflags=windows_hide_flags(),
-                    env=_sanitize_subprocess_env(cua_driver_child_env()),
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
-        if os.path.exists(socket_path):
-            try:
-                os.remove(socket_path)
-            except OSError:
-                pass
 
     def _stop_lifecycle_locked(self) -> None:
         """Signal shutdown + wait for the lifecycle coroutine to unwind.
@@ -2194,7 +2100,6 @@ class _CuaDriverSession:
             except Exception as e:
                 logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
         self._started = False
-        self._stop_owned_standard_runtime_locked()
         # Clear stale capability state; the next start populates from scratch.
         self._capabilities = {}
         self._tool_schemas = {}
@@ -2791,31 +2696,11 @@ class CuaDriverBackend(ComputerUseBackend):
         # part of the required Cua Driver 0.20 runtime contract checked at
         # backend startup.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
-        self._typed_browser = CuaTypedBrowserRoute(
-            session_id=self._session_id,
-            call_tool=self._session.call_tool,
-            has_tool=self._session._has_tool,
-        )
         self._session.set_transport_reset_callback(self._handle_transport_reset)
 
     def _handle_transport_reset(self) -> None:
         """Invalidate every capability minted by the replaced transport."""
         self._clear_active_target()
-        route = getattr(self, "_typed_browser", None)
-        if route is not None:
-            route.state.clear()
-
-    def _browser_route(self) -> CuaTypedBrowserRoute:
-        """Return the per-backend typed route, including test-constructed instances."""
-        route = getattr(self, "_typed_browser", None)
-        if route is None:
-            route = CuaTypedBrowserRoute(
-                session_id=self._session_id,
-                call_tool=self._session.call_tool,
-                has_tool=self._session._has_tool,
-            )
-            self._typed_browser = route
-        return route
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -3967,35 +3852,6 @@ class CuaDriverBackend(ComputerUseBackend):
         # property. It is a standalone native focus operation, not a
         # session-scoped input action.
         return self._action("bring_to_front", args, inject_session=False)
-
-    # ── Typed browser (cua-driver 0.9 contract) ───────────────────
-    def typed_browser_state(self, **kwargs: Any) -> Dict[str, Any]:
-        """Exact-bind a native browser window or read fresh semantic state."""
-        return self._browser_route().observe(**kwargs)
-
-    def typed_browser_prepare(self, **kwargs: Any) -> Dict[str, Any]:
-        """Prepare an explicitly approved driver-owned browser profile.
-
-        The authorization inputs are resolved here, from config and this
-        backend's immutable mode — never from model-supplied kwargs.
-        """
-        kwargs.pop("grant_existing_profile", None)
-        kwargs.pop("permission_mode", None)
-        return self._browser_route().prepare(
-            grant_existing_profile=_cua_grant_existing_profile(),
-            permission_mode=self.permission_mode,
-            **kwargs,
-        )
-
-    def typed_browser_action(
-        self,
-        driver_tool: str,
-        *,
-        tab_id: Optional[str] = None,
-        args: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Run one namespaced typed-browser mutation in this exact route."""
-        return self._browser_route().mutate(driver_tool, tab_id=tab_id, args=args)
 
     # ── Pointer + display introspection ─────────────────────────────
 

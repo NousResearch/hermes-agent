@@ -53,8 +53,10 @@ _lock = threading.RLock()
 
 
 def _connect() -> sqlite3.Connection:
+    from cron.jobs import _ensure_cron_dir
+
     path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_cron_dir(path.parent)
     return sqlite3.connect(path, timeout=5)
 
 

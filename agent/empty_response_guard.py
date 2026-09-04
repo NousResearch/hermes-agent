@@ -15,15 +15,13 @@ like this).
 
 Two independent guards, both failing OPEN to today's behaviour:
 
-1. **Deterministic-empty detection** — two consecutive empty attempts,
-   both with usage present and ``output_tokens == 0``, from the same
-   (model, provider, finish_reason), are treated as deterministic: the
-   same prompt will keep producing the same empty. Remaining retries are
-   skipped and the loop proceeds straight to the fallback chain (a
-   different model may behave differently). Attempts with missing usage
-   or ``output_tokens > 0`` (model generated *something* — think-block
-   stripping, whitespace, flaky decoding) never classify as deterministic
-   and keep the full retry budget.
+1. **Deterministic-empty detection** — two consecutive empty attempts from
+   the same (model, provider, finish_reason) are treated as deterministic
+   when usage proves zero output, or when usage is absent and the assembled
+   responses contain neither content nor reasoning. Remaining retries are
+   skipped and the loop proceeds straight to the fallback chain (a different
+   model may behave differently). Mixed evidence or any generated tokens keep
+   the full retry budget.
 
 2. **Cost-aware retry budget** — when the estimated input cost of a
    single empty attempt exceeds the configured threshold (default
@@ -78,6 +76,7 @@ class EmptyAttempt:
     finish_reason: str
     usage_present: bool
     zero_output: bool
+    observed_generation: bool
 
     @property
     def signature(self) -> tuple:
@@ -201,7 +200,13 @@ def _zero_output(agent: Any, response: Any) -> tuple:
     return (True, (output + reasoning) == 0)
 
 
-def record_empty_attempt(agent: Any, *, finish_reason: str, response: Any) -> None:
+def record_empty_attempt(
+    agent: Any,
+    *,
+    finish_reason: str,
+    response: Any,
+    observed_generation: bool = True,
+) -> None:
     """Record one empty completion in the current streak.
 
     Must be called before ``_empty_content_retries`` is incremented for
@@ -222,6 +227,7 @@ def record_empty_attempt(agent: Any, *, finish_reason: str, response: Any) -> No
             finish_reason=str(finish_reason or ""),
             usage_present=usage_present,
             zero_output=zero_output,
+            observed_generation=bool(observed_generation),
         )
     )
 
@@ -234,10 +240,10 @@ def record_empty_attempt(agent: Any, *, finish_reason: str, response: Any) -> No
 def deterministic_empty(agent: Any) -> bool:
     """True when the current streak looks deterministic.
 
-    Requires >= 2 consecutive attempts, ALL with usage present, zero
-    output tokens, and an identical (model, provider, finish_reason)
-    signature. Any attempt with missing usage or non-zero output keeps
-    this False (fail open — transients deserve their retries).
+    Requires >= 2 consecutive attempts with an identical (model, provider,
+    finish_reason) signature. Usage-backed attempts must all prove zero output.
+    Usage-absent attempts must all have no observed content or reasoning. Mixed
+    evidence fails open so ambiguous transients keep their retries.
     """
     if not guard_enabled(agent):
         return False
@@ -245,10 +251,12 @@ def deterministic_empty(agent: Any) -> bool:
     if len(attempts) < 2:
         return False
     first = attempts[0]
-    return all(
-        a.usage_present and a.zero_output and a.signature == first.signature
-        for a in attempts
+    same_signature = all(a.signature == first.signature for a in attempts)
+    usage_proves_empty = all(a.usage_present and a.zero_output for a in attempts)
+    response_proves_empty = all(
+        not a.usage_present and not a.observed_generation for a in attempts
     )
+    return same_signature and (usage_proves_empty or response_proves_empty)
 
 
 def empty_retry_budget(agent: Any, response: Any) -> int:

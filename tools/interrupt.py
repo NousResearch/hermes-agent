@@ -17,6 +17,7 @@ Usage in tools:
 import logging
 import os
 import threading
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +80,35 @@ def is_interrupted() -> bool:
     Safe to call from any thread — each thread only sees its own
     interrupt state.
     """
+    return is_thread_interrupted(threading.current_thread().ident)
+
+
+def is_thread_interrupted(thread_id: int | None) -> bool:
+    """Check whether *thread_id* has an interrupt bit set.
+
+    Used when a wait is moved onto a deadline worker (``run_bounded_sync``)
+    so ``/stop`` targeting the original tool-worker tid still kills the
+    subprocess (#94285). ``None`` is never interrupted.
+    """
+    if thread_id is None:
+        return False
+    with _lock:
+        return thread_id in _interrupted_threads
+
+
+def run_if_not_interrupted(callback: Callable[[], None]) -> bool:
+    """Run a state transition atomically with current-thread interruption.
+
+    Returns ``False`` without calling ``callback`` when the current thread is
+    already interrupted. The callback runs under the interrupt lock and must
+    not block or re-enter any interrupt API.
+    """
     tid = threading.current_thread().ident
     with _lock:
-        return tid in _interrupted_threads
+        if tid in _interrupted_threads:
+            return False
+        callback()
+        return True
 
 
 def get_interrupt_reason() -> str | None:

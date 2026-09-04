@@ -543,3 +543,18 @@ def _query_windows_pipe(
 def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Convenience wrapper: ``identify`` the gateway serving ``home``."""
     return query_gateway_control(home, "identify", timeout=timeout)
+
+
+def pause_gateway_for_update(
+    home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT
+) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to drain and exit for an update.
+
+    Step 2 of the socket migration (#92091). Returns the gateway's ACK —
+    ``{"pausing": bool, "already_stopping": bool, "pid": int,
+    "drain_timeout": float}`` — or None when no gateway answers (older
+    gateway without the verb, no socket, dead socket). None means the
+    caller falls back to the legacy pause path (signals / tree-kill),
+    exactly as before this verb existed.
+    """
+    return query_gateway_control(home, "pause-for-update", timeout=timeout)

@@ -163,8 +163,8 @@ const reasoningConfigPayload = (arg: string, sid: string) => {
 
 export const sessionCommands: SlashCommand[] = [
   {
-    aliases: ['bg', 'btw'],
-    name: 'background',
+    aliases: ['background'],
+    name: 'bg',
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.backgroundUsage'))
@@ -178,6 +178,25 @@ export const sessionCommands: SlashCommand[] = [
 
           patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
           ctx.transcript.sys(translate(ctx.ui.locale, 'sys.backgroundStarted', { taskId: r.task_id }))
+        })
+      )
+    }
+  },
+
+  {
+    name: 'btw',
+    run: (arg, ctx) => {
+      if (!arg) {
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.btwUsage'))
+      }
+
+      ctx.gateway.rpc<BackgroundStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
+        ctx.guarded<BackgroundStartResponse>(r => {
+          if (!r.task_id) {
+            return
+          }
+
+          ctx.transcript.sys(translate(ctx.ui.locale, 'sys.btwStarted', { taskId: r.task_id }))
         })
       )
     }

@@ -80,8 +80,10 @@ class TestRegistry:
     def test_requires_proper_prefix(self):
         register_stable_prefix("scaffold")
         assert find_stable_prefix("scaffold volatile") == "scaffold"
-        # Exact match would leave an empty volatile block — never split.
+        # Exact match or whitespace-only tail would leave an empty/whitespace volatile block — never split.
         assert find_stable_prefix("scaffold") is None
+        assert find_stable_prefix("scaffold   ") is None
+        assert find_stable_prefix("scaffold\n\n\t") is None
         assert find_stable_prefix("other") is None
 
     def test_longest_registered_prefix_wins(self):

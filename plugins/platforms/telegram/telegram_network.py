@@ -21,6 +21,37 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 
+# TCP keepalive so a half-open or CLOSE-WAIT long-poll errors out instead of
+# blocking getUpdates indefinitely. Windows does not enable SO_KEEPALIVE on
+# new sockets by default, so a dead api.telegram.org peer can hang forever
+# (#87057). Idle/interval knobs are best-effort — not every Python/OS combo
+# exposes TCP_KEEPIDLE / TCP_KEEPALIVE.
+_TCP_KEEPALIVE_IDLE_S = 30
+_TCP_KEEPALIVE_INTERVAL_S = 10
+_TCP_KEEPALIVE_COUNT = 3
+
+
+def tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
+    """Return ``setsockopt`` tuples that enable TCP keepalive on new sockets.
+
+    Pure data for httpx/httpcore ``socket_options``. Safe on every host: the
+    list always includes ``SO_KEEPALIVE`` and adds idle/interval/count only
+    when the running interpreter exposes those option names.
+    """
+    options: list[tuple[int, int, int]] = [
+        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    ]
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    if idle is not None:
+        options.append((socket.IPPROTO_TCP, idle, _TCP_KEEPALIVE_IDLE_S))
+    interval = getattr(socket, "TCP_KEEPINTVL", None)
+    if interval is not None:
+        options.append((socket.IPPROTO_TCP, interval, _TCP_KEEPALIVE_INTERVAL_S))
+    count = getattr(socket, "TCP_KEEPCNT", None)
+    if count is not None:
+        options.append((socket.IPPROTO_TCP, count, _TCP_KEEPALIVE_COUNT))
+    return options
+
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
@@ -73,6 +104,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
+        transport_kwargs.setdefault("socket_options", tcp_keepalive_socket_options())
         self._transport_kwargs = transport_kwargs
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._primary_lock = asyncio.Lock()

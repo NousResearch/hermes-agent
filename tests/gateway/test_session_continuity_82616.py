@@ -201,6 +201,28 @@ class TestPeerResolutionRecency:
 
 
 class TestLoadTranscriptReroutes:
+    def test_load_transcript_raises_when_message_read_fails(self, tmp_path, monkeypatch):
+        from gateway.session import SessionStore, TranscriptReadError
+
+        from gateway.config import GatewayConfig
+
+        store = SessionStore(sessions_dir=tmp_path / "gw-failed-read", config=GatewayConfig())
+        db = store._db
+        assert db is not None
+        monkeypatch.setattr(db, "get_compression_tip", lambda _session_id: None)
+
+        def _malformed(_session_id, *, repair_alternation):
+            assert repair_alternation is True
+            raise RuntimeError("database disk image is malformed")
+
+        monkeypatch.setattr(db, "get_messages_as_conversation", _malformed)
+
+        with pytest.raises(TranscriptReadError) as exc_info:
+            store.load_transcript("existing-session")
+
+        assert exc_info.value.session_id == "existing-session"
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
     def test_load_transcript_follows_reroute_chain(self, tmp_path):
         from gateway.session import SessionStore
 

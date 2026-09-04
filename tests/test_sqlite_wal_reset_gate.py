@@ -69,6 +69,7 @@ class TestApplyWalWalResetGate:
         assert mode == "delete"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
         assert any("instead of enabling WAL" in r.getMessage() for r in caplog.records)
+        assert any(sys.executable in r.getMessage() for r in caplog.records)
         conn.close()
 
     def test_existing_wal_left_alone_when_vulnerable(

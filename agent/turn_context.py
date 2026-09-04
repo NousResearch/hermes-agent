@@ -44,11 +44,88 @@ from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import (
+    anchored_context_tokens,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _preflight_request_tokens(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    system_prompt: str,
+) -> int:
+    """Token estimate for automatic preflight compression.
+
+    When the upcoming request is eligible for native Responses compaction,
+    count the checkpoint-pruned wire payload rather than the full durable
+    transcript. Auxiliary compression still uses the generic estimator
+    (``native_compaction_eligible=False``).
+
+    Usage-anchored fast path: when a provider-reported usage anchor is
+    valid for ``messages`` (see ``anchored_context_tokens``), it already
+    covers system prompt + tool schemas + full history EXACTLY as the
+    provider counted them, with estimation confined to the messages
+    appended since that response. Prefer it over every heuristic.
+    """
+    anchored = anchored_context_tokens(
+        messages, getattr(agent, "_usage_anchor", None)
+    )
+    if anchored is not None:
+        return anchored
+    tools = getattr(agent, "tools", None) or None
+    try:
+        from agent.codex_responses_adapter import (
+            estimate_native_responses_preflight_tokens,
+        )
+
+        native = estimate_native_responses_preflight_tokens(
+            agent,
+            messages,
+            system_prompt=system_prompt or "",
+            tools=tools,
+        )
+        if isinstance(native, int) and not isinstance(native, bool) and native >= 0:
+            return native
+    except Exception:
+        logger.debug(
+            "native Responses preflight estimate unavailable; "
+            "using generic transcript estimate",
+            exc_info=True,
+        )
+    if _agent_stale_thinking_on_wire(agent):
+        return estimate_request_tokens_rough(
+            messages,
+            system_prompt=system_prompt or "",
+            tools=tools,
+        )
+    return estimate_request_tokens_rough(
+        messages,
+        system_prompt=system_prompt or "",
+        tools=tools,
+        charge_stale_thinking=False,
+    )
+
+
+def _agent_stale_thinking_on_wire(agent: Any) -> bool:
+    """Whether the agent's active route replays stale thinking text (#84371).
+
+    Route facts unavailable (test doubles, partially-built agents) default to
+    ``True`` — the conservative full charge.
+    """
+    try:
+        from agent.message_sanitization import stale_thinking_reaches_wire
+
+        return stale_thinking_reaches_wire(
+            getattr(agent, "api_mode", "") or "",
+            getattr(agent, "provider", "") or "",
+            getattr(agent, "model", "") or "",
+            getattr(agent, "base_url", "") or "",
+        )
+    except Exception:
+        return True
 
 
 def compose_user_api_content(
@@ -328,6 +405,23 @@ def compression_made_progress(
 _compression_made_progress = compression_made_progress
 
 
+class PreflightCompressionTimedOut(RuntimeError):
+    """Raised when an oversized turn cannot safely finish preflight."""
+
+
+def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
+    """Stop an oversized turn instead of sending its unchanged provider payload."""
+    from agent.conversation_compression import context_compression_timed_out
+
+    if not context_compression_timed_out(agent):
+        return
+    raise PreflightCompressionTimedOut(
+        "Context compression timed out before it could commit while the request "
+        f"was still approximately {request_tokens:,} tokens. The provider call "
+        "was not sent. Run /compress and wait for it to finish, then retry."
+    )
+
+
 def _review_fork_first_request_pending(agent: Any) -> bool:
     """Whether a detached review fork has yet to send its first provider request.
 
@@ -399,6 +493,7 @@ def _should_idle_compact(
     tokens: int,
     floor_tokens: int,
     cooldown_active: bool,
+    last_compaction_tokens: int = 0,
 ) -> bool:
     """Decide whether an idle-triggered compaction should run this turn.
 
@@ -414,6 +509,23 @@ def _should_idle_compact(
     *to*), so a small idle thread never pays for a summarisation that saves
     nothing, and it defers to an active compression-failure cooldown.
 
+    ``floor_tokens`` alone is a *theoretical* target (``threshold_tokens ×
+    summary_target_ratio``) that a real pass routinely misses: the system
+    prompt, the tool schemas and the protected head/tail are an
+    incompressible floor. A session that compacted to well above that target
+    therefore stays above it forever, so every later idle resume re-runs a
+    full summarisation over a transcript that has not grown — minutes of
+    silently blocked prompt on a slow route, reclaiming nothing (#97239).
+
+    ``last_compaction_tokens`` is what the previous pass on this session
+    actually produced (``ContextCompressor.last_compression_rough_tokens``,
+    the same ``estimate_request_tokens_rough`` shape as ``tokens``). When it
+    is known, require the transcript to have accumulated at least one
+    ``floor_tokens`` worth of *new* content on top of it before paying for
+    another pass. ``0`` — no compaction recorded yet, or the counter reset by
+    a rebind/recalibration — keeps the original floor semantics exactly, so
+    the first idle compaction of any session is unaffected.
+
     Pure predicate so the policy is unit-testable without a live agent.
     """
     if not enabled or idle_after_seconds <= 0:
@@ -422,7 +534,10 @@ def _should_idle_compact(
         return False
     if cooldown_active:
         return False
-    return tokens > floor_tokens
+    effective_floor = floor_tokens
+    if last_compaction_tokens > 0:
+        effective_floor = max(effective_floor, last_compaction_tokens + floor_tokens)
+    return tokens > effective_floor
 
 
 @dataclass
@@ -463,6 +578,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
+    persist_user_platform_id: Optional[str] = None,
     *,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
@@ -540,13 +656,18 @@ def build_turn_context(
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
     # connect, missing the bounded startup wait) lands in THIS turn's tool
-    # snapshot.  This is cache-safe by construction: it runs in the per-turn
+    # snapshot.  Timing is cache-safe by construction: it runs in the per-turn
     # prologue, before this turn's first API call assembles ``tools=``, so it
-    # only ever extends a fresh request prefix — it never mutates the cached
-    # prefix of an in-flight turn.  No-op when no MCP servers are registered
-    # (the common case, gated by the cheap ``has_registered_mcp_tools`` check)
-    # or when the tool set is unchanged (``refresh_agent_mcp_tools`` diffs by
-    # name and leaves the snapshot untouched on no-change).
+    # never mutates the prefix of an in-flight turn.  ``preserve_prefix`` makes
+    # the *content* cache-safe too (#100336): a plain rebuild re-derives the
+    # array from live availability, so a flapping ``check_fn`` silently drops a
+    # tool and a late arrival splices into sorted position — either one forks
+    # the tool block and re-prefills the whole history behind it, every turn it
+    # happens.  With the flag the live order is authoritative and the array
+    # only ever grows.  No-op when no MCP servers are registered (the common
+    # case, gated by the cheap ``has_registered_mcp_tools`` check) or when the
+    # tool set is unchanged (``refresh_agent_mcp_tools`` diffs by name and
+    # leaves the snapshot untouched on no-change).
     try:
         if not getattr(agent, "_skip_mcp_refresh", False):
             # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
@@ -561,7 +682,9 @@ def build_turn_context(
             if "tools.mcp_tool" in _sys.modules:
                 from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
                 if has_registered_mcp_tools():
-                    refresh_agent_mcp_tools(agent, quiet_mode=True)
+                    refresh_agent_mcp_tools(
+                        agent, quiet_mode=True, preserve_prefix=True,
+                    )
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 
@@ -576,6 +699,7 @@ def build_turn_context(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
+    agent._persist_user_message_platform_id = persist_user_platform_id
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -713,6 +837,13 @@ def build_turn_context(
         if persist_user_display_metadata:
             user_msg["display_metadata"] = persist_user_display_metadata
 
+    # Stamp the platform-side message id (e.g. the Discord/Telegram message id)
+    # as metadata on the user turn so it survives the early crash-resilience
+    # persist below (the turn-start flush).  Load-bearing for restart
+    # drain-window recovery: a recovery pass dedups via
+    # ``has_platform_message_id`` against this row.
+    if persist_user_platform_id is not None:
+        user_msg["platform_message_id"] = persist_user_platform_id
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -832,10 +963,15 @@ def build_turn_context(
         _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
         if _idle_gap >= _idle_after:
             _compressor = agent.context_compressor
-            _idle_tokens = estimate_request_tokens_rough(
+            # Route-aware pressure (#96995/#97602 class): on a compacted
+            # native-Codex session the generic durable-history figure
+            # overstates the wire by orders of magnitude and would fire an
+            # idle compaction the next request never needed. Reuse the
+            # preflight estimator (anchor → native pruned → generic).
+            _idle_tokens = _preflight_request_tokens(
+                agent,
                 messages,
-                system_prompt=active_system_prompt or "",
-                tools=agent.tools or None,
+                active_system_prompt or "",
             )
             # Post-compression target size: don't summarise a thread already
             # below what compaction would reduce it to.
@@ -845,6 +981,18 @@ def build_turn_context(
             _idle_cooldown = getattr(
                 _compressor, "get_active_compression_failure_cooldown", lambda: None
             )()
+            # What the previous pass on this session actually produced — the
+            # honest floor, versus the theoretical ``_idle_floor`` above. Type
+            # pin: minimal compressor doubles (SimpleNamespace / MagicMock)
+            # expose truthy non-ints here, and only a real int may raise the
+            # floor. Anything else falls back to 0 = original semantics.
+            _idle_last_compaction = getattr(
+                _compressor, "last_compression_rough_tokens", 0
+            )
+            if not isinstance(_idle_last_compaction, int) or isinstance(
+                _idle_last_compaction, bool
+            ):
+                _idle_last_compaction = 0
             if _should_idle_compact(
                 enabled=agent.compression_enabled,
                 idle_after_seconds=_idle_after,
@@ -852,14 +1000,16 @@ def build_turn_context(
                 tokens=_idle_tokens,
                 floor_tokens=_idle_floor,
                 cooldown_active=bool(_idle_cooldown),
+                last_compaction_tokens=_idle_last_compaction,
             ):
                 logger.info(
                     "Idle compaction: %ss idle >= %ss, ~%s tokens > %s floor "
-                    "(session %s)",
+                    "(last compaction produced ~%s) (session %s)",
                     int(_idle_gap),
                     _idle_after,
                     f"{_idle_tokens:,}",
                     f"{_idle_floor:,}",
+                    f"{_idle_last_compaction:,}" if _idle_last_compaction > 0 else "n/a",
                     agent.session_id or "none",
                 )
                 _idle_status = automatic_compaction_status_message(
@@ -915,10 +1065,10 @@ def build_turn_context(
             agent.context_compressor.threshold_tokens,
         )
     ):
-        _preflight_tokens = estimate_request_tokens_rough(
+        _preflight_tokens = _preflight_request_tokens(
+            agent,
             messages,
-            system_prompt=active_system_prompt or "",
-            tools=agent.tools or None,
+            active_system_prompt or "",
         )
         _compressor = agent.context_compressor
         # getattr guard: minimal compressor doubles (SimpleNamespace in the
@@ -958,10 +1108,18 @@ def build_turn_context(
         )
 
         if not _preflight_deferred:
-            _last = _compressor.last_prompt_tokens
-            # Do NOT overwrite the -1 sentinel (#36718).
-            if _last >= 0 and _preflight_tokens > _last:
-                _compressor.last_prompt_tokens = _preflight_tokens
+            # Display-only seed (see
+            # ContextCompressor.maybe_seed_preflight_display_tokens): a real
+            # provider reading always wins over the rough estimate, and the
+            # -1 post-compression sentinel (#36718) stays protected. On
+            # usage-less responses the seed also feeds the tool-loop
+            # compression gate — the one live path where an inflated seed
+            # could push compression below the user threshold.
+            _maybe_seed = getattr(
+                _compressor, "maybe_seed_preflight_display_tokens", None
+            )
+            if callable(_maybe_seed):
+                _maybe_seed(_preflight_tokens)
 
         _compression_cooldown = getattr(
             _compressor,
@@ -1012,6 +1170,34 @@ def build_turn_context(
                         _compress_block_reason = _info(_preflight_tokens)[1]
                     except Exception:
                         _compress_block_reason = None
+        if _should_compress_now:
+            # Managed local runtime: growing the window beats compressing —
+            # the ladder's design order (same seam as the conversation
+            # loop's pre-API gate; see _maybe_grow_local_window there).
+            try:
+                from agent.conversation_loop import _maybe_grow_local_window
+
+                _grown = _maybe_grow_local_window(
+                    agent, _compressor, _preflight_tokens
+                )
+            except Exception:
+                _grown = None
+            if _grown:
+                _compressor.update_model(
+                    agent.model,
+                    _grown,
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    api_mode=getattr(agent, "api_mode", "") or "",
+                )
+                agent._buffer_status(
+                    f"📈 Context window grown to {_grown // 1024}K "
+                    f"(local model; conversation continues uncompressed)"
+                )
+                _should_compress_now = _compressor.should_compress(
+                    _preflight_tokens
+                )
         if _should_compress_now:
             _preflight_compressed = True
             # Compression is actually running (block cleared / was never
@@ -1079,14 +1265,15 @@ def build_turn_context(
                 # lower token count — e.g. summarising tool outputs) is
                 # recognised as progress instead of being misread as
                 # "Cannot compress further". Fixes #39548.
-                _preflight_tokens = estimate_request_tokens_rough(
+                _preflight_tokens = _preflight_request_tokens(
+                    agent,
                     messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
+                    active_system_prompt or "",
                 )
                 if not _compression_made_progress(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
+                    _fail_closed_after_preflight_timeout(agent, _preflight_tokens)
                     _preflight_compression_blocked = True
                     break  # Cannot compress further: neither rows nor tokens moved
                 conversation_history = conversation_history_after_compression(
@@ -1246,10 +1433,16 @@ def build_turn_context(
                 if callable(_clear_warn):
                     _clear_warn()
             else:
-                _uncompressed_tokens = estimate_request_tokens_rough(
+                # Route-aware (#96995/#97602 class): the warn site in the
+                # conversation loop now measures the checkpoint-pruned wire
+                # payload on native-Codex sessions, so the re-arm must use
+                # the same figure — otherwise a compacted session that fits
+                # on the wire never clears the dedup and future genuine
+                # overflow warnings stay suppressed.
+                _uncompressed_tokens = _preflight_request_tokens(
+                    agent,
                     messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
+                    active_system_prompt or "",
                 )
                 if _uncompressed_tokens <= _ctx_len:
                     _clear_warn = getattr(

@@ -66,6 +66,43 @@ class TestReceiptLifecycle:
         assert gr["incomplete"] is False
         assert payload["fleet"][0]["profile"] == "default"
 
+    def test_fresh_recovery_result_reaches_persisted_receipt(self, receipt_home):
+        recovery = {
+            "requested": ["coder", "default", "ops"],
+            "verified": ["default"],
+            "relaunch_attempted": ["ops"],
+            "failed": ["coder"],
+            "skipped": [
+                {
+                    "profile": "desk",
+                    "kind": "serve",
+                    "supervisor": "desktop",
+                    "reason": "desktop app owns and respawns this serve backend",
+                }
+            ],
+        }
+
+        ur.begin_update_receipt()
+        ur.record_gateway_restart(
+            restarted_services=[],
+            incomplete=True,
+            phase_error="boom: module vanished mid-pull",
+            fresh_recovery=recovery,
+        )
+        path = _finalize("partial")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        persisted = payload["gateway_restart"]["fresh_recovery"]
+        assert {key: persisted[key] for key in recovery} == recovery
+        # Serve coverage is always persisted, even when the pass had nothing
+        # to report, so a reader can tell "no serve runtime" from "the field
+        # predates #92145".
+        assert persisted["serve_units"] == {"verified": [], "failed": []}
+        assert persisted["stale_runtimes"] == []
+        # The conservative vocabulary is the persisted contract: no bucket may
+        # rebrand an unverified relaunch as supervisor-backed success.
+        assert "succeeded" not in persisted
+
     def test_latest_pointer_written_and_readable(self, receipt_home):
         ur.begin_update_receipt()
         ur.record_step("git_pull", True)

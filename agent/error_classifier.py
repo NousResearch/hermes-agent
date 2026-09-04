@@ -57,6 +57,7 @@ class FailoverReason(enum.Enum):
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
+    image_corrupt = "image_corrupt"       # Provider says the image bytes are undecodable — shrinking won't help, strip and retry instead
 
     # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
@@ -67,6 +68,7 @@ class FailoverReason(enum.Enum):
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
+    reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -283,8 +285,47 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
     "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
     "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
+    # Vendors that reject the same oversized image without using the word
+    # "image".  MiniMax's Anthropic-compatible endpoint returns
+    # "media exceeds size limit: max 10485760 bytes (2013)" for a native
+    # image part above its 10 MB ceiling (#76039).  Matched on the "media"
+    # fragment to mirror "image exceeds" above and catch reworded variants.
+    # A non-image media rejection (audio/video) that lands here is safe: the
+    # shrink pass finds no image parts, returns False, and the caller
+    # surfaces the original error unchanged.
+    "media exceeds",
+    "media too large",
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
+]
+
+# Image-corruption patterns — distinct from _IMAGE_TOO_LARGE_PATTERNS above.
+# These fire when the provider can decode the request but not the image
+# bytes themselves (e.g. a re-serialized image part in replayed history that
+# lost data along the way). Re-encoding/shrinking corrupt bytes does not fix
+# corruption, so this list is routed to the strip-and-retry path
+# (FailoverReason.image_corrupt), never to the shrink path.
+#
+# xAI wording: {"code":"invalid-argument","error":"...Invalid PNG image."}
+# xAI has a second wording for the same failure class depending on where
+# the truncation lands: "Invalid PNG image." for aligned truncation,
+# "base64 string of provided image cannot be decoded" for unaligned
+# truncation (confirmed by the issue reporter — same root cause, two wire
+# messages).
+# A third xAI wording covers the URL-image path — the provider downloads
+# the image itself and rejects the fetched bytes:
+# {"code":"invalid-argument","error":"code: 'Client specified an invalid
+# argument', message: \"Downloaded response does not contain a valid JPG,
+# PNG, WebP, or ICO image.\""}
+# Matched as the full observed sentence on purpose — shorter fragments
+# ("downloaded response does not contain a valid") also match non-image
+# download failures and would misroute them into strip-and-retry.
+# See: https://github.com/NousResearch/hermes-agent/issues/69078
+_IMAGE_CORRUPT_PATTERNS = [
+    "invalid png image",
+    "invalid jpeg image",
+    "base64 string of provided image cannot be decoded",
+    "downloaded response does not contain a valid jpg, png, webp, or ico image",
 ]
 
 # Providers that follow the OpenAI spec strictly require tool message
@@ -463,6 +504,10 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unknown_parameter",
     "unsupported_parameter",
 ]
+
+# A reasoning-mandatory route answering ``reasoning: {enabled: false}``
+# (Nous Portal + OpenRouter wording; ``error_msg`` is lowercased upstream).
+_REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
 # Request parameters that Hermes sends on SOME routes only, paired with the
 # providers/hosts where sending them is deliberate.
@@ -1586,6 +1631,16 @@ def _classify_400(
             retryable=True,
         )
 
+    # Image-corruption from 400 (xAI's undecodable-image check fires this way).
+    # Must be checked BEFORE image_too_large: both are image-shaped 400s, but
+    # corrupt bytes need strip-and-retry, not shrink-and-retry — shrinking
+    # can't repair a truncated/malformed PNG.
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -1613,6 +1668,20 @@ def _classify_400(
         return result_fn(
             FailoverReason.invalid_encrypted_content,
             retryable=True,
+            should_fallback=False,
+        )
+
+    # Reasoning-mandatory route rejecting a disable (Nous Portal / OpenRouter
+    # for GLM-5.3 etc.: "Reasoning is mandatory for this endpoint and cannot
+    # be disabled").  Deterministic for the request shape, but the only bad
+    # field is ``reasoning: {enabled: false}`` — the conversation_loop drops
+    # the disable and retries once.  Must precede the request-validation
+    # branch, which would abort the turn as a format_error.
+    if _REASONING_MANDATORY_PATTERN in error_msg:
+        return result_fn(
+            FailoverReason.reasoning_mandatory,
+            retryable=True,
+            should_compress=False,
             should_fallback=False,
         )
 
@@ -1874,6 +1943,13 @@ def _classify_by_message(
     if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
         return result_fn(
             FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
+        )
+
+    # Image-corruption patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
             retryable=True,
         )
 

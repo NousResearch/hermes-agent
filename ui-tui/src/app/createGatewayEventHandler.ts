@@ -421,10 +421,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
-  const { bellOnComplete, stdout, sys } = ctx.system
+  const { bellOnComplete, bellOnPrompt, stdout, sys } = ctx.system
+
+  // display.bell_on_prompt — BEL whenever a blocking prompt modal opens
+  // (same mechanism as bell_on_complete; works over SSH, triggers tmux bell-action).
+  const ringPromptBell = () => {
+    if (bellOnPrompt && stdout?.isTTY) {
+      stdout.write('\x07')
+    }
+  }
+
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
-  const { submitRef } = ctx.submission
+  const { submitLiteralRef, submitRef } = ctx.submission
   const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
 
   let pendingThinkingStatus = ''
@@ -636,7 +645,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
       }
 
-      submitRef.current(STARTUP_QUERY || ti('startup.imagePrompt'))
+      // Startup queries are arbitrary launcher/script text (Omarchy prompted
+      // launches, `hermes --tui -q "…"`) — submit LITERALLY, bypassing the
+      // slash/!/interpolation dispatcher, matching one-shot's semantics.
+      submitLiteralRef.current(STARTUP_QUERY || ti('startup.imagePrompt'))
     }, 0)
   }
 
@@ -861,10 +873,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus(text)
 
-        if (p.kind === 'compressing') {
+        if (p.kind === 'compressing' || p.kind === 'compacting') {
           sys(text)
+          turnController.clearStatusTimer()
+          patchUiState({ compacting: true })
 
           return
+        }
+
+        if (p.kind === 'compacted') {
+          patchUiState({ compacting: false })
         }
 
         if (!p.kind || p.kind === 'status') {
@@ -1265,6 +1283,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               }
         })
         setStatus('waiting for input…')
+        ringPromptBell()
 
         return
       }
@@ -1284,6 +1303,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
         })
         setStatus('approval needed')
+        ringPromptBell()
 
         return
       }
@@ -1291,6 +1311,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'sudo.request':
         patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
         setStatus('sudo password needed')
+        ringPromptBell()
 
         return
 
@@ -1299,6 +1320,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
         })
         setStatus('secret input needed')
+        ringPromptBell()
 
         return
 
@@ -1315,6 +1337,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(ti('transcript.bgComplete', { taskId: ev.payload.task_id, text: ev.payload.text }))
+
+        return
+
+      case 'btw.complete':
+        sys(
+          ti('transcript.btwComplete', {
+            question: ev.payload.question ? ` "${ev.payload.question}"` : '',
+            text: ev.payload.text
+          })
+        )
 
         return
       case 'review.summary': {

@@ -22,7 +22,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $sessions, knownSessionOwner, sessionMatchesStoredId } from '@/store/session'
+import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 import {
   requestForSessionProfile,
   type SessionOwnerScope,
@@ -178,7 +178,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const requestSessionGateway = useCallback(
     <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       const knownOwner: SessionOwnerScope =
-        sessionTileOwnerRoute(storedIdRef.current) ?? knownSessionOwner($sessions.get(), storedIdRef.current)
+        sessionTileOwnerRoute(storedIdRef.current) ?? knownSessionOwner(ownerLookupSessionRows(), storedIdRef.current)
 
       // A bare profile is the legacy/unknown tile shape. Preserve its ambient
       // behavior; only a composite route is strong enough to retarget a tile
@@ -504,6 +504,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         return
       }
 
+      const messages = state.messages
+
       update(current => applyReloadOptimistic(current, plan))
 
       try {
@@ -518,11 +520,20 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(state.messages)
+            durableRowIdsForRebind(messages)
           )
         )
       } catch (err) {
-        update(current => ({ ...current, busy: false, awaitingResponse: false, turnLive: false, turnStartedAt: null }))
+        // Mirror the primary-chat reload catch: optimistic hide/truncate
+        // must roll back when the submit is rejected (#95745).
+        update(current => ({
+          ...current,
+          busy: false,
+          awaitingResponse: false,
+          turnLive: false,
+          turnStartedAt: null,
+          messages
+        }))
         notifyError(err, copy.regenerateFailed)
       }
     },

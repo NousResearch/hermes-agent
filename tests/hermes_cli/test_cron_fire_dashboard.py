@@ -250,6 +250,41 @@ def test_fire_endpoint_multiplex_profile_prefix(tmp_path, monkeypatch):
     assert url == "http://127.0.0.1:8642/p/worker_alpha/api/cron/fire"
 
 
+def test_fire_endpoint_multiplex_reads_port_from_default_listener(tmp_path, monkeypatch):
+    """Multiplex mode: only the DEFAULT profile's api_server is bound, so a
+    secondary's fire URL must use the default home's port — not the
+    secondary's own config.yaml/.env port, which nothing listens on
+    (PR #84755). Real config files, real load_config()."""
+    default_home = tmp_path / "root"
+    worker_home = default_home / "profiles" / "worker_alpha"
+    default_home.mkdir()
+    worker_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text(
+        "gateway:\n  multiplex_profiles: true\n"
+        "platforms:\n  api_server:\n    extra:\n      port: 8650\n",
+        encoding="utf-8",
+    )
+    (worker_home / "config.yaml").write_text(
+        "platforms:\n  api_server:\n    enabled: false\n    extra:\n      port: 8702\n",
+        encoding="utf-8",
+    )
+    (worker_home / ".env").write_text("API_SERVER_PORT=8701\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.delenv("API_SERVER_PORT", raising=False)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(web_server, "_cron_default_profile", lambda: "default")
+
+    url = web_server._gateway_fire_endpoint("worker_alpha", worker_home)
+
+    assert url == "http://127.0.0.1:8650/p/worker_alpha/api/cron/fire"
+    # The GATEWAY_MULTIPLEX_PROFILES env override is still honored (parity
+    # with gateway/config.py): forcing it off restores per-profile routing.
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "0")
+    assert web_server._gateway_fire_endpoint("worker_alpha", worker_home) == (
+        "http://127.0.0.1:8702/api/cron/fire"
+    )
+
+
 # ── OOF-266: intentional-stop drop + Retry-After on transient 503 ─────────
 
 

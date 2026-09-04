@@ -57,15 +57,14 @@ _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
 # Load-bearing bundled built-ins the curator must NEVER archive or consolidate,
 # regardless of ``curator.prune_builtins``, pin state, or LLM judgment. These
-# back advertised UX paths (e.g. ``plan`` powers the ``/plan`` slash-command
-# flow and is referenced in tips/docs/fresh-profile seeding); silently archiving
-# one turns its slash command into "Unknown command" with no signal to the user.
+# back advertised UX paths; silently archiving one turns its slash command
+# into "Unknown command" with no signal to the user.
 # Protection is by skill ``name`` (frontmatter ``name:``), matching the keys used
 # throughout this module. Keep this list tiny and intentional — it is not a
 # substitute for ``curator.prune_builtins: false``, which exempts ALL built-ins.
-PROTECTED_BUILTIN_SKILLS: Set[str] = {
-    "plan",
-}
+# (``plan`` used to live here; it is now a first-class built-in command with
+# no skill on disk, so the set is currently empty.)
+PROTECTED_BUILTIN_SKILLS: Set[str] = set()
 
 
 def is_protected_builtin(skill_name: str) -> bool:
@@ -1116,10 +1115,15 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         dest = archive_root / f"{skill_dir.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
     # Audit ledger pre-capture (best-effort; never blocks the archive).
+    # complete_package: consolidation may have re-homed support files out of
+    # the tree first, so a disk-only capture can come back hollow; the fill
+    # from the newest curator backup keeps rollback restorable (#96962).
     _ledger_before = None
     try:
         from tools import skill_ledger as _ledger
-        _ledger_before = _ledger.capture_before(skill_dir)
+        _ledger_before = _ledger.capture_before(
+            skill_dir, complete_package=True, skill=skill_name
+        )
     except Exception:
         _ledger = None  # type: ignore[assignment]
 

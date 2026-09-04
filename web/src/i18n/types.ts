@@ -668,6 +668,12 @@ export interface Translations {
     fallbackJobTitle: string
     continuityDescription: string
     missedScheduledFire: string
+    lastResults: {
+      ok: string
+      delivery_failed: string
+      blocked_config: string
+      error: string
+    }
     views: {
       jobs: string
       blueprints: string
@@ -1043,6 +1049,7 @@ export interface Translations {
     copyCliCommand: string
     connect: string
     sessionExpires: string
+    sessionExpiredNoError: string
     expiresMinutes: string
     expiresHours: string
     expiresDays: string

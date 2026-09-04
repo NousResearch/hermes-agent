@@ -242,6 +242,8 @@ describe('interpolation', () => {
 describe('slash command presentation', () => {
   it('localizes stable command and category ids in the Ink client', () => {
     expect(translateSlashDescription('zh', 'new', 'Start a new session')).toContain('新会话')
+    expect(translateSlashDescription('zh', 'bg', 'Run a background prompt')).toContain('后台会话')
+    expect(translateSlashDescription('zh', 'btw', 'Ask a side question')).toContain('旁支问题')
     expect(translateSlashCategory('zh', 'session', 'Session')).toBe('会话')
   })
 

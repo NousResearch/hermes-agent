@@ -2505,6 +2505,27 @@ class TestConfigRoundTrip:
 
 
 
+    def test_round_trip_preserves_discord_snowflake_exactly(self):
+        """GET → unchanged PUT must not round a JavaScript-unsafe channel ID."""
+        from hermes_cli.config import read_raw_config, save_config
+
+        snowflake = 1495601377412513923
+        save_config({
+            "discord": {
+                "free_response_channels": [snowflake],
+            }
+        })
+
+        web_config = self.client.get("/api/config").json()
+        assert web_config["discord"]["free_response_channels"] == [str(snowflake)]
+
+        response = self.client.put("/api/config", json={"config": web_config})
+        assert response.status_code == 200
+
+        on_disk = read_raw_config()
+        saved = on_disk["discord"]["free_response_channels"][0]
+        assert str(saved) == str(snowflake)
+
 
 
 
@@ -3165,6 +3186,20 @@ class TestModelContextLength:
         assert result["model"] == "anthropic/claude-sonnet-4"
         assert result["model_context_length"] == 0
 
+
+    def test_normalize_stringifies_json_unsafe_integers(self):
+        """Desktop must not receive Discord snowflakes as JS-rounded numbers."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        snowflake = 1495601377412513923
+        result = _normalize_config_for_web({
+            "discord": {
+                "free_response_channels": [snowflake],
+                "allowed_channels": [42],
+            }
+        })
+        assert result["discord"]["free_response_channels"] == [str(snowflake)]
+        assert result["discord"]["allowed_channels"] == [42]
 
     def test_denormalize_writes_context_length_into_model_dict(self):
         """denormalize should write model_context_length back into model dict."""

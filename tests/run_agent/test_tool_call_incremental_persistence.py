@@ -118,6 +118,67 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
+def test_concurrent_memory_dispatch_forwards_bound_provenance():
+    from agent.agent_runtime_helpers import invoke_tool
+
+    agent = _make_agent()
+    agent.session_id = "session-memory"
+    captured = {}
+
+    def _capture_memory(**kwargs):
+        captured.update(kwargs)
+        return '{"success":true}'
+
+    with patch("tools.memory_tool.memory_tool", side_effect=_capture_memory):
+        result = invoke_tool(
+            agent,
+            "memory",
+            {"action": "add", "target": "memory", "content": "fact"},
+            "task-memory",
+            tool_call_id="call-memory",
+            pre_tool_block_checked=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
+
+    assert result == '{"success":true}'
+    assert captured["session_id"] == "session-memory"
+    assert captured["tool_call_id"] == "call-memory"
+
+
+def test_sequential_memory_dispatch_forwards_bound_provenance():
+    agent = _make_agent()
+    agent.session_id = "session-memory"
+    agent.valid_tool_names = {"memory"}
+    tool_call = _mock_tool_call(
+        name="memory",
+        arguments='{"action":"add","target":"memory","content":"fact"}',
+        call_id="call-memory",
+    )
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    captured = {}
+
+    def _capture_memory(**kwargs):
+        captured.update(kwargs)
+        return '{"success":true}'
+
+    with (
+        patch("tools.memory_tool.memory_tool", side_effect=_capture_memory),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_sequential(
+            assistant_message,
+            [],
+            "task-memory",
+        )
+
+    assert captured["session_id"] == "session-memory"
+    assert captured["tool_call_id"] == "call-memory"
+
+
 # ---------------------------------------------------------------------------
 # Contract 1: run_conversation persists the assistant tool-call block BEFORE
 # tool execution begins.

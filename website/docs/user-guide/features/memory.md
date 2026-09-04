@@ -280,7 +280,15 @@ Review staged writes from the CLI or any messaging platform:
 
 This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
-ones — waits for your yes/no before it ever enters your profile.
+ones — waits for your yes/no before it ever enters your profile. Staged records
+use pending schema v2 with a canonical payload hash and a full-record integrity
+hash that binds dispatch context. On POSIX systems Hermes keeps the pending
+directories at `0700` and each record at `0600`, with descriptor-anchored reads
+and writes. Records are capped at 8 MiB, listing fails closed above 4,096
+entries, and approval claims each record into a non-replayable quarantine before
+applying it. Platforms where that owner-only boundary cannot be enforced fail
+closed. Unsafe, legacy, oversized, or integrity-invalid records remain
+untouched and cannot be applied through the approval commands.
 
 ## Background review notifications (`display.memory_notifications`)
 
@@ -411,9 +419,14 @@ skills:
   write_approval: false     # false = write freely (default) | true = require approval
 ```
 
-When `write_approval: true`, skill writes (create / edit / patch / write_file /
-delete) always **stage** regardless of origin. You review the one-line gist
-inline, but the full diff stays out-of-band:
+When `write_approval: true`, eligible skill writes (create / edit / patch /
+write_file / remove_file) **stage** for both origins. Existing-target background
+mutations must first prove the exact bytes were loaded in that review turn;
+otherwise they are refused before staging. Delete is also refused before staging
+because it cannot be replayed with a portable descriptor-bound directory unlink.
+One-operation `operations` arrays use the normal hardened pending record;
+multi-operation batches are refused before staging while approval is enabled.
+You review the one-line gist inline, but the full diff stays out-of-band:
 
 ```
 /skills pending             # list staged skill writes + a one-line gist each

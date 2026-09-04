@@ -751,6 +751,55 @@ def _compute_docstring_lines(lines: list) -> set:
 # ---------------------------------------------------------------------------
 
 
+def _scan_text_content(
+    content: str,
+    rel_path: str,
+    *,
+    skip_docstrings: bool = True,
+) -> List[Finding]:
+    """Scan already-bound text bytes without reopening a filesystem path."""
+    findings = []
+    lines = content.split("\n")
+    seen = set()
+    docstring_lines = _compute_docstring_lines(lines) if skip_docstrings else set()
+
+    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
+        for i, line in enumerate(lines, start=1):
+            if (pid, i) in seen or i in docstring_lines:
+                continue
+            if pattern.search(line):
+                seen.add((pid, i))
+                matched_text = line.strip()
+                if len(matched_text) > 120:
+                    matched_text = matched_text[:117] + "..."
+                findings.append(Finding(
+                    pattern_id=pid,
+                    severity=severity,
+                    category=category,
+                    file=rel_path,
+                    line=i,
+                    match=matched_text,
+                    description=description,
+                ))
+
+    for i, line in enumerate(lines, start=1):
+        for char in INVISIBLE_CHARS:
+            if char in line:
+                char_name = _unicode_char_name(char)
+                findings.append(Finding(
+                    pattern_id="invisible_unicode",
+                    severity="high",
+                    category="injection",
+                    file=rel_path,
+                    line=i,
+                    match=f"U+{ord(char):04X} ({char_name})",
+                    description=f"invisible unicode character {char_name} (possible text hiding/injection)",
+                ))
+                break
+
+    return findings
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
@@ -773,53 +822,35 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     except (UnicodeDecodeError, OSError):
         return []
 
-    findings = []
-    lines = content.split('\n')
-    seen = set()  # (pattern_id, line_number) for deduplication
+    return _scan_text_content(content, rel_path)
 
-    # Pre-compute line numbers inside triple-quoted strings (docstrings)
-    # so code patterns like python_os_environ don't fire on prose.
-    docstring_lines = _compute_docstring_lines(lines)
 
-    # Regex pattern matching
-    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
-        for i, line in enumerate(lines, start=1):
-            if (pid, i) in seen:
-                continue
-            if i in docstring_lines:
-                continue
-            if pattern.search(line):
-                seen.add((pid, i))
-                matched_text = line.strip()
-                if len(matched_text) > 120:
-                    matched_text = matched_text[:117] + "..."
-                findings.append(Finding(
-                    pattern_id=pid,
-                    severity=severity,
-                    category=category,
-                    file=rel_path,
-                    line=i,
-                    match=matched_text,
-                    description=description,
-                ))
-
-    # Invisible unicode character detection
-    for i, line in enumerate(lines, start=1):
-        for char in INVISIBLE_CHARS:
-            if char in line:
-                char_name = _unicode_char_name(char)
-                findings.append(Finding(
-                    pattern_id="invisible_unicode",
-                    severity="high",
-                    category="injection",
-                    file=rel_path,
-                    line=i,
-                    match=f"U+{ord(char):04X} ({char_name})",
-                    description=f"invisible unicode character {char_name} (possible text hiding/injection)",
-                ))
-                break  # one finding per line for invisible chars
-
-    return findings
+def scan_skill_content(
+    content: str,
+    *,
+    skill_name: str,
+    source: str = "community",
+) -> ScanResult:
+    """Scan exact in-memory SKILL.md content without a pathname race."""
+    trust_level = _resolve_trust_level(source)
+    # SKILL.md is instructional Markdown, not executable Python. Triple quotes
+    # may be legitimate examples but must not suppress injection scanning.
+    findings = _scan_text_content(
+        content,
+        "SKILL.md",
+        skip_docstrings=False,
+    )
+    verdict = _determine_verdict(findings)
+    summary = _build_summary(skill_name, source, trust_level, verdict, findings)
+    return ScanResult(
+        skill_name=skill_name,
+        source=source,
+        trust_level=trust_level,
+        verdict=verdict,
+        findings=findings,
+        scanned_at=datetime.now(timezone.utc).isoformat(),
+        summary=summary,
+    )
 
 
 def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:

@@ -66,6 +66,7 @@ Usage:
     content = skill_view("axolotl", "references/dataset-formats.md")
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -1442,9 +1443,11 @@ def skill_view(
                 ensure_ascii=False,
             )
 
-        # Read the file once — reused for platform check and main content below
+        # Read the file once — reused for platform checks, returned content,
+        # and the exact byte-bound background read proof below.
         try:
-            content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
+            raw_content = skill_md.read_bytes()
+            content = raw_content.decode("utf-8-sig", errors="replace")
         except Exception as e:
             return json.dumps(
                 {
@@ -1592,9 +1595,11 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-            # Read the file content
+            # Read the file content and retain the exact byte digest used for
+            # the background review's read-before-write proof.
             try:
-                content = target_file.read_text(encoding="utf-8-sig", errors="replace")
+                raw_content = target_file.read_bytes()
+                content = raw_content.decode("utf-8-sig", errors="replace")
             except UnicodeDecodeError:
                 # Binary file - return info about it instead
                 return json.dumps(
@@ -1611,7 +1616,10 @@ def skill_view(
             try:
                 from tools.skill_manager_tool import mark_background_review_skill_read
 
-                mark_background_review_skill_read(target_file)
+                mark_background_review_skill_read(
+                    target_file,
+                    content_digest=hashlib.sha256(raw_content).hexdigest(),
+                )
             except Exception:
                 logger.debug(
                     "Could not record background-review skill read for %s",
@@ -1899,7 +1907,10 @@ def skill_view(
         try:
             from tools.skill_manager_tool import mark_background_review_skill_read
 
-            mark_background_review_skill_read(skill_md)
+            mark_background_review_skill_read(
+                skill_md,
+                content_digest=hashlib.sha256(raw_content).hexdigest(),
+            )
         except Exception:
             logger.debug(
                 "Could not record background-review skill read for %s",

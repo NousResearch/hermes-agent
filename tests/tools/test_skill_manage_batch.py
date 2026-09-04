@@ -220,9 +220,8 @@ class TestSkillManageBatch(unittest.TestCase):
         )
         self.assertTrue(json.loads(raw)["success"])
 
-    def test_batch_stages_as_one_pending_write_when_gated(self):
-        """Approval gate: the whole batch stages as ONE pending record, and
-        apply_skill_pending replays it (operations key round-trips)."""
+    def test_multi_op_batch_is_refused_before_approval_staging(self):
+        """Approval replay lacks a race-safe cross-skill rollback, so fail closed."""
         from unittest.mock import patch as _patch
 
         class _Decision:
@@ -230,10 +229,10 @@ class TestSkillManageBatch(unittest.TestCase):
             blocked = False
             message = "staged for review"
 
-        staged = {}
+        staged = []
 
-        def fake_stage_write(area, payload, summary=None, origin=None):
-            staged.update(payload=payload, summary=summary)
+        def fake_stage_write(*args, **kwargs):
+            staged.append((args, kwargs))
             return {"id": "pend_1"}
 
         import tools.write_approval as wa
@@ -245,14 +244,66 @@ class TestSkillManageBatch(unittest.TestCase):
                 {"action": "write_file", "file_path": "references/a.md",
                  "file_content": "a"},
             ])
+
+        self.assertFalse(r["success"], r)
+        self.assertTrue(r.get("_fail_closed"), r)
+        self.assertIn("multi-operation", r["error"])
+        self.assertEqual(staged, [])
+        self.assertFalse(os.path.exists(os.path.join(self.home, "skills", "probe")))
+
+    def test_single_op_operations_uses_secure_flat_approval_staging(self):
+        """The advertised one-op array still stages through the hardened v2 path."""
+        from unittest.mock import patch as _patch
+
+        class _Decision:
+            allow = False
+            blocked = False
+            message = "staged for review"
+
+        staged = {}
+
+        def fake_stage_write(area, payload, **kwargs):
+            staged.update(area=area, payload=payload, kwargs=kwargs)
+            return {"id": "pend_1"}
+
+        context = {
+            "profile": "default",
+            "session_id": "session-1",
+            "surface": "cli",
+            "tool_call_id": "call-1",
+        }
+        import tools.write_approval as wa
+
+        with _patch.object(wa, "evaluate_gate", return_value=_Decision()), \
+             _patch.object(wa, "collect_session_context", return_value=context), \
+             _patch.object(wa, "stage_write", side_effect=fake_stage_write):
+            r = self._call("probe", [
+                {"action": "create", "content": SK.format(n="probe")},
+            ])
+
         self.assertTrue(r.get("staged"), r)
-        self.assertEqual(staged["payload"]["action"], "batch")
-        self.assertEqual(len(staged["payload"]["operations"]), 2)
-        self.assertIn("2 ops", staged["summary"])
-        # Replay applies the batch (gate bypassed inside).
-        out = json.loads(self.smt.apply_skill_pending(staged["payload"]))
-        self.assertTrue(out["success"], out)
-        self.assertEqual(out["operations_applied"], 2)
+        self.assertEqual(staged["payload"]["action"], "create")
+        self.assertEqual(staged["payload"]["name"], "probe")
+        self.assertNotIn("operations", staged["payload"])
+        self.assertRegex(staged["kwargs"]["target_tree_pre_image_hash"], r"^[0-9a-f]{64}$")
+        self.assertEqual(staged["kwargs"]["session_context"], context)
+
+    def test_manually_staged_multi_op_batch_replay_fails_closed(self):
+        out = json.loads(self.smt.apply_skill_pending(
+            {
+                "action": "batch",
+                "operations": [
+                    {"name": "probe", "action": "create", "content": SK.format(n="probe")},
+                    {"name": "probe", "action": "write_file",
+                     "file_path": "references/a.md", "file_content": "a"},
+                ],
+            },
+            expected_target_tree_pre_image_hash="0" * 64,
+        ))
+
+        self.assertFalse(out["success"], out)
+        self.assertTrue(out.get("_fail_closed"), out)
+        self.assertFalse(os.path.exists(os.path.join(self.home, "skills", "probe")))
 
 
 if __name__ == "__main__":

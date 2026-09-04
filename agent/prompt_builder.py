@@ -10,6 +10,7 @@ import os
 import queue
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import contextvars
 from collections import OrderedDict
 from pathlib import Path
@@ -80,33 +81,32 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
-def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
-    """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
+# Bounded executor for context-file reads.  Replaces the previous
+# per-call daemon-thread pattern that leaked one thread per stuck read
+# (issue #102575).  ``max_workers=4`` allows a handful of concurrent
+# reads while preventing unbounded thread growth on repeated timeouts.
+_CONTEXT_READ_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="context-read",
+)
 
-    Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
-    the orphaned reader thread finishes on its own). Read errors propagate to
-    the caller exactly as a direct ``read_text`` would, so existing
-    ``try/except`` handling at each site is unchanged.
+
+def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+    """``path.read_text()`` on a pooled thread so a slow file can't stall startup.
+
+    Returns the text, or ``None`` after *timeout* seconds (logged at WARNING).
+    Uses a shared ``ThreadPoolExecutor`` (max 4 workers) so stuck reads reuse
+    a bounded pool instead of spawning unbounded daemon threads (#102575).
+    Read errors propagate to the caller exactly as a direct ``read_text``
+    would, so existing ``try/except`` handling at each site is unchanged.
     """
     if timeout is None:
         timeout = _get_context_file_read_timeout()
-    result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
-
-    def _reader() -> None:
-        try:
-            result.put((True, path.read_text(encoding="utf-8")))
-        except Exception as exc:  # re-raised on the caller thread
-            result.put((False, exc))
-
-    threading.Thread(target=_reader, daemon=True, name=f"context-read:{path.name}").start()
+    future = _CONTEXT_READ_EXECUTOR.submit(path.read_text, encoding="utf-8")
     try:
-        ok, value = result.get(timeout=timeout)
-    except queue.Empty:
+        return future.result(timeout=timeout)
+    except TimeoutError:
         logger.warning("Context file %s read timed out after %.1fs; skipping", path, timeout)
         return None
-    if ok:
-        return value  # type: ignore[return-value]
-    raise value  # type: ignore[misc]
 
 
 def _scan_context_content(content: str, filename: str) -> str:

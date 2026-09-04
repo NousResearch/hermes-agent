@@ -249,6 +249,8 @@ For per-chat control, set `require_mention` on a `group_rules` entry — see [Pe
 
 When several bots share one group, disabling the mention requirement entirely makes the bot react to messages addressed to other bots. `FEISHU_SMART_MENTION=true` (or `smart_mention: true`) refines this: a group message that explicitly @-mentions someone else (a user or another bot) is silently dropped, while messages with **no mention at all** (the sender may have forgotten to @ anyone) still reach the bot, as do messages that @ this bot or @all. The default is `false`, which preserves the existing behavior.
 
+`smart_mention` only filters messages that explicitly @-mention someone else — it does not filter messages with no mention at all. To drop those too (for example, group-wide broadcasts), set `require_mention: true` for the same chat: unmentioned messages already fail the mention requirement, so with both settings enabled `smart_mention` merely makes the drop reason in the logs more specific.
+
 ### Bot Identity
 
 Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:

@@ -64,6 +64,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setFocusable: focusable => ipcRenderer.send('hermes:pet-overlay:set-focusable', focusable),
     // Main renderer → overlay (forwarded by main): push the latest pet state.
     pushState: payload => ipcRenderer.send('hermes:pet-overlay:state', payload),
+    // Display work area + other-app window bounds for the roam physics loop.
+    roamEnvironment: probe => ipcRenderer.invoke('hermes:pet-overlay:roam-environment', probe),
     // Overlay → main renderer (forwarded by main): pop back in / composer submit.
     control: payload => ipcRenderer.send('hermes:pet-overlay:control', payload),
     // Overlay subscribes to state pushes.

@@ -46,6 +46,26 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
+    def test_prompt_has_no_copyable_example_titles(self):
+        """Small title models must not be primed to copy a canned title (#98926)."""
+        captured_kwargs = {}
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Locate the active workspace"
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("Which folder runs this discussion?") == "Locate the active workspace"
+
+        prompt = captured_kwargs["messages"][0]["content"]
+        assert "Do not copy a title from these instructions" in prompt
+        assert "Fix login button on mobile" not in prompt
+        assert "Postgres connection pool exhaustion" not in prompt
+        assert "Friendly greeting" not in prompt
+
 
 
     def test_strips_think_blocks(self):

@@ -6561,6 +6561,28 @@ def run_job(
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
+        # The resolve above can SUCCEED and still be unusable: every live
+        # credential in the provider's pool may be serving a 429, in which case
+        # resolution hands back a benched key and the request 429s before the
+        # agent's own fallback engages -- one doomed call on every tick, for as
+        # long as the quota stays drained.
+        #
+        # A cron run is single-shot, so there is nothing to restore: the next
+        # tick resolves from the configured primary again and returns to it on
+        # its own once the window lifts. ``model`` moves with the provider --
+        # swapping one while keeping the other would send e.g. a Gemini model id
+        # to OpenRouter. The drift guard below keeps comparing
+        # ``primary_provider_for_drift``, so a temporary demotion is not
+        # mistaken for the operator changing their configured provider.
+        from hermes_cli.provider_cooldown import demote_if_rate_limited
+
+        _demotion = demote_if_rate_limited(
+            runtime, get_fallback_chain(_cfg), subject=f"Job '{job_id}'"
+        )
+        runtime = _demotion.runtime
+        if _demotion.switched:
+            model = _demotion.model
+
         reasoning_config = _resolve_job_reasoning_config(
             job, _cfg if isinstance(_cfg, dict) else {}, str(model)
         )

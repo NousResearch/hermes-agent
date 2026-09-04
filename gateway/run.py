@@ -3328,7 +3328,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         _get_model_config,
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
-    from hermes_cli.runtime_provider import CREDENTIALS_COOLING_DOWN_KEY
+    from hermes_cli.provider_cooldown import demote_if_rate_limited
 
     try:
         runtime = resolve_runtime_provider()
@@ -3353,29 +3353,24 @@ def _resolve_runtime_agent_kwargs() -> dict:
     # spending the request. If nothing in the chain resolves, keep this runtime
     # anyway: a cooldown DEMOTES the primary, it does not disqualify it, and
     # the real upstream 429 is better than refusing to run.
-    _cooling_until = runtime.get(CREDENTIALS_COOLING_DOWN_KEY)
-    _fb_model = None
-    if _cooling_until:
-        try:
-            _cooling_label = datetime.fromtimestamp(_cooling_until).isoformat(
-                timespec="seconds"
-            )
-        except (OverflowError, OSError, ValueError):
-            # A corrupt persisted timestamp must not kill agent construction.
-            _cooling_label = f"epoch {_cooling_until}"
-        logger.warning(
-            "Primary provider %s is rate-limited until %s — trying fallback",
-            runtime.get("provider") or "?",
-            _cooling_label,
-        )
-        _fb_runtime, _fb_model = _resolve_non_cooling_fallback_runtime()
-        if _fb_runtime is not None:
-            runtime = _fb_runtime
-        else:
-            logger.warning(
-                "No usable fallback while the primary cools down — spending "
-                "the rate-limited credential as a last resort"
-            )
+    # One owner for the decision, shared with the CLI, cron and one-shot
+    # callers -- this used to be a fifth hand-rolled copy of the same shape,
+    # down to its own timestamp degrade path. This module's own
+    # `_fallback_runtime_is_rate_limited` / `_resolve_fallback_entry_runtime`
+    # are handed over so they stay the seam for anything that swaps them here.
+    try:
+        _chain = get_fallback_chain(_load_gateway_runtime_config())
+    except Exception:
+        logger.debug("Could not read the fallback chain", exc_info=True)
+        _chain = []
+    _demotion = demote_if_rate_limited(
+        runtime,
+        _chain,
+        is_rate_limited=_fallback_runtime_is_rate_limited,
+        resolve_entry=_resolve_fallback_entry_runtime,
+    )
+    runtime = _demotion.runtime
+    _fb_model = _demotion.model
 
     model_cfg = _get_model_config()
     max_tokens = None
@@ -3605,127 +3600,28 @@ def _credential_pool_for_provider(provider: Optional[str]):
 
 
 def _resolve_fallback_entry_runtime(entry: dict) -> dict | None:
-    """Resolve one fallback-chain entry, or ``None`` when it is unusable.
+    """Resolve one fallback-chain entry — see ``hermes_cli.provider_cooldown``.
 
-    Shared by both chain walkers so a given entry always resolves the same
-    way. ``target_model`` matters: without it the entry's api_mode is derived
-    from the *primary's* model, which can pick the wrong wire protocol for
-    the fallback's endpoint.
+    Kept as a module-level name because both chain walkers here call it, so a
+    test that swaps it governs both.
     """
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_cli.fallback_config import resolve_entry_api_key
+    from hermes_cli.provider_cooldown import resolve_fallback_entry_runtime
 
-    try:
-        return resolve_runtime_provider(
-            requested=entry.get("provider"),
-            target_model=(entry.get("model") or "").strip() or None,
-            explicit_base_url=entry.get("base_url"),
-            explicit_api_key=resolve_entry_api_key(entry),
-        )
-    except Exception as exc:
-        logger.debug(
-            "Fallback entry %s failed: %s", entry.get("provider"), exc,
-        )
-        return None
+    return resolve_fallback_entry_runtime(entry)
 
 
 def _fallback_runtime_is_rate_limited(runtime: dict) -> bool:
     """Whether *runtime* draws on a credential pool that is serving a 429.
 
-    ``resolve_runtime_provider`` annotates the runtimes it resolves through
-    the pool, but a fallback entry that pins its own ``base_url`` (or key)
-    short-circuits through ``_resolve_explicit_runtime`` before that
-    annotation is set -- and a base-url-only entry still resolves its key
-    from the pool. Probing the resolved provider's pool directly covers both
-    routes with the same helper the annotation itself uses.
+    Forwarder — see ``hermes_cli.provider_cooldown.runtime_is_rate_limited``.
+    An entry that pins its own ``base_url`` (or key) short-circuits through
+    ``_resolve_explicit_runtime`` and is never annotated during resolution, so
+    that helper probes the resolved provider's pool directly rather than
+    trusting the flag.
     """
-    from hermes_cli.runtime_provider import (
-        CREDENTIALS_COOLING_DOWN_KEY,
-        _pooled_credentials_cooldown_until,
-    )
+    from hermes_cli.provider_cooldown import runtime_is_rate_limited
 
-    if runtime.get(CREDENTIALS_COOLING_DOWN_KEY):
-        return True
-    provider = str(runtime.get("provider") or "").strip().lower()
-    if not provider:
-        return False
-    try:
-        from agent.credential_pool import get_custom_provider_pool_key, load_pool
-
-        # A custom endpoint resolves with provider "custom" but keeps its
-        # credentials under the endpoint's own pool key, so load_pool("custom")
-        # would read an empty pool and report it healthy.
-        pool_key = (
-            get_custom_provider_pool_key(
-                runtime.get("base_url"), runtime.get("requested_provider")
-            )
-            if provider == "custom"
-            else None
-        ) or provider
-        return _pooled_credentials_cooldown_until(load_pool(pool_key), runtime) is not None
-    except Exception:
-        # Fail open: an unreadable pool must never veto a usable fallback.
-        logger.debug(
-            "Could not probe %s's pool for a cooldown", provider, exc_info=True
-        )
-        return False
-
-
-def _resolve_non_cooling_fallback_runtime() -> tuple[dict | None, str | None]:
-    """First fallback entry that resolves AND is not itself rate-limited.
-
-    Used when the primary's pooled credentials are all benched by a 429.
-    Picking a fallback whose own pool is cooling down would just move the
-    doomed request one hop down the chain, so those entries are passed over
-    in favour of a later, healthy one.
-
-    Returns ``(runtime, model)`` for the chosen entry, or ``(None, None)``
-    when nothing in the chain is usable — the caller then keeps the primary,
-    because a cooldown demotes a provider rather than disqualifying it.
-    """
-    try:
-        chain = get_fallback_chain(_load_gateway_runtime_config())
-    except Exception:
-        logger.debug("Could not read the fallback chain", exc_info=True)
-        return None, None
-
-    cooling_but_resolvable: tuple[dict, str] | None = None
-    for entry in chain:
-        model = (entry.get("model") or "").strip()
-        if not model:
-            # Swapping the provider while keeping the primary's model name
-            # would send e.g. a Gemini model id to OpenRouter.
-            logger.warning(
-                "Fallback entry %s has no model — skipping",
-                entry.get("provider") or "?",
-            )
-            continue
-        runtime = _resolve_fallback_entry_runtime(entry)
-        if runtime is None:
-            continue
-        if _fallback_runtime_is_rate_limited(runtime):
-            logger.info(
-                "Fallback %s is itself rate-limited — looking further down "
-                "the chain", entry.get("provider") or "?",
-            )
-            if cooling_but_resolvable is None:
-                cooling_but_resolvable = (runtime, model)
-            continue
-        logger.info(
-            "Fallback provider resolved: %s model=%s",
-            entry.get("provider") or runtime.get("provider"), model,
-        )
-        return runtime, model or None
-
-    # Everything left is cooling too. A benched fallback still beats a benched
-    # primary that has no chance of a different quota bucket.
-    if cooling_but_resolvable is not None:
-        runtime, model = cooling_but_resolvable
-        logger.warning(
-            "Every fallback is rate-limited too — using the first one anyway"
-        )
-        return runtime, model or None
-    return None, None
+    return runtime_is_rate_limited(runtime)
 
 
 def _try_resolve_fallback_provider() -> dict | None:

@@ -1990,6 +1990,8 @@ CREDENTIALS_COOLING_DOWN_KEY = "credentials_cooling_down_until"
 def _pooled_credentials_cooldown_until(
     pool: Optional[CredentialPool],
     creds: Optional[Dict[str, Any]],
+    *,
+    keyless_means_drained: bool = False,
 ) -> Optional[float]:
     """When the pool behind *creds* re-enters rotation, if a 429 benched it.
 
@@ -2010,10 +2012,42 @@ def _pooled_credentials_cooldown_until(
     try:
         source = str(creds.get("source") or "")
         api_key = creds.get("api_key")
-        pool_backed = source.startswith(CREDENTIAL_POOL_SOURCE_PREFIX) or (
-            isinstance(api_key, str)
-            and bool(api_key)
-            and pool.entry_id_for_api_key(api_key) is not None
+        pool_backed = (
+            source.startswith(CREDENTIAL_POOL_SOURCE_PREFIX)
+            or (
+                isinstance(api_key, str)
+                and bool(api_key)
+                and pool.entry_id_for_api_key(api_key) is not None
+            )
+            # Resolution produced no credential of its own.  This is what a
+            # drained pool looks like for a provider whose fall-through reads
+            # env vars rather than the pool -- ``pool.select()`` refuses every
+            # benched entry, the env var is unset, and the runtime comes back
+            # keyless.  The pool's state is then the only thing that describes
+            # it, and reporting the cooldown is what lets the caller reach its
+            # fallback chain instead of failing with "no API key configured"
+            # while a perfectly good fallback sits unused.
+            #
+            # OPT-IN ONLY, because "resolved no key" and "draws on this pool"
+            # are different claims and conflating them everywhere would demote
+            # endpoints that need no auth at all: a keyless local endpoint
+            # (Ollama, llama.cpp) that happens to own a pool with a stale
+            # benched row does not become unusable because of that row. Only
+            # the OpenRouter tail asks for this, because it is the one shape
+            # whose fall-through reads env vars instead of the pool and so
+            # comes back empty-handed when the pool is drained.
+            #
+            # Restricted to a string/absent key on purpose: a CALLABLE api_key
+            # is a bearer-token provider (Azure Foundry's Entra ID adapter),
+            # which mints its own token per request and never draws on a
+            # pooled api_key -- ``has_usable_secret`` reports False for it, so
+            # without this guard a live token provider would be demoted on the
+            # strength of unrelated benched rows.
+            or (
+                keyless_means_drained
+                and (api_key is None or isinstance(api_key, str))
+                and not has_usable_secret(api_key)
+            )
         )
         if not pool_backed:
             return None
@@ -2029,6 +2063,103 @@ def _pooled_credentials_cooldown_until(
     if cooling_until is None or cooling_until <= time.time():
         return None
     return float(cooling_until)
+
+
+def pool_for_runtime(runtime: Optional[Dict[str, Any]]) -> Optional[CredentialPool]:
+    """The credential pool whose entries can back *runtime*'s ``api_key``.
+
+    A custom endpoint resolves with provider ``custom`` but keeps its
+    credentials under the endpoint's OWN pool key, so ``load_pool("custom")``
+    would read an empty pool and report it healthy.  ``requested_provider``
+    carries the endpoint's configured name, which
+    :func:`get_custom_provider_pool_key` prefers over a ``base_url`` match --
+    that name-first rule is what keeps two endpoints sharing one base_url
+    from resolving to each other's pool.
+
+    Returns ``None`` when the runtime names no provider, when a custom
+    endpoint has no pool of its own, or when the store cannot be read: every
+    caller treats that as "nothing is known to be benched", which leaves
+    resolution exactly as it was.
+    """
+    if not isinstance(runtime, dict):
+        return None
+    provider = str(runtime.get("provider") or "").strip().lower()
+    if not provider:
+        return None
+    # Resolution attaches the pool it actually selected from.  Reusing it
+    # keeps this probe off the disk on the hot path -- every turn asks this
+    # question -- and, more importantly, asks the same object resolution
+    # decided with, rather than a second read that a concurrent rotation
+    # could have moved underneath us.  The provider check is load-bearing:
+    # a cross-provider fallback rebinds this field to the FALLBACK's pool.
+    attached = runtime.get("credential_pool")
+    if isinstance(attached, CredentialPool) and credential_pool_matches_provider(
+        attached, provider, base_url=str(runtime.get("base_url") or "")
+    ):
+        return attached
+    try:
+        if provider == "custom":
+            pool_key = get_custom_provider_pool_key(
+                runtime.get("base_url"), runtime.get("requested_provider")
+            )
+            if not pool_key:
+                return None
+        else:
+            pool_key = provider
+        return load_pool(pool_key)
+    except Exception:
+        logger.debug(
+            "Could not load %s's credential pool for a cooldown probe",
+            provider,
+            exc_info=True,
+        )
+        return None
+
+
+def runtime_credentials_cooling_down_until(
+    runtime: Optional[Dict[str, Any]],
+) -> Optional[float]:
+    """When *runtime*'s pooled credentials re-enter rotation, if a 429 benched them.
+
+    The annotation this module stamps during resolution is the fast path.
+    Probing the pool covers the runtimes that never pass through an
+    annotating branch at all -- an explicitly pinned ``api_key``/``base_url``
+    short-circuits through :func:`_resolve_explicit_runtime`, and a fallback
+    entry is resolved that way by design.  Both answers mean the same thing,
+    so callers can ask this one question instead of knowing which branch
+    produced the runtime they hold.
+    """
+    if not isinstance(runtime, dict):
+        return None
+    annotated = runtime.get(CREDENTIALS_COOLING_DOWN_KEY)
+    if annotated:
+        try:
+            return float(annotated)
+        except (TypeError, ValueError):
+            # A corrupt annotation must not mask a live pool probe.
+            logger.debug("Ignoring malformed %s", CREDENTIALS_COOLING_DOWN_KEY)
+    return _pooled_credentials_cooldown_until(pool_for_runtime(runtime), runtime)
+
+
+def _annotate_pooled_cooldown(
+    runtime: Dict[str, Any],
+    pool: Optional[CredentialPool],
+    *,
+    keyless_means_drained: bool = False,
+) -> Dict[str, Any]:
+    """Stamp ``CREDENTIALS_COOLING_DOWN_KEY`` when *runtime*'s key is benched.
+
+    Returns *runtime* either way so it can wrap a ``return`` statement.  The
+    API-key branch near the end of :func:`resolve_runtime_provider` stamps
+    the same key inline because it computes the cooldown before several
+    other branches can still raise.
+    """
+    cooling_until = _pooled_credentials_cooldown_until(
+        pool, runtime, keyless_means_drained=keyless_means_drained
+    )
+    if cooling_until is not None:
+        runtime[CREDENTIALS_COOLING_DOWN_KEY] = cooling_until
+    return runtime
 
 
 def resolve_runtime_provider(
@@ -2157,7 +2288,17 @@ def resolve_runtime_provider(
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
-        return custom_runtime
+        # A named endpoint's own pool can be fully benched.
+        # ``_try_resolve_from_custom_pool`` returns None when ``pool.select()``
+        # refuses every entry -- indistinguishable, to its caller, from "this
+        # endpoint has no pool" -- and resolution falls through to the
+        # config/env key, which is routinely the SAME credential the pool is
+        # cooling.  ``requested_provider`` is set just above so
+        # ``pool_for_runtime`` can find the endpoint's own ``custom:<name>``
+        # pool rather than the empty bare-"custom" one.
+        return _annotate_pooled_cooldown(
+            custom_runtime, pool_for_runtime(custom_runtime)
+        )
 
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url
     # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
@@ -2194,7 +2335,9 @@ def resolve_runtime_provider(
                     explicit_base_url=explicit_base_url,
                 )
                 runtime["requested_provider"] = requested_provider
-                return runtime
+                return _annotate_pooled_cooldown(
+                    runtime, pool_for_runtime(runtime)
+                )
 
     provider = resolve_provider(
         requested_provider,
@@ -2730,7 +2873,20 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
-    return runtime
+    # OpenRouter reaches here only after ``pool.select()`` above found nothing
+    # usable, and this helper then resolves its key from OPENROUTER_API_KEY /
+    # OPENAI_API_KEY -- which is commonly the same key the pool is cooling.
+    # Probe the resolved runtime rather than the ``pool`` local: this helper
+    # also serves ``provider="custom"``, whose credentials live under a
+    # different pool key entirely -- and which must NOT opt into the keyless
+    # rule, since a custom endpoint is allowed to need no auth at all.
+    return _annotate_pooled_cooldown(
+        runtime,
+        pool_for_runtime(runtime),
+        keyless_means_drained=(
+            str(runtime.get("provider") or "").strip().lower() == "openrouter"
+        ),
+    )
 
 
 def format_runtime_provider_error(error: Exception) -> str:

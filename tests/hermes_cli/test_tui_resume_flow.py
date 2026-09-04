@@ -200,6 +200,11 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
                 "api_mode": "chat_completions",
                 "credential_pool": None,
             },
+            # _run_agent asks (via hermes_cli.provider_cooldown) whether the
+            # resolved provider's credential pool is serving a 429 before it
+            # spends the run's only request. None = nothing benched, leaving
+            # this test's concern (SessionDB wiring) undisturbed.
+            runtime_credentials_cooling_down_until=lambda _runtime: None,
         ),
     )
     monkeypatch.setitem(

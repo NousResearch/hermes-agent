@@ -239,3 +239,135 @@ def test_available_credential_resolves_untouched(tmp_path, monkeypatch):
     assert resolved.get(CREDENTIALS_COOLING_DOWN_KEY) is None
     assert resolved["provider"] == "gemini"
     assert resolved["api_key"].startswith(_KEY)
+
+
+# ---------------------------------------------------------------------------
+# Provider shapes whose credentials come from a pool but whose resolution does
+# NOT run through the API-key branch above: OpenRouter (whose fall-through
+# reads env vars) and a named custom endpoint (whose pool lives under its own
+# ``custom:<name>`` key). Both used to resolve with no cooldown reported at
+# all, so a caller owning a fallback chain never learned to route around them.
+# ---------------------------------------------------------------------------
+
+# A sole credential is benched for EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS (60s),
+# deliberately shorter than the rotating-pool hour, so these fixtures must sit
+# well inside that window to still be cooling when the resolver looks.
+_SOLE_BENCH_AGE = 5
+
+
+def _benched_row(cred_id: str, key: str, source: str) -> dict:
+    return {
+        "id": cred_id,
+        "label": cred_id,
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": source,
+        "access_token": key,
+        "last_status": "exhausted",
+        "last_status_at": time.time() - _SOLE_BENCH_AGE,
+        "last_error_code": 429,
+    }
+
+
+def _pool_home(tmp_path, monkeypatch, pool: dict, config: str):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    for var in (
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENROUTER_BASE_URL",
+        "HERMES_INFERENCE_PROVIDER",
+        "HERMES_INFERENCE_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "credential_pool": pool}, indent=2), encoding="utf-8"
+    )
+    (hermes_home / "config.yaml").write_text(config, encoding="utf-8")
+    return hermes_home
+
+
+def test_openrouter_reports_its_cooldown_instead_of_resolving_keyless(
+    tmp_path, monkeypatch
+):
+    """OpenRouter's fall-through reads env vars, not the pool.
+
+    With every pooled key benched, ``pool.select()`` refuses them all and
+    resolution drops through to ``OPENROUTER_API_KEY`` -- unset here, as it is
+    for anyone who registered their keys with ``hermes auth add``. The runtime
+    used to come back keyless and un-annotated, so the caller reported "no API
+    key configured" and never consulted a perfectly good fallback chain.
+    """
+    key = "sk-test-openrouter-" + "0" * 40
+    _pool_home(
+        tmp_path,
+        monkeypatch,
+        {"openrouter": [_benched_row("or-0", key, "manual")]},
+        "model:\n  default: some/model\n  provider: openrouter\n",
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    cooling_until = resolved.get(CREDENTIALS_COOLING_DOWN_KEY)
+    assert cooling_until is not None
+    assert cooling_until > time.time()
+
+
+def test_a_named_custom_endpoint_reports_its_own_pools_cooldown(
+    tmp_path, monkeypatch
+):
+    """A custom endpoint keeps its credentials under ``custom:<name>``.
+
+    ``_try_resolve_from_custom_pool`` returns None both when an endpoint has
+    no pool and when its pool refuses every benched entry -- so resolution
+    falls through to the ``custom_providers`` api_key, which is the very
+    credential the pool is cooling. Probing the bare ``custom`` pool would
+    read an empty one and call it healthy.
+    """
+    key = "sk-test-custom-" + "0" * 32
+    _pool_home(
+        tmp_path,
+        monkeypatch,
+        {"custom:myllm": [_benched_row("cu-0", key, "config:myllm")]},
+        "model:\n"
+        "  default: my-model\n"
+        "  provider: myllm\n"
+        "custom_providers:\n"
+        "  - name: myllm\n"
+        "    base_url: https://llm.example.test/v1\n"
+        f"    api_key: {key}\n"
+        "    model: my-model\n",
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="myllm")
+
+    assert resolved["api_key"] == key
+    cooling_until = resolved.get(CREDENTIALS_COOLING_DOWN_KEY)
+    assert cooling_until is not None
+    assert cooling_until > time.time()
+
+
+def test_a_healthy_openrouter_pool_is_not_reported_as_cooling(
+    tmp_path, monkeypatch
+):
+    """The negative half: one live key means the provider is usable.
+
+    Guards the keyless branch added for the case above from swallowing every
+    provider whose runtime happens to carry no inline key.
+    """
+    key = "sk-test-openrouter-live-" + "0" * 32
+    row = _benched_row("or-live", key, "manual")
+    row.pop("last_status")
+    row.pop("last_error_code")
+    _pool_home(
+        tmp_path,
+        monkeypatch,
+        {"openrouter": [row]},
+        "model:\n  default: some/model\n  provider: openrouter\n",
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved.get(CREDENTIALS_COOLING_DOWN_KEY) is None

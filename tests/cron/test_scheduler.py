@@ -5,6 +5,7 @@ import itertools
 import json
 import logging
 import os
+import time
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1219,6 +1220,75 @@ class TestRunJobConfigEnvVarExpansion:
         assert requested == [None, "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
+        assert kwargs["model"] == "z-ai/glm-5.2"
+
+    def test_rate_limited_pool_switches_provider_and_model_together(
+        self, tmp_path, monkeypatch
+    ):
+        """A tick must not spend a request the credential pool already refused.
+
+        Unlike the auth case above, resolution SUCCEEDS here — it hands back a
+        key — and only the annotation says every live credential is benched by
+        a 429. Without acting on it the job sends one doomed request on every
+        tick, for as long as the quota stays drained.
+        """
+        from hermes_cli.runtime_provider import CREDENTIALS_COOLING_DOWN_KEY
+
+        # load_pool() resolves its own home, so keep the fallback's pool probe
+        # off the developer's real credential store.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gemini-3.7-flash\n"
+            "  provider: gemini\n"
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: z-ai/glm-5.2\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "cooldown-fallback",
+            "name": "cooldown fallback",
+            "prompt": "hi",
+            "provider_snapshot": "gemini",
+            "model_snapshot": "gemini-3.7-flash",
+        }
+        fake_db = MagicMock()
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") in (None, "gemini"):
+                return {
+                    **self._RUNTIME,
+                    "provider": "gemini",
+                    CREDENTIALS_COOLING_DOWN_KEY: time.time() + 1800,
+                }
+            assert kwargs["requested"] == "openrouter"
+            assert kwargs["target_model"] == "z-ai/glm-5.2"
+            return {**self._RUNTIME, "provider": "openrouter"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_runtime), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert requested == [None, "openrouter"]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "openrouter"
+        # Provider and model move together: a Gemini model id sent to
+        # OpenRouter is a 400, not a fallback.
         assert kwargs["model"] == "z-ai/glm-5.2"
 
 

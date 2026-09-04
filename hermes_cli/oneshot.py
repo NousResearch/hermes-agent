@@ -454,6 +454,21 @@ def _run_agent(
         explicit_api_key=explicit_api_key_from_alias,
     )
 
+    # Resolution can succeed and still hand back a benched key: when every
+    # live credential in the provider's pool is serving a 429, the one request
+    # this process exists to make would 429 before the agent's own fallback
+    # engages. A one-shot run is single-shot by definition, so there is nothing
+    # to restore -- the next invocation resolves from the configured primary
+    # again and returns to it once the window lifts. ``effective_model`` moves
+    # with the provider: swapping one while keeping the other would send e.g. a
+    # Gemini model id to OpenRouter.
+    from hermes_cli.provider_cooldown import demote_if_rate_limited
+
+    _demotion = demote_if_rate_limited(runtime, get_fallback_chain(cfg))
+    runtime = _demotion.runtime
+    if _demotion.switched:
+        effective_model = _demotion.model
+
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
     # sets; explicit values preserve user order.

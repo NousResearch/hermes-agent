@@ -289,7 +289,9 @@ _SPECS = [
     ], help="Edit recovery fields on an already-completed task"),
     _cmd("block", [
         _TASK_ID,
-        _arg("reason", nargs="*", help="Reason (also appended as a comment)"),
+        _arg("reason", nargs="*",
+             help="Required. Why it is blocked / what it waits for (also appended "
+                  "as a comment)"),
         _bulk_ids("block"),
         _arg("--kind", choices=sorted(kb.VALID_BLOCK_KINDS),
              help="Typed block reason. 'dependency' waits in todo (auto-promoted when "

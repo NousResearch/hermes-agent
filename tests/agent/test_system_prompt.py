@@ -308,6 +308,34 @@ class TestNamedProfileHintIntegration:
         assert f"under {root}/profiles/<name>/." in prompt
 
 
+def test_custom_attribution_replaces_nous_in_fallback_identity():
+    agent = _make_agent(_attribution="Acme Corp")
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        prompt = build_system_prompt(agent)
+
+    assert "built by Acme Corp" in prompt
+    assert "by Acme Corp" in prompt
+    assert "Nous Research" not in prompt
+
+
+def test_empty_attribution_omits_org_clause():
+    agent = _make_agent(_attribution="")
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        prompt = build_system_prompt(agent)
+
+    assert "built by" not in prompt
+    assert "Nous Research" not in prompt
+    assert prompt.startswith("You are Hermes Agent. Be direct:")
+
+
 def test_build_system_prompt_records_stable_prefix():
     agent = _make_agent()
     with (

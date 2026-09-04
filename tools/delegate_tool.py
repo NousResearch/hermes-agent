@@ -5122,6 +5122,9 @@ def _build_top_level_description() -> str:
         )
 
     return (
+        "⚠ Subagent work is NOT DURABLE: /stop, /new, or process exit discards "
+        "running children. Use cronjob or terminal(background=True, notify=True) "
+        "for work that must survive this session.\n\n"
         "Spawn subagents in isolated contexts; each gets its own conversation, "
         "terminal session, and toolset, and only its final summary returns to "
         "you. Pass every task in `tasks` — one entry spawns one subagent, "
@@ -5137,10 +5140,7 @@ def _build_top_level_description() -> str:
         "DO NOT USE FOR (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
         "- A single tool call -> call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot ask questions\n"
-        "- Durable work that must survive this session -> cronjob or "
-        "terminal(background=True, notify=True); /stop, /new, or "
-        "process exit discards running subagents.\n\n"
+        "- Tasks needing user interaction -> subagents cannot ask questions\n\n"
         "RULES:\n"
         "- Children know nothing of this conversation: pass everything needed "
         "via 'context', including any required output language, tone, or "

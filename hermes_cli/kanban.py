@@ -493,6 +493,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="KEY",
         help="Restrict to tasks with this current_step_key",
     )
+    p_list.add_argument(
+        "--all",
+        action="store_true",
+        help="Query across all boards instead of the current board. "
+             "Conflicts with the global --board flag.",
+    )
 
     # --- show ---
     p_show = sub.add_parser("show", help="Show a task with comments + events")
@@ -1738,25 +1744,62 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _list_task_filters(args: argparse.Namespace, assignee: Optional[str]) -> dict[str, Any]:
+    return {
+        "assignee": assignee,
+        "status": args.status,
+        "tenant": args.tenant,
+        "session_id": args.session,
+        "include_archived": args.archived,
+        "order_by": getattr(args, "sort", None),
+        "workflow_template_id": args.workflow_template_id,
+        "current_step_key": args.current_step_key,
+    }
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
+    query_all_boards = getattr(args, "all", False)
+    if query_all_boards and getattr(args, "board", None):
+        print("kanban: pass either --all or --board, not both", file=sys.stderr)
+        return 2
+
+    filters = _list_task_filters(args, assignee)
+
+    if query_all_boards:
+        try:
+            boards = kb.list_boards(include_archived=args.archived)
+        except Exception:
+            boards = [{"slug": kb.DEFAULT_BOARD}]
+        labeled: list[tuple[str, Any]] = []
+        for board in boards:
+            slug = board.get("slug") or kb.DEFAULT_BOARD
+            with kb.connect_closing(board=slug) as conn:
+                kb.recompute_ready(conn)
+                for task in kb.list_tasks(conn, **filters):
+                    labeled.append((slug, task))
+        if getattr(args, "json", False):
+            payload = []
+            for slug, task in labeled:
+                row = _task_to_dict(task)
+                row["board"] = slug
+                payload.append(row)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        if not labeled:
+            print("(no matching tasks across boards)")
+            return 0
+        for slug, task in labeled:
+            print(f"[{slug}] " + _fmt_task_line(task))
+        return 0
+
     with kb.connect_closing() as conn:
         # Cheap "mini-dispatch": recompute ready so list output reflects
         # dependencies that may have cleared since the last dispatcher tick.
         kb.recompute_ready(conn)
-        tasks = kb.list_tasks(
-            conn,
-            assignee=assignee,
-            status=args.status,
-            tenant=args.tenant,
-            session_id=args.session,
-            include_archived=args.archived,
-            order_by=getattr(args, "sort", None),
-            workflow_template_id=args.workflow_template_id,
-            current_step_key=args.current_step_key,
-        )
+        tasks = kb.list_tasks(conn, **filters)
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
         return 0

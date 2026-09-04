@@ -57,6 +57,7 @@ describe('useDesktopIntegrations', () => {
     desktopWindow.hermesDesktop = {
       setPreviewShortcutActive: vi.fn(),
       onOpenUpdatesRequested: vi.fn(),
+      onOpenSettingsRequested: vi.fn(),
       onFocusSession: vi.fn(),
       onNotificationAction: vi.fn(),
       onNotificationActivate: vi.fn(),
@@ -130,6 +131,24 @@ describe('useDesktopIntegrations', () => {
       }
     )
   }
+
+  describe('native settings menu', () => {
+    it('navigates to settings when the app menu requests it', () => {
+      let openSettings: (() => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onOpenSettingsRequested: (callback: () => void) => {
+          openSettings = callback
+          return () => undefined
+        }
+      } as Window['hermesDesktop']
+
+      render({ profileReady: true })
+      openSettings?.()
+
+      expect(navigate).toHaveBeenCalledWith('/settings')
+    })
+  })
 
   describe('profile-ready gate', () => {
     it('does NOT restore before profileReady is true', () => {

@@ -198,17 +198,18 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # Constants
 # =========================================================================
 
-DEFAULT_AGENT_IDENTITY = (
-    # Rewritten (#95681, maintainer-directed): the old text was a trait list
-    # ("helpful, knowledgeable, direct") — every model already believes that
-    # of itself, so it changed nothing. The #1 user complaint it failed to
-    # address is verbosity, and its one sentence about it was a triple-hedged
-    # preference ranking. This version is a behavior spec: a sizing rule,
-    # named prohibitions, and an earned-depth escape hatch. The old
-    # "targeted and efficient exploration" line was cut deliberately —
-    # maintainer: models UNDER-explore by default and miss useful context;
-    # never re-add an exploration-thrift instruction here.
-    "You are Hermes Agent, built by Nous Research. Be direct: match the "
+DEFAULT_ATTRIBUTION = "Nous Research"
+
+# Rewritten (#95681, maintainer-directed): the old text was a trait list
+# ("helpful, knowledgeable, direct") — every model already believes that
+# of itself, so it changed nothing. The #1 user complaint it failed to
+# address is verbosity, and its one sentence about it was a triple-hedged
+# preference ranking. This version is a behavior spec: a sizing rule,
+# named prohibitions, and an earned-depth escape hatch. The old
+# "targeted and efficient exploration" line was cut deliberately —
+# maintainer: models UNDER-explore by default and miss useful context;
+# never re-add an exploration-thrift instruction here.
+_IDENTITY_BODY = (
     "length of your reply to the weight of the ask — a one-line question "
     "gets a one-line answer, and finished work gets a short report of what "
     "changed, what's verified, and what's left, never a replay of the "
@@ -221,35 +222,65 @@ DEFAULT_AGENT_IDENTITY = (
     "default."
 )
 
-HERMES_AGENT_HELP_GUIDANCE = (
-    # "when the two differ" was cut (#95681): a model that just read the
-    # skill won't ALSO fetch the docs to diff them, so the clause was dead
-    # weight — the docs-are-authoritative sentence already carries the
-    # precedence. Injected only when skill_view exists AND the hermes-agent
-    # skill is actually installed (see system_prompt.py slot resolution).
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
-    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
-    "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://hermes-agent.nousresearch.com/docs is your "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. The `hermes-agent` skill has the actual commands and proven "
-    "workflows — load it with skill_view(name='hermes-agent') before configuring, "
-    "modifying, or troubleshooting Hermes so you don't guess or invent workarounds."
-)
 
-# Variant injected when the skill tools are not in the session's toolset
-# (e.g. a Blank Slate install with the skills toolset disabled). Pointing the
-# model at skill_view() there would be a dangling reference — the docs URL is
-# the only actionable pointer.
-HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
-    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
-    "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://hermes-agent.nousresearch.com/docs is the "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. Point the user there (or read it yourself if you have a way to "
-    "fetch web content)."
-)
+def build_agent_identity(attribution: Optional[str] = None) -> str:
+    """Default identity with configurable org attribution.
+
+    ``None`` keeps the product default. An empty string omits the
+    ``built by …`` clause. The #95681 behavior spec is otherwise unchanged.
+    """
+    label = DEFAULT_ATTRIBUTION if attribution is None else str(attribution).strip()
+    lead = (
+        f"You are Hermes Agent, built by {label}. Be direct: match the "
+        if label
+        else "You are Hermes Agent. Be direct: match the "
+    )
+    return lead + _IDENTITY_BODY
+
+
+def build_help_guidance(
+    attribution: Optional[str] = None, *, with_skills: bool = True
+) -> str:
+    """Docs pointer, with optional org attribution in the opener.
+
+    ``with_skills=True`` is injected only when skill_view exists AND the
+    hermes-agent skill is actually installed (see system_prompt.py slot
+    resolution). "when the two differ" was cut (#95681): a model that just
+    read the skill won't ALSO fetch the docs to diff them.
+    """
+    label = DEFAULT_ATTRIBUTION if attribution is None else str(attribution).strip()
+    by = f" (by {label})" if label else ""
+    opener = f"You run on Hermes Agent{by}. When the user needs help with "
+    shared = (
+        "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+        "it — or when you need to understand your own features, tools, or capabilities, "
+        "the documentation at https://hermes-agent.nousresearch.com/docs is "
+    )
+    if with_skills:
+        return (
+            opener
+            + shared
+            + "your authoritative reference and always holds the latest, most up-to-date "
+            "information. The `hermes-agent` skill has the actual commands and proven "
+            "workflows — load it with skill_view(name='hermes-agent') before configuring, "
+            "modifying, or troubleshooting Hermes so you don't guess or invent workarounds."
+        )
+    # Variant injected when the skill tools are not in the session's toolset
+    # (e.g. a Blank Slate install with the skills toolset disabled). Pointing
+    # the model at skill_view() there would be a dangling reference — the docs
+    # URL is the only actionable pointer.
+    return (
+        opener
+        + shared
+        + "the authoritative reference and always holds the latest, most up-to-date "
+        "information. Point the user there (or read it yourself if you have a way to "
+        "fetch web content)."
+    )
+
+
+DEFAULT_AGENT_IDENTITY = build_agent_identity()
+HERMES_AGENT_HELP_GUIDANCE = build_help_guidance(with_skills=True)
+HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = build_help_guidance(with_skills=False)
 
 # Memory guidance (#95681, consolidated): ONE block from ONE builder.
 # The opening frame adapts to which stores config enables; everything else

@@ -2090,6 +2090,12 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Org attribution in the fallback identity / help-guidance blocks.
+    # "Nous Research" (default) keeps current wording. A custom string
+    # replaces the org name. Empty omits the "built by …" / "(by …)" clause.
+    _raw_attribution = _agent_section.get("attribution", "Nous Research")
+    agent._attribution = "" if _raw_attribution is None else str(_raw_attribution)
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

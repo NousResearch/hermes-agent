@@ -29,7 +29,7 @@ import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, SETTINGS_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
 
@@ -82,13 +82,17 @@ export function useDesktopIntegrations({
     // default pointed a Mac at its remote Linux backend and left the app itself
     // silently stale (#70266).
     const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow('client'))
+    const unsubscribeSettings = window.hermesDesktop?.onOpenSettingsRequested?.(() =>
+      navigate(SETTINGS_ROUTE)
+    )
 
     return () => {
       unsubscribe?.()
+      unsubscribeSettings?.()
       stopUpdatePoller()
       stopMcpHealthChecker()
     }
-  }, [])
+  }, [navigate])
 
   // The renderer OWNS ⌘W: on macOS the native menu accelerator would else
   // close the window, so claim it unconditionally — the menu then routes ⌘W

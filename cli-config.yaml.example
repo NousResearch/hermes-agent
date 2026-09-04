@@ -1085,6 +1085,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Attribution label for the fallback agent identity (when SOUL.md is absent).
+  # - "Nous Research" (default) → "built by Nous Research"
+  # - "Acme Corp" → "built by Acme Corp"
+  # - "" (empty) → omit the "built by …" / "(by …)" clause
+  # attribution: "Nous Research"
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

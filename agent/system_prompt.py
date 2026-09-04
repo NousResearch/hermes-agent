@@ -33,10 +33,13 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    DEFAULT_ATTRIBUTION,
     EXECUTION_GUIDANCE_MODELS,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
+    build_agent_identity,
+    build_help_guidance,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     USER_PROFILE_GUIDANCE,
@@ -482,9 +485,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             stable_parts.append(_soul_content)
             _soul_loaded = True
 
+    _attribution = getattr(agent, "_attribution", DEFAULT_ATTRIBUTION)
+    if _attribution is None:
+        _attribution = DEFAULT_ATTRIBUTION
+    else:
+        _attribution = str(_attribution).strip()
+    _custom_attribution = _attribution != DEFAULT_ATTRIBUTION
+
     if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        # Fallback to hardcoded identity (org name is config-overridable).
+        stable_parts.append(
+            build_agent_identity(_attribution) if _custom_attribution else DEFAULT_AGENT_IDENTITY
+        )
 
     # Pointer to the docs (and, when it exists, the hermes-agent skill) for
     # user questions about Hermes itself. The skill_view() pointer is a
@@ -495,7 +507,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # per-session, so cache-safe either way.
     _has_skill_view = "skill_view" in (agent.valid_tool_names or set())
     _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    stable_parts.append(
+        build_help_guidance(_attribution, with_skills=False)
+        if _custom_attribution
+        else HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+    )
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -653,7 +669,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # rendered index line keeps this a pure string check — no second
     # filesystem scan, and it inherits the index cache's stability).
     if _has_skill_view and "- hermes-agent:" in skills_prompt:
-        stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+        stable_parts[_help_guidance_slot] = (
+            build_help_guidance(_attribution, with_skills=True)
+            if _custom_attribution
+            else HERMES_AGENT_HELP_GUIDANCE
+        )
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

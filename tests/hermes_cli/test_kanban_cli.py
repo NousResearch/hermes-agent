@@ -40,6 +40,36 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 
+def test_kanban_list_all_includes_board_slug(kanban_home):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    with kb.connect_closing(board="alpha") as conn:
+        kb.create_task(conn, title="alpha-task")
+    with kb.connect_closing(board="beta") as conn:
+        kb.create_task(conn, title="beta-task")
+
+    payload = json.loads(kc.run_slash("list --all --json"))
+    by_title = {row["title"]: row["board"] for row in payload}
+    assert by_title["alpha-task"] == "alpha"
+    assert by_title["beta-task"] == "beta"
+
+    text = kc.run_slash("list --all")
+    assert "[alpha]" in text
+    assert "[beta]" in text
+    assert "alpha-task" in text
+    assert "beta-task" in text
+
+
+def test_kanban_list_all_conflicts_with_board(kanban_home):
+    kb.create_board("alpha")
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "--board", "alpha", "list", "--all"])
+    rc = kc.kanban_command(args)
+    assert rc == 2
+
+
 def test_kanban_list_json_includes_session_id(kanban_home):
     """JSON output exposes `session_id` so external clients (Scarf, web
     dashboards) don't need a side query to filter by chat session."""

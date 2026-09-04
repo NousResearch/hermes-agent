@@ -18,6 +18,8 @@ from agent.prompt_builder import (
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
+    build_agent_identity,
+    build_help_guidance,
     build_skills_system_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
@@ -25,6 +27,9 @@ from agent.prompt_builder import (
     _get_context_file_max_chars,
     _CONTEXT_FILE_DYNAMIC_CEILING,
     DEFAULT_AGENT_IDENTITY,
+    DEFAULT_ATTRIBUTION,
+    HERMES_AGENT_HELP_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
     drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
@@ -61,6 +66,36 @@ def _drain_truncation_warnings():
 
 
 class TestGuidanceConstants:
+    def test_default_identity_keeps_nous_attribution(self):
+        assert DEFAULT_AGENT_IDENTITY == build_agent_identity()
+        assert "built by Nous Research" in DEFAULT_AGENT_IDENTITY
+        assert DEFAULT_ATTRIBUTION == "Nous Research"
+
+    def test_custom_attribution_rewrites_org_name_only(self):
+        text = build_agent_identity("Acme Corp")
+        assert "built by Acme Corp" in text
+        assert "Nous Research" not in text
+        assert "Depth is earned" in text
+
+    def test_empty_attribution_omits_built_by_clause(self):
+        text = build_agent_identity("")
+        assert text.startswith("You are Hermes Agent. Be direct:")
+        assert "built by" not in text
+        assert "Nous Research" not in text
+
+    def test_help_guidance_attribution_variants(self):
+        assert "by Nous Research" in HERMES_AGENT_HELP_GUIDANCE
+        assert "skill_view(name='hermes-agent')" in HERMES_AGENT_HELP_GUIDANCE
+        custom = build_help_guidance("Acme Corp", with_skills=True)
+        assert "by Acme Corp" in custom
+        assert "Nous Research" not in custom
+        empty = build_help_guidance("", with_skills=False)
+        assert empty.startswith("You run on Hermes Agent. When the user")
+        assert "by " not in empty[:80]
+        assert "skill_view" not in empty
+        assert empty == build_help_guidance("", with_skills=False)
+        assert HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS == build_help_guidance(with_skills=False)
+
     def test_memory_guidance_keeps_form_rule_and_routing(self):
         """Dieted (#95681): WHAT belongs in memory is the memory tool
         schema's job (taught on every call). This block keeps only the

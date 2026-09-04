@@ -19,3 +19,13 @@ def test_cronjob_schema_action_description_flags_create_requirements():
     assert "REQUIRED" in action_desc
 
 
+def test_cronjob_schema_leads_with_tui_delivery_warning():
+    """CLI/TUI sessions have no live origin-delivery channel (#54566)."""
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    desc = CRONJOB_SCHEMA["description"]
+    assert desc.lstrip().startswith("⚠")
+    assert "deliver='origin'" in desc
+    assert "TUI/CLI" in desc
+
+

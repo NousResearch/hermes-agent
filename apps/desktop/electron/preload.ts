@@ -402,6 +402,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:open-updates', listener)
   },
+  onOpenSettingsRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:open-settings', listener)
+
+    return () => ipcRenderer.removeListener('hermes:open-settings', listener)
+  },
   onDeepLink: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:deep-link', listener)

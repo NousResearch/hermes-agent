@@ -1686,7 +1686,7 @@ class CredentialPool:
             sync_entry = (
                 self._sync_codex_entry_from_auth_store
                 if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
+                else self._sync_xai_oauth_entry_from_auth_store
                 if self.provider == "xai-oauth"
                 else self._sync_anthropic_entry_from_pool_store
             )
@@ -1948,19 +1948,54 @@ class CredentialPool:
                 # process (or another profile sharing the singleton) would
                 # otherwise trigger ``refresh_token_reused`` on the next
                 # POST.  Only meaningful for singleton-seeded entries.
+                # Persist through ``_refresh_xai_oauth_tokens`` so the
+                # providers.xai-oauth singleton (what resolve_* reads) stays
+                # in lockstep with the pool row.
                 synced = self._sync_xai_oauth_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
-                refreshed = auth_mod.refresh_xai_oauth_pure(
-                    entry.access_token,
-                    entry.refresh_token,
-                )
-                updated = replace(
-                    entry,
-                    access_token=refreshed["access_token"],
-                    refresh_token=refreshed["refresh_token"],
-                    last_refresh=refreshed.get("last_refresh"),
-                )
+                if entry.source == "device_code":
+                    token_endpoint = ""
+                    try:
+                        state = auth_mod._load_provider_state(
+                            auth_mod._load_auth_store(), "xai-oauth"
+                        ) or {}
+                        discovery = state.get("discovery") if isinstance(state, dict) else {}
+                        if isinstance(discovery, dict):
+                            token_endpoint = str(discovery.get("token_endpoint") or "").strip()
+                    except Exception:
+                        token_endpoint = ""
+                    if not token_endpoint:
+                        token_endpoint = auth_mod._xai_oauth_discovery(
+                            auth_mod.env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
+                        )["token_endpoint"]
+                    refreshed_tokens = auth_mod._refresh_xai_oauth_tokens(
+                        {
+                            "access_token": entry.access_token,
+                            "refresh_token": entry.refresh_token,
+                        },
+                        token_endpoint=token_endpoint,
+                        timeout_seconds=auth_mod.env_float(
+                            "HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20
+                        ),
+                    )
+                    updated = replace(
+                        entry,
+                        access_token=str(refreshed_tokens.get("access_token") or ""),
+                        refresh_token=str(refreshed_tokens.get("refresh_token") or ""),
+                        last_refresh=refreshed_tokens.get("last_refresh"),
+                    )
+                else:
+                    refreshed = auth_mod.refresh_xai_oauth_pure(
+                        entry.access_token,
+                        entry.refresh_token,
+                    )
+                    updated = replace(
+                        entry,
+                        access_token=refreshed["access_token"],
+                        refresh_token=refreshed["refresh_token"],
+                        last_refresh=refreshed.get("last_refresh"),
+                    )
             elif self.provider == "nous":
                 stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)
@@ -2077,11 +2112,14 @@ class CredentialPool:
                     self._replace_entry(synced, updated)
                     self._persist()
                     return updated
-                # Terminal error: auth.json has no newer tokens — the stored
-                # refresh_token is dead.  Clear it from auth.json so the next
-                # session does not re-seed the same revoked credentials, and
-                # remove all singleton-seeded xAI entries from the in-memory
-                # pool. Mirrors the Nous quarantine path above.
+                access = str(synced.access_token or "")
+                if access:
+                    logger.warning(
+                        "xAI OAuth refresh failed but stored access token is present; "
+                        "not quarantining shared grant"
+                    )
+                    return synced
+                # Terminal error with no access token left on disk.
                 if auth_mod._is_terminal_xai_oauth_refresh_error(exc):
                     logger.debug(
                         "xAI OAuth refresh token is terminally invalid; clearing local token state"

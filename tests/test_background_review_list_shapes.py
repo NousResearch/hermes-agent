@@ -298,9 +298,6 @@ def test_e_call_does_not_unwind_module_callables():
 
 def main():
     runner = TestRunner()
-    runner.run("a_change_as_list_does_not_crash", test_a_change_as_list_does_not_crash)
-    runner.run("a_change_as_int_does_not_crash", test_a_change_as_int_does_not_crash)
-    runner.run("b_operations_as_string_treated_as_empty", test_b_operations_as_string_treated_as_empty)
     runner.run("b_operations_as_none_treated_as_empty", test_b_operations_as_none_treated_as_empty)
     runner.run("c_operations_contains_non_dict_entries", test_c_operations_contains_non_dict_entries)
     runner.run("d_detail_non_dict_replaced_with_empty", test_d_detail_non_dict_replaced_with_empty)

@@ -20,6 +20,11 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
+
 
 def _make_runner(stt_enabled: bool = True) -> "GatewayRunner":  # type: ignore[name-defined]
     from gateway.run import GatewayRunner

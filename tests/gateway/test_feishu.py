@@ -10,10 +10,13 @@ import unittest
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.platforms.base import ProcessingOutcome
+
+if TYPE_CHECKING:
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
 try:
     import lark_oapi

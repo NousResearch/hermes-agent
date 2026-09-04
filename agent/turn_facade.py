@@ -172,10 +172,14 @@ class TurnFacadeMixin:
                         lease.join_threads()
                         lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
                         lease.release()
-                    # Always clear mid-turn labels on exit — including interrupted early returns
-                    # that skip finalize_turn. Keep ts.
+                    # Terminal activity stamp: persist ``last_activity_at`` and clear mid-turn
+                    # labels in one atomic write, so the timestamp is durably stamped even when
+                    # every intermediate heartbeat was throttled or dropped. Does NOT call
+                    # ``_touch_activity`` (kanban bridge side-effect on a finished turn) and does
+                    # NOT bump in-memory ``_last_activity_ts`` (preserves #15654 watchdog continuity).
+                    # ``_reset_activity_labels_after_turn`` remains available for other consumers.
                     with suppress(Exception):
-                        self._reset_activity_labels_after_turn()
+                        self._finalize_activity_after_turn()
                     if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
                         self._relay_pending_turn_id = None
                     if acct_token is not None:

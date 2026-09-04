@@ -347,6 +347,13 @@ class SessionDB(
     # writes (failure aborts the turn) get the long budget; observation-only activity
     # writes sit on the response-critical path and get a sub-second one.
     _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+    # Turn-end terminal stamp gets its own elevated patience. The turn is
+    # already over (we are in the ``finally`` block), so there is no
+    # response-critical path to protect. A dropped terminal stamp leaves
+    # ``last_activity_at`` stuck at a stale value, which breaks Desktop UI
+    # freshness detection — the exact bug this fixes. 2.0s is enough to survive
+    # routine lock contention on a large state.db without blocking indefinitely.
+    _ACTIVITY_FINALIZE_PATIENCE_S = 2.0
     # A live compression lock gets a short wait (compression publishes in seconds), but the lease
     # is a correctness boundary: a writer still locked out afterwards is refused.
     # Observation-only activity heartbeat/label writes (#76354 review S1): these run on (or adjacent to) the

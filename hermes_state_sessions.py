@@ -601,6 +601,47 @@ class SessionSessionsMixin:
             ("", ActivityProvenance.UNKNOWN.value, session_id), patience_s=self._ACTIVITY_WRITE_PATIENCE_S,
         )
 
+    # Turn-end terminal stamp gets its own elevated patience. The turn is already over (the caller runs in
+    # the turn's ``finally`` block), so there is no response-critical path to protect; a dropped terminal
+    # stamp leaves ``last_activity_at`` stuck at a stale value, which breaks Desktop UI freshness detection.
+    def finalize_session_activity(
+        self, session_id: str, ts: Optional[float] = None, *, patience_s: Optional[float] = None,
+    ) -> None:
+        """Atomically stamp ``last_activity_at`` and clear mid-turn labels.
+
+        Called from the turn ``finally`` block (via
+        ``AIAgent._finalize_activity_after_turn``) to ensure the terminal
+        timestamp is persisted even when all intermediate heartbeats were
+        throttled or dropped. Unlike :meth:`touch_session_activity`, this
+        method:
+
+        - Uses an **elevated write patience** (``_ACTIVITY_FINALIZE_PATIENCE_S``)
+          because the turn is already over and there is no response-critical
+          path to protect.
+        - **Clears** ``last_activity_description`` and
+          ``last_activity_provenance`` in the same UPDATE, avoiding a
+          transient ``"turn completed"`` label flash and halving teardown
+          writes.
+        - Never moves ``last_activity_at`` backwards (monotonic guard).
+
+        Fail-open: a failed write is debug-logged and never raises — the
+        next session start or heartbeat retries naturally.
+        """
+        if not session_id:
+            return
+        when = float(ts if ts is not None else time.time())
+        prov = ActivityProvenance.UNKNOWN.value
+        budget = patience_s if patience_s is not None else self._ACTIVITY_FINALIZE_PATIENCE_S
+        self._write_sql(
+            "UPDATE sessions SET "
+            "last_activity_at = ?, "
+            "last_activity_description = '', "
+            "last_activity_provenance = ? "
+            "WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at < ?)",
+            (when, prov, session_id, when),
+            patience_s=budget,
+        )
+
     def update_session_meta(
         self, session_id: str, model_config_json: str, model: Optional[str] = None,
     ) -> None:

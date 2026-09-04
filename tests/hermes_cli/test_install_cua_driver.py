@@ -263,6 +263,7 @@ class TestInstallCuaDriverUpgrade:
                  return_value="/usr/local/bin/cua-driver",
              ), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_cua_release_endpoint_reachable", return_value=True), \
              patch.object(
                  tools_config,
                  "_repair_cua_driver_autostart_windows",
@@ -1308,7 +1309,7 @@ class TestInstallerNoShell:
     asserting a branch the host had already selected.
     """
 
-    def _run(self, download_rc=0):
+    def _run(self, download_rc=0, bash_path: str | None = "/usr/bin/bash"):
         from unittest.mock import MagicMock
         from hermes_cli import tools_config
 
@@ -1332,6 +1333,7 @@ class TestInstallerNoShell:
         with patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
              patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
+             patch.object(tools_config, "resolve_executable", return_value=bash_path), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \
@@ -1348,11 +1350,16 @@ class TestInstallerNoShell:
         # Download: plain argv curl, no shell.
         dl_cmd = run_calls[0][1]
         assert isinstance(dl_cmd, list) and dl_cmd[0] == "curl"
-        # Exec: argv list ["/bin/bash", <mkstemp path>], shell=False.
+        # Exec: argv list [resolved bash, <mkstemp path>], shell=False.
         exec_cmd, exec_kw = popen_calls[0][1], popen_calls[0][2]
-        assert isinstance(exec_cmd, list) and exec_cmd[0] == "/bin/bash"
+        assert isinstance(exec_cmd, list) and exec_cmd[0] == "/usr/bin/bash"
         assert "cua-driver-install-" in exec_cmd[1]
         assert exec_kw.get("shell") is False
+
+    def test_missing_bash_returns_false_without_exec(self):
+        ok, calls = self._run(bash_path=None)
+        assert ok is False
+        assert not [c for c in calls if c[0] == "popen"]
 
     def test_download_failure_returns_false_without_exec(self):
         ok, calls = self._run(download_rc=6)
@@ -1381,6 +1388,7 @@ class TestInstallerNoShell:
         with patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
              patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
+             patch.object(tools_config, "resolve_executable", return_value="/usr/bin/bash"), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \

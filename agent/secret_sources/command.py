@@ -10,7 +10,7 @@ only secret values.
 Security model (mirrors the TS provider line-for-line where it matters):
 
 * The command string is the USER'S OWN configuration (same trust level as
-  the ``.env`` file they control), so it is run via ``/bin/sh -c <command>``.
+  the ``.env`` file they control), so it is run via ``a resolved POSIX shell -c <command>``.
 * The requested key is passed to the child ONLY via the ``HERMES_SECRET_KEY``
   environment variable — it is NEVER interpolated into the shell string, so
   a hostile key name (e.g. ``"; rm -rf ~``) is inert data, not code.
@@ -25,7 +25,7 @@ Security model (mirrors the TS provider line-for-line where it matters):
   ``HERMES_SECRET_KEY``) — it is never called per-key in a loop, so a
   helper that blocks (e.g. on a vault unlock prompt) can't be spawned
   dozens of times.
-* PLATFORM: the provider is POSIX-only (needs ``/bin/sh``).  On Windows it
+* PLATFORM: the provider is POSIX-only (needs ``a resolved POSIX shell``).  On Windows it
   degrades to an empty result with a warning; Windows users stay on the
   default ``env`` provider.
 """
@@ -46,6 +46,7 @@ from typing import Dict, Optional
 from agent.secret_sources.base import ErrorKind, SecretSource
 from agent.secret_sources.base import get_source_environment
 from agent.secret_sources.bitwarden import FetchResult
+from hermes_cli._subprocess_compat import resolve_executable
 
 __all__ = [
     "FetchResult",
@@ -165,7 +166,7 @@ def _run_helper(
     timeout_seconds: float,
     max_output_bytes: int,
 ) -> Optional[str]:
-    """Run the helper via ``/bin/sh -c`` and return its stdout, or None.
+    """Run the helper via ``a resolved POSIX shell -c`` and return its stdout, or None.
 
     The key is passed as DATA via ``HERMES_SECRET_KEY`` — never interpolated
     into the command string.  Both stdout and stderr are captured via pipes
@@ -175,7 +176,15 @@ def _run_helper(
     if _is_windows():
         print(
             "[secrets:command] the 'command' provider is POSIX-only "
-            "(needs /bin/sh); resolving no value on Windows",
+            "(needs a resolved POSIX shell); resolving no value on Windows",
+            file=sys.stderr,
+        )
+        return None
+
+    shell_executable = resolve_executable("sh")
+    if shell_executable is None:
+        print(
+            "[secrets:command] no POSIX shell executable found; resolving no value",
             file=sys.stderr,
         )
         return None
@@ -197,7 +206,7 @@ def _run_helper(
 
     try:
         proc = subprocess.Popen(  # noqa: S602 — command is the user's own config
-            ["/bin/sh", "-c", command],
+            [shell_executable, "-c", command],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -352,7 +361,7 @@ def apply_command_secrets(
 
     if _is_windows():
         result.warnings.append(
-            "the 'command' secret source is POSIX-only (needs /bin/sh); "
+            "the 'command' secret source is POSIX-only (needs a resolved POSIX shell); "
             "skipping on Windows"
         )
         return result
@@ -425,7 +434,7 @@ class CommandSource(SecretSource):
         return {
             "enabled": {"description": "Master switch", "default": False},
             "command": {
-                "description": "Helper run via /bin/sh -c; must print a "
+                "description": "Helper run via a resolved POSIX shell -c; must print a "
                                "KEY=VALUE blob on stdout",
                 "default": "",
             },
@@ -454,7 +463,7 @@ class CommandSource(SecretSource):
 
         if _is_windows():
             result.error = (
-                "the 'command' secret source is POSIX-only (needs /bin/sh); "
+                "the 'command' secret source is POSIX-only (needs a resolved POSIX shell); "
                 "skipping on Windows"
             )
             result.error_kind = ErrorKind.NOT_CONFIGURED

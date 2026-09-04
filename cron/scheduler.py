@@ -45,7 +45,7 @@ from typing import Any, Callable, List, Optional, Protocol
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import resolve_executable, windows_hide_flags
 from hermes_cli.config import (
     _expand_env_vars,
     cron_model_drift_axes,
@@ -4534,7 +4534,7 @@ def _run_job_script(
 
     Supported interpreters (chosen by file extension):
 
-    * ``.sh`` / ``.bash`` — run with ``/bin/bash``
+    * ``.sh`` / ``.bash`` — run with a resolved ``bash`` executable
     * anything else — run with the current Python interpreter
       (``sys.executable``), preserving the original behaviour for
       Python-based pre-check and data-collection scripts.
@@ -4617,12 +4617,10 @@ def _run_job_script(
     if suffix in {".sh", ".bash"}:
         # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
         # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
+        # executable lookup returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
         # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        _bash = resolve_executable("bash")
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "

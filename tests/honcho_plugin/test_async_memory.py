@@ -601,3 +601,104 @@ class TestPrefetchCacheAccessors:
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
 
+
+
+# ---------------------------------------------------------------------------
+# concurrent flushes of one session send each batch once (#92458)
+# ---------------------------------------------------------------------------
+
+class TestConcurrentFlushSession:
+    def _wire_remote(self, mgr, session, add_messages):
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+        remote = MagicMock()
+        remote.add_messages.side_effect = add_messages
+        mgr._sessions_cache[session.honcho_session_id] = remote
+        return remote
+
+    def test_racing_flushes_send_the_batch_once(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session(key="race")
+        session.add_message("user", "only once")
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+
+        def blocking_add_messages(_messages):
+            upload_started.set()
+            release_upload.wait(timeout=2)
+
+        remote = self._wire_remote(mgr, session, blocking_add_messages)
+        results = []
+        first = threading.Thread(target=lambda: results.append(mgr._flush_session(session)), daemon=True)
+        second = threading.Thread(target=lambda: results.append(mgr._flush_session(session)), daemon=True)
+        first.start()
+        assert upload_started.wait(timeout=1)
+        second.start()
+        # The second flusher must be parked on the lock, not inside add_messages.
+        second.join(timeout=0.2)
+        assert second.is_alive()
+        release_upload.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert results == [True, True]
+        assert remote.add_messages.call_count == 1
+        assert all(m["_synced"] for m in session.messages)
+
+    def test_async_writer_and_exit_flush_send_the_batch_once(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        session = _make_session(key="oneshot")
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi")
+        with mgr._cache_lock:
+            mgr._cache[session.key] = session
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+
+        def blocking_add_messages(_messages):
+            upload_started.set()
+            release_upload.wait(timeout=2)
+
+        remote = self._wire_remote(mgr, session, blocking_add_messages)
+        mgr.save(session)
+        assert upload_started.wait(timeout=2), "async writer never started the upload"
+        exit_flush = threading.Thread(target=mgr.flush_all, daemon=True)
+        exit_flush.start()
+        exit_flush.join(timeout=0.2)
+        assert exit_flush.is_alive()
+        release_upload.set()
+        exit_flush.join(timeout=2)
+        mgr.shutdown()
+
+        assert remote.add_messages.call_count == 1
+        assert all(m["_synced"] for m in session.messages)
+
+    def test_independent_sessions_flush_in_parallel(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        sessions = [_make_session(key="a", honcho_session_id="a"), _make_session(key="b", honcho_session_id="b")]
+        barrier = threading.Barrier(2)
+        results = []
+        for session in sessions:
+            session.add_message("user", session.key)
+            self._wire_remote(mgr, session, lambda _messages: barrier.wait(timeout=1))
+        threads = [threading.Thread(target=lambda s=s: results.append(mgr._flush_session(s)), daemon=True) for s in sessions]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=2)
+
+        assert not any(t.is_alive() for t in threads)
+        assert results == [True, True]
+
+    def test_same_session_flush_is_reentrant(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session()
+        calls = []
+
+        def nested(current):
+            calls.append(current)
+            return mgr._flush_session(current) if len(calls) == 1 else True
+
+        mgr._flush_session_locked = nested
+        assert mgr._flush_session(session) is True
+        assert len(calls) == 2

@@ -2007,6 +2007,10 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+    if target_model is None:
+        configured_default = _get_model_config().get("default")
+        if isinstance(configured_default, str) and configured_default.strip():
+            target_model = configured_default.strip()
 
     # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
     # custom providers and the built-in ones (openai / anthropic /

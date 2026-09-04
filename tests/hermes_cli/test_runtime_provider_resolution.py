@@ -758,6 +758,31 @@ def test_named_provider_pool_keeps_model_transport_override(monkeypatch):
     assert resolved["api_mode"] == "codex_responses"
 
 
+def test_configured_default_model_uses_its_transport_override(monkeypatch):
+    """Startup resolution must apply the selected default model's wire."""
+    config = {
+        "model": {
+            "provider": "cliproxyapi",
+            "default": "gpt-5.6-sol",
+        },
+        "providers": {
+            "cliproxyapi": {
+                "name": "CLIProxyAPI",
+                "base_url": "http://127.0.0.1:8317/v1",
+                "api_key": "local-proxy-key",
+                "transport": "openai_chat",
+                "models": {
+                    "gpt-5.6-sol": {"transport": "codex_responses"},
+                },
+            }
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved["api_mode"] == "codex_responses"
+
 
 def test_named_custom_provider_filters_capabilities_at_lookup_boundary(monkeypatch):
     monkeypatch.setattr(

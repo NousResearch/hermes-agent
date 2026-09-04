@@ -7870,9 +7870,16 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
         }
 
 
-def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+def get_api_key_provider_status(
+    provider_id: str, pconfig: Optional[ProviderConfig] = None,
+) -> Dict[str, Any]:
+    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax, OpenRouter).
+
+    ``pconfig`` is an optional override for providers that deliberately stay
+    out of ``PROVIDER_REGISTRY`` (openrouter — runtime resolution relies on
+    it being absent there); when omitted, the registry entry is used.
+    """
+    pconfig = pconfig if pconfig is not None else PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
 
@@ -8046,6 +8053,25 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_minimax_oauth_auth_status()
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
+    if target == "openrouter":
+        # OpenRouter deliberately stays out of PROVIDER_REGISTRY — runtime
+        # provider resolution relies on it being absent there (see the
+        # registry auto-extension guard above). Synthesize the same minimal
+        # pconfig the model-setup flow uses and route it through the api-key
+        # status resolver. Without this branch the dispatcher falls through
+        # to ``{"logged_in": False}`` and ``hermes auth status openrouter``
+        # falsely reports logged out even with a valid OPENROUTER_API_KEY or
+        # credential-pool entry (#95878).
+        return get_api_key_provider_status(
+            target,
+            pconfig=ProviderConfig(
+                id="openrouter",
+                name="OpenRouter",
+                auth_type="api_key",
+                api_key_env_vars=("OPENROUTER_API_KEY",),
+                inference_base_url=OPENROUTER_BASE_URL,
+            ),
+        )
     pconfig = PROVIDER_REGISTRY.get(target)
     # External-process providers (copilot-acp today; kiro/devin/junie-style ACP
     # backends tomorrow) — dispatch on auth_type, not a hardcoded slug, so every

@@ -174,3 +174,34 @@ class TestValidEnvKeyStillWins:
         )
         assert key == "sk-or-v1-second-var-good"
         assert source == "OPENROUTER_KEY"
+
+
+class TestAuthStatusOpenRouter:
+    """#95878: ``hermes auth status openrouter`` reports logged out even with
+    a valid credential because openrouter is deliberately absent from
+    PROVIDER_REGISTRY and the status dispatcher fell through to the default
+    ``{"logged_in": False}`` before ever consulting .env / credential pool."""
+
+    def test_env_key_reports_logged_in(self, isolated_hermes_home):
+        _write_env_file(
+            isolated_hermes_home, OPENROUTER_API_KEY="sk-or-v1-valid-key-abc123"
+        )
+
+        from hermes_cli.auth import get_auth_status
+        status = get_auth_status("openrouter")
+        assert status.get("logged_in") is True
+        assert status.get("configured") is True
+
+    def test_pool_credential_reports_logged_in(self, isolated_hermes_home):
+        pool = _mock_pool(_entry("sk-or-v1-pool-key-abc123"))
+
+        from hermes_cli.auth import get_auth_status
+        with patch("agent.credential_pool.load_pool", return_value=pool):
+            status = get_auth_status("openrouter")
+        assert status.get("logged_in") is True
+
+    def test_no_credential_reports_logged_out(self, isolated_hermes_home):
+        from hermes_cli.auth import get_auth_status
+        status = get_auth_status("openrouter")
+        assert status.get("logged_in") is False
+        assert status.get("configured") is False

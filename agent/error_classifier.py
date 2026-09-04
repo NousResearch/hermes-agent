@@ -671,6 +671,10 @@ _TIMEOUT_MESSAGE_PATTERNS = [
     "deadline exceeded",
     "operation timed out",
     "upstream timed out",
+    # Cloudflare 524: origin didn't respond within proxy read timeout (120s)
+    "error 524",
+    "proxy read timeout",
+    "origin web server did not return a complete response",
 ]
 
 # Connection-establishment / DNS failure message patterns.  These surface
@@ -1490,11 +1494,12 @@ def _classify_by_status(
             )
         return result_fn(FailoverReason.server_error, retryable=True)
 
-    if status_code in {503, 529}:
+    if status_code in {503, 524, 529}:
         # Same overflow-as-5xx variant (server busy / model-load OOM, or a
-        # Cloudflare/Tailscale hop relabeling the status). Route explicit
-        # overflow bodies into compression; otherwise treat as transient
-        # overload and retry.
+        # Cloudflare/Tailscale hop relabeling the status). 524 is a Cloudflare-
+        # specific "A timeout occurred" (origin didn't respond within 120s proxy
+        # read timeout). Route explicit overflow bodies into compression;
+        # otherwise treat as transient overload and retry.
         if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
             return result_fn(
                 FailoverReason.server_error,

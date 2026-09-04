@@ -3040,10 +3040,24 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
-) -> bool:
+) -> Optional[bool]:
+    """Tri-state terminal write (c-027).
+
+    Returns:
+        ``True``  — recorded; when ``expected_fire_owner`` is set, the
+                    owner CAS matched and the completion is authoritative.
+        ``False`` — authoritatively rejected: the fire fence was acquired
+                    and the owner CAS (when supplied) found a replacement
+                    owner, so the stale completion was discarded.
+        ``None``  — unconfirmed: the fire fence could not be acquired, so
+                    the write (and the CAS) never happened. Callers must
+                    not treat this as ownership loss — a worker's own
+                    fenced side effect may be the reason the fence was
+                    busy.
+    """
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            return False
+            return None
         return _mark_job_run_locked(
             job_id,
             success,
@@ -3785,17 +3799,36 @@ def _sweep_completed_oneshots(
     return removed
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
+    """Tri-state fire-claim heartbeat (correction c-027).
+
+    Returns:
+        ``True``  — renewed/confirmed: we hold the fire fence and the
+                    persisted claim still names ``expected_owner``.
+        ``False`` — authoritatively inspected: the fence was acquired and
+                    the claim is absent or owned by someone else.
+        ``None``  — unconfirmed: the fire fence could not be acquired (its
+                    process-local RLock is contended, e.g. held across a
+                    slow side-effect delivery) so ownership was never
+                    actually inspected.
+
+    Collapsing ``None`` into ``False`` made a worker's own heartbeat thread
+    report authoritative ownership loss during fenced delivery and cancel a
+    successfully completing run. Callers must treat the three outcomes
+    differently: only an explicit ``False`` is an ownership loss.
+    """
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            return False
+            return None
         return _heartbeat_fire_claim_locked(
             job_id,
             expected_owner=expected_owner,
         )
 
 
-def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:
+def _heartbeat_fire_claim_locked(
+    job_id: str, *, expected_owner: str
+) -> Optional[bool]:
     """Refresh an active ``fire_claim`` without extending another owner's lease.
 
     A cron execution can legitimately outlive the fire-claim TTL.  The shared

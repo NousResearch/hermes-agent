@@ -7321,8 +7321,12 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
             )
 
     try:
+        # Tri-state (c-027): True=renewed/owned; False=confirmed loss;
+        # None=unconfirmed (fence contended). Initial validation stays
+        # fail-closed: the run may only start on exactly True.
         owns_fire_claim = heartbeat_fire_claim(job_id, expected_owner=owner)
     except Exception:
+        owns_fire_claim = None
         logger.warning(
             "Job '%s': initial fire_claim validation failed",
             job_id,
@@ -7333,44 +7337,64 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         )
         return True
 
-    if owns_fire_claim is False:
-        logger.warning(
-            "Job '%s': fire claim ownership was already lost before execution",
-            job_id,
-        )
-        _finish_unstarted("Fire claim ownership lost before execution started.")
+    if owns_fire_claim is not True:
+        # Fail closed (c-027): only an exactly-True renewal lets the run
+        # start. An explicit False is a confirmed loss; None (or an
+        # unexpected value) is unconfirmed ownership — the run must not
+        # begin without a validated claim.
+        if owns_fire_claim is False:
+            logger.warning(
+                "Job '%s': fire claim ownership was already lost before execution",
+                job_id,
+            )
+            _finish_unstarted("Fire claim ownership lost before execution started.")
+        else:
+            logger.warning(
+                "Job '%s': fire claim ownership could not be confirmed before "
+                "execution; refusing to start",
+                job_id,
+            )
+            _finish_unstarted(
+                "Fire claim ownership could not be validated before execution started."
+            )
         return True
 
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire claim ownership lost; interrupting stale run",
-                        job_id,
-                    )
-                    return
-                last_confirmed = time.monotonic()
+                # Tri-state (c-027): only an explicit False is an
+                # authoritative ownership loss. None means the fire fence
+                # was busy (e.g. our own delivery holds it) — ownership was
+                # not inspected, so the renewal is merely unconfirmed and
+                # falls under the grace window like any other exception.
+                renewed = heartbeat_fire_claim(job_id, expected_owner=owner)
             except Exception:
-                logger.debug(
-                    "Job '%s': fire_claim heartbeat failed",
+                renewed = None
+            if renewed is False:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire claim ownership lost; interrupting stale run",
                     job_id,
-                    exc_info=True,
                 )
-                if (
-                    time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
-                ):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire_claim could not be renewed within %.1fs; "
-                        "interrupting uncertain run",
-                        job_id,
-                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
-                    )
-                    return
+                return
+            if renewed is True:
+                last_confirmed = time.monotonic()
+                continue
+            logger.debug(
+                "Job '%s': fire_claim heartbeat unconfirmed (fence contended "
+                "or store error)",
+                job_id,
+            )
+            if time.monotonic() - last_confirmed >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire_claim could not be renewed within %.1fs; "
+                    "interrupting uncertain run",
+                    job_id,
+                    _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
+                )
+                return
 
     heartbeat_thread = threading.Thread(
         target=heartbeat_context.run,
@@ -7525,7 +7549,15 @@ def _run_one_job_body(
         if fire_owner is None:
             return False
         try:
-            if heartbeat_fire_claim(job["id"], expected_owner=fire_owner):
+            # Tri-state (c-027): True = still owned; False = authoritative
+            # loss; None = fence contended (likely our own side effect
+            # holds it) — NOT a loss. None keeps the caller in
+            # unknown-but-not-lost territory; the fence acquisition below
+            # re-validates ownership before the terminal write.
+            renewed = heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
+            if renewed is True:
+                return False
+            if renewed is None:
                 return False
         except Exception:
             logger.debug(
@@ -7658,9 +7690,15 @@ def _run_one_job_body(
             # would leave fire_claim lingering until TTL and last_status
             # stale. Probe ownership once; if still ours, record the
             # interruption through the owner-fenced terminal write.
-            if fire_owner is not None and heartbeat_fire_claim(
-                job["id"], expected_owner=fire_owner,
-            ):
+            # Tri-state (c-027): a None probe is unconfirmed — never
+            # adjudicate "ownership lost" on it; the None arm falls through
+            # to the uncertain-store recording path below.
+            probe = (
+                heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
+                if fire_owner is not None
+                else False
+            )
+            if probe is True:
                 mark_job_run(
                     job["id"],
                     False,
@@ -7676,7 +7714,14 @@ def _run_one_job_body(
                 finish_execution(
                     execution_id,
                     success=False,
-                    error="Fire claim ownership lost; stale result was discarded.",
+                    error=(
+                        "Fire claim ownership lost; stale result was discarded."
+                        if probe is False
+                        else (
+                            "Fire claim could not be re-validated after "
+                            "interruption; outcome uncertain."
+                        )
+                    ),
                 )
             return True
 
@@ -7849,9 +7894,14 @@ def _run_one_job_body(
             # Same transport-cancel distinction as the pre-side-effect path:
             # if WE still own the claim, record the interruption instead of
             # discarding silently (lingering claim + stale last_status).
-            if fire_owner is not None and heartbeat_fire_claim(
-                job["id"], expected_owner=fire_owner,
-            ):
+            # Tri-state (c-027): a None probe is unconfirmed — never
+            # adjudicate "ownership lost" on it.
+            probe = (
+                heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
+                if fire_owner is not None
+                else False
+            )
+            if probe is True:
                 mark_job_run(
                     job["id"],
                     False,
@@ -7867,7 +7917,14 @@ def _run_one_job_body(
                 finish_execution(
                     execution_id,
                     success=False,
-                    error="Fire claim ownership lost; stale result was discarded.",
+                    error=(
+                        "Fire claim ownership lost; stale result was discarded."
+                        if probe is False
+                        else (
+                            "Fire claim could not be re-validated after "
+                            "interruption; outcome uncertain."
+                        )
+                    ),
                 )
             return True
 
@@ -7910,11 +7967,25 @@ def _run_one_job_body(
         if blocked_config:
             mark_kwargs["status"] = "blocked_config"
         marked = mark_job_run(job["id"], success, error, **mark_kwargs)
-        if fire_owner is not None and not marked:
+        # Tri-state (c-027): only an explicit False is an authoritative
+        # owner-CAS rejection. None means the fire fence was unavailable —
+        # the CAS never ran, so ownership was NOT confirmed lost; record
+        # the unconfirmed-terminal outcome instead of a confirmed loss.
+        if fire_owner is not None and marked is False:
             finish_execution(
                 execution_id,
                 success=False,
                 error="Fire claim ownership lost before terminal completion.",
+            )
+            return True
+        if fire_owner is not None and marked is None:
+            finish_execution(
+                execution_id,
+                success=False,
+                error=(
+                    "Fire claim fence unavailable before terminal completion; "
+                    "outcome uncertain."
+                ),
             )
             return True
         normalized_deliver = _normalize_deliver_value(

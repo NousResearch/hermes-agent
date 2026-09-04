@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -80,10 +80,18 @@ vi.mock('../overlays/panel', () => ({
 }))
 
 vi.mock('./config-field', () => ({
-  ConfigField: ({ value }: { value: unknown }) => <div data-testid="config-value">{String(value)}</div>
+  ConfigField: ({ value, onChange }: { value: unknown; onChange: (value: unknown) => void }) => (
+    <>
+      <div data-testid="config-value">{String(value)}</div>
+      <button onClick={() => onChange('Local edit')} type="button">
+        Edit timezone
+      </button>
+    </>
+  )
 }))
 
 vi.mock('./helpers', () => ({
+  clearsEnabledToolsets: () => false,
   enumOptionsFor: vi.fn(),
   getNested: (config: Record<string, unknown>, key: string) => config[key],
   isExternalMemoryProvider: () => false,
@@ -149,5 +157,37 @@ describe('ConfigSettings profile switching', () => {
     await refetch
 
     expect((await screen.findByTestId('config-value')).textContent).toBe('UTC')
+  })
+
+  it('keeps an in-progress edit when a background refetch succeeds', async () => {
+    let resolveRefetch: ((value: { timezone: string }) => void) | undefined
+
+    const refetchResult = new Promise<{ timezone: string }>(resolve => {
+      resolveRefetch = resolve
+    })
+
+    getHermesConfigRecord.mockResolvedValueOnce({ timezone: 'UTC' }).mockReturnValueOnce(refetchResult)
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { ConfigSettings } = await import('./config-settings')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ConfigSettings activeSectionId="chat" importInputRef={{ current: null }} />
+      </QueryClientProvider>
+    )
+
+    expect((await screen.findByTestId('config-value')).textContent).toBe('UTC')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit timezone' }))
+    expect(screen.getByTestId('config-value').textContent).toBe('Local edit')
+
+    const refetch = queryClient.invalidateQueries({ queryKey: ['hermes-config-record'] })
+
+    await new Promise(resolve => setTimeout(resolve, 5))
+    resolveRefetch?.({ timezone: 'Remote update' })
+    await refetch
+
+    expect(screen.getByTestId('config-value').textContent).toBe('Local edit')
   })
 })

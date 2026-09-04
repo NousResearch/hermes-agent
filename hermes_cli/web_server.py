@@ -6093,10 +6093,14 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     config = dict(config)  # shallow copy
     model_val = config.get("model")
     if isinstance(model_val, dict):
-        # Extract context_length before flattening the dict
+        # Extract context_length before flattening the dict. Values can be
+        # strings (hand-edited YAML) — coerce so an explicit override never
+        # displays as auto-detect (#102626).
+        from agent.model_metadata import coerce_context_length_override
+
         ctx_len = model_val.get("context_length", 0)
         config["model"] = model_val.get("default", model_val.get("name", ""))
-        config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
+        config["model_context_length"] = coerce_context_length_override(ctx_len) or 0
     else:
         config["model_context_length"] = 0
     return config
@@ -7444,8 +7448,12 @@ def get_model_info(profile: Optional[str] = None):
             auto_ctx = 0
 
         config_ctx_int = 0
-        if isinstance(config_ctx, int) and config_ctx > 0:
-            config_ctx_int = config_ctx
+        if config_ctx is not None:
+            from agent.model_metadata import coerce_context_length_override
+
+            # Coerce (hand-edited YAML can hold strings) so an explicit
+            # override is reported — never silently shown as auto (#102626).
+            config_ctx_int = coerce_context_length_override(config_ctx) or 0
 
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx

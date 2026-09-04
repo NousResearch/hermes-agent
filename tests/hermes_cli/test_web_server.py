@@ -3165,6 +3165,30 @@ class TestModelContextLength:
         assert result["model"] == "anthropic/claude-sonnet-4"
         assert result["model_context_length"] == 0
 
+    def test_normalize_coerces_string_context_length(self):
+        """A numeric string on disk (hand-edited YAML) must surface as the
+        override — never display as auto-detect (#102626)."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        result = _normalize_config_for_web({
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": "200000",
+            }
+        })
+        assert result["model_context_length"] == 200000
+
+    def test_normalize_rejects_garbage_context_length(self):
+        """Non-numeric/zero/negative values mean auto (0), not a window."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        for bad in ("not-a-number", 0, -5, "0", None, True):
+            result = _normalize_config_for_web({
+                "model": {"default": "m", "context_length": bad}
+            })
+            assert result["model_context_length"] == 0, bad
+
 
     def test_denormalize_writes_context_length_into_model_dict(self):
         """denormalize should write model_context_length back into model dict."""
@@ -3334,6 +3358,26 @@ class TestModelInfoEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["auto_context_length"] == 0
+
+    def test_model_info_string_context_length_is_effective(self, monkeypatch):
+        """A numeric string on disk must be reported as the override and win
+        as effective — never silently shown as auto-detect (#102626)."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": "100000",
+            }
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["config_context_length"] == 100000
+        assert data["effective_context_length"] == 100000
 
 
 # ---------------------------------------------------------------------------

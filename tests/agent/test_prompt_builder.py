@@ -324,6 +324,68 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_guidance_treats_descriptions_as_routing_contracts(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "specialist"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: specialist\n"
+            "description: Use for deep audits; do not use for quick checks.\n"
+            "---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "description as a routing contract" in result
+        assert "including when not to use it" in result
+        assert "A counter-trigger is not a match" in result
+        assert "topical overlap alone is not enough" in result
+        assert "description positively matches" in result
+        assert "you MUST load it" in result
+
+    def test_guidance_preserves_recall_for_skill_without_description(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "email" / "mail-helper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: mail-helper\n---\n\n# Mail Helper\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "email:\n    - mail-helper\n" in result
+        assert "A skill shown without a substantive routing description" in result
+        assert "or one in a [names only] category" in result
+        assert "explicitly names it or its visible name/category clearly matches" in result
+        assert "without a substantive routing description has an explicit or clear" in result
+
+    def test_guidance_preserves_recall_for_annotation_only_project_skill(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_skills = tmp_path / "skills"
+        local_skills.mkdir()
+        project_skills = tmp_path / "project-skills"
+        skill_dir = project_skills / "email" / "mail-helper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: mail-helper\n---\n\n# Mail Helper\n"
+        )
+        monkeypatch.setattr(
+            "agent.skill_utils.get_project_skills_dirs", lambda: [project_skills]
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "email:\n    - mail-helper: [project]\n" in result
+        assert "only provenance or collision annotations" in result
+        assert "without a substantive routing description has an explicit or clear" in result
+
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path
@@ -341,6 +403,10 @@ class TestBuildSkillsSystemPrompt:
         )
         assert "thread-writer" in compact
         assert "Write threads" not in compact
+        assert "or one in a [names only] category" in compact
+        assert "explicitly names it" in compact
+        assert "visible name/category clearly matches the task" in compact
+        assert "without a substantive routing description has an explicit or clear" in compact
         # Unfiltered call must not be served from the compacted cache entry.
         full = build_skills_system_prompt()
         assert "Write threads" in full

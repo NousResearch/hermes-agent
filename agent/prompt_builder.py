@@ -2206,10 +2206,14 @@ def _build_skills_system_prompt_inner(
 
         result = (
             "## Skills\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
+            "Before replying, scan the skills below. For fully described skills, treat each description "
+            "as a routing contract, including when not to use it. A counter-trigger is not a match, "
+            "and topical overlap alone is not enough. If a description positively matches your task, "
+            "you MUST load it with skill_view(name) and follow its instructions. A skill shown without "
+            "a substantive routing description (including one with only provenance or collision annotations, "
+            "or one in a [names only] category) may still be loaded when the user explicitly names it or "
+            "its visible name/category clearly matches the task. When several "
+            "skills match, load only those needed for the task. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
             "and proven workflows that outperform general-purpose approaches. Load the skill "
             f"even if you think you could handle the task with basic tools like {_basic_tools}. "
@@ -2225,7 +2229,8 @@ def _build_skills_system_prompt_inner(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Proceed without loading a skill when no description positively matches and no skill shown "
+            "without a substantive routing description has an explicit or clear name/category match."
             + hidden_note
         )
 

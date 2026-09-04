@@ -599,54 +599,75 @@ class TestPreApiCallSteerDrain:
     fix for the scenario where /steer sent during model thinking only lands
     after the agent is completely done."""
 
-    def test_pre_api_drain_injects_into_last_tool_result(self):
-        """If a steer is pending when the main loop starts building
-        api_messages, it should be injected into the last tool result
-        in the messages list."""
+    @staticmethod
+    def _deliver(agent, messages, current_turn_user_idx):
+        from agent import conversation_loop
+
+        deliver = getattr(conversation_loop, "_deliver_pending_steer_before_api", None)
+        assert deliver is not None, "pre-API steer delivery helper is missing"
+        return deliver(agent, messages, current_turn_user_idx)
+
+    def test_pre_api_drain_injects_into_current_turn_tool_result(self, caplog):
         agent = _bare_agent()
-        # Simulate messages after a tool batch completed
         messages = [
+            {"role": "tool", "content": "historical output", "tool_call_id": "old"},
+            {"role": "assistant", "content": "historical answer"},
             {"role": "user", "content": "do something"},
             {"role": "assistant", "content": "ok", "tool_calls": [
                 {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
             ]},
             {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
         ]
-        # Steer arrives during API call (set after tool execution)
         agent.steer("focus on error handling")
-        # Simulate what the pre-API-call drain does:
-        _pre_api_steer = agent._drain_pending_steer()
-        assert _pre_api_steer == "focus on error handling"
-        # Inject into last tool msg (mirrors the new code in run_conversation)
-        for _si in range(len(messages) - 1, -1, -1):
-            if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += format_steer_marker(_pre_api_steer)
-                break
+
+        with caplog.at_level("INFO", logger="agent.conversation_loop"):
+            delivered = self._deliver(agent, messages, current_turn_user_idx=2)
+
+        assert delivered is True
+        assert messages[0]["content"] == "historical output"
         assert STEER_MARKER_OPEN in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
+        assert "Delivered /steer" in caplog.text
+        assert "focus on error handling" not in caplog.text
 
-    def test_pre_api_drain_restashes_when_no_tool_message(self):
-        """If there are no tool results yet (first iteration), the steer
-        should be put back into _pending_steer for the post-tool drain."""
+    def test_pre_api_drain_never_mutates_historical_tool_result(self, caplog):
         agent = _bare_agent()
         messages = [
-            {"role": "user", "content": "hello"},
+            {"role": "tool", "content": "historical output", "tool_call_id": "old"},
+            {"role": "assistant", "content": "historical answer"},
+            {"role": "user", "content": "current request"},
         ]
-        agent.steer("early steer")
-        _pre_api_steer = agent._drain_pending_steer()
-        assert _pre_api_steer == "early steer"
-        # No tool message found — put it back
-        found = False
-        for _si in range(len(messages) - 1, -1, -1):
-            if messages[_si].get("role") == "tool":
-                found = True
-                break
-        assert not found
-        # Restash
-        agent._pending_steer = _pre_api_steer
-        assert agent._pending_steer == "early steer"
+        agent.steer("do not lose this")
 
+        with caplog.at_level("INFO", logger="agent.conversation_loop"):
+            delivered = self._deliver(agent, messages, current_turn_user_idx=2)
+
+        assert delivered is False
+        assert messages[0]["content"] == "historical output"
+        assert agent._pending_steer == "do not lose this"
+        assert "Delivered /steer" not in caplog.text
+
+    def test_pre_api_drain_never_delivers_before_a_later_assistant(self, caplog):
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "current request"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "current output", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "I will continue."},
+            {"role": "user", "content": "[System: continue now]"},
+        ]
+        agent.steer("change direction")
+
+        with caplog.at_level("INFO", logger="agent.conversation_loop"):
+            delivered = self._deliver(agent, messages, current_turn_user_idx=0)
+
+        assert delivered is False
+        assert STEER_MARKER_OPEN not in messages[2]["content"]
+        assert agent._pending_steer == "change direction"
+        assert "Delivered /steer" not in caplog.text
 
 
 class TestSteerMarkerContract:

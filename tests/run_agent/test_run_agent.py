@@ -4181,25 +4181,186 @@ class TestRunConversation:
         resp2 = _mock_response(content="All done", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
 
+        history = [
+            {"role": "user", "content": "old question 1"},
+            {"role": "assistant", "content": "old answer 1"},
+            {"role": "user", "content": "old question 2"},
+            {"role": "assistant", "content": "old answer 2"},
+        ]
+
         with (
             patch("run_agent.handle_function_call", return_value="result"),
             patch.object(
-                agent.context_compressor, "should_compress", return_value=True
+                agent.context_compressor,
+                "should_compress",
+                side_effect=lambda *_: agent._compress_context.call_count == 0,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # _compress_context should return (messages, system_prompt)
+            # Compaction rebuilt the list and shifted the current user row from
+            # index 4 to index 2. Every current-turn consumer must use the new
+            # boundary on the next loop iteration.
             mock_compress.return_value = (
-                [{"role": "user", "content": "search something"}],
+                [
+                    {"role": "user", "content": "old question 2"},
+                    {"role": "assistant", "content": "old answer 2"},
+                    {"role": "user", "content": "search something"},
+                ],
                 "compressed system prompt",
             )
-            result = agent.run_conversation("search something")
+            result = agent.run_conversation(
+                "search something", conversation_history=history
+            )
         mock_compress.assert_called_once()
+        assert agent._persist_user_message_idx == 2
         assert result["final_response"] == "All done"
         assert result["completed"] is True
+
+    def test_pre_api_compression_keeps_steer_for_first_current_tool(self, agent):
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="All done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        history = [
+            {"role": "user", "content": "old question 1"},
+            {"role": "assistant", "content": "old answer 1"},
+            {"role": "user", "content": "old question 2"},
+            {"role": "assistant", "content": "old answer 2"},
+        ]
+        compression_fired = False
+        compacted_rows = []
+
+        def _compress_before_api(_messages, *_args, **_kwargs):
+            nonlocal compression_fired, compacted_rows
+            compression_fired = True
+            agent.steer("arrived during compression")
+            compacted_rows = [
+                {
+                    "role": "tool",
+                    "content": "historical output",
+                    "tool_call_id": "old",
+                },
+                {"role": "assistant", "content": "historical answer"},
+                {"role": "user", "content": "search something"},
+            ]
+            return compacted_rows, "compressed system prompt"
+
+        with (
+            patch("run_agent.handle_function_call", return_value="result"),
+            patch.object(
+                agent.context_compressor,
+                "should_compress",
+                side_effect=lambda *_: (
+                    agent.client.chat.completions.create.call_count == 0
+                    and not compression_fired
+                ),
+            ),
+            patch.object(
+                agent,
+                "_compress_context",
+                side_effect=_compress_before_api,
+            ) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "search something", conversation_history=history
+            )
+
+        mock_compress.assert_called_once()
+        assert agent._persist_user_message_idx == 2
+        assert compacted_rows[0]["content"] == "historical output"
+        second_request = agent.client.chat.completions.create.call_args_list[1].kwargs[
+            "messages"
+        ]
+        current_tool = next(
+            msg for msg in reversed(second_request) if msg.get("role") == "tool"
+        )
+        assert "arrived during compression" in current_tool["content"]
+        assert "pending_steer" not in result
+        assert result["final_response"] == "All done"
+
+    def test_post_tool_compression_reanchors_before_delivering_pending_steer(self, agent):
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="All done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        history = [
+            {"role": "user", "content": "old question 1"},
+            {"role": "assistant", "content": "old answer 1"},
+            {"role": "user", "content": "old question 2"},
+            {"role": "assistant", "content": "old answer 2"},
+        ]
+        compression_fired = False
+
+        def _should_compress_after_first_tool(*_args, **_kwargs):
+            return (
+                agent.client.chat.completions.create.call_count == 1
+                and not compression_fired
+            )
+
+        def _compress_after_tool(messages, *_args, **_kwargs):
+            nonlocal compression_fired
+            compression_fired = True
+            agent.steer("post-compression guidance")
+            current_user = next(
+                msg for msg in reversed(messages)
+                if msg.get("role") == "user" and msg.get("content") == "search something"
+            )
+            current_assistant = next(
+                msg for msg in reversed(messages)
+                if msg.get("role") == "assistant" and msg.get("tool_calls")
+            )
+            current_tool = next(
+                msg for msg in reversed(messages) if msg.get("role") == "tool"
+            )
+            return (
+                [dict(current_user), dict(current_assistant), dict(current_tool)],
+                "compressed system prompt",
+            )
+
+        with (
+            patch("run_agent.handle_function_call", return_value="result"),
+            patch.object(
+                agent.context_compressor,
+                "should_compress",
+                side_effect=_should_compress_after_first_tool,
+            ),
+            patch.object(
+                agent,
+                "_compress_context",
+                side_effect=_compress_after_tool,
+            ) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "search something", conversation_history=history
+            )
+
+        mock_compress.assert_called_once()
+        assert agent._persist_user_message_idx == 0
+        second_request = agent.client.chat.completions.create.call_args_list[1].kwargs[
+            "messages"
+        ]
+        tool_result = next(
+            msg for msg in reversed(second_request) if msg.get("role") == "tool"
+        )
+        assert "post-compression guidance" in tool_result["content"]
+        assert "pending_steer" not in result
+        assert result["final_response"] == "All done"
 
     def test_engine_preflight_fires_below_threshold(self, agent):
         """Sub-threshold ContextEngine.should_compress_preflight() routes to compress().

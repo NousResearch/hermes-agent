@@ -47,10 +47,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
-    # Whether busy_input_mode=steer sends a visible "Steered into current run"
-    # acknowledgment after successfully injecting the user's mid-turn message.
-    # Disable when the platform should steer silently (the text still lands in
-    # the active run; only the confirmation echo is suppressed).
+    # Whether busy_input_mode=steer sends a visible acceptance acknowledgment
+    # after buffering the user's mid-turn message for safe delivery. Disable
+    # when the platform should steer silently; the buffered text is preserved.
     "busy_steer_ack_enabled": True,
     # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
     # after the final response lands on platforms that support message

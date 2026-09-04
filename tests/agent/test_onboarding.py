@@ -78,8 +78,15 @@ class TestHintMessages:
         msg = busy_input_hint_cli("steer")
         assert "/busy interrupt" in msg
         assert "/busy queue" in msg
-        assert "steer" in msg.lower()
+        assert "accepted" in msg.lower()
+        assert "delivery" in msg.lower()
+        assert "steered into the current run" not in msg
 
+    def test_busy_input_hint_gateway_steer_reports_pending_delivery(self):
+        msg = busy_input_hint_gateway("steer")
+        assert "accepted" in msg.lower()
+        assert "delivery" in msg.lower()
+        assert "I steered your message" not in msg
 
     def test_hints_are_not_empty(self):
         for hint in (

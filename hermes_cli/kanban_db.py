@@ -101,6 +101,10 @@ class SpawnAdmissionError(RuntimeError):
     """A configured autonomous-worker admission gate rejected a spawn."""
 
 
+class SpawnAdmissionDeferred(RuntimeError):
+    """A healthy admission gate deferred a spawn without treating it as failure."""
+
+
 def _load_configured_spawn_guard():
     """Return the optional configured guard, rejecting broken configuration."""
     from hermes_cli.config import load_config
@@ -134,7 +138,7 @@ def _spawn_with_guard(task, workspace: str, board: str | None, native_spawn):
         return call_native(task, workspace, board=board)
     try:
         return guard(task, workspace, board, call_native)
-    except SpawnAdmissionError:
+    except (SpawnAdmissionError, SpawnAdmissionDeferred):
         raise
     except Exception as exc:
         raise SpawnAdmissionError(str(exc)) from exc
@@ -9399,6 +9403,41 @@ def _record_spawn_failure(
     )
 
 
+def _record_spawn_deferred(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+) -> None:
+    """Return a policy-deferred spawn to its source lane without failure debt."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return
+        retry_status = _retry_status_for_run(conn, task_id, row["current_run_id"])
+        conn.execute(
+            "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL WHERE id = ? AND status = 'running'",
+            (retry_status, task_id),
+        )
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="deferred",
+            status="deferred",
+            error=reason[:500],
+            metadata={"reason": reason[:500], "retry_status": retry_status},
+        )
+        _append_event(
+            conn,
+            task_id,
+            "spawn_deferred",
+            {"reason": reason[:500], "retry_status": retry_status},
+            run_id=run_id,
+        )
+
+
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
@@ -10333,6 +10372,8 @@ def _dispatch_once_locked(
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
+        except SpawnAdmissionDeferred as exc:
+            _record_spawn_deferred(conn, claimed.id, str(exc))
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),

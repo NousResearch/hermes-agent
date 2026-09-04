@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.mcp_oauth_provider import HermesProviderMixin
+from tools.mcp_oauth_provider import HermesProviderMixin, _AlreadyAuthorized
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +244,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if outgoing is request:
                     tokens = self.context.current_tokens
                     sent_access_token = tokens.access_token if tokens is not None else None
+                    # The SDK holds context.lock for its whole generator, even while HTTPX waits on
+                    # the MCP request. Release it for that request only; OAuth transitions stay serialized.
                     self.context.lock.release()
                     resource_lock_released = True
                 if getattr(self, "_hermes_refresh_skipped", False) and (
@@ -279,9 +281,20 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 # path) rather than a real httpx2.Response; the SDK's
                 # _handle_refresh_response short-circuits before reading it.
                 outgoing = await inner.asend(incoming)  # type: ignore[arg-type]
+        except _AlreadyAuthorized:
+            # A concurrent flow already completed authorization for this server while this flow
+            # waited on the per-server authorization mutex. The re-check loaded that token into
+            # self.context; adopt it and retry the request instead of a second authorization.
+            self._add_auth_header(request)
+            await inner.aclose()
+            retry_after_concurrent_auth = True
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
+            # Release the per-server authorization mutex if this flow still holds it — a
+            # cancellation that lands between the acquire in _perform_authorization_code_grant and
+            # the release in _handle_token_response has no other release point. Idempotent.
+            self._hermes_release_auth_lock()
             # If the refresh generator was cancelled between _refresh_token
             # (which acquires the cross-process lock) and
             # _handle_refresh_response (which releases it), the lock would
@@ -329,6 +342,12 @@ class MCPOAuthManager:
         self._entries_lock = threading.Lock()
         # Strong refs to in-flight 401 tasks so the loop's weak bookkeeping cannot GC them mid-run.
         self._inflight_tasks: set[asyncio.Task] = set()
+        # Per-server authorization mutexes, keyed by server_url so a duplicate/rebuilt provider
+        # for the same endpoint serializes behind the in-flight authorization. Each entry is
+        # (owning_event_loop, lock): ``asyncio.Lock`` pins to the loop it is first contended on,
+        # and the MCP loop is torn down and recreated per idle probe, so a lock left bound to a
+        # dead loop would raise "bound to a different event loop" on a later racing authorization.
+        self._authorization_locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
 
     def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict]) -> Optional[Any]:
         """Cached OAuth provider for ``server_name``, built on first use (rebuilt when ``server_url`` changes);
@@ -346,6 +365,26 @@ class MCPOAuthManager:
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
             return entry.provider
+
+    def authorization_lock(self, server_url: str) -> asyncio.Lock:
+        """A per-server authorization mutex shared across providers for the same endpoint.
+
+        A duplicate/rebuilt provider carries its own ``context.lock``, so the SDK's serialization
+        does not span them; this shared mutex makes "one login == one authorization transaction"
+        by serializing the authorization step itself (redirect + callback + token exchange).
+
+        Keyed by server_url but loop-bound: ``asyncio.Lock`` pins to the loop it is first
+        contended on, and the MCP loop is torn down and recreated per idle probe. Recreate the
+        mutex when the running loop changed so a stale loop-bound lock can never raise "bound to
+        a different event loop" on a later (racing) authorization.
+        """
+        loop = asyncio.get_running_loop()
+        with self._entries_lock:
+            holder = self._authorization_locks.get(server_url)
+            if holder is None or holder[0] is not loop:
+                holder = (loop, asyncio.Lock())
+                self._authorization_locks[server_url] = holder
+            return holder[1]
 
     @staticmethod
     def _key(server_name: str, hermes_home: str | Path | None = None) -> tuple[str, str]:

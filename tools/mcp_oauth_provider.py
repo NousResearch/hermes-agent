@@ -8,12 +8,21 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
 logger = logging.getLogger(__name__)
+
+
+class _AlreadyAuthorized(Exception):
+    """Internal control signal: a concurrent flow already completed authorization for this
+    server while this flow waited on the per-server authorization mutex. The
+    ``async_auth_flow`` bridge converts it into a token-holding retry instead of running a
+    second (duplicate) authorization that would print a second URL and re-bind the callback
+    port (EADDRINUSE)."""
 
 
 class HermesProviderMixin:
@@ -41,6 +50,13 @@ class HermesProviderMixin:
         # flags that a sibling already rotated it and the POST is omitted.
         self._hermes_refresh_lock = None
         self._hermes_refresh_skipped = False
+        # Per-server authorization mutex held across the authorization step
+        # (redirect + callback + token exchange). Acquired in
+        # _perform_authorization_code_grant, released in _handle_token_response
+        # (or the bridge's finally on cancellation). Stores (owning_task, lock) so
+        # release is task-scoped: a cancelled flow must not release a sibling flow's
+        # mutex on the same cached provider. None when not held.
+        self._hermes_auth_lock = None
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""
@@ -92,15 +108,93 @@ class HermesProviderMixin:
     async def _handle_token_response(self, response):
         """Accept any 2xx token response; never echo the body into errors."""
         from mcp.client.auth.oauth2 import OAuthTokenError
-        if not (200 <= response.status_code < 300):
-            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
-        from httpx import HTTPError
-        from mcp.client.auth.utils import handle_token_response_scopes
         try:
-            token_response = await handle_token_response_scopes(response)
-        except (HTTPError, OAuthTokenError):
-            raise OAuthTokenError("Invalid token response") from None
-        await self._store_tokens(token_response)
+            if not (200 <= response.status_code < 300):
+                raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+            from httpx import HTTPError
+            from mcp.client.auth.utils import handle_token_response_scopes
+            try:
+                token_response = await handle_token_response_scopes(response)
+            except (HTTPError, OAuthTokenError):
+                raise OAuthTokenError("Invalid token response") from None
+            await self._store_tokens(token_response)
+        finally:
+            # The token exchange is the last leg of the authorization step; release the
+            # per-server authorization mutex even on a failed exchange so the next flow can
+            # retry (or skip) rather than wedge behind a leaked lock.
+            self._hermes_release_auth_lock()
+
+    def _hermes_release_auth_lock(self) -> None:
+        """Release the per-server authorization mutex if THIS flow holds it (idempotent).
+
+        Task-scoped: the mutex is acquired inside one flow's ``async_auth_flow`` generator and
+        released later in ``_handle_token_response`` or the bridge's ``finally`` — always the
+        same task. A concurrent flow on the same cached provider may hold the mutex while this
+        flow is cancelled/suspended; releasing unconditionally would stomp that sibling's
+        still-open authorization. Only the acquiring task releases.
+        """
+        holder = getattr(self, "_hermes_auth_lock", None)  # tests may build via __new__
+        if holder is None:
+            return
+        task, lock = holder
+        if task is not asyncio.current_task():
+            return  # not this flow's mutex — a sibling holds it
+        self._hermes_auth_lock = None
+        lock.release()
+
+    async def _hermes_adopt_external_authorization(self) -> bool:
+        """Adopt a token a concurrent flow already minted for this server, if any.
+
+        A sibling provider for the same endpoint keeps its own in-memory context, so the
+        freshly-minted token is only visible through shared storage. Returns True when a valid
+        token was adopted (the caller should skip re-authorization instead of printing a second
+        URL and re-binding the callback port).
+        """
+        from tools.mcp_oauth import HermesTokenStorage
+
+        storage = self.context.storage
+        if not isinstance(storage, HermesTokenStorage):
+            return False
+        try:
+            fresh = await storage.get_tokens()
+        except Exception:
+            return False
+        if fresh is None or not fresh.access_token:
+            return False
+        # Adopt only a token that DIFFERS from the one this flow already holds. The rejected
+        # or stale token whose 401/403 drove us to the authorization step must not be re-adopted,
+        # or a 403 step-up / 401-with-unexpired-revoked-token would retry the SAME bad token
+        # forever instead of re-authorizing. Mirrors _hermes_adopt_rotated_token.
+        current = self.context.current_tokens
+        if current is not None and current.access_token == fresh.access_token:
+            return False
+        self.context.current_tokens = fresh
+        self.context.update_token_expiry(fresh)
+        return self.context.is_token_valid()
+
+    async def _perform_authorization_code_grant(self):
+        """Serialize the authorization step across providers for the same server.
+
+        The SDK's ``context.lock`` serializes a single provider's flows, but the bridge releases
+        it during the resource round-trip, and a duplicate/rebuilt provider for the same endpoint
+        carries its own lock. Without a shared mutex two token-less requests both reach the
+        authorization step, print two URLs with distinct PKCE states, and collide on the resolved
+        callback port (EADDRINUSE). The mutex is held through the token exchange
+        (``_handle_token_response`` releases it), so a loser that wins the mutex later adopts the
+        winner's token and skips re-authorization instead.
+        """
+        from tools.mcp_oauth_manager import get_manager
+
+        lock = get_manager().authorization_lock(self.context.server_url)
+        await lock.acquire()
+        self._hermes_auth_lock = (asyncio.current_task(), lock)
+        try:
+            if await self._hermes_adopt_external_authorization():
+                raise _AlreadyAuthorized()
+            return await super()._perform_authorization_code_grant()
+        except BaseException:
+            self._hermes_release_auth_lock()
+            raise
 
     async def _handle_refresh_response(self, response) -> bool:
         """Accept any 2xx refresh response; never log the body."""

@@ -645,10 +645,10 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     _info(f"Starting OAuth flow for '{name}'...")
 
     # The probe triggers the OAuth flow (browser redirect + callback capture). Honor the configured
-    # connect_timeout, floored at 315s (the 300s OAuth callback window + headroom) — matching the GUI
-    # re-auth path in web_server.py. force_interactive_oauth: `hermes mcp login` is explicitly
-    # user-initiated even when stdin isn't a TTY (desktop / agent-spawned terminals), where
-    # _is_interactive() alone would refuse to open a browser.
+    # connect_timeout, floored at the server's own `oauth.timeout` + 15s headroom (the callback waiter
+    # lives that long), matching the GUI re-auth path in web_server.py. force_interactive_oauth:
+    # `hermes mcp login` is explicitly user-initiated even when stdin isn't a TTY (desktop /
+    # agent-spawned terminals), where _is_interactive() alone would refuse to open a browser.
     try:
         from tools.mcp_oauth import force_interactive_oauth
 
@@ -656,9 +656,13 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             _login_connect_timeout = float(server_config.get("connect_timeout"))
         except (TypeError, ValueError):
             _login_connect_timeout = 0.0
+        try:
+            _login_oauth_timeout = float((server_config.get("oauth") or {}).get("timeout", 300))
+        except (TypeError, ValueError):
+            _login_oauth_timeout = 300.0
         with force_interactive_oauth():
             tools = _probe_single_server(
-                name, server_config, connect_timeout=max(_login_connect_timeout, 315.0)
+                name, server_config, connect_timeout=max(_login_connect_timeout, _login_oauth_timeout + 15)
             )
         # A clean probe is NOT proof of authentication: some servers (e.g. Google Drive) serve
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for

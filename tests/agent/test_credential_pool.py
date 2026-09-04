@@ -6,6 +6,7 @@ import base64
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -498,6 +499,91 @@ def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monk
     persisted = auth_payload["credential_pool"]["openai-codex"][0]
     assert persisted["last_status"] == STATUS_EXHAUSTED
     assert persisted["last_error_code"] == 401
+
+
+def test_dead_manual_prune_policy_is_profile_scoped(tmp_path, monkeypatch):
+    """Each profile applies its own configured DEAD-manual retention policy."""
+    from agent.credential_pool import load_pool
+
+    def write_profile(name: str, *, prune: bool, ttl_hours: int) -> Path:
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "credential_pool:\n"
+            f"  prune_dead_manual_entries: {str(prune).lower()}\n"
+            f"  dead_manual_prune_ttl_hours: {ttl_hours}\n",
+            encoding="utf-8",
+        )
+        (home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "credential_pool": {
+                        "openai-codex": [
+                            {
+                                "id": "dead-manual",
+                                "label": "dead-entry",
+                                "auth_type": "oauth",
+                                "source": "manual:device_code",
+                                "access_token": "test-access-token",
+                                "refresh_token": "test-refresh-token",
+                                "last_status": "dead",
+                                "last_status_at": time.time() - (25 * 3600),
+                            },
+                            {
+                                "id": "healthy-manual",
+                                "label": "healthy-entry",
+                                "auth_type": "oauth",
+                                "source": "manual:device_code",
+                                "access_token": "test-access-token-2",
+                                "refresh_token": "test-refresh-token-2",
+                            },
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return home
+
+    retain_home = write_profile("retain", prune=False, ttl_hours=1)
+    prune_home = write_profile("prune", prune=True, ttl_hours=1)
+
+    monkeypatch.setenv("HERMES_HOME", str(retain_home))
+    assert load_pool("openai-codex").select().id == "healthy-manual"
+    retained = json.loads((retain_home / "auth.json").read_text())
+    assert {entry["id"] for entry in retained["credential_pool"]["openai-codex"]} == {
+        "dead-manual",
+        "healthy-manual",
+    }
+
+    monkeypatch.setenv("HERMES_HOME", str(prune_home))
+    assert load_pool("openai-codex").select().id == "healthy-manual"
+    pruned = json.loads((prune_home / "auth.json").read_text())
+    assert [entry["id"] for entry in pruned["credential_pool"]["openai-codex"]] == [
+        "healthy-manual"
+    ]
+
+
+def test_dead_manual_prune_settings_reject_nonfinite_ttl(monkeypatch):
+    """Invalid retention values fall back safely instead of disabling cleanup."""
+    from agent import credential_pool as pool_mod
+
+    monkeypatch.setattr(
+        pool_mod,
+        "_load_config_safe",
+        lambda: {
+            "credential_pool": {
+                "prune_dead_manual_entries": True,
+                "dead_manual_prune_ttl_hours": "nan",
+            }
+        },
+    )
+
+    assert pool_mod.get_dead_manual_prune_settings() == (
+        True,
+        float(pool_mod.DEAD_MANUAL_PRUNE_TTL_SECONDS),
+    )
 
 
 def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):

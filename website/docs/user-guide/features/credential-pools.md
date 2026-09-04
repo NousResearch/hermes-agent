@@ -149,6 +149,20 @@ Provider-supplied `reset_at` timestamps override these default cooldowns.
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
 
+### Dead manual credential cleanup
+
+Manual credentials marked `dead` remain excluded from rotation. By default Hermes removes a dead manual entry after 24 hours during a later pool availability check. The policy is profile-scoped and can be changed in that profile's `config.yaml`:
+
+```yaml
+credential_pool:
+  # false keeps dead manual entries until explicit re-authentication or removal
+  prune_dead_manual_entries: false
+  # Accepted range: 0 through 8,760 hours when pruning is enabled
+  dead_manual_prune_ttl_hours: 72
+```
+
+Invalid retention values fall back to the 24-hour default. Singleton-seeded credentials are never auto-pruned because their backing auth source would recreate them on the next pool load.
+
 ## Custom Endpoint Pools
 
 Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from the `providers:` dict in config.yaml (or the legacy `custom_providers` list, which is auto-migrated).

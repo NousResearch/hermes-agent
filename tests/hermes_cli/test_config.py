@@ -1792,6 +1792,14 @@ def test_default_config_kanban_block_not_dropped_by_duplicate_key():
     assert "auto_decompose" in kanban
 
 
+def test_default_config_exposes_dead_manual_prune_retention_policy():
+    """Fresh profile configs document the legacy-safe tombstone retention."""
+    assert DEFAULT_CONFIG["credential_pool"] == {
+        "prune_dead_manual_entries": True,
+        "dead_manual_prune_ttl_hours": 24,
+    }
+
+
 def test_default_config_has_no_duplicate_top_level_keys():
     """Guard against any duplicate key silently shadowing a default."""
     import ast

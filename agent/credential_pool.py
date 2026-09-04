@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import threading
@@ -109,6 +110,38 @@ CREDENTIAL_PERSIST_FAILED_REASON = "credential_persist_failed"
 # the cleanup.  They remain in the pool marked DEAD until an explicit re-auth
 # write-side sync (``_save_codex_tokens`` etc.) clears the status.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+MAX_DEAD_MANUAL_PRUNE_TTL_HOURS = 24 * 365
+
+
+def get_dead_manual_prune_settings() -> tuple[bool, float]:
+    """Return the profile-scoped enabled flag and TTL for DEAD manual pruning.
+
+    Malformed settings retain the historical 24-hour cleanup behavior rather
+    than preventing cleanup or causing credential selection to fail.
+    """
+    enabled = True
+    ttl_seconds = float(DEAD_MANUAL_PRUNE_TTL_SECONDS)
+    config = _load_config_safe()
+    if not isinstance(config, dict):
+        return enabled, ttl_seconds
+    pool_config = config.get("credential_pool")
+    if not isinstance(pool_config, dict):
+        return enabled, ttl_seconds
+
+    raw_enabled = pool_config.get("prune_dead_manual_entries")
+    if isinstance(raw_enabled, bool):
+        enabled = raw_enabled
+
+    raw_ttl_hours = pool_config.get("dead_manual_prune_ttl_hours")
+    if raw_ttl_hours is not None and not isinstance(raw_ttl_hours, bool):
+        try:
+            ttl_hours = float(raw_ttl_hours)
+        except (TypeError, ValueError):
+            ttl_hours = -1.0
+        if math.isfinite(ttl_hours) and 0 <= ttl_hours <= MAX_DEAD_MANUAL_PRUNE_TTL_HOURS:
+            ttl_seconds = ttl_hours * 3600.0
+
+    return enabled, ttl_seconds
 
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
@@ -2417,6 +2450,7 @@ class CredentialPool:
         now = time.time()
         cleared_any = False
         entries_to_prune: List[str] = []
+        dead_manual_prune_settings: Optional[tuple[bool, float]] = None
         available: List[PooledCredential] = []
         # Entries that need an OAuth refresh via a single-use token provider
         # (openai-codex, xai-oauth).  These require a cross-process file lock
@@ -2487,8 +2521,11 @@ class CredentialPool:
                 # would just be undone by ``_seed_from_singletons`` on the
                 # next load anyway.
                 if _is_manual_source(entry.source):
+                    if dead_manual_prune_settings is None:
+                        dead_manual_prune_settings = get_dead_manual_prune_settings()
+                    prune_enabled, prune_ttl_seconds = dead_manual_prune_settings
                     dead_at = entry.last_status_at or 0
-                    if dead_at and now - dead_at > DEAD_MANUAL_PRUNE_TTL_SECONDS:
+                    if prune_enabled and dead_at and now - dead_at > prune_ttl_seconds:
                         _label = entry.label or entry.id[:8]
                         logger.warning(
                             "credential pool: pruning DEAD manual entry %s "

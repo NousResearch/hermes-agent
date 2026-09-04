@@ -30,6 +30,7 @@ the release signature is unavailable, Hermes keeps the working binary and
 retries later instead of silently falling back to checksum-only verification.
 """
 
+import errno
 import functools
 import gzip
 import hashlib
@@ -58,8 +59,15 @@ logger = logging.getLogger(__name__)
 
 _REPO = "sheeki03/tirith"
 
-# Cosign provenance verification — pinned to the specific release workflow
-_COSIGN_IDENTITY_REGEXP = f"^https://github.com/{_REPO}/\\.github/workflows/release\\.yml@refs/tags/v"
+# Cosign provenance verification — pinned to one stable release tag from the
+# specific release workflow. The authenticated tag is also the update version.
+_COSIGN_IDENTITY_RE = re.compile(
+    rf"^https://github\.com/{re.escape(_REPO)}/\.github/workflows/"
+    r"release\.yml@refs/tags/v"
+    r"((?:0|[1-9][0-9]{0,9}))\."
+    r"((?:0|[1-9][0-9]{0,9}))\."
+    r"((?:0|[1-9][0-9]{0,9}))$"
+)
 _COSIGN_ISSUER = "https://token.actions.githubusercontent.com"
 
 # ---------------------------------------------------------------------------
@@ -360,7 +368,207 @@ def _is_owned_private_directory(path: str) -> bool:
             return False
         if directory_stat.st_mode & 0o022:
             return False
+        if not _trusted_unix_acl_is_private(path, directory=True):
+            return False
     return True
+
+
+def _linux_posix_acl_blob_is_private(
+    value: bytes,
+    *,
+    owner_uid: int,
+    effective_uid: int,
+) -> bool:
+    """Validate one Linux ``system.posix_acl_*`` xattr value."""
+    acl_ea_version = 0x0002
+    acl_user_obj = 0x01
+    acl_user = 0x02
+    acl_group_obj = 0x04
+    acl_group = 0x08
+    acl_mask = 0x10
+    acl_other = 0x20
+    acl_write = 0x02
+
+    if len(value) < 4 or (len(value) - 4) % 8 != 0:
+        return False
+    if int.from_bytes(value[:4], "little") != acl_ea_version:
+        return False
+    for offset in range(4, len(value), 8):
+        entry = value[offset:offset + 8]
+        tag = int.from_bytes(entry[:2], "little")
+        permissions = int.from_bytes(entry[2:4], "little")
+        principal_id = int.from_bytes(entry[4:8], "little")
+        if tag in {acl_user_obj, acl_group_obj, acl_mask, acl_other}:
+            continue
+        if tag == acl_user:
+            if permissions & acl_write and principal_id not in {
+                0,
+                owner_uid,
+                effective_uid,
+            }:
+                return False
+            continue
+        if tag == acl_group:
+            if permissions & acl_write:
+                return False
+            continue
+        return False
+    return True
+
+
+def _linux_acl_is_private(path: str, *, directory: bool) -> bool:
+    """Reject Linux access/default ACLs that grant foreign write authority."""
+    getxattr = getattr(os, "getxattr", None)
+    listxattr = getattr(os, "listxattr", None)
+    effective_uid = getattr(os, "geteuid", None)
+    if getxattr is None or listxattr is None or effective_uid is None:
+        return False
+    try:
+        owner_uid = os.lstat(path).st_uid
+        attribute_names = set(listxattr(path, follow_symlinks=False))
+    except (OSError, TypeError):
+        return False
+
+    expected_names = {
+        "system.posix_acl_access",
+        "system.posix_acl_default",
+    }
+    if any(
+        name.startswith("system.") and "acl" in name.lower()
+        and name not in expected_names
+        for name in attribute_names
+    ):
+        # NFSv4/rich ACL semantics are not equivalent to POSIX ACL xattrs.
+        return False
+
+    names = ["system.posix_acl_access"]
+    if directory:
+        names.append("system.posix_acl_default")
+    missing_xattr_errors = {errno.ENODATA}
+    enoattr = getattr(errno, "ENOATTR", None)
+    if enoattr is not None:
+        missing_xattr_errors.add(enoattr)
+    for name in names:
+        try:
+            value = getxattr(path, name, follow_symlinks=False)
+        except OSError as exc:
+            if exc.errno in missing_xattr_errors:
+                continue
+            return False
+        except TypeError:
+            return False
+        if len(value) > 64 * 1024 or not _linux_posix_acl_blob_is_private(
+            value,
+            owner_uid=owner_uid,
+            effective_uid=effective_uid(),
+        ):
+            return False
+    return True
+
+
+def _darwin_acl_is_private(path: str) -> bool:
+    """Reject mutating allow entries in a macOS extended ACL."""
+    import ctypes
+
+    acl_type_extended = 0x0000_0100
+    acl_first_entry = 0
+    acl_next_entry = -1
+    acl_extended_allow = 1
+    mutating_permissions = (
+        (1 << 2)
+        | (1 << 4)
+        | (1 << 5)
+        | (1 << 6)
+        | (1 << 8)
+        | (1 << 10)
+        | (1 << 12)
+        | (1 << 13)
+    )
+    encoded_path = os.fsencode(path)
+    if b"\0" in encoded_path:
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        acl_get_file = libc.acl_get_file
+        acl_get_entry = libc.acl_get_entry
+        acl_get_tag_type = libc.acl_get_tag_type
+        acl_get_permset_mask_np = libc.acl_get_permset_mask_np
+        acl_free = libc.acl_free
+        acl_get_file.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        acl_get_file.restype = ctypes.c_void_p
+        acl_get_entry.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        acl_get_entry.restype = ctypes.c_int
+        acl_get_tag_type.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+        acl_get_tag_type.restype = ctypes.c_int
+        acl_get_permset_mask_np.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint64),
+        ]
+        acl_get_permset_mask_np.restype = ctypes.c_int
+        acl_free.argtypes = [ctypes.c_void_p]
+        acl_free.restype = ctypes.c_int
+    except (AttributeError, OSError):
+        return False
+
+    ctypes.set_errno(0)
+    acl = acl_get_file(encoded_path, acl_type_extended)
+    if not acl:
+        return ctypes.get_errno() == errno.ENOENT
+    try:
+        entry_id = acl_first_entry
+        while True:
+            entry = ctypes.c_void_p()
+            ctypes.set_errno(0)
+            if acl_get_entry(acl, entry_id, ctypes.byref(entry)) != 0:
+                return ctypes.get_errno() == errno.EINVAL
+            tag_type = ctypes.c_int()
+            permissions = ctypes.c_uint64()
+            if (
+                acl_get_tag_type(entry, ctypes.byref(tag_type)) != 0
+                or acl_get_permset_mask_np(entry, ctypes.byref(permissions)) != 0
+            ):
+                return False
+            if (
+                tag_type.value == acl_extended_allow
+                and permissions.value & mutating_permissions
+            ):
+                return False
+            entry_id = acl_next_entry
+    finally:
+        acl_free(acl)
+
+
+def _trusted_unix_acl_is_private(path: str, *, directory: bool) -> bool:
+    """Validate ACL mutation authority on supported managed Unix targets."""
+    system = platform.system()
+    if system == "Linux":
+        return _linux_acl_is_private(path, directory=directory)
+    if system == "Darwin":
+        return _darwin_acl_is_private(path)
+    return False
+
+
+def _is_owned_private_executable(path: str) -> bool:
+    """Return whether a managed executable is owner-only mutable and runnable."""
+    try:
+        executable_stat = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISREG(executable_stat.st_mode):
+        return False
+    effective_uid = getattr(os, "geteuid", None)
+    if os.name == "posix" and effective_uid is not None:
+        return (
+            executable_stat.st_uid == effective_uid()
+            and executable_stat.st_mode & 0o022 == 0
+            and executable_stat.st_mode & stat.S_IXUSR != 0
+            and _trusted_unix_acl_is_private(path, directory=False)
+        )
+    return os.access(path, os.X_OK)
 
 
 def _managed_tirith_directory_chain() -> list[str]:
@@ -402,18 +610,41 @@ def _managed_install_directory_is_real() -> bool:
     return all(_is_owned_private_directory(directory) for directory in directories)
 
 
-def _is_managed_tirith(path: str) -> bool:
-    """Return whether ``path`` is inside Hermes' real managed-bin boundary."""
+def _is_managed_tirith_location(path: str) -> bool:
+    """Return whether ``path`` names or aliases Hermes' managed Tirith file.
+
+    Lexical comparison also covers an absent installation destination. For an
+    existing file, identity comparison prevents a PATH symlink, hard link, or
+    case alias from shedding the managed-cache trust policy.
+    """
     expected = os.path.normcase(os.path.abspath(_managed_tirith_path()))
     candidate = os.path.normcase(os.path.abspath(path))
-    if candidate != expected:
-        return False
+    if candidate == expected:
+        return True
     try:
-        return _managed_install_directory_is_real() and stat.S_ISREG(
-            os.lstat(path).st_mode
-        )
+        return os.path.samefile(candidate, expected)
     except OSError:
         return False
+
+
+def _is_managed_tirith(path: str) -> bool:
+    """Return whether ``path`` is inside Hermes' real managed-bin boundary."""
+    managed_path = os.path.abspath(_managed_tirith_path())
+    return (
+        _is_managed_tirith_location(path)
+        and _managed_install_directory_is_real()
+        and _is_owned_private_executable(managed_path)
+    )
+
+
+def _validated_tirith_path(path: str) -> str | None:
+    """Return a usable path, normalizing managed aliases to the owned path."""
+    if not os.path.isfile(path) or not os.access(path, os.X_OK):
+        return None
+    if not _is_managed_tirith_location(path):
+        return path
+    managed_path = os.path.abspath(_managed_tirith_path())
+    return managed_path if _is_managed_tirith(managed_path) else None
 
 
 def _update_state_path() -> str:
@@ -794,13 +1025,51 @@ def _download_file(
         raise
 
 
-def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool | None:
+def _release_identity_from_certificate(
+    cert_path: str,
+) -> tuple[tuple[int, int, int], str] | None:
+    """Return the one stable Tirith release identity carried by a certificate."""
+    try:
+        from cryptography import x509
+    except ImportError as exc:
+        logger.warning("cannot inspect cosign certificate: %s", exc)
+        return None
+
+    try:
+        with open(cert_path, "rb") as cert_file:
+            certificate = x509.load_pem_x509_certificate(cert_file.read())
+        san = certificate.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
+        identities = san.get_values_for_type(x509.UniformResourceIdentifier)
+    except (OSError, ValueError, x509.ExtensionNotFound, x509.DuplicateExtension) as exc:
+        logger.warning("cannot inspect cosign certificate identity: %s", exc)
+        return None
+
+    matches = []
+    for identity in identities:
+        match = _COSIGN_IDENTITY_RE.fullmatch(identity)
+        if match is not None:
+            matches.append((tuple(int(part) for part in match.groups()), identity))
+    if len(matches) != 1:
+        logger.warning(
+            "cosign certificate must contain exactly one stable Tirith release identity"
+        )
+        return None
+    return matches[0]
+
+
+def _verify_cosign(
+    checksums_path: str,
+    sig_path: str,
+    cert_path: str,
+) -> tuple[bool | None, tuple[int, int, int] | None]:
     """Verify cosign provenance signature on checksums.txt.
 
     Returns:
-        True  — cosign verified successfully
-        False — cosign found but verification failed
-        None  — cosign not available (not on PATH, or execution failed)
+        (True, version) — cosign verified one exact stable release identity
+        (False, None)   — cosign found but verification failed
+        (None, None)    — cosign not available or could not execute
 
     ``False`` is an explicit verification rejection. ``None`` lets the caller
     use Hermes' documented SHA-256-only fallback.
@@ -808,14 +1077,19 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
     cosign = shutil.which("cosign")
     if not cosign:
         logger.info("cosign not found on PATH")
-        return None
+        return None, None
+
+    release_identity = _release_identity_from_certificate(cert_path)
+    if release_identity is None:
+        return False, None
+    release_version, certificate_identity = release_identity
 
     try:
         result = subprocess.run(
             [cosign, "verify-blob",
              "--certificate", cert_path,
              "--signature", sig_path,
-             "--certificate-identity-regexp", _COSIGN_IDENTITY_REGEXP,
+             "--certificate-identity", certificate_identity,
              "--certificate-oidc-issuer", _COSIGN_ISSUER,
              checksums_path],
             capture_output=True,
@@ -826,14 +1100,14 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
         )
         if result.returncode == 0:
             logger.info("cosign provenance verification passed")
-            return True
+            return True, release_version
         else:
             logger.warning("cosign verification failed (exit %d): %s",
                           result.returncode, result.stderr.strip())
-            return False
+            return False, None
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("cosign execution failed: %s", exc)
-        return None
+        return None, None
 
 
 def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) -> bool:
@@ -1025,6 +1299,12 @@ def _atomic_replace_binary(
             output.flush()
             os.fsync(output.fileno())
 
+        staged_path = os.path.join(destination_dir, staged_name)
+        if not _is_owned_private_executable(staged_path):
+            raise PermissionError(
+                "Tirith staging file is not owner-only mutable and executable"
+            )
+
         if expected_existing_sha256 is not None:
             current_flags = os.O_RDONLY
             if hasattr(os, "O_NOFOLLOW"):
@@ -1090,7 +1370,7 @@ def _download_verified_tirith(
     log,
     *,
     require_signed_release: bool = False,
-) -> tuple[str | None, str, bool]:
+) -> tuple[str | None, str, bool, tuple[int, int, int] | None]:
     """Download, verify, and extract one Tirith release into ``workdir``.
 
     Initial installation retains the historical HTTPS + SHA-256 fallback.
@@ -1116,9 +1396,10 @@ def _download_verified_tirith(
         )
     except Exception as exc:
         log("tirith download failed: %s", exc)
-        return None, "download_failed", False
+        return None, "download_failed", False, None
 
     cosign_verified = False
+    signed_version = None
     if shutil.which("cosign"):
         try:
             _download_file(
@@ -1134,42 +1415,47 @@ def _download_verified_tirith(
         except Exception as exc:
             if require_signed_release:
                 log("tirith release rejected: cosign artifacts unavailable: %s", exc)
-                return None, "cosign_artifacts_unavailable", False
+                return None, "cosign_artifacts_unavailable", False, None
             logger.info(
                 "cosign artifacts unavailable (%s), proceeding with SHA-256 only", exc
             )
         else:
-            cosign_result = _verify_cosign(checksums_path, sig_path, cert_path)
+            cosign_result, signed_version = _verify_cosign(
+                checksums_path, sig_path, cert_path
+            )
             if cosign_result is True:
                 cosign_verified = True
             elif cosign_result is False:
                 log("tirith release rejected: cosign provenance verification failed")
-                return None, "cosign_verification_failed", False
+                return None, "cosign_verification_failed", False, None
             else:
                 if require_signed_release:
                     log("tirith release rejected: cosign provenance could not be verified")
-                    return None, "cosign_exec_failed", False
+                    return None, "cosign_exec_failed", False, None
+                signed_version = None
                 logger.info("cosign execution failed, proceeding with SHA-256 only")
     else:
         if require_signed_release:
             log("tirith release replacement requires cosign provenance verification")
-            return None, "cosign_missing", False
+            return None, "cosign_missing", False, None
         logger.info(
             "cosign not on PATH — using SHA-256 verification only "
             "(install cosign for full supply chain verification)"
         )
 
     if not _verify_checksum(archive_path, checksums_path, archive_name):
-        return None, "checksum_failed", cosign_verified
+        return None, "checksum_failed", cosign_verified, signed_version
 
     src, reason = _extract_release_archive(archive_path, workdir, log)
-    return src, reason, cosign_verified
+    return src, reason, cosign_verified, signed_version
 
 
 def _install_tirith(
     *,
     log_failures: bool = True,
     expected_existing_sha256: str | None = None,
+    current_version: tuple[int, int, int] | None = None,
+    minimum_candidate_version: tuple[int, int, int] | None = None,
 ) -> tuple[str | None, str]:
     """Download and install Tirith to Hermes' private managed cache.
 
@@ -1183,6 +1469,12 @@ def _install_tirith(
     if not _tirith_auto_install_allowed():
         return None, "lazy_installs_disabled"
 
+    replacing_existing = expected_existing_sha256 is not None
+    if replacing_existing != (current_version is not None):
+        return None, "invalid_replacement_request"
+    if minimum_candidate_version is not None and not replacing_existing:
+        return None, "invalid_replacement_request"
+
     log = logger.warning if log_failures else logger.debug
 
     target = _detect_target()
@@ -1194,9 +1486,10 @@ def _install_tirith(
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
     managed_dest = _managed_tirith_path()
     destination_was_absent = not os.path.lexists(managed_dest)
-    replacing_existing = (
-        expected_existing_sha256 is not None or not destination_was_absent
-    )
+    # Initial installers are create-only. An existing path belongs to the
+    # process that installed it and cannot silently become a replacement call.
+    if not destination_was_absent and not replacing_existing:
+        return None, "destination_exists"
 
     try:
         tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
@@ -1205,7 +1498,7 @@ def _install_tirith(
         return None, "no_space"
     try:
         logger.info("tirith not found — downloading latest release for %s...", target)
-        src, reason, cosign_verified = _download_verified_tirith(
+        src, reason, cosign_verified, signed_version = _download_verified_tirith(
             base_url,
             target,
             tmpdir,
@@ -1214,6 +1507,27 @@ def _install_tirith(
         )
         if src is None:
             return None, reason
+
+        if replacing_existing:
+            # The exact stable tag came from the certificate identity that
+            # cosign verified over the checksum manifest. It is therefore
+            # authenticated without executing downloaded bytes from /tmp.
+            if not cosign_verified or signed_version is None:
+                return None, "candidate_version_unverified"
+            assert current_version is not None
+            if signed_version <= current_version:
+                logger.info(
+                    "tirith replacement skipped: signed candidate v%s is not newer "
+                    "than installed v%s",
+                    ".".join(str(part) for part in signed_version),
+                    ".".join(str(part) for part in current_version),
+                )
+                return None, "candidate_not_newer"
+            if (
+                minimum_candidate_version is not None
+                and signed_version < minimum_candidate_version
+            ):
+                return None, "candidate_below_minimum"
 
         # Config is live and the verified download may have taken seconds.
         # Re-check before creating or replacing anything under HERMES_HOME.
@@ -1286,6 +1600,9 @@ def _tirith_subprocess_env() -> dict[str, str]:
 
 def _probe_tirith_version(path: str) -> tuple[tuple[int, int, int] | None, str]:
     """Return a stable Tirith version or an operational/parse reason."""
+    if not _is_managed_tirith(path):
+        return None, "managed_path_untrusted"
+    path = os.path.abspath(_managed_tirith_path())
     try:
         result = subprocess.run(
             [path, "--version"],
@@ -1328,7 +1645,7 @@ def _verify_legacy_release_binary(
     except OSError:
         return None, "no_space"
     try:
-        released, reason, _cosign_verified = _download_verified_tirith(
+        released, reason, _cosign_verified, _signed_version = _download_verified_tirith(
             base_url, target, tmpdir, log
         )
         if released is None:
@@ -1352,6 +1669,9 @@ def _verify_legacy_release_binary(
 
 def _probe_tirith_provenance(path: str) -> tuple[dict | None, str]:
     """Read provenance that Tirith 0.4.1+ exposes for updater ownership."""
+    if not _is_managed_tirith(path):
+        return None, "managed_path_untrusted"
+    path = os.path.abspath(_managed_tirith_path())
     try:
         result = subprocess.run(
             [path, "version", "--provenance", "--format", "json"],
@@ -1404,6 +1724,9 @@ def _provenance_allows_managed_update(
 
 def _run_tirith_update(path: str) -> str:
     """Run Tirith's noninteractive updater and classify its JSON result."""
+    if not _is_managed_tirith(path):
+        return "failed"
+    path = os.path.abspath(_managed_tirith_path())
     # The user may disable runtime installs while the background worker is
     # probing version/provenance. Re-check at the mutating/network sink so the
     # live opt-out takes effect without waiting for the worker to finish.
@@ -1448,6 +1771,7 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
     """Bootstrap or update an existing Hermes-managed Tirith binary."""
     if not _is_managed_tirith(path):
         return "skipped"
+    path = os.path.abspath(_managed_tirith_path())
 
     version, reason = _probe_tirith_version(path)
     if version is None:
@@ -1465,11 +1789,15 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
         installed, install_reason = _install_tirith(
             log_failures=log_failures,
             expected_existing_sha256=expected_sha256,
+            current_version=version,
+            minimum_candidate_version=_SELF_UPDATE_MIN_VERSION,
         )
         if installed and _is_managed_tirith(installed):
             return "bootstrapped"
         if install_reason == "lazy_installs_disabled":
             return "deferred"
+        if install_reason == "candidate_not_newer":
+            return "current"
         return "failed"
 
     provenance, _ = _probe_tirith_provenance(path)
@@ -1498,11 +1826,14 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
         installed, install_reason = _install_tirith(
             log_failures=log_failures,
             expected_existing_sha256=expected_sha256,
+            current_version=version,
         )
         if installed and _is_managed_tirith(installed):
             return "updated"
         if install_reason == "lazy_installs_disabled":
             return "deferred"
+        if install_reason == "candidate_not_newer":
+            return "current"
         return "failed"
 
     return _run_tirith_update(path)
@@ -1602,11 +1933,20 @@ def _resolve_tirith_path(
     # Fast path: successfully resolved on a previous call.
     if isinstance(_resolved_path, str):
         path = _resolved_path
-        # The resolver is exercised for every scan, including in long-lived
-        # gateways. Reconsider completed workers here so a Tirith release made
-        # after Hermes startup is discovered once the shared TTL expires.
-        _schedule_managed_update(path, configured_path, log_failures=False)
-        return path
+        if _is_managed_tirith_location(path):
+            validated_path = _validated_tirith_path(path)
+            if validated_path is None:
+                _resolved_path = _INSTALL_FAILED
+                _install_failure_reason = "managed_cache_untrusted"
+            else:
+                path = validated_path
+                _resolved_path = path
+        if isinstance(_resolved_path, str):
+            # The resolver is exercised for every scan, including in long-lived
+            # gateways. Reconsider completed workers here so a Tirith release made
+            # after Hermes startup is discovered once the shared TTL expires.
+            _schedule_managed_update(path, configured_path, log_failures=False)
+            return path
 
     expanded = os.path.expanduser(configured_path)
     explicit = _is_explicit_path(configured_path)
@@ -1614,14 +1954,16 @@ def _resolve_tirith_path(
 
     # Explicit path: check it and stop. Never auto-download a replacement.
     if explicit:
-        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
-            _resolved_path = expanded
-            return expanded
+        validated_path = _validated_tirith_path(expanded)
+        if validated_path is not None:
+            _resolved_path = validated_path
+            return validated_path
         # Also try shutil.which in case it's a bare name on PATH
         found = shutil.which(expanded)
-        if found:
-            _resolved_path = found
-            return found
+        validated_path = _validated_tirith_path(found) if found else None
+        if validated_path is not None:
+            _resolved_path = validated_path
+            return validated_path
         logger.warning("Configured tirith path %r not found; scanning disabled", configured_path)
         _resolved_path = _INSTALL_FAILED
         _install_failure_reason = "explicit_path_missing"
@@ -1631,12 +1973,19 @@ def _resolve_tirith_path(
     # install is picked up even after a previous network failure (P2 fix:
     # long-lived gateway/CLI recovers without restart).
     found = shutil.which("tirith")
-    if found:
-        _resolved_path = found
+    validated_path = _validated_tirith_path(found) if found else None
+    if validated_path is not None:
+        _resolved_path = validated_path
         _install_failure_reason = ""
         _clear_install_failed()
-        _schedule_managed_update(found, configured_path, log_failures=False)
-        return found
+        _schedule_managed_update(
+            validated_path, configured_path, log_failures=False
+        )
+        return validated_path
+    if found and _is_managed_tirith_location(found):
+        _resolved_path = _INSTALL_FAILED
+        _install_failure_reason = "managed_cache_untrusted"
+        return None if background_only else expanded
 
     # Platform support controls Hermes' managed cache and installer, not
     # whether an operator-provided Tirith binary may scan commands. Explicit
@@ -1647,12 +1996,16 @@ def _resolve_tirith_path(
         return None if background_only else expanded
 
     hermes_bin = _managed_tirith_path()
-    if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+    if _is_managed_tirith(hermes_bin):
         _resolved_path = hermes_bin
         _install_failure_reason = ""
         _clear_install_failed()
         _schedule_managed_update(hermes_bin, configured_path, log_failures=False)
         return hermes_bin
+    if os.path.lexists(hermes_bin):
+        _resolved_path = _INSTALL_FAILED
+        _install_failure_reason = "managed_cache_untrusted"
+        return None if background_only else expanded
 
     # A policy opt-out is not an installation failure. Do not cache or persist
     # it, so changing the setting can take effect immediately in this process.
@@ -1722,15 +2075,24 @@ def _background_install(*, log_failures: bool = True):
 
         # Re-check local paths (may have been installed by another process)
         found = shutil.which("tirith")
-        if found:
-            _resolved_path = found
+        validated_path = _validated_tirith_path(found) if found else None
+        if validated_path is not None:
+            _resolved_path = validated_path
             _install_failure_reason = ""
+            return
+        if found and _is_managed_tirith_location(found):
+            _resolved_path = _INSTALL_FAILED
+            _install_failure_reason = "managed_cache_untrusted"
             return
 
         hermes_bin = _managed_tirith_path()
-        if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+        if _is_managed_tirith(hermes_bin):
             _resolved_path = hermes_bin
             _install_failure_reason = ""
+            return
+        if os.path.lexists(hermes_bin):
+            _resolved_path = _INSTALL_FAILED
+            _install_failure_reason = "managed_cache_untrusted"
             return
 
         if not _tirith_auto_install_allowed():
@@ -1767,14 +2129,19 @@ def ensure_installed(*, log_failures: bool = True):
     # Already resolved from a previous call
     if isinstance(_resolved_path, str):
         path = _resolved_path
-        if os.path.isfile(path) and os.access(path, os.X_OK):
+        validated_path = _validated_tirith_path(path)
+        if validated_path is not None:
+            _resolved_path = validated_path
             _schedule_managed_update(
-                path,
+                validated_path,
                 cfg["tirith_path"],
                 log_failures=log_failures,
             )
-            return path
-        return None
+            return validated_path
+        if not _is_managed_tirith_location(path):
+            return None
+        _resolved_path = _INSTALL_FAILED
+        _install_failure_reason = "managed_cache_untrusted"
 
     configured_path = cfg["tirith_path"]
     explicit = _is_explicit_path(configured_path)
@@ -1782,29 +2149,36 @@ def ensure_installed(*, log_failures: bool = True):
 
     # Explicit path: synchronous check only, no download
     if explicit:
-        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
-            _resolved_path = expanded
-            return expanded
+        validated_path = _validated_tirith_path(expanded)
+        if validated_path is not None:
+            _resolved_path = validated_path
+            return validated_path
         found = shutil.which(expanded)
-        if found:
-            _resolved_path = found
-            return found
+        validated_path = _validated_tirith_path(found) if found else None
+        if validated_path is not None:
+            _resolved_path = validated_path
+            return validated_path
         _resolved_path = _INSTALL_FAILED
         _install_failure_reason = "explicit_path_missing"
         return None
 
     # Default "tirith" — quick local checks first (no network)
     found = shutil.which("tirith")
-    if found:
-        _resolved_path = found
+    validated_path = _validated_tirith_path(found) if found else None
+    if validated_path is not None:
+        _resolved_path = validated_path
         _install_failure_reason = ""
         _clear_install_failed()
         _schedule_managed_update(
-            found,
+            validated_path,
             configured_path,
             log_failures=log_failures,
         )
-        return found
+        return validated_path
+    if found and _is_managed_tirith_location(found):
+        _resolved_path = _INSTALL_FAILED
+        _install_failure_reason = "managed_cache_untrusted"
+        return None
 
     # Unsupported manager targets may still use explicit or PATH binaries,
     # but Hermes must not inspect its managed cache or start an installer for
@@ -1815,7 +2189,7 @@ def ensure_installed(*, log_failures: bool = True):
         return None
 
     hermes_bin = _managed_tirith_path()
-    if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+    if _is_managed_tirith(hermes_bin):
         _resolved_path = hermes_bin
         _install_failure_reason = ""
         _clear_install_failed()
@@ -1825,6 +2199,10 @@ def ensure_installed(*, log_failures: bool = True):
             log_failures=log_failures,
         )
         return hermes_bin
+    if os.path.lexists(hermes_bin):
+        _resolved_path = _INSTALL_FAILED
+        _install_failure_reason = "managed_cache_untrusted"
+        return None
 
     # Preserve local discovery while honoring the global runtime-install
     # policy. Keep state unresolved so an in-process config change is enough
@@ -1916,6 +2294,28 @@ def check_command_security(command: str) -> dict:
             summary = "" if unsupported_manager else "tirith path unavailable"
             return {"action": "allow", "findings": [], "summary": summary}
         return {"action": "block", "findings": [], "summary": "tirith path unavailable (fail-closed)"}
+
+    # Managed cache ownership is re-proved immediately before execution. This
+    # catches mode/ACL drift after path resolution without imposing Hermes'
+    # private-cache policy on explicit or package-manager binaries.
+    if _is_managed_tirith_location(tirith_path):
+        if not _is_managed_tirith(tirith_path):
+            if _resolved_path == tirith_path:
+                _resolved_path = _INSTALL_FAILED
+            action = "allow" if fail_open else "block"
+            return {
+                "action": action,
+                "findings": [],
+                "summary": "tirith managed cache is untrusted "
+                f"(fail-{'open' if fail_open else 'closed'})",
+            }
+        # Never execute a PATH/config alias after using file identity to
+        # classify it. The exact owned path has the validated parent chain and
+        # cannot be swapped through an attacker-controlled alias directory.
+        original_path = tirith_path
+        tirith_path = os.path.abspath(_managed_tirith_path())
+        if _resolved_path == original_path:
+            _resolved_path = tirith_path
 
     try:
         result = subprocess.run(

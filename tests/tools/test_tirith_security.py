@@ -7,10 +7,15 @@ import subprocess
 import tarfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPMessage
 from unittest.mock import MagicMock, patch
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.x509.oid import NameOID
 
 from tools import lazy_deps as _lazy_deps
 import tools.tirith_security as _tirith_mod
@@ -64,6 +69,30 @@ def _mock_run(returncode=0, stdout="", stderr=""):
 
 def _json_stdout(findings=None, summary=""):
     return json.dumps({"findings": findings or [], "summary": summary})
+
+
+def _write_release_certificate(path, identities):
+    """Write a minimal certificate with cosign-like URI SAN identities."""
+    key = ed25519.Ed25519PrivateKey.generate()
+    now = datetime.now(timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test")])
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(minutes=1))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [x509.UniformResourceIdentifier(identity) for identity in identities]
+            ),
+            critical=False,
+        )
+        .sign(key, algorithm=None)
+    )
+    path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
 
 
 def _mock_missing_tirith(monkeypatch):
@@ -325,7 +354,7 @@ class TestLazyInstallPolicy:
         monkeypatch.setattr(
             _tirith_mod,
             "_download_verified_tirith",
-            lambda *_args, **_kwargs: (str(source), "", True),
+            lambda *_args, **_kwargs: (str(source), "", True, (0, 4, 1)),
         )
         replace = MagicMock()
         monkeypatch.setattr(_tirith_mod, "_atomic_replace_binary", replace)
@@ -397,23 +426,160 @@ class TestLazyInstallPolicy:
         assert _tirith_mod._resolved_path == "/tmp/tirith"
 
     def test_local_binary_is_discovered_when_lazy_installs_are_disabled(
-        self, monkeypatch
+        self, tmp_path, monkeypatch
     ):
         """The opt-out disables downloads, not discovery of an installed binary."""
         _tirith_mod._resolved_path = None
         _tirith_mod._install_failure_reason = ""
+        local_tirith = tmp_path / "tirith"
+        local_tirith.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        local_tirith.chmod(0o700)
 
         policy = MagicMock(return_value=False)
         monkeypatch.setattr(_lazy_deps, "_allow_lazy_installs", policy)
         monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
         monkeypatch.setattr(
-            _tirith_mod.shutil, "which", lambda _name: "/usr/bin/tirith"
+            _tirith_mod.shutil, "which", lambda _name: str(local_tirith)
         )
         monkeypatch.setattr(_tirith_mod, "_clear_install_failed", lambda: None)
 
-        assert _tirith_mod._resolve_tirith_path("tirith") == "/usr/bin/tirith"
+        assert _tirith_mod._resolve_tirith_path("tirith") == str(local_tirith)
 
         policy.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Managed-cache execution boundary
+# ---------------------------------------------------------------------------
+
+class TestManagedCacheExecutionBoundary:
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership boundary")
+    @pytest.mark.parametrize(
+        "fail_open, expected_action",
+        [(True, "allow"), (False, "block")],
+    )
+    def test_cached_managed_binary_mode_drift_is_never_spawned(
+        self, fail_open, expected_action, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        managed = home / "bin" / "tirith"
+        managed.parent.mkdir(parents=True)
+        managed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        managed.chmod(0o755)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _tirith_mod._resolved_path = str(managed)
+
+        # Simulate trust drift after successful resolution. The cached string
+        # must not bypass the current filesystem proof.
+        managed.chmod(0o775)
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_load_security_config",
+            lambda: {
+                "tirith_enabled": True,
+                "tirith_path": "tirith",
+                "tirith_timeout": 5,
+                "tirith_fail_open": fail_open,
+            },
+        )
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
+        run = MagicMock()
+        monkeypatch.setattr(_tirith_mod.subprocess, "run", run)
+
+        result = check_command_security("echo guarded")
+
+        assert result["action"] == expected_action
+        assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
+        assert _tirith_mod._install_failure_reason == "managed_cache_untrusted"
+        run.assert_not_called()
+
+    @pytest.mark.require_symlinks
+    def test_path_alias_cannot_hide_untrusted_managed_binary(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        managed = home / "bin" / "tirith"
+        managed.parent.mkdir(parents=True)
+        managed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        managed.chmod(0o777)
+        alias = tmp_path / "path" / "tirith"
+        alias.parent.mkdir()
+        alias.symlink_to(managed)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _tirith_mod._resolved_path = None
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_load_security_config",
+            lambda: {
+                "tirith_enabled": True,
+                "tirith_path": "tirith",
+                "tirith_timeout": 5,
+                "tirith_fail_open": False,
+            },
+        )
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: str(alias))
+        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
+        run = MagicMock()
+        monkeypatch.setattr(_tirith_mod.subprocess, "run", run)
+
+        result = check_command_security("echo guarded")
+
+        assert result["action"] == "block"
+        assert _tirith_mod._install_failure_reason == "managed_cache_untrusted"
+        run.assert_not_called()
+
+    @pytest.mark.require_symlinks
+    def test_trusted_managed_path_alias_is_normalized_before_execution(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        managed = home / "bin" / "tirith"
+        managed.parent.mkdir(parents=True)
+        managed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        managed.chmod(0o755)
+        alias = tmp_path / "path" / "tirith"
+        alias.parent.mkdir()
+        alias.symlink_to(managed)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _tirith_mod._resolved_path = None
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_load_security_config",
+            lambda: {
+                "tirith_enabled": True,
+                "tirith_path": "tirith",
+                "tirith_timeout": 5,
+                "tirith_fail_open": False,
+            },
+        )
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: str(alias))
+        monkeypatch.setattr(_tirith_mod, "_schedule_managed_update", lambda *_a, **_kw: None)
+        run = MagicMock(return_value=_mock_run(0, _json_stdout()))
+        monkeypatch.setattr(_tirith_mod.subprocess, "run", run)
+
+        result = check_command_security("echo safe")
+
+        assert result["action"] == "allow"
+        assert _tirith_mod._resolved_path == str(managed)
+        assert run.call_args.args[0][0] == str(managed)
+
+    @pytest.mark.macos_only
+    def test_case_alias_is_recognized_as_managed_file(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        managed = home / "bin" / "tirith"
+        managed.parent.mkdir(parents=True)
+        managed.write_text("scanner", encoding="utf-8")
+        managed.chmod(0o755)
+        alias = managed.with_name("TIRITH")
+        if not alias.exists():
+            pytest.skip("test filesystem is case-sensitive")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert alias != managed
+        assert alias.samefile(managed)
+        assert _tirith_mod._is_managed_tirith_location(str(alias))
+        assert _tirith_mod._validated_tirith_path(str(alias)) == str(managed)
 
 
 # ---------------------------------------------------------------------------
@@ -631,18 +797,75 @@ class TestExplicitPathNoAutoDownload:
 class TestCosignVerification:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security.shutil.which", return_value="/usr/bin/cosign")
-    def test_cosign_identity_pinned_to_release_workflow(self, mock_which, mock_run):
-        """Identity regexp must pin to the release workflow, not the whole repo."""
+    @patch(
+        "tools.tirith_security._release_identity_from_certificate",
+        return_value=(
+            (0, 4, 1),
+            "https://github.com/sheeki03/tirith/.github/workflows/"
+            "release.yml@refs/tags/v0.4.1",
+        ),
+    )
+    def test_cosign_identity_pinned_to_exact_release_tag(
+        self, mock_identity, mock_which, mock_run
+    ):
+        """Verification binds the manifest to one authenticated stable tag."""
+        del mock_identity, mock_which
         from tools.tirith_security import _verify_cosign
         mock_run.return_value = _mock_run(0, "Verified OK")
-        _verify_cosign("/tmp/checksums.txt", "/tmp/sig", "/tmp/cert")
+        assert _verify_cosign(
+            "/tmp/checksums.txt", "/tmp/sig", "/tmp/cert"
+        ) == (True, (0, 4, 1))
         args = mock_run.call_args[0][0]
-        # Find the value after --certificate-identity-regexp
-        idx = args.index("--certificate-identity-regexp")
-        identity = args[idx + 1]
-        # The identity contains regex-escaped dots
-        assert "workflows/release" in identity
-        assert "refs/tags/v" in identity
+        idx = args.index("--certificate-identity")
+        assert args[idx + 1].endswith("release.yml@refs/tags/v0.4.1")
+        assert "--certificate-identity-regexp" not in args
+
+    @pytest.mark.parametrize(
+        "identity, expected",
+        [
+            (
+                "https://github.com/sheeki03/tirith/.github/workflows/"
+                "release.yml@refs/tags/v0.4.1",
+                (0, 4, 1),
+            ),
+            (
+                "https://github.com/sheeki03/tirith/.github/workflows/"
+                "release.yml@refs/tags/v0.4.1-rc.1",
+                None,
+            ),
+            (
+                "https://github.com/sheeki03/tirith/.github/workflows/"
+                "release.yml@refs/tags/v00.4.1",
+                None,
+            ),
+            (
+                "https://github.com/sheeki03/tirith/.github/workflows/"
+                "other.yml@refs/tags/v0.4.1",
+                None,
+            ),
+        ],
+    )
+    def test_certificate_identity_accepts_only_stable_release_tag(
+        self, tmp_path, identity, expected
+    ):
+        certificate = tmp_path / "checksums.txt.pem"
+        _write_release_certificate(certificate, [identity])
+
+        parsed = _tirith_mod._release_identity_from_certificate(str(certificate))
+
+        assert (parsed[0] if parsed else None) == expected
+
+    def test_certificate_with_ambiguous_release_identities_is_rejected(
+        self, tmp_path
+    ):
+        prefix = (
+            "https://github.com/sheeki03/tirith/.github/workflows/"
+            "release.yml@refs/tags/v"
+        )
+        certificate = tmp_path / "checksums.txt.pem"
+        _write_release_certificate(certificate, [prefix + "0.4.1", prefix + "0.4.2"])
+
+        assert _tirith_mod._release_identity_from_certificate(str(certificate)) is None
 
 
     @patch(
@@ -678,7 +901,10 @@ class TestCosignVerification:
         del mock_target, mock_dl, mock_which
         from tools.tirith_security import _install_tirith
 
-        path, reason = _install_tirith(expected_existing_sha256="0" * 64)
+        path, reason = _install_tirith(
+            expected_existing_sha256="0" * 64,
+            current_version=(0, 4, 0),
+        )
 
         assert path is None
         assert reason == "cosign_missing"
@@ -701,7 +927,7 @@ class TestCosignVerification:
             existing = hermes_home / "bin" / "tirith"
             existing.parent.mkdir(parents=True)
             existing.write_bytes(b"concurrent tirith")
-            return str(verified), "", False
+            return str(verified), "", False, None
 
         monkeypatch.setattr(
             _tirith_mod, "_download_verified_tirith", unsigned_download
@@ -728,7 +954,7 @@ class TestCosignVerification:
         monkeypatch.setattr(
             _tirith_mod,
             "_download_verified_tirith",
-            lambda *_args, **_kwargs: (str(verified), "", False),
+            lambda *_args, **_kwargs: (str(verified), "", False, None),
         )
         real_directory_check = _tirith_mod._managed_install_directory_is_real
 

@@ -633,41 +633,64 @@ async function openSignInUrl(url: string) {
 }
 
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
-  clearPoll()
+    clearPoll()
 
-  if (provider.flow === 'external') {
-    setFlow({ status: 'external_pending', provider, copied: false })
-
-    return
-  }
-
-  setFlow({ status: 'starting', provider })
-
-  try {
-    const start = await startOAuthLogin(provider.id)
-    const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
-    await openSignInUrl(browserUrl)
-
-    if (start.flow === 'pkce') {
-      setFlow({ status: 'awaiting_user', provider, start, code: '' })
+    if (provider.flow === 'external') {
+      setFlow({ status: 'external_pending', provider, copied: false })
 
       return
     }
 
-    setFlow({ status: 'polling', provider, start, copied: false })
-    schedulePollExpiry(start, () =>
-      setFlow({
-        status: 'error',
-        provider,
-        start,
-        message: translateNow('onboarding.signInExpired')
-      })
-    )
-    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
-  } catch (error) {
-    setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
+    setFlow({ status: 'starting', provider })
+
+    try {
+      const start = await startOAuthLogin(provider.id)
+      const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
+      await openSignInUrl(browserUrl)
+
+      if (start.flow === 'pkce') {
+        setFlow({ status: 'awaiting_user', provider, start, code: '', pkceTimeoutId: null })
+
+        // Track when the PKCE flow started so we can detect silent callback failure
+        const pkceStartTime = Date.now()
+        const PKCE_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes - should be plenty for user to complete auth
+
+        const pkceTimeoutId = window.setTimeout(() => {
+          // Check if flow is still awaiting_user - if so, the callback was never received
+          const { flow } = $desktopOnboarding.get()
+          if (flow.status === 'awaiting_user' && flow.provider.id === provider.id) {
+            setFlow({
+              status: 'error',
+              provider,
+              message:
+                'The sign-in window was closed or the authorization callback was never received. ' +
+                'This usually means the Portal sign-in completed but the redirect back to Hermes failed. ' +
+                'Try again, or use an API key instead: Settings → Providers → "I have an API key".'
+            })
+            clearPoll()
+          }
+        }, PKCE_TIMEOUT_MS)
+
+        // Store the timeout ID in the flow so we can clear it when the flow completes
+        setFlow({ ...$desktopOnboarding.get().flow, pkceTimeoutId })
+
+        return
+      }
+
+      setFlow({ status: 'polling', provider, start, copied: false })
+      schedulePollExpiry(start, () =>
+        setFlow({
+          status: 'error',
+          provider,
+          start,
+          message: translateNow('onboarding.signInExpired')
+        })
+      )
+      pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
+    } catch (error) {
+      setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
+    }
   }
-}
 
 // Poll a session-backed device-code flow until it resolves.
 async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext) {

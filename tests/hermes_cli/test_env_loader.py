@@ -598,11 +598,14 @@ def test_config_yaml_terminal_omitted_key_does_not_clear_env(tmp_path, monkeypat
     assert os.getenv("TERMINAL_TIMEOUT") == "600"
 
 
-def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch):
-    """Loading a DIFFERENT profile's .env must not re-bridge this process's
-    config.yaml — the shared bridge reads the process-global config, so
-    applying it for another home would stamp the wrong profile's terminal
-    settings into the env."""
+def test_other_profile_home_bridges_process_config(tmp_path, monkeypatch):
+    """Loading a DIFFERENT profile's .env still bridges the process config.
+
+    The bridge ALWAYS applies the process home's terminal config, even when
+    loading a different profile's .env. This prevents cross-profile terminal
+    config leakage (#102769): a cron tick for profile B must not leak its
+    TERMINAL_* config into the launch profile's process environment.
+    """
     process_home = tmp_path / "process-home"
     process_home.mkdir()
     (process_home / "config.yaml").write_text(
@@ -618,5 +621,58 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
 
     load_hermes_dotenv(hermes_home=other_home)
 
-    # The other profile's .env value stands; the process config was not applied.
-    assert os.getenv("TERMINAL_ENV") == "docker"
+    # The process home's config (local) is applied even when loading a
+    # different profile's .env, preventing cross-profile terminal config leakage.
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_cross_profile_terminal_leak_fixed(tmp_path, monkeypatch):
+    """Regression test for #102769: a cron tick for profile B must not leak
+    its TERMINAL_* config into the launch profile's process environment.
+
+    The process HERMES_HOME has terminal.backend: local (launch profile).
+    A cron tick for profile B (docker backend) sets the override to profile B's
+    home, loads profile B's .env with TERMINAL_ENV=docker, and the bug would
+    cause the bridge to apply docker to the process env because the override
+    makes _process_hermes_home() return profile B's home.
+    """
+    import os
+    from hermes_cli.env_loader import load_hermes_dotenv, _reapply_terminal_config_bridge
+    from hermes_constants import get_process_hermes_home
+
+    process_home = tmp_path / "launch-profile"
+    process_home.mkdir()
+    (process_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+    # 1. Initial load: launch profile starts, loads its config
+    load_hermes_dotenv(hermes_home=process_home)
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+    # Simulate the cron tick for profile B (docker backend)
+    cron_home = tmp_path / "cron-profile"
+    cron_home.mkdir()
+    (cron_home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+    (cron_home / "config.yaml").write_text(
+        "terminal:\n  backend: docker\n", encoding="utf-8"
+    )
+
+    # Simulate the cron tick: set override, load cron profile, reapply bridge
+    from hermes_constants import set_hermes_home_override
+    set_hermes_home_override(str(cron_home))
+    load_hermes_dotenv(hermes_home=cron_home)
+    from hermes_cli.env_loader import _reapply_terminal_config_bridge
+    _reapply_terminal_config_bridge(cron_home)
+
+    # The launch profile's local backend should be preserved (not overwritten by docker)
+    import os
+    assert os.getenv("TERMINAL_ENV") == "local", (
+        "Cross-profile TERMINAL_* leak: launch profile's local backend "
+        f"was overwritten by cron profile's docker ({os.getenv('TERMINAL_ENV')})"
+    )
+
+    # Clean up override
+    from hermes_constants import set_hermes_home_override
+    set_hermes_home_override(None)

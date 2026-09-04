@@ -3920,6 +3920,25 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def load_config_readonly_for_home(home: Path) -> Dict[str, Any]:
+    """Load config from a specific home directory's config.yaml without
+    caching or deepcopy. Used by _reapply_terminal_config_bridge to apply
+    the process-global (launch profile) config even when HERMES_HOME is
+    overridden for a cron/profile tick.
+    """
+    config_path = home / "config.yaml"
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                user_config = fast_safe_load(f) or {}
+        except FileNotFoundError:
+            user_config = {}
+        if user_config:
+            config = _deep_merge(config, user_config)
+    return config
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,
@@ -4061,12 +4080,11 @@ def apply_terminal_config_to_env(
     if not isinstance(terminal_cfg, dict):
         return target
 
-    # A caller-supplied config is its own source of explicit keys.  For the
-    # normal merged-config path, only keys present in raw config.yaml may
-    # override existing env values; keys inherited from DEFAULT_CONFIG are
-    # backfill-only.
-    explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
-    backend_is_explicit = config is not None or "backend" in raw_terminal_cfg
+    # Only keys explicitly set in the user's config.yaml (raw_terminal_cfg) are
+    # considered explicit and allowed to override env vars. Defaults from
+    # DEFAULT_CONFIG must not override existing env values.
+    explicit_keys = set(raw_terminal_cfg.keys())
+    backend_is_explicit = "backend" in raw_terminal_cfg
     if backend_is_explicit:
         terminal_backend = str(
             terminal_cfg.get("backend") or target.get("TERMINAL_ENV") or ""

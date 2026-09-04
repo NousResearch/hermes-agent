@@ -594,9 +594,9 @@ def load_hermes_dotenv(
 def _reapply_terminal_config_bridge(home_path: Path) -> None:
     """Re-assert config.yaml's explicit ``terminal.*`` keys over reloaded .env.
 
-    Delegates to ``hermes_cli.config.apply_terminal_config_to_env`` — the
+    Delegates to ``hermes_cli.config.apply_terminal_config_to_env`` - the
     single shared bridge (same one terminal_tool's fallback and the TUI/
-    dashboard launchers use) — so key coverage, explicit-keys-only override
+    dashboard launchers use) - so key coverage, explicit-keys-only override
     semantics, cwd placeholder handling, and the managed-scope overlay can't
     drift from the other bridge sites. Only keys the user actually wrote in
     config.yaml's ``terminal`` section override env values; a config.yaml
@@ -605,16 +605,25 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     Scoped to the process HERMES_HOME: the shared bridge reads the
     process-global config, so re-applying it for a *different* profile's
     ``load_hermes_dotenv(hermes_home=...)`` call would bridge the wrong
-    profile's config. Fail-open — a config problem must never break dotenv
+    profile's config. Fail-open - a config problem must never break dotenv
     loading (the historical env-driven behavior still applies).
     """
     try:
-        if Path(home_path).resolve() != _process_hermes_home().resolve():
-            return
-        from hermes_cli.config import apply_terminal_config_to_env
-
-        apply_terminal_config_to_env(env=None)
-    except Exception:  # noqa: BLE001 — early bootstrap / malformed config
+        # The bridge should ALWAYS apply the PROCESS home's config (the launch
+        # profile), regardless of which profile's home_path is passed. This
+        # ensures that cron ticks for other profiles don't leak their terminal
+        # config into the launch profile's environment (#102769).
+        from hermes_constants import get_process_hermes_home
+        from hermes_cli.config import apply_terminal_config_to_env, load_config_readonly_for_home, load_config_readonly_for_home
+        process_home = get_process_hermes_home()
+        config = load_config_readonly_for_home(process_home)
+        print(f"DEBUG: bridge applying config from {process_home}")
+        print(f"DEBUG: config terminal = {config.get('terminal')}")
+        apply_terminal_config_to_env(env=None, config=config)
+        print(f"DEBUG: after apply, TERMINAL_ENV = {os.environ.get('TERMINAL_ENV')}")
+    except Exception:  # noqa: BLE001 - early bootstrap / malformed config
+        import traceback
+        traceback.print_exc()
         pass
 
 
@@ -832,8 +841,7 @@ def _load_secrets_config(home_path: Path) -> dict:
 def _process_hermes_home() -> Path:
     """The HERMES_HOME the shared config cache is keyed to."""
     try:
-        from hermes_constants import get_hermes_home
-
+        from hermes_constants import get_hermes_home, get_process_hermes_home
         return get_hermes_home()
     except Exception:
         return Path.home() / ".hermes"

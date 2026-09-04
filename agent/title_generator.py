@@ -1,9 +1,23 @@
 """Auto-generate short session titles from the user's opening message.
 
-Two stages, both off the critical path: an **instant** deterministic title (written before the model
-is called, cannot fail), then an **upgrade** from one small-model call (cheap tier, thinking off,
-JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
-and neither replaces a name the user typed."""
+Two stages, both off the critical path:
+
+1. **Instant** — a deterministic title derived from the first user message,
+   written before the model is even called. Costs nothing, cannot fail, and
+   means a session is named the moment it starts instead of after the first
+   turn finishes (which measured p50 151s / p90 1212s on real sessions).
+2. **Upgrade** — one small-model call that replaces the derived title with a
+   proper one. Runs on a cheap/fast tier, with thinking disabled and the
+   response as free text, so title extraction goes through the JSON scan +
+   prose fallback in ``_extract_title_text`` (strict ``json_schema`` response
+   formats are avoided because some local providers abort and return empty
+   ``content`` under them).
+
+Provenance (``derived`` < ``llm`` < ``user``) is enforced by the storage layer,
+so stage 2 can only ever replace stage 1, and neither can replace a name the
+user typed. That ordering is the industry-standard one — Codex CLI encodes the
+same ``custom > ai > fallback`` precedence in its session importer.
+"""
 
 import json
 import logging
@@ -180,7 +194,13 @@ def _first_line(text: str) -> str:
 
 
 def _extract_title_text(content: str) -> str:
-    """Strict JSON, then a loose JSON scan, then first-line prose (a provider ignoring ``response_format`` still titles)."""
+    """Pull the title out of a model response.
+
+    No ``response_format`` is sent anymore (see module docstring), so the
+    shape is free-form: try a strict JSON object first, fall back through a
+    loose JSON scan, and finally to first-line prose so any provider still
+    titles.
+    """
     if not content:
         return ""
     raw = content.strip()

@@ -178,6 +178,17 @@ DEFAULT_CONFIG = {
         # force on everywhere; "auto" = on for interactive coding surfaces and programmatic callers,
         # off for messaging surfaces. Doc/markdown/skill-only edits never fire.
         "verify_on_stop": False,
+        # False-stop detection: when the model produces finish_reason=stop
+        # with text indicating intent to continue (e.g., a colon-preamble
+        # that lost its tool_calls, or a narrated continuation) after a
+        # tool round, nudge it to issue the actual tool call instead of
+        # silently ending the turn (#42503). Bounded to 2 retries per turn;
+        # resets on successful tool round or genuine completion. Default is
+        # "auto" — surface-aware: on for interactive coding surfaces (CLI,
+        # TUI, desktop) and programmatic callers, off for conversational
+        # messaging surfaces. Set true to force on everywhere, or false to
+        # disable.
+        "false_stop_detection": "auto",
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
         # Max seconds the gateway blocks an agent awaiting a clarify-tool reply; then it unblocks

@@ -1,11 +1,10 @@
 # .github/workflows/rust-tests.yml
 name: Rust tests
 
-# `cargo test` for the Tauri bootstrap installer (Hermes-Setup). Nothing in CI
-# compiled this crate before: `.rs` lives under `apps/`, so the change
-# classifier matched it as `frontend` and ran the TypeScript matrix, which
-# cannot notice a Rust error. The crate's unit tests existed in the tree and had
-# never run.
+# `cargo test` for Rust crates: the Tauri bootstrap installer (Hermes-Setup)
+# and the opt-in native TUI (`crates/tui`). `.rs` under `apps/` used to match
+# only `frontend` (TypeScript matrix); the native TUI crate is a second
+# cargo package and needs its own job.
 #
 # Linux runner on purpose. The pipe-drain tests in src/powershell.rs need a real
 # process tree whose grandchild inherits the parent's stdout, and their fixture
@@ -74,3 +73,33 @@ jobs:
       # (vite dist) that this lane deliberately does not produce.
       - name: cargo test
         run: cargo test --lib
+
+  native-tui:
+    name: cargo test (native tui)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: crates/tui
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: secret shapes
+        run: bash scripts/scan-secrets.sh

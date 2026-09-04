@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+.claude/
+.devgod/
+*.swp
+.hermes/
+.rocketride/

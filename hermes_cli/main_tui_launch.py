@@ -777,7 +777,16 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    # Opt-in native client (ratatui). Ink remains the default and the
+    # dashboard PTY embed. Must run after HERMES_TUI_RESUME is resolved so a
+    # stale shell export cannot leak into --resume. `--dev` is Ink-only.
+    from hermes_cli.launch_native import native_tui_argv
+
+    native = None if tui_dev else native_tui_argv(env)
+    if native:
+        argv, cwd = native, Path(env.get("HERMES_CWD") or os.getcwd())
+    else:
+        argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     code: Optional[int] = None
     try:
         try:

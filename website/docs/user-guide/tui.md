@@ -30,6 +30,9 @@ hermes --tui --resume latest --in ./my-project
 
 # Run source directly — skips the prebuild step (for TUI contributors)
 hermes --tui --dev
+
+# Experimental native (ratatui) client — Ink remains the default
+hermes --tui --native
 ```
 
 You can also enable it via env var:
@@ -97,6 +100,18 @@ hermes --tui
 ```
 
 The directory must contain `dist/entry.js`.
+
+### Experimental native client
+
+Ink (`ui-tui/`) is still what `hermes --tui` launches. A native ratatui client lives at `crates/tui/` (binary `hermes-tui-native`) and talks to the same Python `tui_gateway`. It is opt-in:
+
+```bash
+cargo install --path crates/tui
+hermes --tui --native
+# or: export HERMES_TUI_NATIVE=1
+```
+
+If the binary is missing, Hermes prints how to build it and falls back to Ink. Point at a local build with `HERMES_TUI_NATIVE_BIN`. The dashboard chat PTY always uses Ink, even when the env var is set.
 
 ## Keybindings
 

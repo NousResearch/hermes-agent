@@ -238,7 +238,7 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
     def _precreate_voice_session() -> None:
         db = self._ensure_session_db()
         if db is not None:
-            db.create_session(session_id=session_id, source="voice", title="Voice conversation")
+            db.create_session(session_id=session_id, source="voice")
 
     with contextlib.suppress(Exception):
         await loop.run_in_executor(None, _precreate_voice_session)

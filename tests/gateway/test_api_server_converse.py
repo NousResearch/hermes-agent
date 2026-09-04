@@ -165,7 +165,11 @@ async def test_turn_persists_voice_session_source(monkeypatch):
     created: dict = {}
 
     class _SpyDB:
-        def create_session(self, session_id, source, **kwargs):
+        # No **kwargs on purpose: mirrors the real create_session(session_id, source)
+        # call so a regression that passes an unaccepted kwarg (which the real
+        # SessionDB rejects with TypeError, then contextlib.suppress swallows) leaves
+        # `created` empty and fails this test instead of silently persisting api_server.
+        def create_session(self, session_id, source):
             created["id"], created["source"] = session_id, source
             return session_id
 

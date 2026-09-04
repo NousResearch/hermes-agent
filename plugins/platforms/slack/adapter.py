@@ -1276,9 +1276,13 @@ class SlackAdapter(BasePlatformAdapter):
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
         # Native streaming (chat.startStream/appendStream/stopStream) state.
         # One active stream per chat, keyed by chat_id. Each value:
-        # {"ts": str, "draft_id": int, "sent": str, "started": float}
+        # {"ts": str, "draft_id": int, "sent": str, "started": float,
+        #  "sealing": bool (optional)}
         # ``sent`` is the raw (pre-mrkdwn) text streamed so far — deltas are
         # computed against it because the streaming API is append-only.
+        # ``sealing`` is set by _try_finalize_stream while it awaits
+        # chat.stopStream, so a concurrently delivered frame from the
+        # stream consumer task can recognize the stream is being finalized.
         self._active_streams: Dict[str, Dict[str, Any]] = {}
         # Set after the first startStream failure that indicates the Slack
         # app lacks the streaming feature (Agents & AI Apps not enabled /
@@ -3402,6 +3406,15 @@ class SlackAdapter(BasePlatformAdapter):
         client = self._get_client(chat_id)
         stream = self._active_streams.get(chat_id)
 
+        if stream is not None and stream.get("sealing"):
+            # _try_finalize_stream is sealing this stream on another task
+            # (the stream consumer runs concurrently with the finalize
+            # call). This frame's content is already covered by the
+            # finalize: appending would race chat.stopStream and fail with
+            # message_not_in_streaming_state, and treating the eventual pop
+            # as "no active stream" would open a duplicate one (#94435).
+            return SendResult(success=True, message_id=stream.get("ts"))
+
         try:
             if stream is not None and stream.get("draft_id") != draft_id:
                 # New segment started while a prior stream is open — seal the
@@ -3554,9 +3567,18 @@ class SlackAdapter(BasePlatformAdapter):
         # everything, so require substance before claiming the send.
         if not sent or not text.startswith(sent):
             return None
-        self._active_streams.pop(chat_id, None)
+        # Mark sealing *before* awaiting the seal call, and pop only after
+        # it returns. A frame from the stream consumer task can run during
+        # that await; the "sealing" flag lets send_draft recognize this
+        # stream as being finalized instead of racing an append against an
+        # already-sealed ts, or — had we popped first — mistaking the gap
+        # for "no active stream" and opening a duplicate one (#94435).
+        stream["sealing"] = True
         ts = stream["ts"]
-        ok = await self._seal_stream(chat_id, stream, final_text=text)
+        try:
+            ok = await self._seal_stream(chat_id, stream, final_text=text)
+        finally:
+            self._active_streams.pop(chat_id, None)
         if not ok:
             # Could not stop the stream — post normally so the user still
             # gets the final answer; the dangling stream times out on

@@ -18,6 +18,7 @@ Behaviour contract:
   * disconnect(): dangling streams sealed.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -228,3 +229,51 @@ class TestDisconnectCleanup:
         await adapter.disconnect()
         client.chat_stopStream.assert_awaited()
         assert not adapter._active_streams
+
+
+class TestFinalizeSendDraftRace:
+    @pytest.mark.asyncio
+    async def test_late_frame_during_seal_is_dropped_not_orphaned(self):
+        """#94435: the stream consumer runs as a separate task from the
+        turn's finalize send(). A frame it delivers while chat.stopStream is
+        still in flight must be dropped, not appended to the sealing ts
+        (message_not_in_streaming_state) nor mistaken for "no active
+        stream" and given a duplicate chat.startStream."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello wo", metadata=META)
+
+        late_frame = {}
+
+        async def _stop_stream_races_with_late_frame(*args, **kwargs):
+            late_frame["result"] = await adapter.send_draft(
+                "D1", 7, "Hello world!", metadata=META
+            )
+            return {"ok": True}
+
+        client.chat_stopStream = AsyncMock(
+            side_effect=_stop_stream_races_with_late_frame
+        )
+
+        result = await adapter.send("D1", "Hello world, done.", metadata=META)
+
+        assert result.success
+        assert late_frame["result"].success
+        client.chat_appendStream.assert_not_awaited()
+        client.chat_startStream.assert_awaited_once()
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_stream_popped_even_if_seal_raises(self):
+        """If chat.stopStream raises instead of returning, the stream entry
+        must still be popped — otherwise it's stuck with sealing=True
+        forever and every later send_draft for that chat silently drops
+        content (early-return at the top of send_draft)."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello wo", metadata=META)
+
+        client.chat_stopStream = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter.send("D1", "Hello world, done.", metadata=META)
+
+        assert "D1" not in adapter._active_streams

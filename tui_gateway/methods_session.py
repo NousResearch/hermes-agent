@@ -2989,9 +2989,22 @@ def _(rid, params: dict) -> dict:
             if user_originated_turn_view(message) is not None
         ]
         if user_indices:
+            # /undo [N] — support multiple turns; clamp to available user turns.
+            n = 1
+            try:
+                n_raw = params.get("n", 1)
+                if isinstance(n_raw, int) and not isinstance(n_raw, bool):
+                    n = n_raw
+                else:
+                    n = int(str(n_raw).strip() or 1)
+            except (ValueError, TypeError):
+                n = 1
+            n = max(1, n)
+            n = min(n, len(user_indices))
+            target_ordinal = len(user_indices) - n
             try:
                 _installed, _live_view, rewound_count = (
-                    _rewind_active_session_history(session, len(user_indices) - 1)
+                    _rewind_active_session_history(session, target_ordinal)
                 )
                 removed = rewound_count
             except Exception as exc:

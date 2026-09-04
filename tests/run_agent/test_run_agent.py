@@ -1529,6 +1529,17 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
 
+    def test_provider_quantizations_injected(self, agent):
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.providers_quantizations = ["fp8", "mxfp8", "bf16"]
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert (
+            kwargs["extra_body"]["provider"]["quantizations"]
+            == ["fp8", "mxfp8", "bf16"]
+        )
+
 
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""

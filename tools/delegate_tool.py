@@ -2053,6 +2053,7 @@ def _build_child_agent(
     child_provider_data_collection = getattr(
         parent_agent, "provider_data_collection", None
     ) or ""
+    child_providers_quantizations = getattr(parent_agent, "providers_quantizations", None)
     child_openrouter_min_coding_score = getattr(parent_agent, "openrouter_min_coding_score", None)
     if override_provider:
         child_providers_allowed = None
@@ -2143,6 +2144,7 @@ def _build_child_agent(
                 provider_sort=child_provider_sort,
                 provider_require_parameters=child_provider_require_parameters,
                 provider_data_collection=child_provider_data_collection,
+                providers_quantizations=child_providers_quantizations,
                 request_overrides=(
                     # override_request_overrides is honored whenever set —
                     # including the inherit branch (override_provider=None),

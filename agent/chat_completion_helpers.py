@@ -571,6 +571,8 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
         preferences["require_parameters"] = True
     if agent.provider_data_collection:
         preferences["data_collection"] = agent.provider_data_collection
+    if agent.providers_quantizations:
+        preferences["quantizations"] = agent.providers_quantizations
     return preferences
 
 

@@ -301,6 +301,12 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+#
+#   # Only route to endpoints at these quantization levels (OpenRouter only).
+#   # Values: int4, int8, fp4, mxfp4, nvfp4, fp6, fp8, mxfp8, fp16, bf16, fp32, unknown.
+#   # "unknown" means the host's native/full-precision weights (bf16/fp16).
+#   # e.g. pin to fp8-or-better: ["fp8", "mxfp8", "fp16", "bf16", "fp32", "unknown"]
+#   # quantizations: ["fp8", "bf16"]
 
 # =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)

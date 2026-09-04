@@ -27,6 +27,7 @@ provider_routing:
   order: []               # Explicit provider priority order
   require_parameters: false  # Only use providers that support all parameters
   data_collection: null   # Control data collection ("allow" or "deny")
+  quantizations: []       # Only route to these quantization levels (OpenRouter only)
 ```
 
 :::info
@@ -101,6 +102,28 @@ Controls whether providers can use your prompts for training. Options are `"allo
 provider_routing:
   data_collection: "deny"
 ```
+
+### `quantizations`
+
+Restrict routing to endpoints serving the model at a minimum quantization level. This is how you avoid low-precision re-hosts: OpenRouter often routes to the cheapest provider, which is frequently a 4-bit (`fp4`/`int4`) re-host of an open-weight model. Quantization is orthogonal to provider slug — the *same* host can serve `fp8` for one model and `fp4` for another — so it cannot be expressed through `only`/`ignore`.
+
+Valid values: `int4`, `int8`, `fp4`, `mxfp4`, `nvfp4`, `fp6`, `fp8`, `mxfp8`, `fp16`, `bf16`, `fp32`, `unknown`. (`unknown` is the host's native/full-precision weights — bf16/fp16 — which is *better* than fp8.)
+
+To pin to "fp8-or-better":
+
+```yaml
+provider_routing:
+  sort: "price"
+  quantizations:
+    - "fp8"
+    - "mxfp8"
+    - "fp16"
+    - "bf16"
+    - "fp32"
+    - "unknown"
+```
+
+Combined with `sort: "price"`, this routes to the cheapest endpoint that meets the precision floor.
 
 ## Practical Examples
 
@@ -181,6 +204,7 @@ providers_order    ← from provider_routing.order
 provider_sort      ← from provider_routing.sort
 provider_require_parameters ← from provider_routing.require_parameters
 provider_data_collection    ← from provider_routing.data_collection
+providers_quantizations     ← from provider_routing.quantizations
 ```
 
 :::tip

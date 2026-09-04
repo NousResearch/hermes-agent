@@ -885,3 +885,63 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+
+def test_deleting_a_project_with_sessions_removes_its_row_from_the_tree(
+    monkeypatch, tmp_path
+):
+    """The reported bug, end to end through the real RPCs.
+
+    Deleting a project whose folder still holds sessions used to re-promote that
+    same folder as an AUTO project in the very next ``projects.tree`` — the row
+    reappeared in place with the same path and only the directory-leaf label, so
+    the delete read as a no-op and the row could not be removed at all (an auto
+    row only offers a local dismiss).
+    """
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "main-quarkus"
+    (repo / ".git").mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+
+    with _serving_launch_profile(launch_home):
+        created = _call(
+            "projects.create",
+            {"name": "version42-adapter-ng", "folders": [str(repo)]},
+        )["project"]
+        _create_session(launch_home, "in-the-project", repo)
+
+        before = _call("projects.tree")
+        assert created["id"] in [p["id"] for p in before["projects"]]
+
+        _call("projects.delete", {"id": created["id"]})
+        after = _call("projects.tree")
+
+    ids = [p["id"] for p in after["projects"] if p["id"] != "__no_project__"]
+    # Neither the explicit row NOR an auto row on the same folder may survive.
+    assert ids == []
+    assert str(repo) not in ids
+
+
+def test_recreating_a_deleted_project_folder_works_again(monkeypatch, tmp_path):
+    """A tombstone must not lock the folder out of ever being a project again."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "again"
+    (repo / ".git").mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+
+    with _serving_launch_profile(launch_home):
+        first = _call("projects.create", {"name": "Again", "folders": [str(repo)]})[
+            "project"
+        ]
+        _create_session(launch_home, "still-here", repo)
+        _call("projects.delete", {"id": first["id"]})
+
+        second = _call("projects.create", {"name": "Again 2", "folders": [str(repo)]})[
+            "project"
+        ]
+        tree = _call("projects.tree")
+
+    rows = [p for p in tree["projects"] if p["id"] != "__no_project__"]
+    assert [p["id"] for p in rows] == [second["id"]]
+    assert rows[0]["label"] == "Again 2"
+    # The session that kept the folder alive is claimed by the new project.
+    assert rows[0]["sessionCount"] == 1

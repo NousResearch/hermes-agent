@@ -547,6 +547,98 @@ def test_exists_defaults_to_keeping_everything():
     assert [p["id"] for p in tree["projects"]] == ["/remote/workspace"]
 
 
+def test_deleted_project_folder_does_not_return_as_an_auto_project():
+    # Deleting an explicit project whose folder still holds sessions must not
+    # re-promote that same folder as an AUTO project on the very next tree read.
+    # The row reappears in place, keeping the path and only swapping the user's
+    # name for the directory leaf, which reads as "delete did nothing" — and the
+    # only action left on it is a local dismiss, so the project cannot be
+    # removed at all while any session remains in its folder.
+    resolve = _resolver({"/ws/main-quarkus": ("/ws/main-quarkus", "/ws/main-quarkus")})
+    sessions = [_session("/ws/main-quarkus", branch="main")]
+
+    tree = pt.build_tree(
+        [],
+        sessions,
+        [],
+        resolve,
+        hydrate=True,
+        exists=lambda _p: True,
+        is_tombstoned=lambda path: path == "/ws/main-quarkus",
+    )
+
+    assert _real_project_ids(tree) == []
+    # The session itself survives — it falls back to Home, never disappears.
+    assert _home_session_ids(tree) == [sessions[0]["id"]]
+
+
+def test_tombstone_only_suppresses_the_deleted_folder():
+    # A tombstone is per-folder, so a sibling workspace keeps its auto project.
+    resolve = _resolver(
+        {
+            "/ws/gone": ("/ws/gone", "/ws/gone"),
+            "/ws/kept": ("/ws/kept", "/ws/kept"),
+        }
+    )
+    sessions = [_session("/ws/gone", branch="main"), _session("/ws/kept", branch="main")]
+
+    tree = pt.build_tree(
+        [],
+        sessions,
+        [],
+        resolve,
+        hydrate=True,
+        is_tombstoned=lambda path: path == "/ws/gone",
+    )
+
+    assert _real_project_ids(tree) == ["/ws/kept"]
+
+
+def test_tombstone_never_overrides_an_explicit_project():
+    # Re-creating a project on a tombstoned path must win: the explicit row is
+    # the user's newer intent, and Tier 1 must not be filtered by a stale
+    # tombstone (the store clears it on create, this is the belt-and-braces).
+    resolve = _resolver({"/ws/again": ("/ws/again", "/ws/again")})
+    sessions = [_session("/ws/again", branch="main")]
+    projects = [_project("p_1", "Again", ["/ws/again"])]
+
+    tree = pt.build_tree(
+        projects,
+        sessions,
+        [],
+        resolve,
+        hydrate=True,
+        is_tombstoned=lambda _path: True,
+    )
+
+    assert _real_project_ids(tree) == ["p_1"]
+
+
+def test_is_tombstoned_defaults_to_promoting_everything():
+    # Omitting the predicate (older callers, remote backends) keeps the previous
+    # behavior — guessing "deleted" would wrongly hide a live workspace.
+    sessions = [_session("/ws/plain")]
+
+    tree = pt.build_tree([], sessions, [], lambda _cwd: None, hydrate=True)
+
+    assert _real_project_ids(tree) == ["/ws/plain"]
+
+
+def test_tombstoned_discovered_repo_is_not_promoted():
+    # Tier 3 (disk-scan repos with no loaded sessions) promotes independently of
+    # Tier 2, so a deleted project's folder must be suppressed there too or the
+    # row simply comes back from the scan cache instead.
+    tree = pt.build_tree(
+        [],
+        [],
+        [{"root": "/ws/scanned", "label": "scanned", "sessions": 0, "last_active": 0}],
+        lambda _cwd: None,
+        is_tombstoned=lambda path: path == "/ws/scanned",
+    )
+
+    assert _real_project_ids(tree) == []
+
+
 def test_sibling_probe_is_bounded():
     # Each miss costs a git invocation, and this runs per session, so a deeply
     # nested unresolvable cwd must not fan out into an unbounded probe storm.

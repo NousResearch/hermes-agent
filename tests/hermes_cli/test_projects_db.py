@@ -125,6 +125,85 @@ def test_find_by_primary_path(conn):
 
 
 
+def test_delete_project_tombstones_its_folders(conn):
+    # Deleting a project records its folders so the tree builder does not
+    # re-promote them as auto projects (which would make the delete a no-op).
+    pid = pdb.create_project(
+        conn, name="Quarkus", folders=["/ws/main-quarkus", "/ws/extra"]
+    )
+
+    assert pdb.is_folder_tombstoned(conn, "/ws/main-quarkus") is False
+
+    pdb.delete_project(conn, pid)
+
+    assert pdb.is_folder_tombstoned(conn, "/ws/main-quarkus") is True
+    assert pdb.is_folder_tombstoned(conn, "/ws/extra") is True
+    assert pdb.is_folder_tombstoned(conn, "/ws/unrelated") is False
+
+
+def test_tombstones_survive_a_reconnect(tmp_path):
+    # The suppression has to outlive the process: the tree is rebuilt on every
+    # app start, and an in-memory-only tombstone would let the row come back.
+    db = tmp_path / "projects.db"
+    first = pdb.connect(db_path=db)
+    try:
+        pid = pdb.create_project(first, name="Gone", folders=["/ws/gone"])
+        pdb.delete_project(first, pid)
+    finally:
+        first.close()
+
+    second = pdb.connect(db_path=db)
+    try:
+        assert pdb.is_folder_tombstoned(second, "/ws/gone") is True
+    finally:
+        second.close()
+
+
+def test_creating_a_project_clears_the_tombstone(conn):
+    # Re-creating a project on a deleted folder is newer intent than the delete.
+    pid = pdb.create_project(conn, name="Again", folders=["/ws/again"])
+    pdb.delete_project(conn, pid)
+    assert pdb.is_folder_tombstoned(conn, "/ws/again") is True
+
+    pdb.create_project(conn, name="Again 2", folders=["/ws/again"])
+
+    assert pdb.is_folder_tombstoned(conn, "/ws/again") is False
+
+
+def test_adding_a_folder_clears_its_tombstone(conn):
+    # Same intent via the other write path: attaching a previously deleted
+    # folder to a live project must un-suppress it.
+    gone = pdb.create_project(conn, name="Gone", folders=["/ws/shared"])
+    pdb.delete_project(conn, gone)
+    keeper = pdb.create_project(conn, name="Keeper", folders=["/ws/keeper"])
+
+    pdb.add_folder(conn, keeper, "/ws/shared")
+
+    assert pdb.is_folder_tombstoned(conn, "/ws/shared") is False
+
+
+def test_tombstone_lookup_normalizes_the_path(conn):
+    # The builder passes git roots as reported by git; the store's own folders
+    # are normalized, so both spellings must resolve to the same tombstone.
+    pid = pdb.create_project(conn, name="Norm", folders=["/ws/norm"])
+    pdb.delete_project(conn, pid)
+
+    assert pdb.is_folder_tombstoned(conn, "/ws/norm/") is True
+    assert pdb.is_folder_tombstoned(conn, "") is False
+
+
+def test_tombstoned_folders_lists_every_suppressed_path(conn):
+    # The gateway builds one predicate per tree read, so it needs the whole set
+    # in a single query rather than a lookup per candidate folder.
+    a = pdb.create_project(conn, name="A", folders=["/ws/a"])
+    b = pdb.create_project(conn, name="B", folders=["/ws/b1", "/ws/b2"])
+    pdb.create_project(conn, name="Live", folders=["/ws/live"])
+    pdb.delete_project(conn, a)
+    pdb.delete_project(conn, b)
+
+    assert pdb.tombstoned_folders(conn) == {"/ws/a", "/ws/b1", "/ws/b2"}
+
+
 def test_per_profile_isolation(tmp_path):
     # Two distinct DB paths stand in for two profiles' HERMES_HOME.
     a = pdb.connect(db_path=tmp_path / "a" / "projects.db")

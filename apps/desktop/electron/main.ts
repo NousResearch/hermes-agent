@@ -31,6 +31,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { settleApiRequest } from './api-error-envelope'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
@@ -16511,6 +16512,17 @@ async function handleHermesApiRequest(request) {
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {
+  // Electron logs every rejected ipcMain.handle promise with a main-process
+  // stack trace. A REST 404 is control flow here, not a fault (session-tile
+  // probes a fresh draft by id and retries across the persist lag; a discarded
+  // draft's id lives on in renderer storage), so those rejections buried the
+  // log in stack traces for a case the renderer already handles.
+  // `settleApiRequest` resolves an envelope for those and preload rethrows it
+  // byte-identically; everything else keeps rejecting and keeps being logged.
+  return settleApiRequest(() => dispatchHermesApiRequest(request))
+})
+
+async function dispatchHermesApiRequest(request) {
   // Hold the deletion gate for BOTH profile deletes and renames: a concurrent
   // renderer reconnect entering ensureBackend() mid-mutation would otherwise
   // respawn the old-name backend and recreate its HERMES_HOME (#45474).
@@ -16538,7 +16550,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)
 
   return handleHermesApiRequest(request).finally(releaseProfileDeletion)
-})
+}
 
 // One deduper per cross-window cue — the choke point every window shares. Main
 // handles IPC serially, so the first window to claim a key wins with no race.

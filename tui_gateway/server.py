@@ -15865,13 +15865,16 @@ def _project_tree_row(r: dict) -> dict:
 
 def _project_tree_inputs(
     db, session_limit: int, *, include_discovered: bool
-) -> tuple[list[dict], list[dict], list[dict], str | None]:
-    """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
+) -> tuple[list[dict], list[dict], list[dict], str | None, set[str]]:
+    """Gather (sessions, projects, discovered_repos, active_id, tombstones).
 
     ``include_discovered`` is the zero-session-repo overview tier; the entered
     view (drill-in) skips it entirely — it only needs the project it's showing,
     which already has sessions — avoiding the distinct-cwd scan + git probes on
     that per-turn path. One projects.db connection serves both reads.
+
+    ``tombstones`` are the folders whose explicit project was deleted, read in
+    the same connection so the builder can suppress re-promoting them.
     """
     rows = db.list_sessions_rich(
         limit=session_limit,
@@ -15905,6 +15908,7 @@ def _project_tree_inputs(
             )
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
+        tombstones = pdb.tombstoned_folders(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = (
             _discover_repos_payload(
@@ -15917,7 +15921,7 @@ def _project_tree_inputs(
             else []
         )
 
-    return sessions, projects, discovered, active_id
+    return sessions, projects, discovered, active_id, tombstones
 
 
 # Per-build memo for `_dir_exists_cached`. Cleared at the top of every
@@ -15941,6 +15945,29 @@ def _dir_exists_cached(path: str) -> bool:
     return hit
 
 
+def _tombstone_predicate(tombstones: set[str]):
+    """A ``build_tree(is_tombstoned=…)`` predicate over one build's tombstones.
+
+    The builder passes paths as git/sessions report them, while the store holds
+    normalized ones, so both sides are compared through the store's own key —
+    otherwise a trailing separator or a case difference silently misses and the
+    deleted project's row comes back.
+    """
+    if not tombstones:
+        return None
+
+    from hermes_cli.projects_db import _tombstone_key
+
+    keys = {_tombstone_key(path) for path in tombstones}
+    keys.discard("")
+
+    def is_tombstoned(path: str) -> bool:
+        key = _tombstone_key(path)
+        return bool(key) and key in keys
+
+    return is_tombstoned
+
+
 def _build_project_tree(
     db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
 ) -> tuple[dict, str | None]:
@@ -15948,7 +15975,7 @@ def _build_project_tree(
     from tui_gateway import project_tree
 
     _DIR_EXISTS_CACHE.clear()
-    sessions, projects, discovered, active_id = _project_tree_inputs(
+    sessions, projects, discovered, active_id, tombstones = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
     )
     # build_tree resolves every declared project folder and every discovered
@@ -15968,6 +15995,7 @@ def _build_project_tree(
         is_junk_root=_is_repo_junk,
         is_junk_cwd=_is_session_cwd_junk,
         exists=_dir_exists_cached,
+        is_tombstoned=_tombstone_predicate(tombstones),
     )
     return tree, active_id
 

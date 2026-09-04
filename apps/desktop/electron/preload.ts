@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+import { unwrapApiResult } from './api-error-envelope'
+
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
@@ -11,6 +13,16 @@ const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
 const launchFlags = ipcRenderer.sendSync('hermes:launch-flags')
+
+// `hermes:api` resolves an error ENVELOPE for statuses the renderer treats as
+// control flow (a REST 404), because a rejected ipcMain.handle promise is logged
+// by Electron itself with a main-process stack trace — noise for a case the
+// renderer already handles. `unwrapApiResult` turns the envelope back into the
+// exact rejection the caller would otherwise have seen: same message (404
+// detection is message-based), same statusCode. Everything else rejects as
+// before. The helper module is import-safe in the sandboxed preload: it pulls in
+// no node builtins, only plain functions bundled into electron-preload.js.
+const invokeHermesApi = request => unwrapApiResult(() => ipcRenderer.invoke('hermes:api', request))
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
@@ -227,7 +239,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
-  api: request => ipcRenderer.invoke('hermes:api', request),
+  api: request => invokeHermesApi(request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),

@@ -42,6 +42,16 @@ Resolve = Callable[[str], Optional[dict]]
 # project that lives on the other host.
 Exists = Callable[[str], bool]
 
+# A "was an explicit project on this folder deleted?" predicate, injected like
+# ``Resolve`` and ``Exists`` so the builder stays pure. Deleting a project whose
+# folder still holds sessions would otherwise re-promote that same folder as an
+# AUTO project in the very next tree read: the row reappears in place with the
+# same path, only swapping the user's name for the directory leaf, so the delete
+# reads as a no-op and the row's only remaining action is a local dismiss.
+# Defaults to "nothing was deleted", which preserves the previous behavior for
+# callers that carry no tombstone store.
+IsTombstoned = Callable[[str], bool]
+
 # Only KANBAN-TASK worktrees (`<repo>/.worktrees/t_<hex>`, the `t_…` id kanban_db
 # mints) collapse into one lane; user-named "New worktree" dirs under
 # `.worktrees/` stay as their own lanes.
@@ -582,6 +592,7 @@ def build_tree(
     is_junk_root: Optional[Callable[[str], bool]] = None,
     is_junk_cwd: Optional[Callable[[str], bool]] = None,
     exists: Optional[Exists] = None,
+    is_tombstoned: Optional[IsTombstoned] = None,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -596,7 +607,10 @@ def build_tree(
     projects are honored regardless. ``exists`` reports whether a directory is
     still on disk, so a session whose workspace was DELETED (a removed worktree,
     a scratch dir under /tmp) doesn't get promoted to a phantom AUTO project;
-    omit it (remote backends) to keep every candidate.
+    omit it (remote backends) to keep every candidate. ``is_tombstoned`` reports
+    whether an explicit project on that folder was DELETED, so the folder is not
+    re-promoted as an AUTO project on the next read (which would make the delete
+    look like a no-op); omit it to promote every candidate as before.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -607,6 +621,11 @@ def build_tree(
     _junk = is_junk_root or (lambda _root: False)
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     _exists = exists or (lambda _path: True)
+    # An explicit project always wins over its own tombstone: re-creating a
+    # project on a previously deleted folder is the user's newer intent, so Tier 1
+    # is never filtered here (the store clears the tombstone on create; this keeps
+    # a stale entry from hiding a live project either way).
+    _tombstoned = is_tombstoned or (lambda _path: False)
     folder_index = _FolderIndex(active_projects)
 
     by_project: dict[str, list[dict]] = {}
@@ -675,8 +694,11 @@ def build_tree(
             # A real git root uses the stricter repo policy. Do not reinterpret a
             # filtered internal repo as a cwd-only project. A root that no longer
             # exists is a stale persisted value (the repo was deleted after the
-            # session ran) and must not resurrect as a project.
-            if not _junk(root) and _exists(root):
+            # session ran) and must not resurrect as a project. A root whose
+            # explicit project the user just DELETED must not resurrect either —
+            # otherwise the delete silently downgrades the row to an auto project
+            # in place instead of removing it.
+            if not _junk(root) and _exists(root) and not _tombstoned(root):
                 _add_auto(root, session)
             else:
                 homeless.append(session)
@@ -698,7 +720,7 @@ def build_tree(
         # with its parent, a removed /tmp scratch dir), promoting it mints a
         # phantom project that can never be opened and can only be dismissed by
         # hand. The session goes to Home instead.
-        if placement and _exists(placement["repo_key"]):
+        if placement and _exists(placement["repo_key"]) and not _tombstoned(placement["repo_key"]):
             _add_auto(placement["repo_key"], session)
         else:
             homeless.append(session)
@@ -745,7 +767,12 @@ def build_tree(
         info = resolve(raw_root) if resolve else None
         root = (info or {}).get("repo_root") or raw_root
         root_key = _path_key(root)
-        if root_key in seen or _junk(root) or _project_for_path(folder_index, root):
+        if (
+            root_key in seen
+            or _junk(root)
+            or _tombstoned(root)
+            or _project_for_path(folder_index, root)
+        ):
             continue
         seen.add(root_key)
         label = repo.get("label") or base_name(root) or root

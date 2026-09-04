@@ -424,6 +424,9 @@ def create_project(
                 "VALUES (?, ?, ?, ?, ?)",
                 (pid, path, None, 1 if path == primary else 0, now),
             )
+        # Re-creating a project on a previously deleted folder is newer intent
+        # than the delete, so its tombstone goes away with it.
+        _clear_tombstones_locked(conn, folder_paths)
     return pid
 
 
@@ -543,6 +546,9 @@ def add_folder(
             ).fetchone()
             if existing_primary is None:
                 _set_primary_locked(conn, project_id, norm)
+        # Attaching a previously deleted folder to a live project is the same
+        # newer intent as re-creating it, so drop its tombstone too.
+        _clear_tombstones_locked(conn, [norm])
     return norm
 
 
@@ -625,9 +631,25 @@ def restore_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
-    """Hard-delete a project and its folders (cascade)."""
+    """Hard-delete a project and its folders (cascade).
+
+    The folders are tombstoned in the same transaction. Without that, a folder
+    that still holds sessions is re-promoted as an AUTO project on the very next
+    tree read: the row reappears in place, keeping the path and only swapping the
+    user's name for the directory leaf, so the delete looks like a no-op and the
+    row can no longer be deleted at all (an auto row only offers a local dismiss).
+    """
     with write_txn(conn):
+        folders = [
+            row["path"]
+            for row in conn.execute(
+                "SELECT path FROM project_folders WHERE project_id = ?",
+                (project_id,),
+            )
+        ]
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        if cur.rowcount > 0:
+            _tombstone_folders_locked(conn, folders)
     return cur.rowcount > 0
 
 
@@ -638,6 +660,70 @@ def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
+# One meta row per deleted folder: ``tombstone:<normcase path>`` -> path. Keyed
+# per folder (not one JSON blob) so concurrent deletes of different projects
+# can't clobber each other's entry under last-writer-wins.
+_TOMBSTONE_META_PREFIX = "tombstone:"
+
+
+def _tombstone_key(path: str) -> str:
+    """The meta key for a folder's tombstone, or ``""`` for an empty path."""
+    norm = _normalize_path(path)
+    return f"{_TOMBSTONE_META_PREFIX}{os.path.normcase(norm)}" if norm else ""
+
+
+def _tombstone_folders_locked(
+    conn: sqlite3.Connection, paths: Iterable[str]
+) -> None:
+    """Record folders as deleted (caller already holds a write txn)."""
+    for path in paths:
+        key = _tombstone_key(path)
+        if key:
+            conn.execute(
+                "INSERT INTO project_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, _normalize_path(path)),
+            )
+
+
+def _clear_tombstones_locked(
+    conn: sqlite3.Connection, paths: Iterable[str]
+) -> None:
+    """Drop folders' tombstones (caller already holds a write txn)."""
+    for path in paths:
+        key = _tombstone_key(path)
+        if key:
+            conn.execute("DELETE FROM project_meta WHERE key = ?", (key,))
+
+
+def is_folder_tombstoned(conn: sqlite3.Connection, path: str) -> bool:
+    """Whether an explicit project on ``path`` was deleted.
+
+    The tree builder consults this so a deleted project's folder is not
+    re-promoted as an AUTO project while sessions remain in it — without this
+    the row reappears in place (same path, directory-leaf label) and the delete
+    reads as a no-op.
+    """
+    key = _tombstone_key(path)
+    if not key:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM project_meta WHERE key = ?", (key,)
+    ).fetchone()
+    return row is not None
+
+
+def tombstoned_folders(conn: sqlite3.Connection) -> set[str]:
+    """Every folder whose explicit project was deleted (normalized paths).
+
+    One query per tree read; the gateway turns this into the builder's
+    ``is_tombstoned`` predicate instead of hitting the DB per candidate folder.
+    """
+    rows = conn.execute(
+        "SELECT value FROM project_meta WHERE key LIKE ?",
+        (f"{_TOMBSTONE_META_PREFIX}%",),
+    ).fetchall()
+    return {row["value"] for row in rows if row["value"]}
 
 
 def set_active(conn: sqlite3.Connection, project_id: Optional[str]) -> None:

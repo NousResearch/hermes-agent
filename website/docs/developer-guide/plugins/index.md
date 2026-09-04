@@ -937,6 +937,8 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 | [`gateway_platform_event`](/user-guide/features/hooks#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
+| `gateway_ready` | Gateway adapter maps are ready; async callbacks only, with isolated 10-second per-callback timeout | `gateway, adapters, profile_adapters` | ignored |
+| `gateway_stopping` | Gateway is stopping before adapter teardown; async callbacks only, with isolated 10-second per-callback timeout | `gateway, adapters, profile_adapters` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |

@@ -71,6 +71,25 @@ def fake_tool(monkeypatch):
 
 
 
+def test_email_subject_uses_transport_subject_not_body_header(fake_tool):
+    args = _parse([
+        "--to",
+        "email:andy@example.com",
+        "--subject",
+        "[Hermes][Test] Subject",
+        "body text",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert fake_tool.calls[0] == {
+        "action": "send",
+        "target": "email:andy@example.com",
+        "message": "body text",
+        "subject": "[Hermes][Test] Subject",
+    }
+
+
 
 # ---------------------------------------------------------------------------
 # Error paths

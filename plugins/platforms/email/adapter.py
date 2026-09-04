@@ -1507,6 +1507,7 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    subject=None,
 ):
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
@@ -1538,7 +1539,11 @@ async def _standalone_send(
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        if isinstance(subject, str) and subject.strip():
+            email_subject = subject.replace("\r", " ").replace("\n", " ")
+        else:
+            email_subject = "Hermes Agent"
+        msg["Subject"] = email_subject
         msg["Date"] = formatdate(localtime=True)
 
         ctx = _tls_context(smtp_tls_verify, smtp_host)

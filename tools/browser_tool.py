@@ -2195,6 +2195,11 @@ BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
 # Deliberately a large multiple of the inactivity timeout so a legitimately
 # busy session is never touched.
 BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20)
+# A daemon PID file is not an atomic record: Browser Harness opens it with
+# truncate-then-write semantics.  Let the file settle before parsing so an
+# all-digit prefix (for example ``2`` while writing ``222``) can never be
+# mistaken for a complete, already-dead PID and trigger runtime deletion.
+BROWSER_PID_FILE_SETTLE_SECONDS = 1.0
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -2491,8 +2496,13 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
-def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
-                                    session_name: str) -> bool:
+def _verify_reapable_browser_daemon(
+    daemon_pid: int,
+    socket_dir: str,
+    session_name: str,
+    *,
+    expected_start: Optional[int] = None,
+) -> bool:
     """Confirm a live PID is genuinely *this* session's agent-browser daemon.
 
     The orphan reaper scans world-writable, predictably-named temp paths
@@ -2532,6 +2542,14 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
 
     try:
         proc = psutil.Process(daemon_pid)
+        if expected_start is not None:
+            # Use the same cross-platform fingerprint source as the caller and
+            # final termination guard. Linux returns /proc start ticks; other
+            # platforms return quantized psutil epoch time.
+            from gateway.status import get_process_start_time
+
+            if get_process_start_time(daemon_pid) != expected_start:
+                return False
         name = (proc.name() or "").lower()
         cmdline = " ".join(proc.cmdline() or []).lower()
     except psutil.NoSuchProcess:
@@ -2544,11 +2562,16 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
             daemon_pid, session_name, exc)
         return False
 
-    looks_like_browser = "agent-browser" in name or "agent-browser" in cmdline
+    harness_daemon = session_name.startswith("hermes_bh_")
+    if harness_daemon:
+        looks_like_browser = "browser_harness.daemon" in cmdline
+    else:
+        looks_like_browser = "agent-browser" in name or "agent-browser" in cmdline
     if not looks_like_browser:
+        expected_kind = "browser-harness" if harness_daemon else "agent-browser"
         logger.warning(
-            "Refusing to reap PID %d (session %s): not an agent-browser "
-            "process (name=%r)", daemon_pid, session_name, name)
+            "Refusing to reap PID %d (session %s): not a %s "
+            "process (name=%r)", daemon_pid, session_name, expected_kind, name)
         return False
 
     # Binding check: the live process must reference *this* socket dir.
@@ -2558,8 +2581,11 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
         socket_base_l and socket_base_l in cmdline)
     if not bound:
         try:
-            env_dir = (proc.environ() or {}).get(
-                "AGENT_BROWSER_SOCKET_DIR", "")
+            env = proc.environ() or {}
+            env_dir = env.get(
+                "BH_RUNTIME_DIR" if harness_daemon else "AGENT_BROWSER_SOCKET_DIR",
+                "",
+            )
             bound = bool(env_dir) and os.path.normpath(env_dir) == \
                 os.path.normpath(socket_dir)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
@@ -2609,6 +2635,60 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
         pass  # dir mtime alone is still a usable lower bound
 
     return max(0.0, time.time() - latest)
+
+
+def _pid_file_still_matches(
+    pid_file: str, expected_text: str, expected_stat: os.stat_result
+) -> bool:
+    """Return whether a PID record is still the exact settled file we parsed."""
+    try:
+        current_stat = os.stat(pid_file)
+        if (
+            current_stat.st_mtime_ns != expected_stat.st_mtime_ns
+            or current_stat.st_size != expected_stat.st_size
+            or current_stat.st_ino != expected_stat.st_ino
+        ):
+            return False
+        return Path(pid_file).read_text(encoding="utf-8").strip() == expected_text
+    except OSError:
+        return False
+
+
+def _remove_confirmed_runtime_dir(
+    socket_dir: str,
+    pid_file: str,
+    expected_text: str,
+    expected_stat: os.stat_result,
+) -> bool:
+    """Atomically claim an obsolete runtime directory, then remove the claim.
+
+    Renaming is the only operation that can bind cleanup to the directory entry
+    we inspected. A concurrent Browser Harness writer either keeps the original
+    directory busy (rename fails, so we retain it) or recreates the original
+    name after our rename; in the latter case we delete only our private claim,
+    never the replacement session.
+    """
+    parent = os.path.dirname(socket_dir)
+    claim = os.path.join(
+        parent,
+        f".hermes-browser-reap-{os.getpid()}-{time.time_ns()}",
+    )
+    try:
+        os.rename(socket_dir, claim)
+    except OSError:
+        return False
+
+    claimed_pid_file = os.path.join(claim, os.path.basename(pid_file))
+    if not _pid_file_still_matches(
+        claimed_pid_file, expected_text, expected_stat
+    ):
+        # The runtime changed after our claim. Keep the private claim intact as
+        # uncertain evidence. Never rename it back: on POSIX rename can replace
+        # an empty directory created concurrently at the public name.
+        return False
+
+    shutil.rmtree(claim, ignore_errors=True)
+    return True
 
 
 def _reap_orphaned_browser_sessions():
@@ -2721,30 +2801,52 @@ def _reap_orphaned_browser_sessions():
                 continue
 
         # owner_alive is False (dead owner) OR legacy daemon not tracked here.
-        pid_file = os.path.join(socket_dir, f"{session_name}.pid")
+        harness_daemon = session_name.startswith("hermes_bh_")
+        pid_file = os.path.join(
+            socket_dir,
+            "bu.pid" if harness_daemon else f"{session_name}.pid",
+        )
         if not os.path.isfile(pid_file):
-            # A newly-created session directory exists briefly before
-            # agent-browser writes its PID/owner files. Another Hermes process
-            # may run this global reaper during that window. Treat a pidless
-            # directory as stale only after the orphan grace period; deleting
-            # it immediately races the creator's first stdout/stderr open.
-            idle_s = _socket_dir_idle_seconds(socket_dir)
-            if idle_s is None or idle_s < BROWSER_ORPHAN_GRACE_SECONDS:
-                continue
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            # Without a PID there is no process identity to verify and no way
+            # to prove the daemon is dead. The directory may also be in the
+            # creator's mkdir→pid-write window. Retain it fail-closed; bounded
+            # namespaced residue is preferable to deleting the only endpoint
+            # evidence for a live orphan.
             continue
 
+        # PID files are written truncate-then-write rather than via atomic
+        # replace.  Even an integer-looking snapshot can therefore be an
+        # incomplete prefix.  Never parse or delete from a fresh PID file.
         try:
-            daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+            pid_stat_before = os.stat(pid_file)
+            if time.time() - pid_stat_before.st_mtime < BROWSER_PID_FILE_SETTLE_SECONDS:
+                continue
+            pid_text = Path(pid_file).read_text(encoding="utf-8").strip()
+            pid_stat_after = os.stat(pid_file)
+            if (
+                pid_stat_after.st_mtime_ns != pid_stat_before.st_mtime_ns
+                or pid_stat_after.st_size != pid_stat_before.st_size
+                or pid_stat_after.st_ino != pid_stat_before.st_ino
+            ):
+                # Replaced or rewritten between the settle check and read.
+                continue
+            daemon_pid = int(pid_text)
+            if daemon_pid <= 0:
+                continue
         except (ValueError, OSError):
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            # Ambiguous: the daemon may be in a truncate-then-write startup
+            # window, or the file may be temporarily unreadable. Keep the PID
+            # and endpoint evidence so a later periodic sweep can retry; only a
+            # confirmed-dead daemon permits directory removal.
             continue
 
         # Check if the daemon is still alive. ``os.kill(pid, 0)`` on Windows
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            _remove_confirmed_runtime_dir(
+                socket_dir, pid_file, pid_text, pid_stat_after
+            )
             continue
 
         # The PID is live — but the .pid file lives in a world-writable,
@@ -2754,35 +2856,53 @@ def _reap_orphaned_browser_sessions():
         # otherwise (don't touch the process, leave the socket dir for a later
         # sweep once the imposter PID is gone).  Fixes the arbitrary same-user
         # process DoS in issue #14073.
+        # Capture the process generation before identity verification. Passing
+        # the same fingerprint into both verification and termination closes
+        # the verify→start-time PID-recycle window.
+        from gateway.status import get_process_start_time
+        daemon_start = get_process_start_time(daemon_pid)
+        if daemon_start is None:
+            logger.warning(
+                "Refusing to reap browser daemon PID %d (session %s): "
+                "no start-time fingerprint available", daemon_pid, session_name)
+            continue
         if not _verify_reapable_browser_daemon(
-                daemon_pid, socket_dir, session_name):
+                daemon_pid, socket_dir, session_name,
+                expected_start=daemon_start):
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
         # Use the process-tree termination helper so Chromium children
         # (renderer, GPU, etc.) are cleaned up, not just the daemon parent.
+        terminated = False
         try:
-            from gateway.status import get_process_start_time
             from tools.process_registry import ProcessRegistry
-            daemon_start = get_process_start_time(daemon_pid)
-            if daemon_start is None:
-                # Identity can't be fingerprinted — the verify above matched,
-                # but without a start time _terminate_host_pid cannot rule out
-                # a recycle between verify and kill. Refuse; a later sweep
-                # retries once the process table settles.
-                logger.warning(
-                    "Refusing to reap browser daemon PID %d (session %s): "
-                    "no start-time fingerprint available", daemon_pid, session_name)
-                continue
             ProcessRegistry._terminate_host_pid(daemon_pid, daemon_start)
-            logger.info("Reaped orphaned browser daemon PID %d (session %s)",
-                        daemon_pid, session_name)
-            reaped += 1
+            # The termination helper is deliberately best-effort and can return
+            # after a denied/failed signal.  Re-probe before deleting the only
+            # PID/runtime evidence a later periodic sweep can use.
+            terminated = not _pid_exists(daemon_pid)
+            if terminated:
+                logger.info("Reaped orphaned browser daemon PID %d (session %s)",
+                            daemon_pid, session_name)
+                reaped += 1
+            else:
+                logger.warning(
+                    "Browser daemon PID %d (session %s) survived termination; "
+                    "retaining runtime directory for a later retry",
+                    daemon_pid, session_name,
+                )
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.warning(
+                "Could not terminate browser daemon PID %d (session %s); "
+                "retaining runtime directory for a later retry",
+                daemon_pid, session_name,
+            )
 
-        # Clean up the socket directory
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        if terminated:
+            _remove_confirmed_runtime_dir(
+                socket_dir, pid_file, pid_text, pid_stat_after
+            )
 
     if reaped:
         logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)

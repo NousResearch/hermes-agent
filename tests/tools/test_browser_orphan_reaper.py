@@ -3,6 +3,7 @@ daemons whose Python parent exited without cleaning up."""
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -16,11 +17,14 @@ def fake_tmpdir(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_sessions():
+def _isolate_sessions(monkeypatch):
     """Ensure _active_sessions is empty for each test."""
     import tools.browser_tool as bt
     orig = bt._active_sessions.copy()
     bt._active_sessions.clear()
+    # Existing unit fixtures create complete PID files immediately. Disable
+    # only the real-time settle delay unless a test explicitly exercises it.
+    monkeypatch.setattr(bt, "BROWSER_PID_FILE_SETTLE_SECONDS", 0.0)
     yield
     bt._active_sessions.clear()
     bt._active_sessions.update(orig)
@@ -53,8 +57,8 @@ class TestReapOrphanedBrowserSessions:
         from tools.browser_tool import _reap_orphaned_browser_sessions
         _reap_orphaned_browser_sessions()  # should not raise
 
-    def test_stale_dir_without_pid_file_is_removed(self, fake_tmpdir):
-        """Socket dir with no PID file is cleaned up."""
+    def test_stale_dir_without_pid_file_is_retained(self, fake_tmpdir):
+        """Without a PID, daemon death cannot be confirmed; retain evidence."""
         from tools.browser_tool import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
         assert d.exists()
@@ -63,7 +67,7 @@ class TestReapOrphanedBrowserSessions:
             return_value=10_000,
         ):
             _reap_orphaned_browser_sessions()
-        assert not d.exists()
+        assert d.exists()
 
     def test_fresh_dir_without_pid_file_survives_creator_race(self, fake_tmpdir):
         """A concurrent reaper must not delete a session still starting."""
@@ -99,10 +103,16 @@ class TestReapOrphanedBrowserSessions:
         def mock_terminate(pid, expected_start=None):
             terminate_calls.append(pid)
 
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("gateway.status.get_process_start_time", return_value=777), \
-             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+        with patch(
+            "gateway.status._pid_exists", side_effect=[True, False]
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=777
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=mock_terminate,
+        ):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in terminate_calls
@@ -131,15 +141,235 @@ class TestReapOrphanedBrowserSessions:
         assert terminate_calls == []
 
 
-    def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
-        """PID file with non-integer content is cleaned up."""
+    def test_nonpositive_pid_file_is_retained(self, fake_tmpdir):
+        """Zero/negative integers are malformed PID records, not dead daemons."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        for index, value in enumerate(("0", "-7")):
+            session = f"hermes_bh_111_invalid{index}"
+            d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+            (d / "bu.pid").write_text(value)
+            with patch("gateway.status._pid_exists", return_value=False):
+                _reap_orphaned_browser_sessions()
+            assert d.exists()
+            assert (d / "bu.pid").read_text() == value
+
+    def test_pid_record_replaced_during_read_is_retained(
+        self, fake_tmpdir, monkeypatch
+    ):
+        """A settled-file check must bind to the bytes actually parsed."""
+        import tools.browser_tool as bt
+
+        session = "hermes_bh_111_replaced"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        pid_file = d / "bu.pid"
+        pid_file.write_text("222")
+        _age_socket_dir(d, 60)
+        monkeypatch.setattr(bt, "BROWSER_PID_FILE_SETTLE_SECONDS", 1.0)
+        original_read_text = Path.read_text
+
+        def replace_during_read(path, *args, **kwargs):
+            if path == pid_file:
+                pid_file.write_text("2")
+                return "2"
+            return original_read_text(path, *args, **kwargs)
+
+        pid_probes = []
+
+        def _pid_exists(pid):
+            pid_probes.append(pid)
+            return False
+
+        with patch.object(Path, "read_text", replace_during_read), patch(
+            "gateway.status._pid_exists", side_effect=_pid_exists
+        ):
+            bt._reap_orphaned_browser_sessions()
+
+        assert pid_probes == [111]
+        assert d.exists()
+        assert pid_file.read_text() == "2"
+
+    def test_pid_record_replaced_during_dead_probe_is_retained(
+        self, fake_tmpdir
+    ):
+        """A replacement after parsing must veto dead-PID directory removal."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_deadprobe"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        pid_file = d / "bu.pid"
+        pid_file.write_text("222")
+        probes = []
+
+        def _pid_exists(pid):
+            probes.append(pid)
+            if pid == 222:
+                pid_file.write_text("333")
+            return False
+
+        with patch("gateway.status._pid_exists", side_effect=_pid_exists):
+            _reap_orphaned_browser_sessions()
+
+        assert probes == [111, 222]
+        retained = list(fake_tmpdir.glob(".hermes-browser-reap-*"))
+        assert len(retained) == 1
+        assert (retained[0] / "bu.pid").read_text() == "333"
+
+    def test_pid_record_replaced_after_termination_is_retained(
+        self, fake_tmpdir
+    ):
+        """Post-kill cleanup must bind to the same PID record it verified."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_postkill"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        pid_file = d / "bu.pid"
+        pid_file.write_text("222")
+        probes = []
+
+        def _pid_exists(pid):
+            probes.append(pid)
+            if probes == [111, 222, 222]:
+                pid_file.write_text("333")
+                return False
+            return pid == 222
+
+        with patch(
+            "gateway.status._pid_exists", side_effect=_pid_exists
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=444
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid"
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert probes == [111, 222, 222]
+        retained = list(fake_tmpdir.glob(".hermes-browser-reap-*"))
+        assert len(retained) == 1
+        assert (retained[0] / "bu.pid").read_text() == "333"
+
+    def test_fresh_numeric_pid_prefix_is_retained(self, fake_tmpdir, monkeypatch):
+        """An integer-looking partial write must not select/dead-check that PID."""
+        import tools.browser_tool as bt
+
+        session = "hermes_bh_111_partial"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        (d / "bu.pid").write_text("2")  # possible prefix while writing 222
+        monkeypatch.setattr(bt, "BROWSER_PID_FILE_SETTLE_SECONDS", 1.0)
+        pid_probes = []
+
+        def _pid_exists(pid):
+            pid_probes.append(pid)
+            return False  # owner 111 is dead; PID 2 must never be probed
+
+        with patch("gateway.status._pid_exists", side_effect=_pid_exists):
+            bt._reap_orphaned_browser_sessions()
+
+        assert pid_probes == [111]
+        assert d.exists()
+        assert (d / "bu.pid").read_text() == "2"
+
+    def test_corrupt_pid_file_is_retained_for_later_sweep(self, fake_tmpdir):
+        """A malformed PID file is ambiguous, so retain all runtime evidence.
+
+        Browser Harness may expose a truncate-then-write window while creating
+        ``bu.pid``. Deleting the directory on a parse error can therefore hide
+        a live daemon and race its ``bu.sock`` creation. A later periodic sweep
+        can retry after the file becomes readable.
+        """
         from tools.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
         (d / "h_corrupt1234.pid").write_text("not-a-number")
 
         _reap_orphaned_browser_sessions()
+        assert d.exists()
+        assert (d / "h_corrupt1234.pid").read_text() == "not-a-number"
+
+    def test_browser_harness_dead_owner_reaps_bu_pid(self, fake_tmpdir):
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_alpha"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        (d / "bu.pid").write_text("222")
+        terminated = []
+
+        with patch(
+            "gateway.status._pid_exists",
+            side_effect=[False, True, False],
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=333
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=lambda pid, expected_start=None: terminated.append(pid),
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert terminated == [222]
         assert not d.exists()
+
+    def test_browser_harness_runtime_dir_survives_failed_termination(
+        self, fake_tmpdir
+    ):
+        """Never delete a live daemon's control files after a failed kill.
+
+        The termination helper is best-effort and can return while the process
+        is still alive (access denial, taskkill failure, or a PID-generation
+        race). Removing ``bu.pid`` / ``bu.sock`` then would hide the survivor
+        from every later sweep. Keep the whole abandoned runtime directory so
+        the periodic reaper can retry safely.
+        """
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_survivor"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        (d / "bu.pid").write_text("222")
+        (d / "bu.sock").write_text("runtime endpoint")
+
+        with patch(
+            "gateway.status._pid_exists",
+            side_effect=[False, True, True],
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=333
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid"
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
+        assert (d / "bu.pid").read_text() == "222"
+        assert (d / "bu.sock").read_text() == "runtime endpoint"
+
+    def test_browser_harness_runtime_dir_survives_termination_error(
+        self, fake_tmpdir
+    ):
+        """An explicit termination failure retains evidence for a later retry."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_denied"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        (d / "bu.pid").write_text("222")
+
+        with patch(
+            "gateway.status._pid_exists", side_effect=[False, True]
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=333
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=PermissionError("denied"),
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
+        assert (d / "bu.pid").exists()
 
 
 class TestOwnerPidCrossProcess:
@@ -296,7 +526,8 @@ class TestReaperIdentityGuard:
             return self._environ
 
     def _run(self, fake_proc, socket_dir, session_name="h_sess123456",
-             daemon_pid=12345, no_such=False, access_denied=False):
+             daemon_pid=12345, no_such=False, access_denied=False,
+             expected_start=None):
         import psutil
         from tools.browser_tool import _verify_reapable_browser_daemon
 
@@ -309,7 +540,9 @@ class TestReaperIdentityGuard:
 
         with patch("psutil.Process", side_effect=_factory):
             return _verify_reapable_browser_daemon(
-                daemon_pid, socket_dir, session_name)
+                daemon_pid, socket_dir, session_name,
+                expected_start=expected_start,
+            )
 
     def test_real_daemon_bound_via_cmdline_is_reapable(self):
         socket_dir = "/tmp/agent-browser-h_sess123456"
@@ -329,6 +562,50 @@ class TestReaperIdentityGuard:
         )
         assert self._run(proc, socket_dir) is True
 
+
+    def test_harness_daemon_bound_via_runtime_env_is_reapable(self):
+        socket_dir = "/tmp/agent-browser-hermes_bh_111_alpha"
+        proc = self._FakeProc(
+            name="python",
+            cmdline=["python", "-m", "browser_harness.daemon"],
+            environ={"BH_RUNTIME_DIR": socket_dir},
+        )
+        assert self._run(
+            proc, socket_dir, session_name="hermes_bh_111_alpha"
+        ) is True
+
+    def test_harness_recycled_pid_with_other_runtime_is_refused(self):
+        socket_dir = "/tmp/agent-browser-hermes_bh_111_alpha"
+        proc = self._FakeProc(
+            name="python",
+            cmdline=["python", "-m", "browser_harness.daemon"],
+            environ={"BH_RUNTIME_DIR": "/tmp/agent-browser-hermes_bh_111_other"},
+        )
+        assert self._run(
+            proc, socket_dir, session_name="hermes_bh_111_alpha"
+        ) is False
+
+    def test_fingerprint_uses_same_cross_platform_source(self):
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(
+            name="agent-browser",
+            cmdline=["agent-browser", "--socket-dir", socket_dir],
+        )
+        with patch("gateway.status.get_process_start_time", return_value=123456):
+            assert self._run(
+                proc, socket_dir, expected_start=123456
+            ) is True
+
+    def test_fingerprint_mismatch_refuses_recycled_pid(self):
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(
+            name="agent-browser",
+            cmdline=["agent-browser", "--socket-dir", socket_dir],
+        )
+        with patch("gateway.status.get_process_start_time", return_value=999999):
+            assert self._run(
+                proc, socket_dir, expected_start=123456
+            ) is False
 
     def test_recycled_pid_browser_not_bound_to_our_dir_is_refused(self):
         """An agent-browser process for a DIFFERENT session must not be reaped.
@@ -485,11 +762,16 @@ class TestLeakedDaemonWithLiveOwner:
         _age_socket_dir(d, BROWSER_ORPHAN_GRACE_SECONDS + 600)
         kill_calls = []
 
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("gateway.status.get_process_start_time", return_value=777), \
-             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
-                   side_effect=lambda pid, expected_start=None: kill_calls.append(pid)):
+        with patch(
+            "gateway.status._pid_exists", side_effect=[True, True, False]
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=777
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=lambda pid, expected_start=None: kill_calls.append(pid),
+        ):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in kill_calls

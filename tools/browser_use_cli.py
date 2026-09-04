@@ -5,6 +5,8 @@ instead of default browser tools
 """
 
 import json
+import hashlib
+import importlib
 import logging
 import os
 import re
@@ -104,10 +106,24 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
     return None
 
 
-def _base_subprocess_env() -> dict:
-    from tools.browser_tool import _build_browser_env
-
-    env = _build_browser_env()
+def _base_subprocess_env(session_name: str = "") -> dict:
+    browser_tool = importlib.import_module("tools.browser_tool")
+    env = browser_tool._build_browser_env()
+    socket_tmpdir = getattr(browser_tool, "_socket_safe_tmpdir", None)
+    write_owner_pid = getattr(browser_tool, "_write_owner_pid", None)
+    if socket_tmpdir is not None and write_owner_pid is not None:
+        effective_name = session_name or "default"
+        name_hash = hashlib.sha256(effective_name.encode("utf-8")).hexdigest()[:12]
+        runtime_identity = f"hermes_bh_{os.getpid()}_{name_hash}"
+        runtime_dir = os.path.join(
+            socket_tmpdir(), f"agent-browser-{runtime_identity}"
+        )
+        os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
+        write_owner_pid(runtime_dir, runtime_identity)
+        # Browser Harness v0.1.9 treats a caller-supplied runtime directory as
+        # one daemon namespace and writes bare bu.pid/bu.sock (or bu.port).
+        env["BH_RUNTIME_DIR"] = runtime_dir
+        env["BH_TMP_DIR"] = runtime_dir
     # The browser-use CLI runs under its own Python (uv tool / uvx), which
     # may differ from Hermes's venv Python. PYTHONPATH/PYTHONHOME inherited
     # from the agent process point at Hermes's venv site-packages, and a
@@ -750,14 +766,23 @@ def browser_exec(
             "to verify the setup."
         )
 
-    env = _base_subprocess_env()
     if session:
         if not _SESSION_RE.match(session):
             return tool_error(
                 f"Invalid session name {session!r}: use 1-64 letters, digits, "
                 "dashes, or underscores (e.g. 'r7k2')."
             )
+    env = _base_subprocess_env(session_name=session)
+    if session:
         env["BU_NAME"] = session
+    # browser_exec can be the only browser surface loaded in this process, so
+    # start the existing idempotent periodic orphan reaper explicitly.
+    try:
+        from tools.browser_tool import _start_browser_cleanup_thread
+
+        _start_browser_cleanup_thread()
+    except Exception as e:
+        logger.debug("Browser orphan cleanup unavailable: %s", e)
     # Real-profile consent: on a local backend this upgrades the attach to
     # the user's default browser (profile snapshot, logins included); with
     # local=True it forces that even under a cloud backend. Runs BEFORE

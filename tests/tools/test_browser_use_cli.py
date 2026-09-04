@@ -15,6 +15,7 @@ import json
 import os
 import stat
 import time
+from pathlib import Path
 
 import pytest
 
@@ -100,6 +101,40 @@ class TestSubprocessEnvironment:
         monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
+
+    def test_harness_runtime_matches_v019_layout_and_isolates_names(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.setattr(browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
+        first = bu_cli._base_subprocess_env(session_name="alpha")
+        same = bu_cli._base_subprocess_env(session_name="alpha")
+        other = bu_cli._base_subprocess_env(session_name="beta")
+
+        assert first["BH_RUNTIME_DIR"] == first["BH_TMP_DIR"]
+        assert first["BH_RUNTIME_DIR"] == same["BH_RUNTIME_DIR"]
+        assert first["BH_RUNTIME_DIR"] != other["BH_RUNTIME_DIR"]
+        assert "BH_RUNTIME_DIR_SHARED" not in first
+        assert "AGENT_BROWSER_SOCKET_DIR" not in first
+        runtime = Path(first["BH_RUNTIME_DIR"])
+        identity = runtime.name.removeprefix("agent-browser-")
+        assert identity.startswith(f"hermes_bh_{os.getpid()}_")
+        assert (runtime / f"{identity}.owner_pid").is_file()
+
+    def test_browser_exec_starts_orphan_cleanup(self, monkeypatch, tmp_path):
+        import tools.browser_tool as browser_tool
+
+        cli = _fake_cli(tmp_path, "cat > /dev/null\n")
+        starts = []
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(
+            browser_tool, "_start_browser_cleanup_thread", lambda: starts.append(True)
+        )
+
+        bu_cli.browser_exec("print(1)", session="alpha")
+
+        assert starts == [True]
 
     def test_subprocess_env_strips_parent_python_import_paths(self, monkeypatch):
         """#83427/#84841/#86006/#86104: the browser-use CLI runs under its

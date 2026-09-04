@@ -472,27 +472,31 @@ class MemoryManager:
         ), kind="prefetch")
 
     @staticmethod
-    def _provider_sync_accepts_messages(provider: MemoryProvider) -> bool:
-        """Whether ``sync_turn`` accepts a ``messages`` keyword (uninspectable → assume yes)."""
+    def _provider_sync_accepts(provider: MemoryProvider, keyword: str) -> bool:
+        """Whether ``sync_turn`` accepts ``keyword`` (uninspectable → assume yes)."""
         params = _signature_params(provider.sync_turn)
-        return params is None or _has_var_kwargs(params) or "messages" in params
+        return params is None or _has_var_kwargs(params) or keyword in params
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "",
-                 messages: Optional[List[Dict[str, Any]]] = None) -> None:
+                 messages: Optional[List[Dict[str, Any]]] = None,
+                 turn_author: Optional[Dict[str, Any]] = None) -> None:
         """Sync a completed turn to all providers on the background worker.
 
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
+        ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
+        optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: Dict[str, Any] = {"session_id": session_id}
-            if messages is not None and self._provider_sync_accepts_messages(provider):
-                kwargs["messages"] = messages
+            for keyword, value in optional_kwargs.items():
+                if value is not None and self._provider_sync_accepts(provider, keyword):
+                    kwargs[keyword] = value
             provider.sync_turn(clean_user_content, assistant_content, **kwargs)
 
         self._submit_background(

@@ -94,6 +94,13 @@ class MessagesMemoryProvider(FakeMemoryProvider):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
 
 
+class AuthorMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into the per-turn author."""
+
+    def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None, turn_author=None):
+        self.synced_turns.append((user_content, assistant_content, turn_author))
+
+
 class BlockingPrefetchProvider(FakeMemoryProvider):
     """External provider whose prefetch call blocks until released."""
 
@@ -137,6 +144,9 @@ class TestMemoryProviderABC:
         p.queue_prefetch("query")
         p.sync_turn("user", "assistant")
         p.shutdown()
+
+    def test_identity_signature_defaults_to_empty(self):
+        assert FakeMemoryProvider().identity_signature() == {}
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +277,41 @@ class TestMemoryManager:
         mgr.flush_pending(timeout=5)
 
         assert legacy_provider.synced_turns == [("user", "assistant")]
+
+    def test_sync_all_forwards_author_and_scope_only_to_providers_that_accept_them(self):
+        """A bot turn reaches the new-signature provider with its author; legacy and messages-only
+        providers get the call without the keywords they cannot take."""
+        legacy = FakeMemoryProvider("legacy")
+        messages_only = MessagesMemoryProvider("messages")
+        author_aware = AuthorMemoryProvider("author")
+        author = {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+        # One manager per provider: a manager admits a single external provider.
+        for p in (legacy, messages_only, author_aware):
+            mgr = MemoryManager()
+            mgr.add_provider(p)
+            mgr.sync_all("user", "assistant", session_id="s1", turn_author=author)
+            mgr.flush_pending(timeout=5)
+
+        assert legacy.synced_turns == [("user", "assistant")]
+        assert messages_only.synced_turns == [("user", "assistant", "s1", None)]
+        assert author_aware.synced_turns == [("user", "assistant", author)]
+
+    def test_sync_all_without_author_sends_none_to_author_aware_provider(self):
+        mgr = MemoryManager()
+        author_aware = AuthorMemoryProvider("author")
+        mgr.add_provider(author_aware)
+
+        mgr.sync_all("user", "assistant")
+        mgr.flush_pending(timeout=5)
+
+        assert author_aware.synced_turns == [("user", "assistant", None)]
+
+    def test_provider_sync_accepts_inspects_named_keyword(self):
+        assert MemoryManager._provider_sync_accepts(AuthorMemoryProvider(), "turn_author")
+        assert not MemoryManager._provider_sync_accepts(MessagesMemoryProvider(), "turn_author")
+        assert not MemoryManager._provider_sync_accepts(FakeMemoryProvider(), "messages")
+        assert MemoryManager._provider_sync_accepts_messages(MessagesMemoryProvider())
 
     # -- Tool routing -------------------------------------------------------
 

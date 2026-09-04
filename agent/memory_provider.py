@@ -107,8 +107,11 @@ class MemoryProvider(ABC):
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
         session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
+        turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far."""
+        """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
+        ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side of this turn.
+        Providers may ignore it. The manager sends it only to signatures that accept it."""
 
     @abstractmethod
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -125,9 +128,16 @@ class MemoryProvider(ABC):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count,
-        author_id, author_name, author_is_bot. The author trio names who wrote THIS turn: a shared
-        session carries several participants and other agents, so a provider keying durable state
-        on identity must read it per turn. All three are absent when the transport gave no author."""
+        author_id, author_name, author_is_bot. The author trio names who wrote THIS turn:
+        a shared session carries several participants and other agents, so a provider keying durable
+        state on identity must read it per turn. All three are None when the transport gave no author."""
+
+    def identity_signature(self) -> Dict[str, Any]:
+        """Identity-mapping values that must bust a cached gateway agent when they change: which
+        user/agent identity the provider writes under, alias tables, session-name prefixing. Keys are
+        namespaced by the provider; values are JSON-serializable primitives or sorted lists. The gateway
+        calls this on an uninitialized instance on every inbound message, so keep it cheap and read-only."""
+        return {}
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """End-of-session extraction; fires only at real session boundaries, never per-turn."""

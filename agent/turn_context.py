@@ -25,6 +25,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
+from agent.turn_author import parse_turn_author
 
 logger = logging.getLogger(__name__)
 
@@ -868,6 +869,11 @@ def build_turn_context(
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
+
+    # Reset first: a cached gateway agent must never carry the previous turn's bot author into a
+    # human turn. The end-of-turn memory sync reads these back.
+    turn_author = parse_turn_author(turn_author)
+    agent._turn_author = turn_author
 
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.

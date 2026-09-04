@@ -1,9 +1,11 @@
 """Tests for the tirith security scanning subprocess wrapper."""
 
+import base64
 import io
 import json
 import os
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -517,7 +519,7 @@ class TestManagedCacheExecutionBoundary:
 
     @pytest.mark.require_symlinks
     def test_path_alias_cannot_hide_untrusted_managed_binary(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, caplog
     ):
         home = tmp_path / "home"
         managed = home / "bin" / "tirith"
@@ -544,10 +546,19 @@ class TestManagedCacheExecutionBoundary:
         run = MagicMock()
         monkeypatch.setattr(_tirith_mod.subprocess, "run", run)
 
-        result = check_command_security("echo guarded")
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            result = check_command_security("echo guarded")
+            repeated = check_command_security("echo guarded again")
 
         assert result["action"] == "block"
+        assert repeated["action"] == "block"
         assert _state().install_failure_reason == "managed_cache_untrusted"
+        trust_warnings = [
+            record
+            for record in caplog.records
+            if "failed ownership, mode, ACL, or link validation" in record.message
+        ]
+        assert len(trust_warnings) == 1
         run.assert_not_called()
 
     @pytest.mark.require_symlinks
@@ -705,6 +716,32 @@ class TestUnsupportedPlatform:
         assert mock_run.call_args.args[0][0] == str(binary)
         mock_thread.assert_not_called()
 
+    @pytest.mark.windows_only
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_native_windows_explicit_scanner_remains_usable(
+        self, mock_cfg, mock_run
+    ):
+        """Native Windows may scan with an external binary without manager support."""
+        mock_cfg.return_value = {
+            "tirith_enabled": True,
+            "tirith_path": sys.executable,
+            "tirith_timeout": 5,
+            "tirith_fail_open": False,
+        }
+        mock_run.return_value = _mock_run(
+            1,
+            _json_stdout([{"rule_id": "homograph_url"}], "blocked"),
+        )
+        state = _state(sys.executable)
+        state.resolved_path = None
+
+        assert not _tirith_mod.is_platform_supported()
+        result = check_command_security("curl https://example.test")
+
+        assert result["action"] == "block"
+        assert mock_run.call_args.args[0][0] == sys.executable
+
     @patch("tools.tirith_security._load_security_config")
     def test_unsupported_missing_scanner_honors_fail_closed(self, mock_cfg):
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
@@ -731,12 +768,15 @@ class TestUnsupportedPlatform:
                                  "tirith_path": str(binary),
                                  "tirith_timeout": 5,
                                  "tirith_fail_open": True}
-        _state().resolved_path = None
+        state = _state(str(binary))
+        state.resolved_path = None
+        state.install_failure_reason = "explicit_path_missing"
         with patch("tools.tirith_security.is_platform_supported", return_value=False), \
              patch("tools.tirith_security.threading.Thread") as mock_thread:
             assert ensure_installed() == str(binary)
 
         mock_thread.assert_not_called()
+        assert state.install_failure_reason == ""
 
     @patch("tools.tirith_security._load_security_config")
     def test_ensure_installed_honors_path(self, mock_cfg, tmp_path):
@@ -788,6 +828,17 @@ class TestFailedDownloadCaching:
 # ---------------------------------------------------------------------------
 
 class TestExplicitPathNoAutoDownload:
+    def test_explicit_path_recovery_clears_stale_failure_reason(self, tmp_path):
+        binary = tmp_path / "tirith"
+        binary.write_text("scanner", encoding="utf-8")
+        binary.chmod(0o700)
+        state = _state(str(binary))
+        state.resolved_path = _tirith_mod._INSTALL_FAILED
+        state.install_failure_reason = "explicit_path_missing"
+
+        assert _tirith_mod._resolve_tirith_path(str(binary)) == str(binary)
+        assert state.install_failure_reason == ""
+
     @patch("tools.tirith_security._install_tirith")
     @patch("tools.tirith_security.shutil.which", return_value=None)
     def test_tilde_explicit_path_missing_no_download(self, mock_which, mock_install):
@@ -894,6 +945,40 @@ class TestCosignVerification:
         )
         certificate = tmp_path / "checksums.txt.pem"
         _write_release_certificate(certificate, [prefix + "0.4.1", prefix + "0.4.2"])
+
+        assert _tirith_mod._release_identity_from_certificate(str(certificate)) is None
+
+    def test_upstream_base64_wrapped_certificate_is_accepted(self, tmp_path):
+        identity = (
+            "https://github.com/sheeki03/tirith/.github/workflows/"
+            "release.yml@refs/tags/v0.4.1"
+        )
+        certificate = tmp_path / "checksums.txt.pem"
+        _write_release_certificate(certificate, [identity])
+        certificate.write_bytes(base64.b64encode(certificate.read_bytes()) + b"\n")
+
+        assert _tirith_mod._release_identity_from_certificate(str(certificate)) == (
+            (0, 4, 1),
+            identity,
+        )
+
+    @pytest.mark.parametrize("malformation", ["trailing", "bundle", "double-wrap"])
+    def test_noncanonical_certificate_framing_is_rejected(
+        self, malformation, tmp_path
+    ):
+        identity = (
+            "https://github.com/sheeki03/tirith/.github/workflows/"
+            "release.yml@refs/tags/v0.4.1"
+        )
+        certificate = tmp_path / "checksums.txt.pem"
+        _write_release_certificate(certificate, [identity])
+        raw = certificate.read_bytes()
+        malformed = {
+            "trailing": raw + b"unexpected",
+            "bundle": raw + raw,
+            "double-wrap": base64.b64encode(base64.b64encode(raw)),
+        }[malformation]
+        certificate.write_bytes(malformed)
 
         assert _tirith_mod._release_identity_from_certificate(str(certificate)) is None
 
@@ -1563,16 +1648,22 @@ class TestSpawnWarningDedup:
 
 
 class TestCircuitBreakerRecovery:
+    @pytest.mark.parametrize(
+        "returncode, expected_action",
+        [(0, "allow"), (1, "block"), (2, "warn")],
+    )
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_recognized_warn_resets_prior_failures(self, mock_cfg, mock_run):
+    def test_recognized_verdict_resets_prior_failures(
+        self, mock_cfg, mock_run, returncode, expected_action
+    ):
         mock_cfg.return_value = _CFG
         _state().crash_count = _tirith_mod._CRASH_LIMIT - 1
-        mock_run.return_value = _mock_run(2, _json_stdout([], "review"))
+        mock_run.return_value = _mock_run(returncode, _json_stdout([], "review"))
 
         result = check_command_security("echo review")
 
-        assert result["action"] == "warn"
+        assert result["action"] == expected_action
         assert _state().crash_count == 0
         assert not _state().circuit_open
 

@@ -10,14 +10,14 @@ JSON stdout enriches findings/summary but never overrides the verdict.
 Operational failures (spawn error, timeout, unknown exit code) respect
 the fail_open config setting. Programming errors propagate.
 
-Auto-install: if tirith is not found on PATH or at the configured path,
-it is automatically downloaded from GitHub releases to Hermes' private cache.
-The download always verifies SHA-256 checksums.  When cosign is available on
-PATH, provenance verification (GitHub Actions workflow signature) is also
-performed.  If cosign is not installed, the download proceeds with SHA-256
-verification only — still secure via HTTPS + checksum, just without supply
-chain provenance proof.  Installation runs in a background thread so startup
-never blocks.
+Auto-install: when the default bare ``tirith`` cannot be found on PATH, Hermes
+automatically downloads it from GitHub releases to a private cache. Explicitly
+configured paths are authoritative and are never replaced by an auto-install.
+The download always verifies SHA-256 checksums. When cosign is available,
+Hermes attempts provenance verification (GitHub Actions workflow signature);
+an initial install falls back to SHA-256-only verification when provenance
+cannot be checked. Installation runs in a background thread so startup never
+blocks.
 
 Managed updates: only Hermes' private Tirith cache is maintained. This is
 $HERMES_HOME/bin/tirith for normal installs and a platform-qualified cache for
@@ -30,6 +30,8 @@ the release signature is unavailable, Hermes keeps the working binary and
 retries later instead of silently falling back to checksum-only verification.
 """
 
+import base64
+import binascii
 import errno
 import functools
 import gzip
@@ -137,7 +139,7 @@ _INSTALL_FAILED = False  # sentinel: distinct from "not yet tried"
 
 @dataclass
 class _RuntimeState:
-    """Process-local Tirith state isolated by profile and scanner config."""
+    """Process-local Tirith state isolated by profile and configured path."""
 
     key: tuple[str, str]
     resolved_path: str | None | bool = None
@@ -284,6 +286,22 @@ def _warn_once(key: str, message: str, *args) -> None:
     logger.warning(message, *args)
 
 
+def _warn_managed_cache_untrusted(state: _RuntimeState) -> None:
+    """Surface a managed-cache trust failure without hot-path log spam."""
+    _warn_once(
+        f"{state.key!r}:managed_cache_untrusted",
+        "Hermes-managed Tirith failed ownership, mode, ACL, or link validation; "
+        "scanning is disabled until HERMES_HOME and its Tirith cache are owned "
+        "by the current user, are not redirected, and are not peer-writable",
+    )
+
+
+def _set_managed_cache_untrusted(state: _RuntimeState) -> None:
+    state.resolved_path = _INSTALL_FAILED
+    state.install_failure_reason = "managed_cache_untrusted"
+    _warn_managed_cache_untrusted(state)
+
+
 def _reset_spawn_warning_state() -> None:
     """Clear the warn-once dedupe set. Called when tirith is freshly
     (re)installed so a subsequent failure surfaces again — e.g. user
@@ -416,6 +434,7 @@ def _linux_posix_acl_blob_is_private(
     *,
     owner_uid: int,
     effective_uid: int,
+    default_acl: bool = False,
 ) -> bool:
     """Validate one Linux ``system.posix_acl_*`` xattr value."""
     acl_ea_version = 0x0002
@@ -431,11 +450,57 @@ def _linux_posix_acl_blob_is_private(
         return False
     if int.from_bytes(value[:4], "little") != acl_ea_version:
         return False
+    entries: list[tuple[int, int, int]] = []
+    mask_permissions = None
     for offset in range(4, len(value), 8):
         entry = value[offset:offset + 8]
         tag = int.from_bytes(entry[:2], "little")
         permissions = int.from_bytes(entry[2:4], "little")
         principal_id = int.from_bytes(entry[4:8], "little")
+        if permissions & ~0o7:
+            return False
+        if tag == acl_mask:
+            if mask_permissions is not None:
+                return False
+            mask_permissions = permissions
+        elif tag not in {
+            acl_user_obj,
+            acl_user,
+            acl_group_obj,
+            acl_group,
+            acl_other,
+        }:
+            return False
+        entries.append((tag, permissions, principal_id))
+
+    if default_acl:
+        # Unlike access ACL base entries, default ACL entries are not reflected
+        # in st_mode. A write-bearing mask is harmless by itself, but it makes
+        # group-class entries effective and must therefore be applied here.
+        for tag, permissions, principal_id in entries:
+            effective_permissions = permissions
+            if tag in {acl_user, acl_group_obj, acl_group} and mask_permissions is not None:
+                effective_permissions &= mask_permissions
+            if tag in {acl_user_obj, acl_mask}:
+                continue
+            if tag == acl_user:
+                if effective_permissions & acl_write and principal_id not in {
+                    0,
+                    owner_uid,
+                    effective_uid,
+                }:
+                    return False
+                continue
+            if tag in {acl_group_obj, acl_group, acl_other}:
+                if effective_permissions & acl_write:
+                    return False
+                continue
+            return False
+        return True
+
+    # Access ACL base and mask entries are already represented by st_mode.
+    # Preserve the stricter historical policy for named principals.
+    for tag, permissions, principal_id in entries:
         if tag in {acl_user_obj, acl_group_obj, acl_mask, acl_other}:
             continue
         if tag == acl_user:
@@ -499,6 +564,7 @@ def _linux_acl_is_private(path: str, *, directory: bool) -> bool:
             value,
             owner_uid=owner_uid,
             effective_uid=effective_uid(),
+            default_acl=name == "system.posix_acl_default",
         ):
             return False
     return True
@@ -807,7 +873,14 @@ def _write_update_state(outcome: str, *, now: float | None = None) -> bool:
         os.replace(tmp_path, _update_state_path())
         tmp_path = ""
         return True
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError) as exc:
+        _warn_once(
+            f"tirith_update_state_persistence:{_update_state_key()}",
+            "could not persist Tirith update backoff at %r; "
+            "this process remains throttled, but another process may retry: %s",
+            _update_state_path(),
+            exc,
+        )
         return False
     finally:
         if fd >= 0:
@@ -1030,11 +1103,10 @@ def _detect_target() -> str | None:
 
 
 def is_platform_supported() -> bool:
-    """True when tirith ships a prebuilt binary for this OS+arch.
+    """True when Hermes can manage Tirith for this OS and architecture.
 
-    Used by callers (CLI banner, etc.) to distinguish "tirith failed to
-    install" from "tirith was never going to install here" — the latter
-    is silent because there is nothing the user can do about it.
+    An explicit or PATH-provided scanner can still run when this is false;
+    only Hermes' release downloader and managed updater are unavailable.
     """
     return _detect_target() is not None
 
@@ -1076,7 +1148,12 @@ def _download_file(
 def _release_identity_from_certificate(
     cert_path: str,
 ) -> tuple[tuple[int, int, int], str] | None:
-    """Return the one stable Tirith release identity carried by a certificate."""
+    """Return the one stable Tirith release identity carried by a certificate.
+
+    Sigstore release assets historically contain either a raw PEM certificate
+    or one strict standard-base64 layer around that PEM. Keep the downloaded
+    file unchanged for cosign itself; decoding here is only for SAN inspection.
+    """
     try:
         from cryptography import x509
     except ImportError as exc:
@@ -1085,7 +1162,32 @@ def _release_identity_from_certificate(
 
     try:
         with open(cert_path, "rb") as cert_file:
-            certificate = x509.load_pem_x509_certificate(cert_file.read())
+            raw_certificate = cert_file.read().strip()
+        candidates = [raw_certificate]
+        try:
+            candidates.append(
+                base64.b64decode(raw_certificate, validate=True).strip()
+            )
+        except (binascii.Error, ValueError):
+            pass
+
+        certificate = None
+        begin = b"-----BEGIN CERTIFICATE-----"
+        end = b"-----END CERTIFICATE-----"
+        for candidate in candidates:
+            if (
+                candidate.startswith(begin)
+                and candidate.endswith(end)
+                and candidate.count(begin) == 1
+                and candidate.count(end) == 1
+            ):
+                try:
+                    certificate = x509.load_pem_x509_certificate(candidate)
+                except ValueError:
+                    continue
+                break
+        if certificate is None:
+            raise ValueError("certificate is not one raw or base64-wrapped PEM block")
         san = certificate.extensions.get_extension_for_class(
             x509.SubjectAlternativeName
         ).value
@@ -1728,11 +1830,19 @@ def _probe_tirith_version(path: str) -> tuple[tuple[int, int, int] | None, str]:
             stdin=subprocess.DEVNULL,
             env=_tirith_subprocess_env(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("tirith version probe failed: %s", exc)
         return None, "probe_failed"
     if result.returncode != 0:
+        logger.debug(
+            "tirith version probe exited with %d: %s",
+            result.returncode,
+            result.stderr.strip()[:500],
+        )
         return None, "probe_failed"
     version = _parse_tirith_version(result.stdout)
+    if version is None:
+        logger.debug("tirith version probe returned an unrecognized version")
     return (version, "") if version is not None else (None, "unparseable")
 
 
@@ -1798,15 +1908,23 @@ def _probe_tirith_provenance(path: str) -> tuple[dict | None, str]:
             stdin=subprocess.DEVNULL,
             env=_tirith_subprocess_env(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("tirith provenance probe failed: %s", exc)
         return None, "provenance_failed"
     if result.returncode != 0:
+        logger.debug(
+            "tirith provenance probe exited with %d: %s",
+            result.returncode,
+            result.stderr.strip()[:500],
+        )
         return None, "provenance_failed"
     try:
         provenance = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError):
+        logger.debug("tirith provenance probe returned malformed JSON")
         return None, "provenance_failed"
     if not isinstance(provenance, dict):
+        logger.debug("tirith provenance probe returned non-object JSON")
         return None, "provenance_failed"
     return provenance, ""
 
@@ -1872,13 +1990,23 @@ def _run_tirith_update(path: str) -> str:
     try:
         payload = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError):
+        logger.info(
+            "tirith background update returned malformed JSON; keeping current binary"
+        )
         return "failed"
     if not isinstance(payload, dict):
+        logger.info(
+            "tirith background update returned non-object JSON; keeping current binary"
+        )
         return "failed"
     if payload.get("action") == "none":
         return "current"
     if payload.get("action") == "updated":
         return "updated"
+    logger.info(
+        "tirith background update returned unexpected action %r; keeping current binary",
+        str(payload.get("action"))[:100],
+    )
     return "failed"
 
 
@@ -1919,6 +2047,7 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
     if not _is_managed_tirith(path):
         return "skipped"
     path = os.path.abspath(_managed_tirith_path())
+    log = logger.warning if log_failures else logger.debug
 
     target = _detect_target()
     termux_musl_target = target == "aarch64-unknown-linux-musl"
@@ -1932,6 +2061,11 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
             logger.info("tirith background update skipped: unrecognized build version")
             return "skipped"
         if version is None:
+            log(
+                "tirith background update could not determine the installed version "
+                "(%s); keeping current binary",
+                reason,
+            )
             return "failed"
 
     if termux_musl_target:
@@ -1939,12 +2073,18 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
         # safely use its own updater. v0.4.1 reports GNU for both AArch64
         # builds, so older releases take the byte-matched migration below.
         if not version_was_embedded and version >= _SELF_UPDATE_MIN_VERSION:
-            provenance, _ = _probe_tirith_provenance(path)
+            provenance, provenance_reason = _probe_tirith_provenance(path)
             if provenance is not None and _provenance_allows_managed_update(
                 path, version, provenance
             ):
                 if provenance.get("target") == "aarch64-unknown-linux-musl":
                     return _run_tirith_update(path)
+            elif provenance is None:
+                logger.debug(
+                    "tirith native Termux updater provenance probe failed (%s); "
+                    "using the verified migration path",
+                    provenance_reason,
+                )
 
         expected_sha256, matched_target, verification_reason = (
             _verify_termux_release_binary(
@@ -1992,8 +2132,13 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
             return "current"
         return "failed"
 
-    provenance, _ = _probe_tirith_provenance(path)
+    provenance, provenance_reason = _probe_tirith_provenance(path)
     if provenance is None:
+        log(
+            "tirith background update could not verify updater provenance (%s); "
+            "keeping current binary",
+            provenance_reason,
+        )
         return "failed"
     if not _provenance_allows_managed_update(path, version, provenance):
         logger.info(
@@ -2116,11 +2261,11 @@ def _resolve_tirith_path(
         if _is_managed_tirith_location(path):
             validated_path = _validated_tirith_path(path)
             if validated_path is None:
-                state.resolved_path = _INSTALL_FAILED
-                state.install_failure_reason = "managed_cache_untrusted"
+                _set_managed_cache_untrusted(state)
             else:
                 path = validated_path
                 state.resolved_path = path
+                state.install_failure_reason = ""
         if isinstance(state.resolved_path, str):
             # The resolver is exercised for every scan, including in long-lived
             # gateways. Reconsider completed workers here so a Tirith release made
@@ -2142,12 +2287,14 @@ def _resolve_tirith_path(
         validated_path = _validated_tirith_path(expanded)
         if validated_path is not None:
             state.resolved_path = validated_path
+            state.install_failure_reason = ""
             return validated_path
         # Also try shutil.which in case it's a bare name on PATH
         found = shutil.which(expanded)
         validated_path = _validated_tirith_path(found) if found else None
         if validated_path is not None:
             state.resolved_path = validated_path
+            state.install_failure_reason = ""
             return validated_path
         logger.warning("Configured tirith path %r not found; scanning disabled", configured_path)
         state.resolved_path = _INSTALL_FAILED
@@ -2171,8 +2318,7 @@ def _resolve_tirith_path(
         )
         return validated_path
     if found and _is_managed_tirith_location(found):
-        state.resolved_path = _INSTALL_FAILED
-        state.install_failure_reason = "managed_cache_untrusted"
+        _set_managed_cache_untrusted(state)
         return None if background_only else expanded
 
     # Platform support controls Hermes' managed cache and installer, not
@@ -2196,8 +2342,7 @@ def _resolve_tirith_path(
         )
         return hermes_bin
     if os.path.lexists(hermes_bin):
-        state.resolved_path = _INSTALL_FAILED
-        state.install_failure_reason = "managed_cache_untrusted"
+        _set_managed_cache_untrusted(state)
         return None if background_only else expanded
 
     # A policy opt-out is not an installation failure. Do not cache or persist
@@ -2281,8 +2426,7 @@ def _background_install(
             state.install_failure_reason = ""
             return
         if found and _is_managed_tirith_location(found):
-            state.resolved_path = _INSTALL_FAILED
-            state.install_failure_reason = "managed_cache_untrusted"
+            _set_managed_cache_untrusted(state)
             return
 
         hermes_bin = _managed_tirith_path()
@@ -2291,8 +2435,7 @@ def _background_install(
             state.install_failure_reason = ""
             return
         if os.path.lexists(hermes_bin):
-            state.resolved_path = _INSTALL_FAILED
-            state.install_failure_reason = "managed_cache_untrusted"
+            _set_managed_cache_untrusted(state)
             return
 
         if not _tirith_auto_install_allowed():
@@ -2332,6 +2475,7 @@ def ensure_installed(*, log_failures: bool = True):
         validated_path = _validated_tirith_path(path)
         if validated_path is not None:
             state.resolved_path = validated_path
+            state.install_failure_reason = ""
             _schedule_managed_update(
                 validated_path,
                 configured_path,
@@ -2341,8 +2485,7 @@ def ensure_installed(*, log_failures: bool = True):
             return validated_path
         if not _is_managed_tirith_location(path):
             return None
-        state.resolved_path = _INSTALL_FAILED
-        state.install_failure_reason = "managed_cache_untrusted"
+        _set_managed_cache_untrusted(state)
 
     explicit = _is_explicit_path(configured_path)
     expanded = os.path.expanduser(configured_path)
@@ -2352,11 +2495,13 @@ def ensure_installed(*, log_failures: bool = True):
         validated_path = _validated_tirith_path(expanded)
         if validated_path is not None:
             state.resolved_path = validated_path
+            state.install_failure_reason = ""
             return validated_path
         found = shutil.which(expanded)
         validated_path = _validated_tirith_path(found) if found else None
         if validated_path is not None:
             state.resolved_path = validated_path
+            state.install_failure_reason = ""
             return validated_path
         state.resolved_path = _INSTALL_FAILED
         state.install_failure_reason = "explicit_path_missing"
@@ -2377,8 +2522,7 @@ def ensure_installed(*, log_failures: bool = True):
         )
         return validated_path
     if found and _is_managed_tirith_location(found):
-        state.resolved_path = _INSTALL_FAILED
-        state.install_failure_reason = "managed_cache_untrusted"
+        _set_managed_cache_untrusted(state)
         return None
 
     # Unsupported manager targets may still use explicit or PATH binaries,
@@ -2402,8 +2546,7 @@ def ensure_installed(*, log_failures: bool = True):
         )
         return hermes_bin
     if os.path.lexists(hermes_bin):
-        state.resolved_path = _INSTALL_FAILED
-        state.install_failure_reason = "managed_cache_untrusted"
+        _set_managed_cache_untrusted(state)
         return None
 
     # Preserve local discovery while honoring the global runtime-install
@@ -2506,7 +2649,10 @@ def _check_command_security_with_state(
 
     if tirith_path is None:
         unsupported_manager = state.install_failure_reason == "unsupported_platform"
-        if not unsupported_manager:
+        untrusted_cache = state.install_failure_reason == "managed_cache_untrusted"
+        if untrusted_cache:
+            _warn_managed_cache_untrusted(state)
+        elif not unsupported_manager:
             _warn_once(
                 f"{state.key!r}:tirith_path_none",
                 "tirith path resolved to None; scanning disabled",
@@ -2522,8 +2668,9 @@ def _check_command_security_with_state(
     if _is_managed_tirith_location(tirith_path):
         if not _is_managed_tirith(tirith_path):
             if state.resolved_path == tirith_path:
-                state.resolved_path = _INSTALL_FAILED
-                state.install_failure_reason = "managed_cache_untrusted"
+                _set_managed_cache_untrusted(state)
+            else:
+                _warn_managed_cache_untrusted(state)
             action = "allow" if fail_open else "block"
             return {
                 "action": action,

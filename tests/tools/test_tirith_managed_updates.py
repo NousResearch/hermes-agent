@@ -181,7 +181,7 @@ class TestUpdateState:
         assert tirith._update_is_due(now=1_000)
 
     def test_persistence_failure_still_throttles_this_process(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, caplog
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(
@@ -190,8 +190,10 @@ class TestUpdateState:
             MagicMock(side_effect=OSError("read-only filesystem")),
         )
 
-        assert not tirith._write_update_state("failed", now=1_000)
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            assert not tirith._write_update_state("failed", now=1_000)
         assert not (tmp_path / ".tirith-update-state.json").exists()
+        assert "could not persist Tirith update backoff" in caplog.text
         assert not tirith._update_is_due(
             now=1_000 + tirith._UPDATE_FAILURE_TTL - 1
         )
@@ -396,6 +398,66 @@ class TestAtomicInstall:
 
 
 class TestSignedReplacementFreshness:
+    @pytest.mark.parametrize(
+        "failure_mode, verification_result, expected_reason",
+        [
+            ("artifacts", None, "cosign_artifacts_unavailable"),
+            ("rejected", (False, None), "cosign_verification_failed"),
+            ("unavailable", (None, None), "cosign_exec_failed"),
+        ],
+    )
+    def test_replacement_never_falls_back_when_provenance_is_unavailable(
+        self,
+        failure_mode,
+        verification_result,
+        expected_reason,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        destination = _write_executable(
+            tmp_path / "home" / "bin" / "tirith", b"current tirith"
+        )
+        expected_sha256 = tirith._sha256_file(str(destination))
+
+        def download(url, dest, *, max_bytes, **_kwargs):
+            del max_bytes
+            if failure_mode == "artifacts" and url.endswith("checksums.txt.sig"):
+                raise OSError("signature unavailable")
+            Path(dest).write_bytes(b"downloaded")
+
+        verify = MagicMock(return_value=verification_result)
+        checksum = MagicMock(return_value=True)
+        extract = MagicMock(return_value=(str(tmp_path / "candidate"), ""))
+        replace = MagicMock()
+        monkeypatch.setattr(tirith, "_tirith_auto_install_allowed", lambda: True)
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-apple-darwin"
+        )
+        monkeypatch.setattr(tirith.shutil, "which", lambda _name: "/usr/bin/cosign")
+        monkeypatch.setattr(tirith, "_download_file", download)
+        monkeypatch.setattr(tirith, "_verify_cosign", verify)
+        monkeypatch.setattr(tirith, "_verify_checksum", checksum)
+        monkeypatch.setattr(tirith, "_extract_release_archive", extract)
+        monkeypatch.setattr(tirith, "_atomic_replace_binary", replace)
+
+        installed, reason = tirith._install_tirith(
+            log_failures=False,
+            expected_existing_sha256=expected_sha256,
+            current_version=(0, 4, 0),
+        )
+
+        assert installed is None
+        assert reason == expected_reason
+        assert destination.read_bytes() == b"current tirith"
+        checksum.assert_not_called()
+        extract.assert_not_called()
+        replace.assert_not_called()
+        if failure_mode == "artifacts":
+            verify.assert_not_called()
+        else:
+            verify.assert_called_once()
+
     @pytest.mark.parametrize("candidate_version", [(0, 3, 9), (0, 4, 1)])
     def test_older_or_equal_signed_release_cannot_replace_current_binary(
         self, candidate_version, tmp_path, monkeypatch
@@ -758,6 +820,90 @@ class TestManagedCachePlacement:
             effective_uid=501,
         )
 
+    @pytest.mark.parametrize(
+        "entries, expected",
+        [
+            (
+                [
+                    (0x01, 7, 0xFFFF_FFFF),
+                    (0x04, 7, 0xFFFF_FFFF),
+                    (0x10, 7, 0xFFFF_FFFF),
+                    (0x20, 5, 0xFFFF_FFFF),
+                ],
+                False,
+            ),
+            (
+                [
+                    (0x01, 7, 0xFFFF_FFFF),
+                    (0x04, 7, 0xFFFF_FFFF),
+                    (0x10, 5, 0xFFFF_FFFF),
+                    (0x20, 5, 0xFFFF_FFFF),
+                ],
+                True,
+            ),
+            (
+                [
+                    (0x01, 7, 0xFFFF_FFFF),
+                    (0x04, 5, 0xFFFF_FFFF),
+                    (0x10, 5, 0xFFFF_FFFF),
+                    (0x20, 7, 0xFFFF_FFFF),
+                ],
+                False,
+            ),
+            (
+                [
+                    (0x01, 7, 0xFFFF_FFFF),
+                    (0x02, 7, 31_337),
+                    (0x04, 5, 0xFFFF_FFFF),
+                    (0x10, 5, 0xFFFF_FFFF),
+                    (0x20, 5, 0xFFFF_FFFF),
+                ],
+                True,
+            ),
+        ],
+    )
+    def test_linux_default_acl_applies_mask_and_rejects_foreign_write(
+        self, entries, expected
+    ):
+        assert tirith._linux_posix_acl_blob_is_private(
+            _linux_acl_blob(entries),
+            owner_uid=501,
+            effective_uid=501,
+            default_acl=True,
+        ) is expected
+
+    def test_linux_acl_reader_treats_default_acl_as_inheritance_policy(
+        self, tmp_path, monkeypatch
+    ):
+        directory = tmp_path / "managed"
+        directory.mkdir()
+        owner_uid = directory.stat().st_uid
+        default_acl = _linux_acl_blob(
+            [
+                (0x01, 7, 0xFFFF_FFFF),
+                (0x04, 7, 0xFFFF_FFFF),
+                (0x10, 7, 0xFFFF_FFFF),
+                (0x20, 5, 0xFFFF_FFFF),
+            ]
+        )
+
+        def getxattr(_path, name, *, follow_symlinks):
+            assert follow_symlinks is False
+            if name == "system.posix_acl_access":
+                raise OSError(tirith.errno.ENODATA, "no access ACL")
+            return default_acl
+
+        monkeypatch.setattr(tirith.os, "getxattr", getxattr, raising=False)
+        monkeypatch.setattr(
+            tirith.os,
+            "listxattr",
+            lambda *_args, **_kwargs: ["system.posix_acl_default"],
+            raising=False,
+        )
+        monkeypatch.setattr(tirith.os, "geteuid", lambda: owner_uid, raising=False)
+
+        assert not tirith._linux_acl_is_private(str(directory), directory=True)
+
     @pytest.mark.live_system_guard_bypass
     @pytest.mark.macos_only
     @pytest.mark.parametrize("component", ["binary", "directory"])
@@ -816,10 +962,9 @@ class TestManagedCachePlacement:
         home = tmp_path / "home"
         home.mkdir()
         external = tmp_path / "external"
+        external.mkdir()
         target = "x86_64-unknown-linux-gnu"
-        outside_binary = _write_executable(
-            external / target / "bin" / "tirith", b"outside"
-        )
+        outside_binary = external / target / "bin" / "tirith"
         (home / ".tirith-managed").symlink_to(
             external, target_is_directory=True
         )
@@ -833,12 +978,15 @@ class TestManagedCachePlacement:
             "_download_verified_tirith",
             lambda *_args, **_kwargs: (str(verified), "", True, (0, 4, 1)),
         )
+        replace = MagicMock()
+        monkeypatch.setattr(tirith, "_atomic_replace_binary", replace)
 
         installed, reason = tirith._install_tirith(log_failures=False)
 
         assert installed is None
-        assert reason == "destination_exists"
-        assert outside_binary.read_bytes() == b"outside"
+        assert reason == "managed_directory_untrusted"
+        assert not outside_binary.exists()
+        replace.assert_not_called()
         assert not tirith._is_managed_tirith(
             str(home / ".tirith-managed" / target / "bin" / "tirith")
         )
@@ -941,6 +1089,21 @@ class TestUpdateScheduling:
         assert tirith.ensure_installed() == str(explicit)
         assert not _CapturedThread.instances
 
+    def test_explicit_managed_cache_path_is_never_updated(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        managed = _write_executable(tmp_path / "home" / "bin" / "tirith")
+        monkeypatch.setattr(
+            tirith, "_load_security_config", lambda: _config(str(managed))
+        )
+        monkeypatch.setattr(tirith, "is_platform_supported", lambda: True)
+        monkeypatch.setattr(tirith, "_update_is_due", lambda: True)
+        monkeypatch.setattr(tirith.threading, "Thread", _CapturedThread)
+
+        assert tirith.ensure_installed() == str(managed)
+        assert not _CapturedThread.instances
+
     def test_runtime_install_opt_out_disables_updates_not_scanning(
         self, tmp_path, monkeypatch
     ):
@@ -1026,6 +1189,53 @@ class TestUpdateScheduling:
 
 class TestLegacyReleaseProof:
     @pytest.mark.parametrize(
+        "version, verification_results, expected, expected_targets",
+        [
+            (
+                (0, 2, 12),
+                [(None, "binary_mismatch")],
+                (None, None, "binary_mismatch"),
+                ["aarch64-unknown-linux-gnu"],
+            ),
+            (
+                (0, 4, 1),
+                [(None, "binary_mismatch"), ("a" * 64, "")],
+                ("a" * 64, "aarch64-unknown-linux-musl", ""),
+                ["aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl"],
+            ),
+            (
+                (0, 4, 1),
+                [("b" * 64, "")],
+                ("b" * 64, "aarch64-unknown-linux-gnu", ""),
+                ["aarch64-unknown-linux-gnu"],
+            ),
+            (
+                (0, 4, 1),
+                [(None, "download_failed"), (None, "binary_mismatch")],
+                (None, None, "download_failed"),
+                ["aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl"],
+            ),
+        ],
+    )
+    def test_termux_release_verification_routes_across_published_targets(
+        self,
+        version,
+        verification_results,
+        expected,
+        expected_targets,
+        monkeypatch,
+    ):
+        verify = MagicMock(side_effect=verification_results)
+        monkeypatch.setattr(tirith, "_verify_legacy_release_binary", verify)
+
+        assert tirith._verify_termux_release_binary(
+            "/managed/tirith", version, log_failures=False
+        ) == expected
+        assert [
+            call.kwargs["target"] for call in verify.call_args_list
+        ] == expected_targets
+
+    @pytest.mark.parametrize(
         "installed_bytes, expected_reason",
         [
             (b"official release", ""),
@@ -1057,6 +1267,45 @@ class TestLegacyReleaseProof:
 
 
 class TestMaintenanceDecision:
+    def test_version_probe_failure_is_diagnosed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        monkeypatch.setattr(
+            tirith, "_probe_tirith_version", lambda _path: (None, "probe_failed")
+        )
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-apple-darwin"
+        )
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            assert tirith._maintain_managed_tirith(str(managed)) == "failed"
+
+        assert "could not determine the installed version" in caplog.text
+
+    def test_provenance_probe_failure_is_diagnosed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        monkeypatch.setattr(
+            tirith, "_probe_tirith_version", lambda _path: ((0, 4, 1), "")
+        )
+        monkeypatch.setattr(
+            tirith,
+            "_probe_tirith_provenance",
+            lambda _path: (None, "provenance_failed"),
+        )
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-apple-darwin"
+        )
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            assert tirith._maintain_managed_tirith(str(managed)) == "failed"
+
+        assert "could not verify updater provenance" in caplog.text
+
     def test_pre_041_cache_is_bootstrapped_with_verified_installer(
         self, tmp_path, monkeypatch
     ):
@@ -1576,7 +1825,7 @@ class TestSelfUpdateSubprocess:
         assert "--allow-unsigned" not in run.call_args.args[0]
 
     def test_unexpected_success_payload_is_not_treated_as_fresh(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, caplog
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         managed = _write_executable(tmp_path / "bin" / "tirith")
@@ -1593,7 +1842,30 @@ class TestSelfUpdateSubprocess:
             ),
         )
 
-        assert tirith._run_tirith_update(str(managed)) == "failed"
+        with caplog.at_level("INFO", logger="tools.tirith_security"):
+            assert tirith._run_tirith_update(str(managed)) == "failed"
+
+        assert "unexpected action" in caplog.text
+
+    def test_malformed_success_payload_is_diagnosed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        monkeypatch.setattr(
+            tirith.subprocess,
+            "run",
+            MagicMock(
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="not json", stderr=""
+                )
+            ),
+        )
+
+        with caplog.at_level("INFO", logger="tools.tirith_security"):
+            assert tirith._run_tirith_update(str(managed)) == "failed"
+
+        assert "returned malformed JSON" in caplog.text
 
 
 class TestBackgroundWorkerIsolation:

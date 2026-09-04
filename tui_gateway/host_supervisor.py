@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import queue
-import signal
 import subprocess
 import sys
 import threading
@@ -94,12 +93,9 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        from gateway.status import _pid_exists
+
+        return bool(_pid_exists(pid))
     except Exception:
         return False
 
@@ -107,23 +103,10 @@ def _pid_alive(pid: int) -> bool:
 def _pid_command(pid: int) -> str:
     if pid <= 0:
         return ""
-    # Linux fast path.
-    proc_cmdline = Path("/proc") / str(pid) / "cmdline"
     try:
-        data = proc_cmdline.read_bytes()
-        if data:
-            return data.replace(b"\x00", b" ").decode("utf-8", errors="replace")
-    except Exception:
-        pass
-    try:
-        return subprocess.check_output(
-            ["ps", "-p", str(pid), "-o", "command="],
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        ).strip()
+        from gateway.status import _read_process_cmdline
+
+        return _read_process_cmdline(pid) or ""
     except Exception:
         return ""
 
@@ -605,13 +588,17 @@ class HostSupervisor:
     def _pid_matches_compute_host(self, pid: int) -> bool:
         return is_compute_host_identity(pid)
 
-    def _terminate_pid(self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS) -> None:
+    def _terminate_pid(
+        self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS
+    ) -> None:
         try:
-            os.kill(pid, signal.SIGTERM)
+            from gateway.status import terminate_pid
+
+            terminate_pid(pid)
         except ProcessLookupError:
             return
         except Exception:
-            logger.debug("failed to SIGTERM compute host pid=%s", pid, exc_info=True)
+            logger.debug("failed to terminate compute host pid=%s", pid, exc_info=True)
             return
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -619,11 +606,13 @@ class HostSupervisor:
                 return
             time.sleep(0.05)
         try:
-            os.kill(pid, signal.SIGKILL)
+            terminate_pid(pid, force=True)
         except ProcessLookupError:
             return
         except Exception:
-            logger.debug("failed to SIGKILL compute host pid=%s", pid, exc_info=True)
+            logger.debug(
+                "failed to force-terminate compute host pid=%s", pid, exc_info=True
+            )
 
     def _terminate_process(self, proc: subprocess.Popen[str]) -> None:
         if proc.poll() is not None:

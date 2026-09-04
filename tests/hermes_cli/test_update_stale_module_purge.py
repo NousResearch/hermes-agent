@@ -134,3 +134,86 @@ def test_stale_symbol_scenario_end_to_end():
         sys.modules.pop(name, None)
         if real is not None:
             sys.modules[name] = real
+
+
+# --- the pytest-side antidote to the purge -------------------------------
+#
+# The purge is correct in production (the interpreter is about to exec the new
+# checkout) and poisonous inside pytest, where the session continues. The
+# antidote is `conftest._restore_purged_hermes_modules`; these tests pin its
+# CONTRACT, because the first version of it restored `sys.modules` only and so
+# rebuilt the same split identity one level up — a later test's
+# `monkeypatch.setattr("pkg.sub.thing", ...)` then patched a copy the code under
+# test never reached. Reproduced in this suite with `hermes_cli.config` after
+# `test_state_db_guard` deletes and re-imports it.
+
+
+def _install_fake_package(monkeypatch):
+    """A parent package with one submodule, wired the way import wires it."""
+    pkg = types.ModuleType("hermes_cli_fakepkg")
+    sub = types.ModuleType("hermes_cli_fakepkg.sub")
+    pkg.sub = sub
+    monkeypatch.setitem(sys.modules, "hermes_cli_fakepkg", pkg)
+    monkeypatch.setitem(sys.modules, "hermes_cli_fakepkg.sub", sub)
+    return pkg, sub
+
+
+def test_restore_snapshot_rebinds_the_parent_attribute(monkeypatch):
+    """Restoring must fix BOTH names a submodule answers to."""
+    from tests.hermes_cli.conftest import _restore_module_snapshot
+
+    pkg, sub = _install_fake_package(monkeypatch)
+    snapshot = {"hermes_cli_fakepkg.sub": sub}
+
+    # What a partial purge + re-import leaves behind, and the shape that
+    # actually bit: only the SUBMODULE was evicted, so the import system
+    # rebound the fresh copy onto the SAME, still-cached parent package.
+    new_sub = types.ModuleType("hermes_cli_fakepkg.sub")
+    sys.modules["hermes_cli_fakepkg.sub"] = new_sub
+    pkg.sub = new_sub
+
+    _restore_module_snapshot(snapshot)
+
+    assert sys.modules["hermes_cli_fakepkg.sub"] is sub
+    # The regression: without rebinding, this is still `new_sub`, so
+    # `from hermes_cli_fakepkg import sub` hands out the copy the test built.
+    assert pkg.sub is sub, "parent package still points at the post-purge copy"
+
+
+def test_restore_snapshot_leaves_untouched_modules_alone(monkeypatch):
+    """Identity already correct ⇒ no write, so a legitimately shared object
+    is never clobbered and a read-only parent never raises."""
+    pkg, sub = _install_fake_package(monkeypatch)
+
+    class Frozen(types.ModuleType):
+        def __setattr__(self, name, value):  # pragma: no cover - guard only
+            raise AttributeError("read-only parent")
+
+    frozen = Frozen("hermes_cli_fakepkg")
+    monkeypatch.setitem(sys.modules, "hermes_cli_fakepkg", frozen)
+
+    from tests.hermes_cli.conftest import _restore_module_snapshot
+
+    # `sub` is unchanged in sys.modules, so restore must not touch the parent.
+    _restore_module_snapshot({"hermes_cli_fakepkg.sub": sub})
+    assert sys.modules["hermes_cli_fakepkg.sub"] is sub
+
+
+def test_restore_snapshot_survives_a_parent_that_refuses_setattr(monkeypatch):
+    """A parent that rejects attribute writes must not fail the whole run:
+    the dict entry is the load-bearing half, the attribute is best-effort."""
+    from tests.hermes_cli.conftest import _restore_module_snapshot
+
+    class Frozen(types.ModuleType):
+        def __setattr__(self, name, value):
+            raise AttributeError("read-only parent")
+
+    frozen = Frozen("hermes_cli_fakepkg")
+    sub = types.ModuleType("hermes_cli_fakepkg.sub")
+    monkeypatch.setitem(sys.modules, "hermes_cli_fakepkg", frozen)
+    monkeypatch.setitem(sys.modules, "hermes_cli_fakepkg.sub",
+                        types.ModuleType("hermes_cli_fakepkg.sub"))
+
+    _restore_module_snapshot({"hermes_cli_fakepkg.sub": sub})
+
+    assert sys.modules["hermes_cli_fakepkg.sub"] is sub

@@ -78,22 +78,12 @@ def _patch_managed_uv(request):
         yield
 
 
-@pytest.fixture(autouse=True)
-def _patch_gateway_discovery():
-    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
-
-    The restart phase used to swallow every exception at debug level, so these
-    end-to-end tests never noticed it touching real gateway discovery. Since
-    the phase is surfaced (#78574: an aborted restart now fails the update),
-    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
-    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
-    Discovery returning nothing makes the phase a clean no-op for every test
-    in this module (none of them assert on gateway restarts).
-    """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
-         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
-        yield
+# The gateway-discovery mocking that used to live here as a local
+# ``_patch_gateway_discovery`` autouse fixture now comes from
+# ``tests/hermes_cli/conftest.py`` — it is needed by four sibling
+# ``test_update_*`` modules too, and the local copy was both duplicated and
+# incomplete (it did not survive ``cmd_update``'s ``sys.modules`` purge, so the
+# real fleet got discovered anyway). See ``patch_gateway_discovery`` there.
 
 
 class TestCmdUpdateNpmLockfileCache:

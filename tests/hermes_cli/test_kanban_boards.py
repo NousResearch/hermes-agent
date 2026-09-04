@@ -159,13 +159,23 @@ class TestBoardCRUD:
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
 
         kb.remove_board("recycle", archive=archive)
-        # remove_board must drop the cache entry so a re-create through
-        # connect() gets a fresh schema-init pass.
+        # remove_board must drop the cache entry so a re-create gets a fresh
+        # schema-init pass. Still required: the deliberate create path below
+        # depends on it.
         assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
 
-        # Simulate the event-stream poll: re-open the same slug. connect()
-        # recreates the directory + empty .db; the schema must be re-applied.
-        with kb.connect(board="recycle") as conn:
+        # Simulate the event-stream poll: re-open the same slug. connect() no
+        # longer recreates the board — that implicit mkdir WAS the zombie-board
+        # bug (a removed board reappearing because some component still held
+        # the old slug). Naming a board is a read now; creating one is opt-in.
+        with pytest.raises(kb.KanbanBoardMissing):
+            kb.connect(board="recycle")
+        assert not db_path.exists()
+
+        # The original #23833 assertion still has to hold on the path that DOES
+        # recreate: a deliberately re-created board must come back with a full
+        # schema, never a schemaless file.
+        with kb.connect(board="recycle", create=True) as conn:
             tables = {
                 row[0]
                 for row in conn.execute(

@@ -814,6 +814,69 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
             m["content"] = new_content if new_content else [{"type": "text", "text": "(tool result removed)"}]
 
 
+def _hoist_tool_results_to_front(result: List[Dict[str, Any]]) -> None:
+    """Move ``tool_result`` blocks to the front of their user message.
+
+    Anthropic requires the ``tool_result`` blocks answering an assistant's
+    ``tool_use`` to come FIRST in the following user message. A leading
+    non-tool_result block (typically an injected ``<system-reminder>`` text
+    block carrying re-serialized context) breaks the pairing and the request
+    is rejected with a non-retryable HTTP 400:
+
+        messages.N: `tool_use` ids were found without `tool_result` blocks
+        immediately after
+
+    ``_strip_orphaned_tool_blocks`` does not catch this: it compares ID sets
+    between adjacent messages, so a pair that is present-but-misordered looks
+    healthy and the malformed body ships. The session is then permanently
+    bricked — every retry replays the same prefix (#79147).
+
+    Reorder rather than drop: the injected text is real context the model
+    should still see, it just may not sit ahead of the tool_result blocks.
+    Relative order WITHIN each group is preserved, so parallel tool batches
+    keep their result order and the surviving text keeps its reading order.
+
+    Note the message is only valid when the tool_result blocks form a
+    CONTIGUOUS leading run -- ``[tool_result, text, tool_result]`` leads with
+    one but still strands the second behind the text, so it is compacted too.
+    Mutates ``result`` in place.
+    """
+    for m in result:
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        blocks = m["content"]
+        # Fast path: the message is already valid only when every tool_result
+        # forms a contiguous prefix. Checking just the first index is not
+        # enough -- [tool_result, text, tool_result] starts at 0 but still
+        # strands the second result behind the text block.
+        is_tool_result = [
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks
+        ]
+        n_results = sum(is_tool_result)
+        if n_results == 0 or all(is_tool_result[:n_results]):
+            continue
+        leading = is_tool_result.index(False) if not all(is_tool_result) else 0
+
+        tool_results = [
+            b for b in blocks
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        others = [
+            b for b in blocks
+            if not (isinstance(b, dict) and b.get("type") == "tool_result")
+        ]
+        logger.warning(
+            "Pre-call sanitizer: compacted %d tool_result block(s) into a "
+            "leading run past %d interleaved block(s) (types=%s) to satisfy "
+            "Anthropic tool_use/tool_result adjacency",
+            len(tool_results),
+            len(others),
+            sorted({str(b.get("type")) if isinstance(b, dict)
+                    else type(b).__name__ for b in others}),
+        )
+        m["content"] = tool_results + others
+
+
 def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Merge consecutive same-role messages to enforce Anthropic alternation.
 
@@ -1216,6 +1279,7 @@ def convert_messages_to_anthropic(
 
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
+    _hoist_tool_results_to_front(result)
     _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)

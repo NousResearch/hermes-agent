@@ -66,6 +66,7 @@ from agent.anthropic_message_convert import (  # noqa: F401
     _evict_old_screenshots,
     _extract_preserved_thinking_blocks,
     _fix_blank_text_blocks_in_list,
+    _hoist_tool_results_to_front,
     _image_source_from_openai_url,
     _is_bedrock_model_id,
     _manage_thinking_signatures,

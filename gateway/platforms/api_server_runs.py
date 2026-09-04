@@ -963,8 +963,19 @@ async def _handle_runs(
             # failure, instead of falling through to the generic
             # except-Exception branch below.
             logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
-            from agent.notice_collapse import provider_auth_error_reply
-            error_msg = provider_auth_error_reply(exc, session_key=run_id)
+            # session_key=run_id makes this window per run, and a run renders
+            # at most one auth reply, so the dedupe never fires here by design
+            # — /v1/runs has no conversation to collapse across. The call stays
+            # so this site cannot drift off the shared renderer (the ast guard
+            # in tests/agent/test_notice_collapse.py enforces that), and
+            # resolve_direct_reply keeps the run's error field non-empty.
+            from agent.notice_collapse import (
+                provider_auth_error_reply,
+                resolve_direct_reply,
+            )
+            error_msg = resolve_direct_reply(
+                provider_auth_error_reply(exc, session_key=run_id)
+            )
             self._set_run_status(
                 run_id,
                 "failed",

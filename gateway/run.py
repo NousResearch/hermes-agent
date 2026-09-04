@@ -929,18 +929,24 @@ def _format_exec_approval_fallback(
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
     )
 
-def _gateway_surface_key(platform: Any) -> str:
-    """Stable dedupe key for a chat surface.
+def _gateway_surface_key(platform: Any, chat_id: Any = None) -> str:
+    """Stable dedupe key for one chat surface: ``<platform>:<chat_id>``.
 
-    These two sanitizers see the rendered reply, not the session, so the
-    collapse window for provider-error replies is per platform surface. That
-    is the granularity the noise actually has: one dead provider spams one
-    surface.
+    The window has to be per conversation, not per platform. Keyed on the
+    platform alone, every channel and DM on a box shares one window, so one
+    person's provider error 20 minutes ago collapses a different person's
+    reply in a different chat.
+
+    ``chat_id`` is absent only for callers that have no conversation in hand
+    (older/synthetic call paths). Those fall back to the platform alone, which
+    is the previous behaviour: coarser, never wrong in the other direction.
     """
     try:
-        return str(getattr(platform, "name", None) or type(platform).__name__)
+        surface = str(getattr(platform, "name", None) or type(platform).__name__)
     except Exception:
         return ""
+    chat = "" if chat_id is None else str(chat_id).strip()
+    return f"{surface}:{chat}" if chat else surface
 
 
 def _gateway_provider_error_reply(text: str, session_key: Any = None) -> str:
@@ -949,8 +955,11 @@ def _gateway_provider_error_reply(text: str, session_key: Any = None) -> str:
     ``display.fallback_notifications`` collapses the result: a provider outage
     that walks the fallback chain produces one failure envelope per attempt,
     and in ``collapse`` mode only the first of each error class reaches chat
-    inside ``display.fallback_notice_interval_seconds`` (``""`` afterwards).
-    ``on`` (default) is unchanged.
+    inside ``display.fallback_notice_interval_seconds``. Afterwards it returns
+    ``notice_collapse.SUPPRESSED_NOTICE``, which the caller must resolve with
+    ``resolve_direct_reply`` or ``resolve_status_notice`` — never treat it as
+    "not a provider error" and fall back to the raw text. ``on`` (default) is
+    unchanged.
     """
     from agent.notice_collapse import collapse_provider_error_reply
 
@@ -1030,7 +1039,21 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+def _is_suppressed_gateway_notice(text: Any) -> bool:
+    """True when the collapse window withheld this provider-error reply."""
+    from agent.notice_collapse import is_suppressed_notice
+
+    return is_suppressed_notice(text)
+
+
+def _terse_suppressed_gateway_reply() -> str:
+    """One line for a direct reply the collapse window already reported."""
+    from agent.notice_collapse import TERSE_SUPPRESSED_REPLY
+
+    return TERSE_SUPPRESSED_REPLY
+
+
+def _sanitize_gateway_final_response(platform: Any, text: str, chat_id: Any = None) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
     Every human-facing chat surface (Telegram, WhatsApp, Discord, Slack,
@@ -1065,11 +1088,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted, _gateway_surface_key(platform))
+        # May return notice_collapse.SUPPRESSED_NOTICE. Callers MUST resolve
+        # that (resolve_direct_reply / resolve_status_notice) and must never
+        # treat it as "not a provider error" and fall back to the raw text.
+        return _gateway_provider_error_reply(
+            redacted, _gateway_surface_key(platform, chat_id),
+        )
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(
+    platform: Any, event_type: str, message: str, chat_id: Any = None,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
@@ -1095,7 +1125,16 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         ):
             return None
     if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text, _gateway_surface_key(platform)) or None
+        # The ONLY path allowed to collapse to nothing: nobody asked for this
+        # message. A reply to a message a person actually sent goes through
+        # resolve_direct_reply instead and always says something.
+        from agent.notice_collapse import resolve_status_notice
+
+        return resolve_status_notice(
+            _gateway_provider_error_reply(
+                text, _gateway_surface_key(platform, chat_id),
+            )
+        )
     return text
 
 
@@ -5932,6 +5971,7 @@ class TurnRunner:
             ctx.source.platform,
             event_type,
             message,
+            getattr(ctx.source, "chat_id", None),
         )
         if prepared_message is None:
             logger.debug(
@@ -6022,16 +6062,23 @@ class TurnRunner:
             # One shared renderer across all three provider auth-error sites
             # (here, api_server.py, api_server_runs.py) so
             # display.fallback_notifications can collapse the burst a walking
-            # fallback chain produces. The log line is unconditional; an empty
-            # reply means "already told this session", not "nothing happened".
-            from agent.notice_collapse import provider_auth_error_reply
+            # fallback chain produces. The log line is unconditional.
+            # resolve_direct_reply keeps this non-empty even when the window
+            # already reported the outage: this envelope IS the answer to a
+            # message a person sent, and an empty one falls into the #31884
+            # "send it again" hint, which is the worst thing to tell someone
+            # mid-outage.
+            from agent.notice_collapse import (
+                provider_auth_error_reply,
+                resolve_direct_reply,
+            )
             logger.warning(
                 "Provider authentication failed for session=%s: %s",
                 ctx.session_key or "", exc,
             )
             return {
-                "final_response": provider_auth_error_reply(
-                    exc, session_key=ctx.session_key,
+                "final_response": resolve_direct_reply(
+                    provider_auth_error_reply(exc, session_key=ctx.session_key)
                 ),
                 "messages": [],
                 "api_calls": 0,
@@ -7365,8 +7412,16 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(
                 result, final_response or "", history_len=len(agent_history),
             )
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
-            if not final_response:
+            final_response = _sanitize_gateway_final_response(
+                ctx.source.platform, final_response,
+                getattr(ctx.source, "chat_id", None),
+            )
+            if _is_suppressed_gateway_notice(final_response):
+                # Suppressed by the collapse window. This is a reply to a
+                # message a person sent, so it gets the terse line — never
+                # silence, and never the raw provider error below.
+                final_response = _terse_suppressed_gateway_reply()
+            elif not final_response:
                 final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             return {
                 "final_response": final_response,
@@ -23362,7 +23417,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                response = _sanitize_gateway_final_response(source.platform, response)
+                response = _sanitize_gateway_final_response(
+                    source.platform, response, getattr(source, "chat_id", None),
+                )
+                if _is_suppressed_gateway_notice(response):
+                    response = _terse_suppressed_gateway_reply()
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().

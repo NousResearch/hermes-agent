@@ -1,3 +1,4 @@
+from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 """Integration tests for the hosted Discussion coordinator."""
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from gateway.hosted_room_peer import (
 )
 from tui_gateway.hosted_room_service import (
     HostedRoomService,
-    _RouteStatusPeerClient,
     _grant_revoke_is_terminal,
 )
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute

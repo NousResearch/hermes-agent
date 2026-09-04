@@ -373,7 +373,9 @@ class TestThreadContext(unittest.TestCase):
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
-            adapter._send_email("user@test.com", "Here is the answer.", None)
+            adapter._send_email(
+                "user@test.com", "Here is the answer.", "<original@test.com>"
+            )
 
             # Check the sent message
             send_call = mock_server.send_message.call_args[0][0]
@@ -381,6 +383,359 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
+
+
+class TestThreadContextPersistence(unittest.TestCase):
+    """Thread context must survive gateway restarts (replies keep subject)."""
+
+    def _make_adapter(self, tmp_dir):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": str(tmp_dir),
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_save_then_reload_roundtrip(self):
+        """Saved context loads back with subject + message_id intact."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context["user@test.com:my-thread"] = {
+                "subject": "Re: My Thread",
+                "message_id": "<m@test.com>",
+                "epoch": 0,
+                "msg_count": 3,
+            }
+            adapter._save_thread_context()
+            self.assertTrue(adapter._thread_context_path.exists())
+
+            # New adapter instance (simulates gateway restart) reloads it
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["subject"],
+                "Re: My Thread",
+            )
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["message_id"],
+                "<m@test.com>",
+            )
+
+    def test_corrupt_file_starts_fresh(self):
+        """A corrupt/partial JSON file must not crash adapter construction."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context_path.parent.mkdir(parents=True, exist_ok=True)
+            adapter._thread_context_path.write_text("{not json", "utf-8")
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(adapter2._thread_context, {})
+
+
+class TestSessionLifecycle(unittest.TestCase):
+    """/new in email body + auto-rotation cap bound session growth."""
+
+    def setUp(self):
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+
+    def _make_adapter(self, max_messages=0):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": self._tmp.name,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(
+                PlatformConfig(enabled=True, extra={"max_messages_per_session": max_messages})
+            )
+
+    def _dispatch(self, adapter, subject, body, mid):
+        import asyncio
+        captured = []
+
+        async def capture_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": mid.encode(),
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": subject,
+            "message_id": f"<{mid}@test.com>",
+            "in_reply_to": "",
+            "body": body,
+            "attachments": [],
+            "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(msg_data))
+        return captured
+
+    def test_bare_new_resets_session_without_agent_dispatch(self):
+        """A body of '/new' bumps the epoch and does NOT run the agent."""
+        adapter = self._make_adapter()
+        # Seed the thread at epoch 0
+        self._dispatch(adapter, "My Thread", "hello", "m1")
+        captured = self._dispatch(adapter, "Re: My Thread", "/new", "m2")
+        # Bare /new must not dispatch to the agent (confirmation only)
+        self.assertEqual(captured, [])
+        # Next real message lands in epoch 1 → new session key
+        captured2 = self._dispatch(adapter, "Re: My Thread", "fresh start", "m3")
+        self.assertEqual(len(captured2), 1)
+        self.assertEqual(captured2[0].source.thread_id, "my-thread-1")
+
+    def test_new_with_text_dispatches_in_fresh_session(self):
+        """/new plus a request runs the agent in the rotated session."""
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "My Thread", "old context", "m1")
+        captured = self._dispatch(adapter, "Re: My Thread", "/new what is the weather", "m2")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].source.thread_id, "my-thread-1")
+        self.assertEqual(captured[0].text, "what is the weather")
+
+    def test_auto_rotation_cap_bounds_session(self):
+        """Exceeding max_messages_per_session rotates to a new session."""
+        adapter = self._make_adapter(max_messages=2)
+        self._dispatch(adapter, "My Thread", "msg 1", "m1")
+        self._dispatch(adapter, "Re: My Thread", "msg 2", "m2")
+        # Third message crosses the cap → epoch 1
+        captured = self._dispatch(adapter, "Re: My Thread", "msg 3", "m3")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].source.thread_id, "my-thread-1")
+        # Subsequent message continues in epoch 1 (no further rotation)
+        captured2 = self._dispatch(adapter, "Re: My Thread", "msg 4", "m4")
+        self.assertEqual(captured2[0].source.thread_id, "my-thread-1")
+
+    def test_epoch_state_persists_across_restart(self):
+        """Rotation epoch survives a restart (persisted with context)."""
+        adapter = self._make_adapter(max_messages=2)
+        self._dispatch(adapter, "My Thread", "msg 1", "m1")
+        self._dispatch(adapter, "Re: My Thread", "msg 2", "m2")
+        self._dispatch(adapter, "Re: My Thread", "msg 3", "m3")  # rotates to epoch 1
+
+        # Simulate restart: fresh adapter, same HOME
+        adapter2 = self._make_adapter(max_messages=2)
+        captured = self._dispatch(adapter2, "Re: My Thread", "msg 4", "m4")
+        self.assertEqual(captured[0].source.thread_id, "my-thread-1")
+
+
+class TestReplySubjectIsolation(unittest.TestCase):
+    """Replies must carry THEIR thread's subject when several of the same
+    sender's threads were dispatched in one poll cycle.
+
+    Regression for the E2E failure caught 15 Aug 2026: after dispatching
+    "test session isolation A" and "test session isolation B" back-to-back,
+    the reply to A came back as "Re: test session isolation B" because the
+    send path looked up the plain-sender key, which B's dispatch had
+    overwritten. The gateway passes the thread's slug via metadata, so the
+    adapter must resolve the compound (sender:thread_id) key from metadata.
+    """
+
+    def setUp(self):
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": self._tmp.name,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def _dispatch(self, adapter, subject, body, mid):
+        import asyncio
+        captured = []
+
+        async def capture_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": mid.encode(),
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": subject,
+            "message_id": f"<{mid}@test.com>",
+            "in_reply_to": "",
+            "body": body,
+            "attachments": [],
+            "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(msg_data))
+        return captured
+
+    def _sent_subject(self, mock_smtp, call_index=-1):
+        send_call = mock_smtp.return_value.send_message.call_args_list[call_index][0][0]
+        return send_call["Subject"]
+
+    def test_reply_to_thread_a_keeps_subject_a_after_same_cycle_dispatch(self):
+        """A's reply must say 'Re: test session isolation A' even though B's
+        dispatch overwrote the plain-sender key afterwards."""
+        import asyncio
+        adapter = self._make_adapter()
+        # Both threads dispatched in the same poll cycle (the E2E scenario)
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+        self._dispatch(adapter, "test session isolation B", "body B", "m2")
+        # Plain-sender key now holds B's subject (last dispatch wins)
+        self.assertEqual(
+            adapter._thread_context["user@test.com"]["subject"],
+            "test session isolation B",
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            # The gateway sends chat_id=plain sender + metadata thread_id
+            asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Reply to A",
+                metadata={"thread_id": "test-session-isolation-a"},
+            ))
+        self.assertEqual(
+            self._sent_subject(mock_smtp), "Re: test session isolation A"
+        )
+
+    def test_reply_to_thread_b_keeps_subject_b(self):
+        """B's reply stays correct (compound lookup, not plain-sender fallback)."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+        self._dispatch(adapter, "test session isolation B", "body B", "m2")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Reply to B",
+                metadata={"thread_id": "test-session-isolation-b"},
+            ))
+        self.assertEqual(
+            self._sent_subject(mock_smtp), "Re: test session isolation B"
+        )
+
+    def test_outbound_send_without_context_gets_neutral_subject(self):
+        """Bare outbound sends (no metadata, no reply-to) must NOT inherit the
+        sender's last inbound subject — that is the cron mis-threading bug.
+        They get a neutral subject and a fresh conversation."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Cron report",
+            ))
+        msg = mock_smtp.return_value.send_message.call_args_list[0][0][0]
+        self.assertEqual(msg["Subject"], "Hermes Agent")
+        # Fresh conversation: no threading headers into the sender's thread
+        self.assertNotIn("In-Reply-To", msg)
+        self.assertNotIn("References", msg)
+
+    def test_legacy_reply_with_reply_to_resolves_plain_sender(self):
+        """Legacy replies (no thread_id metadata, but a reply-to message id)
+        still resolve the plain-sender key — the pre-isolation reply path."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Plain reply",
+                reply_to="<m1@test.com>",
+            ))
+        self.assertEqual(
+            self._sent_subject(mock_smtp), "Re: test session isolation A"
+        )
+
+    def test_cron_delivery_explicit_subject_is_fresh_conversation(self):
+        """Cron deliveries carry an explicit subject in metadata: used
+        verbatim (no Re: prefix) with no threading headers, so Gmail shows a
+        new conversation instead of nesting the report in the sender's last
+        thread (the nightly-backup-in-floor-plans-thread bug)."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Backup report",
+                metadata={"subject": "Cronjob Response: hermes-nightly-backup"},
+            ))
+        # Regression: send() must report SUCCESS (the pre-fix path raised
+        # UnboundLocalError in the success logger after sending, which made
+        # send() return failure and triggered a duplicate standalone fallback).
+        self.assertTrue(result.success)
+        msg = mock_smtp.return_value.send_message.call_args_list[0][0][0]
+        self.assertEqual(msg["Subject"], "Cronjob Response: hermes-nightly-backup")
+        self.assertNotIn("In-Reply-To", msg)
+        self.assertNotIn("References", msg)
+
+    def test_cron_delivery_explicit_subject_with_attachment_is_fresh(self):
+        """The attachment send path honours the explicit subject the same
+        way (send_document → _send_email_with_attachment)."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+
+        attach_path = os.path.join(self._tmp.name, "report.bin")
+        with open(attach_path, "wb") as f:
+            f.write(b"fake attachment bytes")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send_document(
+                chat_id="user@test.com",
+                file_path=attach_path,
+                caption="Report with file",
+                metadata={"subject": "Cronjob Response: weekly-report"},
+            ))
+        self.assertTrue(result.success)
+        msg = mock_smtp.return_value.send_message.call_args_list[0][0][0]
+        self.assertEqual(msg["Subject"], "Cronjob Response: weekly-report")
+        self.assertNotIn("In-Reply-To", msg)
+        self.assertNotIn("References", msg)
 
 
 class TestSendMethods(unittest.TestCase):

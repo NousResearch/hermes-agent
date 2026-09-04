@@ -161,6 +161,10 @@ An unauthenticated public dashboard was the entry point for the June 2026 MCP-co
 
 Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace.
 
+### Host-managed channels
+
+A hosting layer that configures messaging channels for the operator (the Nous Portal does this for hosted agents) can stamp the container with `HERMES_MANAGED_PLATFORMS`, a comma-separated list of `platform:kind` entries such as `telegram:native,discord:relay`, plus an optional `HERMES_MANAGED_PLATFORMS_LABEL`. The dashboard then shows those channels read-only, links back to the host through `HERMES_DASHBOARD_PORTAL_URL`, and refuses writes to them from the Channels page, the Keys page and the config editor. `native` means the host supplies the platform credentials; `relay` means the host's connector fronts the platform and the native adapter stays off. These are deployment stamps set by the host, not settings for your own `.env`. Without them nothing changes.
+
 ## Running interactively (CLI chat)
 
 To open an interactive chat session against a running data directory:

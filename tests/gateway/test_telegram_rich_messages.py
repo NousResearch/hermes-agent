@@ -376,6 +376,74 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
     adapter._bot.send_message_draft.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_rich_draft_capability_failure_falls_back_and_latches_off():
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    adapter._bot.do_api_request = AsyncMock(side_effect=BadRequest("Method not found"))
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True  # legacy plain-text draft delivered the frame
+    adapter._bot.send_message_draft.assert_awaited_once()
+    assert adapter._rich_draft_disabled is True
+
+    # A subsequent frame skips the rich attempt entirely (latched off).
+    adapter._bot.do_api_request.reset_mock()
+    adapter._bot.send_message_draft.reset_mock()
+    result2 = await adapter.send_draft("12345", draft_id=8, content=RICH_CONTENT)
+    assert result2.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_transient_failure_does_not_latch_off():
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    adapter._bot.do_api_request = AsyncMock(side_effect=TimedOut("timed out"))
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True  # legacy draft carried this frame
+    adapter._bot.send_message_draft.assert_awaited_once()
+    # Transient errors must NOT permanently disable rich drafts.
+    assert adapter._rich_draft_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_flood_control_propagates_retry_after_without_legacy_fallback():
+    """A RetryAfter on sendRichMessageDraft must not immediately spend a
+    second call on legacy sendMessageDraft for the same frame — that just
+    burns another call in the same flood-control window. The result must
+    propagate retryable=True and the wait duration so the stream consumer
+    can cool down instead (see GatewayStreamConsumer._send_draft_frame)."""
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    exc = Exception("flood control")
+    exc.retry_after = 280.0
+    adapter._bot.do_api_request = AsyncMock(side_effect=exc)
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is False
+    assert result.retryable is True
+    assert result.retry_after == 280.0
+    # Must NOT have spent a second call on the legacy draft endpoint.
+    adapter._bot.send_message_draft.assert_not_called()
+    # Not a capability failure — rich drafts stay enabled for the next frame.
+    assert adapter._rich_draft_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_oversized_uses_legacy():
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    oversized = "a" * 40000
+
+    result = await adapter.send_draft("12345", draft_id=7, content=oversized)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once()
+
+
 # ----------------------------------------------------------------------
 # prefers_fresh_final_streaming: root DMs stay on the no-duplicate edit/draft
 # path (#47048). DM topics that degrade off drafts still need a fresh

@@ -464,6 +464,8 @@ Per-channel ephemeral system prompts that are injected on every turn in the matc
 ```yaml
 discord:
   channel_prompts:
+    "*": |
+      Follow the server-wide privacy and escalation policy.
     "1234567890": |
       This channel is for research tasks. Prefer deep comparisons,
       citations, and concise synthesis.
@@ -473,8 +475,10 @@ discord:
 ```
 
 Behavior:
-- Exact thread/channel ID matches win.
-- If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
+- The `"*"` prompt is prepended for every channel or thread.
+- Exact thread/channel ID matches win over parent entries.
+- If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes composes the wildcard with the parent channel/forum prompt.
+- An identical wildcard and selected prompt are emitted once.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
 #### `discord.history_backfill`

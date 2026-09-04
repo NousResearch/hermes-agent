@@ -1253,6 +1253,8 @@ Assign ephemeral system prompts to specific Telegram groups or forum topics. The
 ```yaml
 telegram:
   channel_prompts:
+    "*": |
+      Follow the shared privacy and escalation policy.
     "-1001234567890": |
       You are a research assistant. Focus on academic sources,
       citations, and concise synthesis.
@@ -1261,11 +1263,11 @@ telegram:
       constructive.
 ```
 
-Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, topic-level prompts override the group-level prompt:
+Keys are chat IDs (groups/supergroups) or forum topic IDs. The `"*"` prompt is prepended globally. For forum groups, the exact topic prompt is selected before the group-level parent prompt:
 
 - Message in topic `42` inside group `-1001234567890` → uses topic `42`'s prompt
 - Message in topic `99` (no explicit entry) → falls back to group `-1001234567890`'s prompt
-- Message in a group with no entry → no channel prompt applied
+- Message in a group with no entry → uses only the `"*"` prompt (or no prompt if `"*"` is absent)
 
 Numeric YAML keys are automatically normalized to strings.
 

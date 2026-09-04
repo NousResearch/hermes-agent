@@ -292,6 +292,29 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 }
 ```
 
+## Shared Channel Prompt Policies
+
+Platforms that support `channel_prompts` (Discord, Telegram, Slack,
+Mattermost, and Feishu/Lark) use the same resolver. Use `"*"` for policy
+text that must apply to every channel, then add channel-specific context:
+
+```yaml
+discord:
+  channel_prompts:
+    "*": |
+      Follow the organization's privacy and escalation policy.
+    "123456789012345678": |
+      This channel handles code review. Focus on correctness and regressions.
+```
+
+The wildcard is prepended to the selected channel prompt. Exact channel or
+thread IDs win over parent channel/forum IDs; without an exact match, threads
+inherit the parent prompt. Blank or non-string wildcard values are ignored. If
+the selected prompt is identical to the wildcard after trimming, Hermes emits
+it once. `channel_prompts` remain additive when a matching
+`channel_overrides.system_prompt` is configured: the override prompt is
+appended after the wildcard and selected channel prompt.
+
 ## Per-Channel Model & System Prompt Overrides
 
 Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:

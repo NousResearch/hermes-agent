@@ -989,6 +989,8 @@ Assign ephemeral system prompts to specific Slack channels. The prompt is inject
 ```yaml
 slack:
   channel_prompts:
+    "*": |
+      Follow the workspace-wide privacy and escalation policy.
     "C01RESEARCH": |
       You are a research assistant. Focus on academic sources,
       citations, and concise synthesis.
@@ -997,7 +999,7 @@ slack:
       performance implications.
 ```
 
-Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). The `"*"` prompt is prepended to every channel; a matching channel prompt is appended as additional ephemeral context.
 
 ## Per-Channel Skill Bindings
 

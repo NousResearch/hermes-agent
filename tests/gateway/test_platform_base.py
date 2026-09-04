@@ -14,6 +14,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
+    resolve_channel_prompt,
     safe_url_for_log,
     utf16_len,
     validate_inbound_media_size,
@@ -21,6 +22,88 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+
+
+class TestResolveChannelPrompt:
+    def test_wildcard_only_applies_to_any_channel(self):
+        config = {"channel_prompts": {"*": "Global policy"}}
+
+        assert resolve_channel_prompt(config, "channel-a") == "Global policy"
+        assert resolve_channel_prompt(config, "channel-b") == "Global policy"
+
+    def test_wildcard_is_prepended_to_exact_prompt(self):
+        config = {
+            "channel_prompts": {
+                "*": "Global policy",
+                "channel-a": "Exact context",
+            }
+        }
+
+        assert resolve_channel_prompt(config, "channel-a") == (
+            "Global policy\n\nExact context"
+        )
+
+    def test_wildcard_is_prepended_to_inherited_parent_prompt(self):
+        config = {
+            "channel_prompts": {
+                "*": "Global policy",
+                "parent": "Parent context",
+            }
+        }
+
+        assert resolve_channel_prompt(config, "thread", "parent") == (
+            "Global policy\n\nParent context"
+        )
+
+    def test_exact_prompt_still_wins_over_parent(self):
+        config = {
+            "channel_prompts": {
+                "*": "Global policy",
+                "thread": "Exact context",
+                "parent": "Parent context",
+            }
+        }
+
+        assert resolve_channel_prompt(config, "thread", "parent") == (
+            "Global policy\n\nExact context"
+        )
+
+    def test_existing_resolution_is_unchanged_without_wildcard(self):
+        config = {
+            "channel_prompts": {
+                "thread": "Exact context",
+                "parent": "Parent context",
+            }
+        }
+
+        assert resolve_channel_prompt(config, "thread", "parent") == "Exact context"
+        assert resolve_channel_prompt(config, "other", "parent") == "Parent context"
+        assert resolve_channel_prompt(config, "other") is None
+
+    @pytest.mark.parametrize("wildcard", [None, "   ", [], {}, 0, False])
+    def test_blank_or_malformed_wildcard_is_ignored(self, wildcard):
+        config = {
+            "channel_prompts": {
+                "*": wildcard,
+                "channel-a": "Exact context",
+            }
+        }
+
+        assert resolve_channel_prompt(config, "channel-a") == "Exact context"
+        assert resolve_channel_prompt(config, "channel-b") is None
+
+    def test_identical_wildcard_and_selected_prompt_are_emitted_once(self):
+        config = {
+            "channel_prompts": {
+                "*": "Same policy",
+                "thread": "  Same policy  ",
+                "parent": "Different parent context",
+            }
+        }
+
+        # The exact entry still wins over the parent; it is merely de-duplicated
+        # from the already-selected wildcard text.
+        assert resolve_channel_prompt(config, "thread", "parent") == "Same policy"
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):

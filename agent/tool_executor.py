@@ -126,6 +126,7 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Generous ceiling for slow-but-valid tool work (large page fetches, slow
 # remote backends) so the batch guard does not preempt a legitimate attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+_CONCURRENT_WAIT_POLL_INTERVAL_S = 0.25
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough
 # to cover slow-but-legitimate authorization (e.g. an approval round-trip),
@@ -340,6 +341,49 @@ def _cancelled_tool_result(reason: str = "user interrupt") -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _has_pending_steer(agent) -> bool:
+    """Return whether user guidance is waiting for the next tool boundary.
+
+    ``AIAgent.steer()`` is called from gateway/UI threads while the executor
+    runs on the turn thread. Read the slot under the same lock used by
+    ``steer()`` and ``_drain_pending_steer()`` so a tool-batch breakout never
+    races a concurrent append.
+    """
+    lock = getattr(agent, "_pending_steer_lock", None)
+    if lock is None:
+        return bool(getattr(agent, "_pending_steer", None))
+    with lock:
+        return bool(getattr(agent, "_pending_steer", None))
+
+
+def _append_steer_deferred_tool_results(
+    agent,
+    messages: list,
+    tool_calls,
+) -> bool:
+    """Close unstarted tool calls so the model can process a pending steer."""
+    for tool_call in tool_calls:
+        name = getattr(getattr(tool_call, "function", None), "name", "") or "tool"
+        messages.append(
+            make_tool_result_message(
+                name,
+                (
+                    f"[Tool execution deferred — {name} was not started. "
+                    "User guidance arrived and must be processed first]"
+                ),
+                _pairing_tool_call_id(tool_call),
+                effect_disposition="none",
+            )
+        )
+        if not _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"steer-deferred tool result {name}",
+        ):
+            return False
+    return True
 
 
 def _emit_cancelled_terminal_post_tool_call(
@@ -1513,6 +1557,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         futures = []
         future_to_index = {}
         timed_out_indices: set[int] = set()
+        steer_deferred_indices: set[int] = set()
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
             max_workers = _max_workers_for_tool_batch(runnable_calls)
@@ -1528,6 +1573,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 for submit_index, (i, tc, name, args, scope_block) in enumerate(
                     runnable_calls
                 ):
+                    # A steer may arrive after the model emitted this batch but
+                    # before its tools were submitted. Do not start work the
+                    # user has already redirected; synthesize paired tool
+                    # results below so message-role alternation stays valid.
+                    if _has_pending_steer(agent):
+                        steer_deferred_indices.update(
+                            pending_i
+                            for pending_i, *_rest in runnable_calls[submit_index:]
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}🧭 Steer pending — deferring "
+                            f"{len(steer_deferred_indices)} unstarted concurrent "
+                            "tool call(s)",
+                            force=True,
+                        )
+                        break
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
                     # callbacks into the worker thread; clears callbacks on exit.
@@ -1585,7 +1646,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _conc_start = time.time()
                 _interrupt_logged = False
                 while True:
-                    wait_timeout = 5.0
+                    wait_timeout = _CONCURRENT_WAIT_POLL_INTERVAL_S
                     if deadline is not None:
                         effective_deadline = (
                             deadline + authorization_gate.excluded_seconds()
@@ -1668,6 +1729,29 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
+                    # A conversational steer must not kill tools that already
+                    # started (their side-effect state may be unknown), but it
+                    # should cancel queued futures so the model can reconsider
+                    # them. Keep waiting for running tools; only successfully
+                    # cancelled, never-started calls are classified as deferred.
+                    newly_deferred = (
+                        {
+                            future_to_index[f]
+                            for f in not_done
+                            if future_to_index[f] not in steer_deferred_indices
+                            and f.cancel()
+                        }
+                        if _has_pending_steer(agent)
+                        else set()
+                    )
+                    if newly_deferred:
+                        steer_deferred_indices.update(newly_deferred)
+                        agent._vprint(
+                            f"{agent.log_prefix}🧭 Steer pending — deferring "
+                            f"{len(newly_deferred)} queued concurrent tool call(s)",
+                            force=True,
+                        )
+
                     _conc_elapsed = int(time.time() - _conc_start)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
@@ -1734,6 +1818,24 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 middleware_trace=list(middleware_trace),
             )
             tool_duration = float(timeout_s or 0.0)
+        elif i in steer_deferred_indices and r is None:
+            function_result = (
+                f"[Tool execution deferred — {name} was not started. "
+                "User guidance arrived and must be processed first]"
+            )
+            effect_disposition = "none"
+            is_error = False
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=name,
+                function_args=args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+                status="deferred",
+                middleware_trace=list(middleware_trace),
+            )
+            tool_duration = 0.0
         elif r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
@@ -2856,6 +2958,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     return
             break
 
+        if _has_pending_steer(agent) and i < len(assistant_message.tool_calls):
+            remaining_calls = assistant_message.tool_calls[i:]
+            agent._vprint(
+                f"{agent.log_prefix}🧭 Steer pending — deferring "
+                f"{len(remaining_calls)} remaining tool call(s) so the model "
+                "can process the guidance",
+                force=True,
+            )
+            if not _append_steer_deferred_tool_results(
+                agent,
+                messages,
+                remaining_calls,
+            ):
+                return
+            break
+
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     # Keep /steer pending until the final post-budget drain below.  The model
     # only receives this batch after all calls finish, and an early drain can
@@ -2903,9 +3021,30 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+
+        if _has_pending_steer(agent):
+            remaining_calls = [
+                tool_call
+                for _remaining_kind, segment_calls in segments[segment_index:]
+                for tool_call in segment_calls
+            ]
+            if remaining_calls:
+                agent._vprint(
+                    f"{agent.log_prefix}🧭 Steer pending — deferring "
+                    f"{len(remaining_calls)} segmented tool call(s) so the "
+                    "model can process the guidance",
+                    force=True,
+                )
+                if not _append_steer_deferred_tool_results(
+                    agent,
+                    messages,
+                    remaining_calls,
+                ):
+                    return
+            break
         segment_message = SimpleNamespace(tool_calls=list(calls))
         if kind == "parallel":
             execute_tool_calls_concurrent(

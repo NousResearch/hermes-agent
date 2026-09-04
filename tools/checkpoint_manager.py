@@ -307,15 +307,14 @@ def _git_env(
     * ``GIT_CONFIG_GLOBAL=<os.devnull>`` — ignore ``~/.gitconfig`` (git 2.32+).
     * ``GIT_CONFIG_SYSTEM=<os.devnull>`` — ignore ``/etc/gitconfig`` (git 2.32+).
     * ``GIT_CONFIG_NOSYSTEM=1`` — legacy belt-and-suspenders for older git.
+    * Drop environment-based git configuration and credential wrappers.
 
     ``index_file``, if given, forces git to use a per-project index under
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
     normalized_working_dir = _normalize_path(working_dir)
-    # git child with hand-isolated config env; exact preservation — a HOME
-    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
     from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    env = build_subprocess_env(scrub_secrets=True)
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -327,6 +326,22 @@ def _git_env(
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env.pop("GIT_CONFIG_PARAMETERS", None)
+    env.pop("GIT_CONFIG_COUNT", None)
+    for key in list(env):
+        upper = key.upper()
+        if upper.startswith("GIT_CONFIG_KEY_") or upper.startswith("GIT_CONFIG_VALUE_"):
+            env.pop(key, None)
+    for key in (
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_PROXY_COMMAND",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIFF_OPTS",
+    ):
+        env.pop(key, None)
     return env
 
 
@@ -500,14 +515,32 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
     # subprocess with just the config-isolation env vars.
     from tools.environments.local import build_subprocess_env
-    init_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    init_env = build_subprocess_env(scrub_secrets=True)
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
     # Drop any inherited GIT_* that would interfere.
-    for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE",
-              "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+    for k in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_PROXY_COMMAND",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIFF_OPTS",
+    ):
         init_env.pop(k, None)
+    for key in list(init_env):
+        upper = key.upper()
+        if upper.startswith("GIT_CONFIG_KEY_") or upper.startswith("GIT_CONFIG_VALUE_"):
+            init_env.pop(key, None)
     try:
         result = subprocess.run(
             ["git", "init", "--bare", str(store)],

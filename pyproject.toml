@@ -222,7 +222,13 @@ voice = [
 # first /wake; mirrored in tools/lazy_deps.py.
 wake = [
   "openwakeword==0.6.0",
-  "onnxruntime==1.27.0",
+  # onnxruntime<1.27.0 — ORT 1.27.0 ships a tightened x86_64 macOS shim
+  # that fails to initialize on Intel hardware (the macOS Intel pre-T2
+  # kernel slice the upstream wheels still target). Wake install dies with
+  # `CoreMLExecutionProviderRegister` / `OrtApi` symbol errors on Intel
+  # Macs; pinning <1.27 keeps the install green. Tracked in the lazy_deps
+  # comment below — bump to ==1.27.x once upstream ships an Intel-Mac fix.
+  "onnxruntime<1.27.0",
   "sherpa-onnx==1.13.4",
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",

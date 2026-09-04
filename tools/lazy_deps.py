@@ -167,7 +167,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "wake.openwakeword": (
         "openwakeword==0.6.0",
-        "onnxruntime==1.27.0",
+        # Mirror the pyproject.toml comment: onnxruntime 1.27.0 breaks
+        # Intel-Mac init. Keep this in sync with pyproject.toml:210.
+        "onnxruntime<1.27.0",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),

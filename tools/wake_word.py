@@ -49,6 +49,18 @@ SAMPLE_RATE = 16000
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
 
+# Post-wake capture: after a wake fires, the same mic stream keeps reading
+# frames so the user's *next* utterance (the command after "amos") is captured
+# on a healthy, already-routed device. Without this, the wake→voice handoff
+# would have to close the wake stream and open a second one on the same
+# physical mic, which on macOS races the CoreAudio AUHAL handle-release window
+# and delivers attenuated/empty audio. Keeping the same stream open eliminates
+# that race entirely.
+_POST_WAKE_SILENCE_RMS = 250           # int16 RMS below this counts as silence
+_POST_WAKE_SILENCE_DURATION = 1.5       # seconds of silence to auto-stop
+_POST_WAKE_MAX_DURATION = 30.0          # hard cap (matches voice default)
+_POST_WAKE_MIN_SPEECH_DURATION = 0.3   # seconds above threshold to confirm speech
+
 # Ambient-speech rejection: openWakeWord scores one ~80ms frame at a time, and a
 # stray phoneme in background conversation can spike a single frame over the
 # threshold. A real utterance of the phrase holds the score high across several
@@ -1025,6 +1037,17 @@ class WakeWordDetector:
         self.audio_silent = False
         self._silent_frames = 0
 
+        # Post-wake capture state. When set, the read loop transitions out
+        # of wake-detection mode and into capture mode: it stops calling
+        # engine.process(frame), instead appending frames to a buffer, and
+        # fires ``_capture_done_callback(audio_array, sample_rate)`` when
+        # silence is detected or the duration cap elapses. The detector's
+        # mic stream stays open the whole time — no close/reopen, no
+        # CoreAudio AUHAL race.
+        self._capture_active = False
+        self._capture_done_callback: Optional[Any] = None
+        self._capture_buffer: list = []
+
     @property
     def running(self) -> bool:
         t = self._thread
@@ -1100,6 +1123,168 @@ class WakeWordDetector:
 
     def resume(self) -> None:
         self.start()
+
+    def start_post_wake_capture(
+        self,
+        on_done: Callable[["Any", int], None],
+        *,
+        silence_rms: int = _POST_WAKE_SILENCE_RMS,
+        silence_duration: float = _POST_WAKE_SILENCE_DURATION,
+        max_duration: float = _POST_WAKE_MAX_DURATION,
+        min_speech_duration: float = _POST_WAKE_MIN_SPEECH_DURATION,
+    ) -> bool:
+        """After a wake fires, switch the read loop into capture mode.
+
+        The detector's mic stream stays open. Instead of forwarding frames to
+        the wake engine, frames are appended to an internal buffer. When
+        silence (RMS < ``silence_rms``) is sustained for ``silence_duration``
+        seconds — or ``max_duration`` elapses — ``on_done(audio_array,
+        sample_rate)`` is called from the wake thread with the captured
+        int16 mono audio and its sample rate (16 kHz).
+
+        Must be called from the wake callback thread (the ``on_wake``
+        callback runs on a daemon thread started by ``_dispatch_wake``). If
+        the detector is not currently running, returns ``False`` so the
+        caller can fall back to opening its own mic.
+
+        Returns ``True`` if capture was armed.
+        """
+        if not self.running:
+            return False
+        with self._lock:
+            self._capture_active = True
+            self._capture_done_callback = on_done
+            self._capture_buffer = []
+            self._capture_silence_rms = silence_rms
+            self._capture_silence_duration = silence_duration
+            self._capture_max_duration = max_duration
+            self._capture_min_speech_duration = min_speech_duration
+            self._capture_speech_start = 0.0
+            self._capture_has_spoken = False
+            self._capture_silence_start = 0.0
+            self._capture_start_time = time.monotonic()
+            self._capture_dip_start = 0.0
+            # Re-arm wake cooldown so a residual phoneme tail of "amos"
+            # can't re-fire wake detection before the user finishes their
+            # command. The reader thread sees _capture_active=True and
+            # stops calling engine.process(frame) entirely.
+            self._last_fire = time.monotonic()
+        logger.info(
+            "wake word: post-wake capture armed (silence_rms=%d, silence_duration=%.1fs, max=%.1fs)",
+            silence_rms, silence_duration, max_duration,
+        )
+        return True
+
+    def cancel_post_wake_capture(self) -> None:
+        """Drop any in-flight post-wake capture without firing the callback."""
+        with self._lock:
+            if not self._capture_active:
+                return
+            self._capture_active = False
+            self._capture_done_callback = None
+            self._capture_buffer = []
+            logger.debug("wake word: post-wake capture cancelled")
+
+    def _capture_tick(self, frame: "Any", np: "Any"):
+        """Per-frame capture logic. Appends the frame, runs VAD, returns
+        ``(audio_array, sample_rate)`` when capture should end, else None.
+        """
+        # Phase 1: under lock, append + decide whether to end.
+        should_finalize = False
+        try:
+            with self._lock:
+                if not self._capture_active:
+                    return None
+                self._capture_buffer.append(frame)
+                now = time.monotonic()
+                elapsed = now - self._capture_start_time
+
+                # Hard cap.
+                if elapsed >= self._capture_max_duration:
+                    logger.info(
+                        "wake word: post-wake capture reached max duration (%.1fs)",
+                        self._capture_max_duration,
+                    )
+                    should_finalize = True
+
+                if not should_finalize:
+                    # Compute RMS for VAD. int16 mono, frame is already
+                    # resampled to SAMPLE_RATE / engine.frame_length.
+                    rms_sq = float(np.mean(frame.astype(np.float64) ** 2))
+                    rms = int(rms_sq ** 0.5)
+                    threshold = self._capture_silence_rms
+
+                    if rms > threshold:
+                        # Audio above silence threshold — track speech start.
+                        self._capture_dip_start = 0.0
+                        if self._capture_speech_start == 0.0:
+                            self._capture_speech_start = now
+                        elif (
+                            not self._capture_has_spoken
+                            and now - self._capture_speech_start >= self._capture_min_speech_duration
+                        ):
+                            self._capture_has_spoken = True
+                        if self._capture_has_spoken:
+                            self._capture_silence_start = 0.0
+                    elif self._capture_has_spoken:
+                        # Below threshold after speech was confirmed — start
+                        # the silence timer. Brief dips during speech don't
+                        # count, mirroring AudioRecorder's VAD behavior.
+                        if self._capture_silence_start == 0.0:
+                            self._capture_silence_start = now
+                        elif now - self._capture_silence_start >= self._capture_silence_duration:
+                            logger.info(
+                                "wake word: post-wake capture silence detected (%.1fs)",
+                                self._capture_silence_duration,
+                            )
+                            should_finalize = True
+                    elif self._capture_speech_start > 0:
+                        # We were in a speech attempt but dipped.
+                        if self._capture_dip_start == 0.0:
+                            self._capture_dip_start = now
+                        elif now - self._capture_dip_start >= 0.3:
+                            # Tolerable dip window passed; reset speech attempt.
+                            self._capture_speech_start = 0.0
+                            self._capture_dip_start = 0.0
+        except Exception as e:
+            logger.warning("wake word: post-wake capture tick error: %s", e)
+            return None
+
+        # Phase 2: finalize OUTSIDE the lock (which is re-acquired inside
+        # _finalize_capture). This avoids the deadlock where _capture_tick
+        # holds self._lock and tries to re-acquire it in _finalize_capture.
+        if should_finalize:
+            return self._finalize_capture(np)
+        return None
+
+    def _finalize_capture(self, np: "Any"):
+        """Stop capturing, concatenate the buffer, return (audio, sample_rate).
+
+        Caller must NOT hold ``self._lock`` — this acquires it.
+        """
+        with self._lock:
+            if not self._capture_active:
+                return None
+            self._capture_active = False
+            buf = self._capture_buffer
+            self._capture_buffer = []
+        if not buf:
+            return np.zeros(0, dtype=np.int16), SAMPLE_RATE
+        try:
+            audio = np.concatenate(buf).astype(np.int16, copy=False)
+        except Exception as e:
+            logger.warning("wake word: capture concatenate failed: %s", e)
+            return np.zeros(0, dtype=np.int16), SAMPLE_RATE
+        return audio, SAMPLE_RATE
+
+    @staticmethod
+    def _invoke_capture_callback(cb: Callable[["Any", int], None],
+                                 audio: "Any", sample_rate: int) -> None:
+        """Run the capture-done callback in a daemon thread with full error guarding."""
+        try:
+            cb(audio, sample_rate)
+        except Exception as e:
+            logger.error("wake word: post-wake capture callback failed: %s", e, exc_info=True)
 
     def stop(self) -> None:
         self._halt_thread()
@@ -1235,6 +1420,33 @@ class WakeWordDetector:
                         logger.info("wake word: mic audio detected — stream healthy")
                     self._silent_frames = 0
                     self.audio_silent = False
+
+                # Post-wake capture branch: when armed, the read loop stays
+                # alive on the SAME mic stream (no close/reopen → no AUHAL
+                # race). Frames accumulate into a buffer; silence or a hard
+                # duration cap fires the done-callback with the captured
+                # audio. The wake engine is paused for the duration so a
+                # residual phoneme tail of "amos" can't immediately refire.
+                if self._capture_active:
+                    done = self._capture_tick(frame, np)
+                    if done is not None:
+                        # Callback is fired on a daemon thread so the read
+                        # loop is free to immediately re-arm for the next
+                        # wake — the user can keep issuing voice commands
+                        # without a 200ms thread-spin penalty.
+                        audio, sr = done
+                        cb = self._capture_done_callback
+                        self._capture_done_callback = None
+                        if cb is not None:
+                            threading.Thread(
+                                target=self._invoke_capture_callback,
+                                args=(cb, audio, sr),
+                                daemon=True,
+                                name="wake-word-capture-done",
+                            ).start()
+                        # Continue the read loop; do not exit on capture done.
+                    continue
+
                 try:
                     fired = self.engine.process(frame)
                 except Exception as e:
@@ -1406,6 +1618,39 @@ def pause_listening(*, owner: object) -> bool:
         if _detector is None or _detector_owner is not owner:
             return False
         _detector.pause()
+        return True
+
+
+def start_post_wake_capture(
+    on_done: Callable[["Any", int], None],
+    *,
+    owner: object,
+    **kwargs,
+) -> bool:
+    """Arm post-wake capture on the singleton detector.
+
+    If the wake listener was started by ``owner``, switches its read loop
+    into capture mode on the SAME mic stream (no close/reopen, so no
+    CoreAudio AUHAL race). The detector's wake engine is paused for the
+    duration; once capture ends, the engine resumes automatically on the
+    next frame.
+
+    Returns True on success, False if the detector isn't owned by ``owner``
+    or isn't running.
+    """
+    with _detector_lock:
+        if _detector is None or _detector_owner is not owner:
+            return False
+        det = _detector
+    return det.start_post_wake_capture(on_done, **kwargs)
+
+
+def cancel_post_wake_capture(*, owner: object) -> bool:
+    """Cancel any in-flight post-wake capture without firing the callback."""
+    with _detector_lock:
+        if _detector is None or _detector_owner is not owner:
+            return False
+        _detector.cancel_post_wake_capture()
         return True
 
 

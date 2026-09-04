@@ -41,7 +41,7 @@ def main() -> int:
     if not MANIFEST.exists():
         print("compat_manifest.json missing — nothing to check (compat layer already reverted?)")
         return 0
-    entries = json.loads(MANIFEST.read_text(encoding=utf-8-sig))["entries"]
+    entries = json.loads(MANIFEST.read_text(encoding="utf-8-sig"))["entries"]
     compat: dict[str, set[str]] = {}
     for e in entries:
         compat.setdefault(e["facade"], set()).add(e["name"])
@@ -51,7 +51,7 @@ def main() -> int:
     for path in _py_files():
         rel = path.relative_to(ROOT)
         try:
-            src = path.read_text(encoding=utf-8-sig, errors="ignore")
+            src = path.read_text(encoding="utf-8-sig", errors="ignore")
             tree = ast.parse(src)
         except SyntaxError:
             continue

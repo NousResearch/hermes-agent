@@ -317,7 +317,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
 def _read_json(path: Path) -> Optional[dict]:
     """Parse ``path`` as a JSON object; None when missing, unreadable, or not a dict."""
-    blob = _quiet(lambda: json.loads(path.read_text(encoding=utf-8-sig)))
+    blob = _quiet(lambda: json.loads(path.read_text(encoding="utf-8-sig")))
     return blob if isinstance(blob, dict) else None
 
 

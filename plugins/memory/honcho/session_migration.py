@@ -49,7 +49,7 @@ class SessionMigrationMixin:
         uploaded = False
         for filename, upload_name, description, target_kind in _MEMORY_FILES:
             filepath = memory_path / filename
-            content = filepath.read_text(encoding=utf-8-sig).strip() if filepath.exists() else ""
+            content = filepath.read_text(encoding="utf-8-sig").strip() if filepath.exists() else ""
             if not content:
                 continue
             target_peer_id = session.user_peer_id if target_kind == "user" else session.assistant_peer_id

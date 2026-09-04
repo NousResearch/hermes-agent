@@ -576,7 +576,7 @@ def _file_lock(
                     lock_path.write_text(" ", encoding="utf-8")
                 except (OSError, PermissionError):
                     pass
-            lock_file = stack.enter_context(lock_path.open("r+" if msvcrt else "a+", encoding=utf-8-sig))
+            lock_file = stack.enter_context(lock_path.open("r+" if msvcrt else "a+", encoding="utf-8-sig"))
             deadline = time.monotonic() + max(1.0, timeout_seconds)
             while True:
                 try:
@@ -1820,7 +1820,7 @@ def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[st
     try:
         cli_config = os.path.expanduser("~/.copilot/config.json")
         if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding=utf-8-sig, errors="ignore") as fh:
+            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
                 raw = "\n".join(
                     line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
             tokens = (json.loads(raw) if raw.strip() else {}).get("copilotTokens")

@@ -442,7 +442,7 @@ def probe_gateway_loop_liveness(
         from gateway.shutdown_watchdog import get_loop_heartbeat_path
         path = get_loop_heartbeat_path(home)
         mtime = path.stat().st_mtime
-        payload = json.loads(path.read_text(encoding=utf-8-sig))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
         heartbeat_pid = int(payload.get("pid", 0))
     except Exception:
         return GATEWAY_LOOP_UNKNOWN
@@ -1101,7 +1101,7 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
     if not unit_path.exists():
         return None
     try:
-        text = unit_path.read_text(encoding=utf-8-sig)
+        text = unit_path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
     for line in text.splitlines():
@@ -2229,7 +2229,7 @@ def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
             try:
                 if not unit_path.exists():
                     continue
-                text = unit_path.read_text(encoding=utf-8-sig, errors="ignore")
+                text = unit_path.read_text(encoding="utf-8-sig", errors="ignore")
             except (OSError, PermissionError):
                 continue
             if any(marker in text for marker in _LEGACY_UNIT_EXECSTART_MARKERS):
@@ -2365,7 +2365,7 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
 def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
     if not unit_path.exists():
         return None
-    for line in unit_path.read_text(encoding=utf-8-sig).splitlines():
+    for line in unit_path.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith("User="):
             return line.split("=", 1)[1].strip() or None
     return None
@@ -2870,7 +2870,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
-    installed = unit_path.read_text(encoding=utf-8-sig)
+    installed = unit_path.read_text(encoding="utf-8-sig")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
@@ -3482,7 +3482,7 @@ def _append_launchd_reload_log(message: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         from datetime import datetime as _dt
         stamp = _dt.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
-        with path.open("a", encoding=utf-8-sig) as fh:
+        with path.open("a", encoding="utf-8-sig") as fh:
             fh.write(f"[{stamp}] {message}\n")
     except OSError:
         pass
@@ -3735,7 +3735,7 @@ def launchd_plist_is_current() -> bool:
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
-    installed = plist_path.read_text(encoding=utf-8-sig)
+    installed = plist_path.read_text(encoding="utf-8-sig")
     norm = _normalize_launchd_plist_for_comparison
     return norm(installed) == norm(generate_launchd_plist())
 

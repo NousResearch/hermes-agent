@@ -40,7 +40,7 @@ def _snapshot_child_pids() -> set:
         found: set = set()
         for tid in os.listdir(task_dir):
             try:
-                with open(f"{task_dir}/{tid}/children", encoding=utf-8-sig) as f:
+                with open(f"{task_dir}/{tid}/children", encoding="utf-8-sig") as f:
                     found.update(int(p) for p in f.read().split() if p.strip())
             except (FileNotFoundError, OSError, ValueError):
                 continue  # thread exited between listdir and open

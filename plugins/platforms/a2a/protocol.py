@@ -445,7 +445,7 @@ def persist_message(context_id: str, role: str, text: str, task_id: str = "") ->
     try:
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding=utf-8-sig) as fh:
+        with path.open("a", encoding="utf-8-sig") as fh:
             fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
     except Exception:
         pass
@@ -454,7 +454,7 @@ def persist_message(context_id: str, role: str, text: str, task_id: str = "") ->
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     """Last *limit* messages for a context (empty list if none / unreadable)."""
     try:
-        lines = _conv_path(context_id).read_text(encoding=utf-8-sig).splitlines()
+        lines = _conv_path(context_id).read_text(encoding="utf-8-sig").splitlines()
     except Exception:
         return []
     out: list[dict] = []

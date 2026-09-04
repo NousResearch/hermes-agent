@@ -105,8 +105,7 @@ let SCRIPT_HASH = '';
 try {
   SCRIPT_HASH = createHash('sha256')
     .update(readFileSync(fileURLToPath(import.meta.url)))
-    .digest('hex')
-    .slice(0, 16);
+    .digest('hex');
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');

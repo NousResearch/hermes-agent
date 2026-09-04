@@ -198,12 +198,30 @@ def _is_allowed_bridge_path(url: str) -> bool:
 
 
 def _file_content_hash(path: Path) -> str:
-    """First 16 hex chars of SHA-256 of *path* ("" if unreadable); bridge.js reports its own as ``/health`` ``scriptHash``."""
+    """Full SHA-256 of *path* ("" if unreadable); bridge.js reports its own as ``/health`` ``scriptHash``."""
     import hashlib
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return ""
+
+
+
+def _bridge_hash_matches(reported_hash: object, expected_hash: str) -> bool:
+    """True when the bridge reported exactly *expected_hash*.
+
+    Both sides must be a well-formed full SHA-256. A truncated prefix is
+    rejected rather than accepted as a partial match: the whole point of the
+    handshake is to prove the running bridge is serving the bytes on disk, and
+    a 64-bit prefix is not enough to establish that.
+    """
+    import hmac  # local, matching _file_content_hash's import style above
+
+    if not isinstance(reported_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", reported_hash):
+        return False
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_hash or ""):
+        return False
+    return hmac.compare_digest(reported_hash, expected_hash)
 
 
 def check_whatsapp_requirements() -> bool:
@@ -354,7 +372,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
             running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
+            if _bridge_hash_matches(running_hash, disk_hash) and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                 self._mark_connected()
                 self._attach_to_bridge(None)  # Not managed by us

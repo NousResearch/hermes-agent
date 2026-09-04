@@ -595,6 +595,43 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+    def test_builtin_name_collision_keeps_mcp_alias_searchable(self):
+        from tools.registry import registry
+        import model_tools
+
+        self._register("mcp__memory__read_graph", "mcp-memory")
+        registry.register_toolset_alias("memory", "mcp-memory")
+
+        source_result = model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "unrelated capability", "limit": 5},
+            enabled_toolsets=["memory"],
+        )
+
+        source_payload = json.loads(source_result)
+        assert {source["name"] for source in source_payload["available_sources"]} == {
+            "memory"
+        }
+
+        match_result = model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "read graph", "limit": 5},
+            enabled_toolsets=["memory"],
+        )
+        assert "mcp__memory__read_graph" in {
+            match["name"] for match in json.loads(match_result)["matches"]
+        }
+
+        call_result = model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": "mcp__memory__read_graph", "arguments": {}},
+            enabled_toolsets=["memory"],
+        )
+        assert json.loads(call_result) == {
+            "ok": True,
+            "tool": "mcp__memory__read_graph",
+        }
+
 
 # ---------------------------------------------------------------------------
 # Catalog listing (skills-style progressive disclosure)

@@ -35,9 +35,6 @@ let container: HTMLDivElement;
 let root: Root;
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// SessionsPage mounts several providers and lazy UI effects; hosted runners
-// can legitimately need more than Vitest's default five-second test budget.
-// The polling interval stays short, while the overall wait remains bounded.
 async function waitFor(cond: () => boolean, timeoutMs = 15_000) {
   const start = Date.now();
   while (!cond()) {
@@ -153,5 +150,5 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     );
     await act(async () => click(confirm ?? null));
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-guanli", "guanli");
-  }, 30_000);
+  }, 15_000);
 });

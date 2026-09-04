@@ -1067,6 +1067,19 @@ def content_hash(skill_path: Path) -> str:
 # Structural checks
 # ---------------------------------------------------------------------------
 
+def _declares_agent_plugins_v1(path: Path) -> bool:
+    """True only when *path* parses as a JSON object declaring the canonical
+    agent-plugins-v1 ``$schema``. Fail-closed: any read/parse error counts as
+    "not a plugin root" so a planted manifest cannot grant exemptions."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and (
+        data.get("$schema") == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+    )
+
+
 def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
     """
     Check the skill directory for structural anomalies:
@@ -1171,8 +1184,11 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
 
     # File count limit. Skipped for agent-plugin roots: a portable plugin
     # package legitimately bundles many skills, so the per-skill file-count
-    # rule does not apply to the package as a whole.
-    is_plugin_root = (skill_dir / "plugin.json").is_file()
+    # rule does not apply to the package as a whole. The exemption requires
+    # the manifest to actually declare the agent-plugins-v1 $schema — a
+    # planted plugin.json alone must not disable the structural heuristic.
+    plugin_json = skill_dir / "plugin.json"
+    is_plugin_root = plugin_json.is_file() and _declares_agent_plugins_v1(plugin_json)
     if file_count > MAX_FILE_COUNT and not is_plugin_root:
         findings.append(Finding(
             pattern_id="too_many_files",

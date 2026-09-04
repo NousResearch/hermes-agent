@@ -8291,7 +8291,16 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            # Free-response channels skip auto-threading so ambient chatter does
+            # not spawn a thread per message — but an explicit @mention is a
+            # deliberate request to start a conversation, so it should still get
+            # its own thread just like in a normal channel.  Without this, a bot
+            # that is free-response in a busy channel can never be given an
+            # isolated thread, and every reply lands inline.
+            mentioned_bot = mention_prefix or self._self_is_explicitly_mentioned(message)
+            skip_thread = bool(channel_keys & no_thread_channels) or (
+                is_free_channel and not mentioned_bot
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

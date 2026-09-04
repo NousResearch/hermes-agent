@@ -21,6 +21,8 @@ These tests verify:
 
 from __future__ import annotations
 
+import re
+
 import logging
 
 from hermes_cli.auth import (
@@ -100,8 +102,15 @@ class TestCallSiteWiring:
         drops, someone removed protection; if it grows, audit the new
         site to be sure validation is appropriate."""
         source = self._read_auth_source()
-        refresh_count = source.count(
-            '_validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))'
+        # Both refresh sites pass the issuing Portal so the validator can apply
+        # the portal→inference-host pairing (staging portal ⇒ staging gateway).
+        refresh_count = len(
+            re.findall(
+                r'_validate_nous_inference_url_from_network\(\s*'
+                r'refreshed\.get\("inference_base_url"\),\s*'
+                r'(?:portal_base_url|state\.get\("portal_base_url"\))\s*\)',
+                source,
+            )
         )
         mint_count = source.count(
             '_validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))'

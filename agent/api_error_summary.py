@@ -6,6 +6,7 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 """
 import json
 import re
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from agent.redact import redact_sensitive_text
@@ -28,6 +29,23 @@ _XAI_ENTITLEMENT_HINT = (
     "which, or run `/model` to switch providers."
 )
 _ERROR_DETAIL_KEYS = ("message", "detail", "error", "code", "type")
+
+# Z.AI / Zhipu quota walls return a 429 body phrased "Usage limit reached for
+# 5 hour. Your limit will reset at 2026-09-04 19:01:25" — the timestamp is a
+# *naive* Beijing-time (UTC+8) value with no zone marker. Rendering it verbatim
+# misleads users in other zones by the offset (6h for Europe/Warsaw in summer).
+_RESET_AT_PATTERN = re.compile(
+    r"reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", re.IGNORECASE
+)
+# Z.AI's quota window is ~5h, so a genuine Beijing interpretation of the
+# timestamp lands minutes-to-hours ahead of now. The window is deliberately
+# generous (up to 6h) to absorb clock drift, and one-sided (strictly future):
+# if the provider ever switches to UTC or already-local timestamps, the
+# Beijing interpretation falls outside the window and the text passes through
+# unchanged — no wrong annotation is ever added.
+_RESET_AT_SANITY_WINDOW_SECONDS = 6 * 3600
+# Must match the annotation text emitted below — checked for idempotence.
+_ANNOTATION_MARKER = "Beijing time, UTC+8; local:"
 
 
 def _is_xai_entitlement_text(lower: str) -> bool:
@@ -123,6 +141,54 @@ class ApiErrorSummaryMixin:
         return str(value)
 
     @staticmethod
+    def _annotate_naive_beijing_reset_timestamp(text: str) -> str:
+        """Append a local-time conversion to naive Beijing reset timestamps.
+
+        Z.AI / Zhipu usage-limit 429 bodies say "Your limit will reset at
+        2026-09-04 19:01:25" — a naive Beijing-time (UTC+8) timestamp with no
+        zone marker. Shown verbatim to a user in another timezone it misleads
+        by the zone offset (6h for Europe/Warsaw in summer). This annotates
+        the timestamp with the user's local equivalent.
+
+        Guarded by a one-sided sanity window: the annotation is added only
+        when interpreting the timestamp as Beijing time lands strictly in the
+        future and within ``_RESET_AT_SANITY_WINDOW_SECONDS``. If the provider
+        ever switches to UTC or already-local timestamps, the Beijing reading
+        falls outside the window and the text passes through unchanged — the
+        guard makes a wrong annotation impossible rather than merely unlikely.
+        Idempotent: already-annotated text is returned as-is.
+        """
+        if _ANNOTATION_MARKER in text:
+            return text
+        m = _RESET_AT_PATTERN.search(text)
+        if not m:
+            return text
+        try:
+            from zoneinfo import ZoneInfo
+
+            naive = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            try:
+                from hermes_time import get_timezone
+
+                local_tz = get_timezone() or datetime.now().astimezone().tzinfo
+            except Exception:
+                local_tz = datetime.now().astimezone().tzinfo
+            if local_tz is None:
+                return text
+            now_local = datetime.now(local_tz)
+            local = naive.replace(tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(local_tz)
+            if not 0 < (local - now_local).total_seconds() <= _RESET_AT_SANITY_WINDOW_SECONDS:
+                return text
+            return text.replace(
+                m.group(0),
+                f"{m.group(0)} (Beijing time, UTC+8; local: "
+                f"{local.strftime('%Y-%m-%d %H:%M:%S')})",
+                1,
+            )
+        except Exception:
+            return text
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -167,6 +233,7 @@ class ApiErrorSummaryMixin:
             msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
+                msg = ApiErrorSummaryMixin._annotate_naive_beijing_reset_timestamp(msg)
                 return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
         # SDK may leave body empty while httpx has the payload. Redact: the body is attacker-influenced
@@ -188,9 +255,15 @@ class ApiErrorSummaryMixin:
                 if isinstance(payload, dict):
                     err = payload.get("error")
                     if isinstance(err, dict) and err.get("message"):
-                        return redact_sensitive_text(f"{prefix}{str(err['message'])[:300]}")
+                        _msg = ApiErrorSummaryMixin._annotate_naive_beijing_reset_timestamp(
+                            str(err["message"])
+                        )
+                        return redact_sensitive_text(f"{prefix}{_msg[:300]}")
                     if payload.get("message"):
-                        return redact_sensitive_text(f"{prefix}{str(payload['message'])[:300]}")
+                        _msg = ApiErrorSummaryMixin._annotate_naive_beijing_reset_timestamp(
+                            str(payload["message"])
+                        )
+                        return redact_sensitive_text(f"{prefix}{_msg[:300]}")
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars

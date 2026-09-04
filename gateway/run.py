@@ -9087,6 +9087,76 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
+        # Model routing happens once while constructing the turn route. It is
+        # deliberately before AIAgent creation and is never consulted from
+        # the tool loop, preserving the frozen prompt/tool cache for a turn.
+        router_cfg = getattr(self, "config", None)
+        router_cfg = router_cfg.get("model_router", {}) if isinstance(router_cfg, dict) else {}
+        mode = router_cfg.get("mode", "off") if isinstance(router_cfg, dict) else "off"
+        raw_candidates = router_cfg.get("candidates", []) if isinstance(router_cfg, dict) else []
+        if mode in {"suggest", "auto"} and isinstance(raw_candidates, list) and raw_candidates:
+            try:
+                from agent.model_router import Candidate, route_turn
+
+                candidates = []
+                runtimes = {}
+                for item in raw_candidates:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate_model = item.get("model")
+                    candidate_provider = item.get("provider", "")
+                    if not isinstance(candidate_model, str) or not candidate_model.strip():
+                        continue
+                    if candidate_model == model and candidate_provider in {"", runtime["provider"]}:
+                        candidate_runtime = runtime
+                    else:
+                        try:
+                            candidate_runtime = _resolve_runtime_agent_kwargs_for_provider(candidate_provider) if candidate_provider else {}
+                        except Exception:
+                            continue
+                    if candidate_provider and candidate_runtime.get("provider") != candidate_provider:
+                        continue
+                    candidates.append(Candidate(
+                        model=candidate_model.strip(),
+                        provider=str(candidate_runtime.get("provider") or candidate_provider),
+                        context_window=int(item.get("context_window", 0) or 0),
+                        reasoning=bool(item.get("reasoning", False)),
+                        vision=bool(item.get("vision", False)),
+                        quality=float(item.get("quality", 0.5)),
+                        cost=float(item.get("cost", 0.5)),
+                    ))
+                    runtimes[candidate_model.strip()] = candidate_runtime
+                decision = route_turn(user_message, candidates, current_model=model, mode=mode)
+                route["model_router"] = {
+                    "reason": decision.reason,
+                    "explanation": decision.explanation,
+                    "suggestion": decision.suggestion,
+                    "rejected": list(decision.rejected),
+                }
+                logger.info(
+                    "Model router decision: mode=%s current=%s selected=%s reason=%s",
+                    mode, model, decision.selected_model, decision.reason,
+                )
+                if mode == "auto" and decision.selected_model in runtimes:
+                    selected_runtime = runtimes[decision.selected_model]
+                    route["model"] = decision.selected_model
+                    route["runtime"].update({
+                        key: selected_runtime.get(key)
+                        for key in ("api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args", "credential_pool", "max_tokens", "capabilities")
+                        if key in selected_runtime
+                    })
+                    # The cache key must describe the selected model/runtime,
+                    # not the pre-routing model, otherwise a routed turn can
+                    # accidentally reuse an agent built for another backend.
+                    route["signature"] = (
+                        route["model"], route["runtime"]["provider"],
+                        route["runtime"]["requested_provider"], route["runtime"]["base_url"],
+                        route["runtime"]["api_mode"], route["runtime"]["command"],
+                        tuple(route["runtime"]["args"]),
+                    )
+            except Exception:
+                logger.debug("Model router unavailable; retaining current turn model", exc_info=True)
+
         # Provider-level request_overrides (e.g. a custom_providers extra_body)
         # resolved upstream by resolve_runtime_provider().  These were being
         # dropped by the runtime whitelist above, so a custom provider's

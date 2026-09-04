@@ -8,6 +8,12 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # Deterministic model routing is opt-in. Candidates must be explicitly
+    # configured so routing never guesses credentials or provider capability.
+    "model_router": {
+        "mode": "off",  # "off", "suggest", or "auto"
+        "candidates": [],
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # SQLite journal mode used by every Hermes database opener. WAL is the

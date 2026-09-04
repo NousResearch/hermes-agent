@@ -203,9 +203,30 @@ def _cmd_subscribe(args):
     base_url = _get_webhook_base_url()
     status = "Updated" if is_update else "Created"
 
+    # Never echo the full HMAC secret by default — `hermes webhook subscribe`
+    # GENERATES the secret itself, so without masking every invocation leaks a
+    # fresh credential into terminal scrollback, shell transcripts, agent
+    # conversation logs, and CI output. Show a masked form; the operator can
+    # opt in with --show-secret at creation time, or read it from the 0600
+    # subscriptions file. (The hint does NOT suggest re-running subscribe:
+    # re-running without --secret regenerates and silently rotates it.)
+    if getattr(args, "show_secret", False):
+        secret_display = secret
+        secret_hint = ""
+    else:
+        from agent.redact import mask_secret
+
+        secret_display = mask_secret(secret)
+        secret_hint = (
+            f"  (masked — full secret is stored in "
+            f"{display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})"
+        )
+
     print(f"\n  {status} webhook subscription: {name}")
     print(f"  URL:    {base_url}/webhooks/{name}")
-    print(f"  Secret: {secret}")
+    print(f"  Secret: {secret_display}")
+    if secret_hint:
+        print(secret_hint)
     if events:
         print(f"  Events: {', '.join(events)}")
     else:

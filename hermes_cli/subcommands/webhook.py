@@ -49,6 +49,14 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"
     )
     wh_sub.add_argument(
+        "--show-secret",
+        action="store_true",
+        help="Print the full HMAC secret instead of a masked form. Off by "
+        "default so the generated secret doesn't land in terminal "
+        "scrollback/logs; it is always saved to "
+        "~/.hermes/webhook_subscriptions.json (mode 0600).",
+    )
+    wh_sub.add_argument(
         "--deliver-only",
         action="store_true",
         help="Skip the agent — deliver the rendered prompt directly as the "

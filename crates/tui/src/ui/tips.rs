@@ -14,8 +14,8 @@ use crate::tips::{self, TIPS};
 pub struct TipBar;
 
 impl TipBar {
-    /// Two pad rows, copy, hairline — keeps the bar off the window chrome.
-    pub const HEIGHT: u16 = 4;
+    /// One pad row, copy, hairline — same inset above the copy as below it.
+    pub const HEIGHT: u16 = 3;
 
     pub fn render(frame: &mut Frame, area: Rect, state: &mut AppState) {
         if area.height == 0 || !state.tips_open {
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn height_pads_chrome() {
-        assert_eq!(TipBar::HEIGHT, 4);
+        assert_eq!(TipBar::HEIGHT, 3);
         let s = AppState::new();
         assert!(s.tips_open);
         assert!(s.tip_index < TIPS.len());

@@ -4525,6 +4525,11 @@ class TelegramAdapter(BasePlatformAdapter):
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message
         ))
+        app.add_handler(TelegramMessageHandler(
+            filters.StatusUpdate.FORUM_TOPIC_CREATED
+            | filters.StatusUpdate.FORUM_TOPIC_EDITED,
+            self._handle_forum_topic_name_update,
+        ))
         # Handle inline keyboard button callbacks (update prompts)
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker (@botname <query>) — searchable, uncapped
@@ -9985,6 +9990,38 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def _handle_forum_topic_name_update(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Forward a user-created or user-edited forum topic name to the gateway."""
+        msg = self._effective_update_message(update)
+        actor = getattr(msg, "from_user", None) if msg is not None else None
+        if (
+            msg is None
+            or actor is None
+            or bool(getattr(actor, "is_bot", False))
+            or not self._is_user_authorized_from_message(msg)
+        ):
+            return
+
+        edited = getattr(msg, "forum_topic_edited", None)
+        created = getattr(msg, "forum_topic_created", None)
+        topic = edited or created
+        name = getattr(topic, "name", None)
+        if not isinstance(name, str) or not name.strip():
+            return
+
+        event = self._build_message_event(
+            msg,
+            MessageType.TEXT,
+            update_id=getattr(update, "update_id", None),
+        )
+        event.text = ""
+        event.allow_gateway_control = False
+        event.source.chat_topic = name
+        event.metadata["telegram_forum_topic_name"] = name
+        await self.handle_message(event)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.

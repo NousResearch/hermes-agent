@@ -2,6 +2,8 @@ import { atom } from 'nanostores'
 
 import { capitalize } from '@/lib/text'
 
+import { lineageAliases } from './session'
+
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
@@ -197,7 +199,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     status,
     taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,
     taskIndex: num(payload.task_index) ?? prev?.taskIndex ?? 0,
-    startedAt: prev?.startedAt ?? at,
+    startedAt: prev?.startedAt ?? (num(payload.started_at) ?? at / 1_000) * 1_000,
     updatedAt: at,
     durationSeconds: num(payload.duration_seconds) ?? prev?.durationSeconds,
     costUsd: num(payload.cost_usd) ?? prev?.costUsd,
@@ -275,7 +277,10 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const id = idOf(payload)
   const idx = list.findIndex(item => item.id === id)
 
-  if (idx < 0 && !createIfMissing) {
+  // Completion is authoritative even when a renderer reload erased the start
+  // row. Other late event types still require an existing row so stray
+  // progress cannot invent a running subagent.
+  if (idx < 0 && !createIfMissing && eventType !== 'subagent.complete') {
     return
   }
 
@@ -289,6 +294,58 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })
+}
+
+/** Re-seed rows that survived in the gateway while the renderer store did not. */
+export function restoreActiveSubagents(sid: string, entries: readonly SubagentPayload[]) {
+  if (!sid) {
+    return
+  }
+
+  for (const entry of entries) {
+    upsertSubagent(sid, entry, true, 'subagent.start')
+  }
+}
+
+/** Pick the live children owned by this conversation, including old compression tips. */
+export function activeSubagentsForStoredSession(
+  storedSessionId: string,
+  entries: readonly SubagentPayload[],
+  sessions: Parameters<typeof lineageAliases>[1]
+): SubagentPayload[] {
+  if (!storedSessionId) {
+    return []
+  }
+
+  const owners = new Set(lineageAliases(storedSessionId, sessions))
+
+  const includedIds = new Set(
+    entries
+      .filter(entry => owners.has(str(entry.owner_agent_session_id)))
+      .map(entry => str(entry.subagent_id))
+      .filter(Boolean)
+  )
+
+  // Nested children name their immediate subagent parent rather than the
+  // top-level conversation. Grow from owned roots so grandchildren survive a
+  // renderer reload without admitting an unrelated tree.
+  let changed = true
+
+  while (changed) {
+    changed = false
+
+    for (const entry of entries) {
+      const id = str(entry.subagent_id)
+      const parentId = str(entry.parent_id)
+
+      if (id && parentId && includedIds.has(parentId) && !includedIds.has(id)) {
+        includedIds.add(id)
+        changed = true
+      }
+    }
+  }
+
+  return entries.filter(entry => includedIds.has(str(entry.subagent_id)))
 }
 
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {

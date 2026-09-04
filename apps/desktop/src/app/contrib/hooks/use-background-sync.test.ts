@@ -22,6 +22,7 @@ import {
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
+import { $subagentsBySession } from '@/store/subagents'
 
 import {
   type ActiveTranscriptRefreshDeps,
@@ -177,6 +178,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   clearAllSessionStates()
   $sessionTiles.set([])
+  $subagentsBySession.set({})
   resetTypingActivityTracking()
 })
 
@@ -1004,5 +1006,150 @@ describe('isTypingBurstActive', () => {
 
     // Exactly one quiet threshold after the last key the keyboard is cold.
     expect(isTypingBurstActive(1_000_000 + 1_500)).toBe(false)
+  })
+})
+
+describe('running subagent rehydration', () => {
+  it('restores only the resumed conversation from delegation.status', async () => {
+    setSessions([
+      {
+        _lineage_ids: ['stored-root', 'stored-tip'],
+        _lineage_root_id: 'stored-root',
+        id: 'stored-tip'
+      }
+    ] as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'delegation.status') {
+        return {
+          active: [
+            {
+              goal: 'owned work',
+              owner_agent_session_id: 'stored-root',
+              started_at: 1_700_000_000,
+              status: 'running',
+              subagent_id: 'sa-owned'
+            },
+            {
+              goal: 'other conversation',
+              owner_agent_session_id: 'stored-foreign',
+              status: 'running',
+              subagent_id: 'sa-foreign'
+            }
+          ]
+        }
+      }
+
+      return { sessions: [] }
+    })
+
+    renderHook(() =>
+      useBackgroundSync({
+        activeConnectionId: 'local',
+        activeGatewayProfile: 'default',
+        activeIsMessaging: false,
+        activeSessionId: 'runtime-tip',
+        activeStoredSessionId: 'stored-tip',
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveTranscript: vi.fn(),
+        refreshCronJobs: vi.fn(),
+        refreshCurrentModel: vi.fn(),
+        refreshHermesConfig: vi.fn(),
+        refreshMessagingSessions: vi.fn(),
+        refreshSessions: vi.fn(),
+        requestGateway: requestGateway as never,
+        updateSessionState: vi.fn()
+      })
+    )
+
+    await waitFor(() => {
+      expect($subagentsBySession.get()['runtime-tip']?.map(item => item.id)).toEqual(['sa-owned'])
+    })
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'delegation.status')).toEqual([
+      ['delegation.status', { session_id: 'runtime-tip' }]
+    ])
+  })
+
+  it('discards a stale snapshot after a session switch and does not poll on rerender', async () => {
+    let resolveFirst!: (value: unknown) => void
+
+    const first = new Promise(resolve => {
+      resolveFirst = resolve
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method !== 'delegation.status') {
+        return { sessions: [] }
+      }
+
+      if (params?.session_id === 'runtime-a') {
+        return first
+      }
+
+      return {
+        active: [
+          {
+            owner_agent_session_id: 'stored-b',
+            status: 'running',
+            subagent_id: 'sa-b'
+          }
+        ]
+      }
+    })
+
+    const stable = {
+      refreshActiveTranscript: vi.fn(),
+      refreshCronJobs: vi.fn(),
+      refreshCurrentModel: vi.fn(),
+      refreshHermesConfig: vi.fn(),
+      refreshMessagingSessions: vi.fn(),
+      refreshSessions: vi.fn(),
+      requestGateway: requestGateway as never,
+      updateSessionState: vi.fn()
+    }
+
+    const { rerender } = renderHook(
+      props =>
+        useBackgroundSync({
+          ...stable,
+          activeConnectionId: 'local',
+          activeGatewayProfile: 'default',
+          activeIsMessaging: false,
+          activeSessionId: props.runtime,
+          activeStoredSessionId: props.stored,
+          freshDraftReady: false,
+          gatewayState: 'open'
+        }),
+      { initialProps: { runtime: 'runtime-a', stored: 'stored-a' } }
+    )
+
+    rerender({ runtime: 'runtime-b', stored: 'stored-b' })
+
+    await waitFor(() => {
+      expect($subagentsBySession.get()['runtime-b']?.map(item => item.id)).toEqual(['sa-b'])
+    })
+
+    resolveFirst({
+      active: [
+        {
+          owner_agent_session_id: 'stored-a',
+          status: 'running',
+          subagent_id: 'sa-a'
+        }
+      ]
+    })
+    await act(async () => {
+      await first
+      await Promise.resolve()
+    })
+
+    expect($subagentsBySession.get()['runtime-a']).toBeUndefined()
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'delegation.status')).toHaveLength(2)
+
+    rerender({ runtime: 'runtime-b', stored: 'stored-b' })
+    await act(async () => Promise.resolve())
+
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'delegation.status')).toHaveLength(2)
   })
 })

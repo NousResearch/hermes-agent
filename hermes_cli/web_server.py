@@ -3823,8 +3823,40 @@ def _merge_profile_gateway_platforms(
     return merged
 
 
+def _machine_env_mtime() -> Optional[int]:
+    """Epoch mtime of the machine-default ``~/.hermes/.env``, or ``None``.
+
+    Bypasses any active per-request profile-scope override, same rationale
+    as ``plugins/dashboard_auth/telegram_miniapp/tiers.py``'s
+    ``_machine_hermes_home()``: the Telegram allowlist vars this drives a
+    restart-needed comparison for are process-global (one Telegram gateway
+    per machine, not one per profile — see that module's docstring), so this
+    must reflect the same ``.env`` the gateway process itself reads, not
+    whatever profile this status request happens to be scoped to via
+    ``?profile=``.
+
+    Deliberately a bare ``os.stat`` -- no dotenv parse, no sanitize pass, no
+    external-secret-source pull. Only the mtime is needed, and
+    ``os.replace()`` (the write path every ``.env`` writer in this codebase
+    uses) already gives the file a fresh mtime on every write with zero
+    extra code -- see the "env change pending restart" investigation this
+    field implements the API surface for.
+    """
+    override_free = os.environ.get("HERMES_HOME", "").strip()
+    if override_free:
+        home = Path(override_free)
+    else:
+        from hermes_constants import _get_platform_default_hermes_home
+
+        home = _get_platform_default_hermes_home()
+    try:
+        return int((home / ".env").stat().st_mtime)
+    except OSError:
+        return None
+
+
 @app.get("/api/status")
-async def get_status(profile: Optional[str] = None):
+async def get_status(request: Request, profile: Optional[str] = None):
     status_scope = None
     requested_profile = (profile or "").strip()
     # Plain /api/status stays the machine-level public liveness probe. The
@@ -3984,6 +4016,32 @@ async def get_status(profile: Optional[str] = None):
             gateway_platforms = _merge_profile_gateway_platforms(
                 gateway_platforms, topology.get("profile_platforms") or {}
             )
+
+        # Interactive `hermes` CLI usage is deliberately NOT part of the
+        # configured/gateway-managed platforms above -- it isn't a messaging
+        # bridge the gateway maintains a connection for, it's a separate,
+        # on-demand terminal invocation. Surfaced here as a synthetic entry
+        # instead, independent of gateway_running (a CLI session works fine
+        # even with the gateway stopped) and NOT filtered by
+        # configured_gateway_platforms (there's nothing to "configure" for
+        # it in config.yaml). Only added when actually detected right now --
+        # unlike the gateway-managed rows, there's no meaningful persisted
+        # "disconnected" state for something this ephemeral.
+        try:
+            from gateway.status import detect_active_cli_process
+
+            if detect_active_cli_process():
+                gateway_platforms = {
+                    **gateway_platforms,
+                    "cli": {
+                        "state": "connected",
+                        "error_code": None,
+                        "error_message": None,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
+        except Exception:
+            pass  # best-effort process scan -- never let this break /api/status
 
         active_sessions = await _status_active_sessions()
 
@@ -4227,6 +4285,92 @@ async def get_status(profile: Optional[str] = None):
                 "gateway_health_url": _GATEWAY_HEALTH_URL,
                 "gateways": topology["gateways"],
             })
+
+        # gateway_start_time (the gateway process's absolute OS-level start
+        # time, already captured in the runtime-status file as `start_time`
+        # -- see gateway/status.py's PID-reuse-guard use of the same field)
+        # drives the Mini App admin view's "env change pending restart"
+        # banner: needs_restart = env_mtime > gateway_start_time.
+        #
+        # _dashboard_requester_scope (not auth_required) is the real security
+        # boundary here -- gateway_pid's `if not auth_required:` wrapper above
+        # exists for a DIFFERENT threat model (an anonymous external liveness
+        # probe on a gated bind must never see recon info at all, since
+        # /api/status is in PUBLIC_API_PATHS and reachable with zero
+        # credentials on ANY bind) and must not be copied onto this field:
+        # in the one deployment this field actually exists for -- a gated,
+        # Mini-App-enabled bind -- auth_required is unconditionally True, so
+        # wrapping this field in `if not auth_required:` (as an earlier
+        # version of this code did) made it permanently absent for
+        # EVERYONE, admins included. That was a real bug, not a style choice.
+        #
+        # requester_scope == "admin" is unconditionally reliable regardless
+        # of bind type: it requires a verified admin-tier TokenPrincipal from
+        # the token-auth seam, which runs on token PRESENCE and is not
+        # exempted by PUBLIC_API_PATHS the way the cookie gate is.
+        #
+        # `requester_scope is None` is NOT an equivalent signal for THIS
+        # endpoint the way it is for /api/sessions et al. There,
+        # non-public routes, reaching the handler at all already implies the
+        # cookie gate (gated_auth_middleware) either verified a session or
+        # rejected the request first -- so scope None there really does mean
+        # "cookie-authenticated". /api/status is different: it is in
+        # PUBLIC_API_PATHS, and gated_auth_middleware's own
+        # `if _path_is_public(path): return await call_next(request)`
+        # (hermes_cli/dashboard_auth/middleware.py:270-271) skips session
+        # cookie verification ENTIRELY for this path, for every caller,
+        # cookie-holder or not -- request.state.session is never set here
+        # regardless of bind type. So on a gated bind, scope None is
+        # indistinguishable between "a genuine cookie-authenticated desktop
+        # operator" and "a fully anonymous internet caller with zero
+        # credentials" -- there is no reliable signal here to tell them
+        # apart without adding new session-verification logic duplicating
+        # gated_auth_middleware's, which is not worth doing for one field.
+        # Trusting scope None on a gated bind would leak this field to any
+        # anonymous prober, reopening exactly the class of leak gateway_pid's
+        # own wrapper (correctly) prevents for that field.
+        #
+        # UNLIKE gateway_pid above, this does NOT also qualify on
+        # `not auth_required`. That was reconsidered and dropped, not
+        # silently kept: these two fields exist for exactly one consumer,
+        # the Mini App admin view's needs_restart banner -- the desktop
+        # dashboard (cookie-authenticated, requester_scope is None) has been
+        # confirmed to neither display nor read either field anywhere in its
+        # own UI, on any bind type. So the "trusted local operator" loophole
+        # that legitimately extends gateway_pid's visibility to a loopback
+        # bind has no real caller to serve here -- it would only ever widen
+        # who can see these two fields, never actually help anyone. Concretely:
+        # a PAIRED, non-admin Mini App token (requester_scope == "own") hitting
+        # a loopback/no-gate bind would have gotten both fields for free under
+        # the old `or not auth_required` clause, despite the Mini App's own
+        # admin/paired tier split existing specifically to keep this field
+        # pair admin-only end-to-end (see this function's own admin-only
+        # docstring note below and the Mini App design doc's "This field pair
+        # is admin-only end-to-end" requirement). requester_scope == "admin"
+        # alone is the correct, sufficient, and now sole gate.
+        requester_scope, _ = _dashboard_requester_scope(request)
+        if requester_scope == "admin":
+            # start_epoch, NOT start_time: start_time is a boot-relative
+            # clock-tick fingerprint (gateway/status.py's PID-reuse guard),
+            # not a wall-clock value. Both consumers here compare against a
+            # real Unix epoch -- the uptime display (now - start) and the
+            # restart-needed banner (env_mtime > start). Using start_time
+            # gave a decades-long uptime AND an always-true banner (a ~1.78e9
+            # epoch is always > a ~2.5e8 tick count). start_epoch is the
+            # process creation time in real epoch seconds. Older runtime
+            # files written before this field existed lack it -> None ->
+            # frontend fails closed (no uptime, no banner) until the gateway
+            # next writes its status, which is correct.
+            status["gateway_start_time"] = runtime.get("start_epoch") if runtime else None
+            # telegram_allowlist_updated_at: same gate, same reasoning --
+            # drives the Mini App admin view's needs_restart comparison
+            # (needs_restart = telegram_allowlist_updated_at > gateway_start_time)
+            # alongside gateway_start_time above. No gateway_updated_at reuse:
+            # that field advances on every runtime-status write regardless of
+            # whether the allowlist actually changed (see the prior
+            # investigation), so it cannot answer "did the allowlist change
+            # since the gateway started" -- only .env's own mtime can.
+            status["telegram_allowlist_updated_at"] = _machine_env_mtime()
 
         return status
     finally:
@@ -5041,8 +5185,12 @@ def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict
 
 
 @app.post("/api/gateway/restart")
-async def restart_gateway(profile: Optional[str] = None):
-    """Kick off a ``hermes gateway restart`` in the background."""
+async def restart_gateway(request: Request, profile: Optional[str] = None):
+    """Kick off a ``hermes gateway restart`` in the background.
+
+    Mini App token route (required=False), admin-tier only.
+    """
+    _require_dashboard_admin(request)
     try:
         proc, _reused = _spawn_gateway_restart(profile)
     except HTTPException:
@@ -5131,8 +5279,12 @@ async def gateway_drain(request: Request):
 
 
 @app.post("/api/hermes/update")
-async def update_hermes():
-    """Kick off ``hermes update`` in the background."""
+async def update_hermes(request: Request):
+    """Kick off ``hermes update`` in the background.
+
+    Mini App token route (required=False), admin-tier only.
+    """
+    _require_dashboard_admin(request)
     if _dashboard_local_update_managed_externally():
         message = (
             "Hermes updates are managed outside this dashboard in "
@@ -6052,6 +6204,107 @@ def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, A
         for key in _SESSION_LIST_HEAVY_FIELDS:
             s.pop(key, None)
     return sessions
+
+
+def _dashboard_requester_scope(request: Request) -> Tuple[Optional[str], Optional[str]]:
+    """Derive ``(scope, requester_user_id)`` for DM-ownership scoping (spec §4).
+
+    Returns ``(None, None)`` for a non-token (cookie/session) caller — the
+    existing single-owner dashboard login already implies full access, so
+    this scoping only ever activates for a bearer-token (Mini App) caller.
+
+    Returns ``("admin", None)`` when the verified principal carries the
+    ``dashboard:admin`` scope (Task #4's fail-closed admin tier) — same
+    unrestricted access as the desktop dashboard.
+
+    Returns ``("own", "<telegram-user-id>")`` for a recognised
+    ``telegram-miniapp`` principal without admin scope (Task #4's default
+    "paired" tier).
+
+    Returns ``("own", None)`` for any other token-authed caller that isn't
+    admin-scoped and isn't a recognised ``telegram-miniapp`` principal (e.g.
+    a future token provider this scoping logic doesn't know how to map to a
+    Telegram user id). Callers must treat this as "deny", not fall through
+    to an unscoped query — it deliberately does NOT resolve to a usable
+    ``requester_user_id``.
+    """
+    principal_obj = getattr(request.state, "token_principal", None)
+    if principal_obj is None:
+        return None, None
+    scopes = getattr(principal_obj, "scopes", ()) or ()
+    if "dashboard:admin" in scopes:
+        return "admin", None
+    if getattr(principal_obj, "provider", "") != "telegram-miniapp":
+        return "own", None
+    principal = getattr(principal_obj, "principal", "") or ""
+    _, _, user_id = principal.partition(":")
+    return "own", (user_id or None)
+
+
+def _enforce_session_ownership(request: Request, session: dict) -> None:
+    """Raise 404 unless *request*'s caller may see this single *session* row.
+
+    The single-row counterpart to the DM-scope filter Task #7 applied to
+    ``GET /api/sessions`` — same trust classification
+    (``_dashboard_requester_scope``, reused here rather than re-derived),
+    but a different SHAPE of decision: a query-filter there restricts which
+    rows come back at all; this restricts access to one already-fetched
+    row by id.
+
+    Auth-path-aware by construction, because it is built on
+    ``_dashboard_requester_scope``: a cookie/session-authenticated caller
+    (scope ``None``) and a token-authed admin (scope ``"admin"``) are
+    unrestricted, matching the desktop dashboard operator's existing
+    unconditional access — this check only ever activates for a non-admin
+    ``telegram-miniapp`` token principal (scope ``"own"``).
+
+    404, not 403, on a mismatch: matches ``_resume_target_allowed``'s
+    (``gateway/slash_commands.py``) fail-closed IDOR precedent of not
+    distinguishing "doesn't exist" from "exists but isn't yours" via status
+    code — a Mini App caller probing another session id learns nothing
+    beyond what they already know (the id itself).
+    """
+    scope, requester_user_id = _dashboard_requester_scope(request)
+    if scope in (None, "admin"):
+        return
+    from hermes_state import session_row_is_own_dm
+
+    if not session_row_is_own_dm(session, requester_user_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _require_dashboard_admin(request: Request) -> None:
+    """Raise 403 unless *request*'s caller is unrestricted or admin-tier.
+
+    The gate for every Mini App action that mutates instance-wide state
+    (cron pause/resume/trigger, skill toggle, session archive/delete, the
+    Telegram allowlist, gateway restart/update) — none of these have a
+    per-row ownership shape like ``_enforce_session_ownership``'s sessions;
+    a non-admin paired caller gets none of it, full stop, so this is a flat
+    admin-or-nothing check rather than a scoped-query or per-row one.
+
+    Reuses ``_dashboard_requester_scope`` rather than re-deriving trust
+    classification here — same reason as ``_enforce_session_ownership``:
+    this is the third handler-level admin check in this file, and a fourth
+    independent reimplementation of "is this caller admin" is exactly the
+    pattern that produced every tier-boundary bug found while building this
+    Mini App feature.
+
+    403, not 404: unlike a session id (which an IDOR probe could use to
+    enumerate existence), there is nothing to hide the existence of here —
+    the caller already knows the action exists from the UI/API docs, they
+    just aren't allowed to perform it. A cookie/session-authenticated
+    caller (scope ``None``) and an admin-scoped Mini App token (scope
+    ``"admin"``) both pass unconditionally, matching the desktop dashboard
+    operator's existing unconditional access. A non-admin paired Mini App
+    token (scope ``"own"``) is rejected — this is the ONLY tier that must
+    never reach any endpoint gated by this function, regardless of what the
+    frontend does or doesn't render.
+    """
+    scope, _ = _dashboard_requester_scope(request)
+    if scope in (None, "admin"):
+        return
+    raise HTTPException(status_code=403, detail="Admin access required")
 
 
 from hermes_cli.web_routers import sessions as _sessions_routes  # noqa: E402
@@ -12546,6 +12799,7 @@ from hermes_cli.web_routers.sessions import (  # noqa: E402,F401 — legacy re-e
     get_session_detail,
     get_session_latest_descendant,
     get_session_messages,
+    resume_session_endpoint,
     delete_session_endpoint,
     rename_session_endpoint,
     export_session_endpoint,
@@ -12879,12 +13133,20 @@ def _prune_sessions(body: SessionPrune):
 
 @app.get("/api/logs")
 async def get_logs(
+    request: Request,
     file: str = "agent",
     lines: int = 100,
     level: Optional[str] = None,
     component: Optional[str] = None,
     search: Optional[str] = None,
 ):
+    # Mini App token route (required=False), admin-tier only -- this
+    # endpoint predates the Mini App and had no per-handler check at all
+    # (implicitly desktop-only, gated purely by the cookie/session auth
+    # wrapper around every /api/* route). Adding the explicit check here is
+    # a no-op for the desktop operator (scope is None) and is what makes it
+    # safe to register as a Mini App token route.
+    _require_dashboard_admin(request)
     from hermes_cli.logs import _read_tail, LOG_FILES
 
     log_name = LOG_FILES.get(file)
@@ -14164,6 +14426,276 @@ async def clear_pending_pairing(profile: Optional[str] = None):
     store = _pairing_store(profile)
     count = store.clear_pending()
     return {"ok": True, "cleared": count}
+
+
+# ---------------------------------------------------------------------------
+# Telegram allowlist endpoints — scoped narrowly to TELEGRAM_ALLOWED_USERS,
+# for the Mini App's Users tab. Deliberately NOT the generic GET/PUT /api/env
+# (which reads/writes arbitrary keys, including API keys) exposed to a Mini
+# App bearer token: that would be a far broader admin-tier surface than
+# "manage who's allowed to DM the bot", the one thing this tab does. All
+# three are admin-tier only (_require_dashboard_admin) -- the paired/"member"
+# tier never sees this tab in the first place (Cron/Users are hidden
+# entirely for non-admin in the Mini App shell), so nothing below needs a
+# per-row ownership shape, only the flat gate.
+#
+# A user_id can come from two independent sources that this endpoint merges
+# for display, matching the union `is_authorized()` already reads (env
+# allowlist OR pairing store):
+#   - PairingStore's approved list (gateway/pairing.py) -- has user_name and
+#     approved_at, populated by the code-based pairing flow.
+#   - The raw TELEGRAM_ALLOWED_USERS env var -- a bare numeric id with no
+#     metadata, e.g. someone added directly via `hermes setup` or hand-edited
+#     .env, never paired at all.
+# An id present in both is reported once, preferring the pairing store's
+# richer metadata. For any entry still missing a username/name after that,
+# _resolve_telegram_profiles() makes a best-effort Bot API getChat call:
+# Telegram's Bot API has no *generic* id->profile lookup, but getChat DOES
+# return the profile for a user the bot has interacted with -- and an
+# allowlisted user has almost always messaged the bot (that's typically how
+# they got allowlisted). It's best-effort: cached, short-timeout, and any
+# id it can't resolve (never messaged the bot, privacy settings, network
+# blip) simply keeps username/name null and the frontend's "name
+# unavailable" fallback, exactly as before.
+# ---------------------------------------------------------------------------
+
+
+def _split_allowlist_ids(raw: str) -> list[str]:
+    return [uid.strip() for uid in raw.split(",") if uid.strip()]
+
+
+# Cache getChat results (positive AND negative) so the Users tab doesn't
+# re-hit the Bot API for every id on every load. {uid: (fetched_at, profile)}
+# where profile is {"username": str|None, "name": str|None}.
+_TELEGRAM_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
+_TELEGRAM_PROFILE_TTL = 3600.0  # 1h — a user who messages the bot resolves within the hour
+
+
+async def _resolve_telegram_profiles(user_ids: list[str]) -> dict[str, dict]:
+    """Best-effort {uid: {"username", "name"}} via the Bot API's getChat.
+
+    Reads the bot token from the machine ``.env`` file (not ``os.environ``,
+    which may have the token scrubbed post-startup). Concurrent, short
+    per-call timeout, every failure swallowed to an absent entry -- this
+    only ever ADDS names it can resolve; it never blocks or errors the
+    allowlist response.
+    """
+    now = time.time()
+    resolved: dict[str, dict] = {}
+    to_fetch: list[str] = []
+    for uid in user_ids:
+        cached = _TELEGRAM_PROFILE_CACHE.get(uid)
+        if cached and now - cached[0] < _TELEGRAM_PROFILE_TTL:
+            resolved[uid] = cached[1]
+        else:
+            to_fetch.append(uid)
+    if not to_fetch:
+        return resolved
+
+    try:
+        from hermes_cli.config import load_env
+        bot_token = (load_env().get("TELEGRAM_BOT_TOKEN") or "").strip()
+    except Exception:
+        bot_token = ""
+    if not bot_token:
+        return resolved
+
+    import httpx
+
+    # httpx's OWN internal request logger logs the full URL -- including the
+    # bot token embedded in the path, since that's how Telegram's Bot API
+    # requires auth -- at INFO level by default (confirmed: "HTTP Request:
+    # GET https://api.telegram.org/bot<TOKEN>/getChat ..."). hermes_logging's
+    # _NOISY_LOGGERS list already suppresses the "httpx" logger to WARNING
+    # app-wide (for noise, not security), which happens to prevent this today
+    # -- but this call site's credential safety should not be an accidental
+    # side effect of an unrelated noise-reduction list that could change for
+    # unrelated reasons. Explicitly (and reversibly -- restored in `finally`,
+    # never a permanent global mutation) floor the "httpx" logger at WARNING
+    # for the duration of this specific request, regardless of ambient
+    # config, same principle as this session's hash-only-comparison rule for
+    # verifying secrets: never let a credential reach a place it can be
+    # read back out of, even indirectly via logs.
+    # Known, accepted narrow race: two overlapping calls can interleave
+    # their set/restore, briefly re-raising the level while the other's
+    # request is in flight. It only matters if something had deliberately
+    # set the httpx logger BELOW WARNING (never true in a stock deployment,
+    # where _NOISY_LOGGERS pins it at WARNING) AND two admin allowlist
+    # reads overlap in that window. This floor is defense-in-depth on top
+    # of _NOISY_LOGGERS, not the sole barrier, so per-call reversibility
+    # (never permanently clobbering a developer's deliberate debug level)
+    # wins over closing a race that requires the primary defense to already
+    # be off.
+    _httpx_logger = logging.getLogger("httpx")
+    _prev_httpx_level = _httpx_logger.level
+    if _httpx_logger.level == logging.NOTSET or _httpx_logger.level < logging.WARNING:
+        _httpx_logger.setLevel(logging.WARNING)
+
+    async def _fetch(client: "httpx.AsyncClient", uid: str) -> None:
+        profile = {"username": None, "name": None}
+        try:
+            r = await client.get(
+                f"https://api.telegram.org/bot{bot_token}/getChat",
+                params={"chat_id": uid},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("ok"):
+                    res = data.get("result") or {}
+                    name = " ".join(
+                        p for p in (res.get("first_name"), res.get("last_name")) if p
+                    ).strip()
+                    profile = {"username": res.get("username"), "name": name or None}
+        except Exception:
+            pass  # keep the null profile; negative-cache it below
+        _TELEGRAM_PROFILE_CACHE[uid] = (now, profile)
+        resolved[uid] = profile
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(4.0)) as client:
+            await asyncio.gather(*(_fetch(client, uid) for uid in to_fetch))
+    except Exception:
+        pass
+    finally:
+        _httpx_logger.setLevel(_prev_httpx_level)
+    return resolved
+
+
+@app.get("/api/telegram/allowlist")
+async def get_telegram_allowlist(request: Request):
+    _require_dashboard_admin(request)
+    from gateway.pairing import PairingStore
+
+    store = PairingStore()
+    by_id: dict[str, dict] = {}
+    for entry in store.list_approved("telegram"):
+        uid = str(entry.get("user_id", ""))
+        if not uid:
+            continue
+        by_id[uid] = {
+            "user_id": uid,
+            "username": None,  # PairingStore doesn't separately track @handle
+            "name": entry.get("user_name") or None,
+            "added_at": entry.get("approved_at"),
+            "source": "pairing",
+        }
+
+    raw = os.environ.get("TELEGRAM_ALLOWED_USERS", "").strip()
+    for uid in _split_allowlist_ids(raw):
+        if uid == "*" or uid in by_id:
+            continue
+        by_id[uid] = {
+            "user_id": uid,
+            "username": None,
+            "name": None,
+            "added_at": None,
+            "source": "env",
+        }
+
+    # Best-effort fill in username/display name for any entry still missing
+    # both (getChat; see _resolve_telegram_profiles). Never fails the
+    # response -- an id it can't resolve keeps its null fields.
+    unresolved = [uid for uid, e in by_id.items() if not e["username"] and not e["name"]]
+    if unresolved:
+        profiles = await _resolve_telegram_profiles(unresolved)
+        for uid, profile in profiles.items():
+            entry = by_id.get(uid)
+            if entry is None:
+                continue
+            if profile.get("username"):
+                entry["username"] = profile["username"]
+            if profile.get("name") and not entry["name"]:
+                entry["name"] = profile["name"]
+
+    return {"allowlist": list(by_id.values())}
+
+
+class TelegramAllowlistAdd(BaseModel):
+    user_id: str
+
+
+_TELEGRAM_USER_ID_RE = re.compile(r"^\d{5,15}$")
+
+
+@app.post("/api/telegram/allowlist")
+async def add_telegram_allowlist_entry(request: Request, body: TelegramAllowlistAdd):
+    _require_dashboard_admin(request)
+    uid = (body.user_id or "").strip()
+    if not _TELEGRAM_USER_ID_RE.match(uid):
+        raise HTTPException(
+            status_code=400,
+            detail="user_id must be a numeric Telegram user id (5-15 digits).",
+        )
+
+    raw = os.environ.get("TELEGRAM_ALLOWED_USERS", "").strip()
+    ids = _split_allowlist_ids(raw)
+    if uid in ids or "*" in ids:
+        return {"ok": True, "already_present": True}
+
+    # Unconditional append -- unlike gateway/pairing.py's _sync_allowlist_add
+    # (which no-ops when the var is unset, to avoid a passive pairing
+    # approval silently locking down a previously-open gateway), this is an
+    # explicit admin action from the Users tab: the admin typed an id and
+    # tapped Add, so writing it must always take effect, empty-var case
+    # included -- an unset TELEGRAM_ALLOWED_USERS should not silently
+    # swallow a deliberate add.
+    ids.append(uid)
+    save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(ids))
+    return {"ok": True, "user_id": uid}
+
+
+@app.delete("/api/telegram/allowlist/{user_id}")
+async def remove_telegram_allowlist_entry(request: Request, user_id: str):
+    _require_dashboard_admin(request)
+    from gateway.pairing import PairingStore
+
+    store = PairingStore()
+    # revoke() also mirrors the removal into TELEGRAM_ALLOWED_USERS when a
+    # pairing-derived entry has one (gateway/pairing.py's _sync_allowlist_remove),
+    # so this half handles anyone who came through pairing.
+    store.revoke("telegram", user_id)
+
+    # Independently strip the id from the raw env var too, for the
+    # env-only-source case revoke() never touches (added directly, never
+    # paired) -- a no-op if it's already gone.
+    raw = os.environ.get("TELEGRAM_ALLOWED_USERS", "").strip()
+    ids = _split_allowlist_ids(raw)
+    remaining = [i for i in ids if i != user_id]
+    if len(remaining) != len(ids):
+        if remaining:
+            save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(remaining))
+        else:
+            remove_env_value("TELEGRAM_ALLOWED_USERS")
+
+    return {"ok": True}
+
+
+@app.get("/api/miniapp/me")
+async def get_miniapp_me(request: Request):
+    """Tells the Mini App frontend its own tier on mount.
+
+    ``/api/auth/me`` (hermes_cli/dashboard_auth/routes.py) only recognizes a
+    cookie session and 401s for a bearer-token caller, so it can't serve
+    this purpose — a Mini App request never carries a cookie. Registered as
+    a Mini App token route (required=False) so a cookie caller (e.g. the
+    desktop dashboard previewing the Mini App views) also gets a sensible
+    answer here instead of needing a separate code path.
+
+    Reuses _dashboard_requester_scope rather than re-deriving tier — same
+    reason as _require_dashboard_admin: this is the read-only counterpart,
+    not a fourth independent trust classification.
+    """
+    scope, requester_user_id = _dashboard_requester_scope(request)
+    if scope in (None, "admin"):
+        # Cookie/session desktop operator (scope None) and admin-scoped
+        # Mini App tokens both get the same unrestricted tier.
+        return {"tier": "admin", "user_id": None}
+    if requester_user_id:
+        return {"tier": "paired", "user_id": requester_user_id}
+    # scope == "own" with no usable id: deny-by-default per
+    # _dashboard_requester_scope's own contract (e.g. a token provider this
+    # scoping logic doesn't recognize) -- not a real paired principal.
+    return {"tier": None, "user_id": None}
 
 
 # ---------------------------------------------------------------------------

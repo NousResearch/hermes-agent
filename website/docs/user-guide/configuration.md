@@ -2773,6 +2773,9 @@ dashboard:
   ws_orphan_reap_grace_s: 20.0 # Grace before a WS-detached session is reaped (seconds)
   ws_orphan_activity_stale_s: 600.0 # Activity idle bound before a detached RUNNING turn is interrupted (seconds)
   startup_orphan_sweep: true  # Close session rows orphaned by a dead gateway process at boot
+  telegram_miniapp:           # Telegram Mini App dashboard access (dashboard_auth/telegram_miniapp plugin)
+    enabled: false            # off by default — must be explicitly turned on
+    max_age_seconds: 60       # reject a Telegram initData payload older than this (replay window)
 ```
 
 - `theme` — dashboard visual theme.
@@ -2784,3 +2787,4 @@ dashboard:
 - `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)
 - `ws_orphan_activity_stale_s` (default `600`) — how long a detached **running** turn's activity clock (the same clock the `agent.turn_liveness` watchdog samples: API waits, stream tokens, tool heartbeats) must be idle before the orphan reaper interrupts it. A client-absent turn that is still actively producing keeps running to completion detached — closing the laptop, backgrounding the mobile app, or a desktop update no longer cancels healthy long turns; only a genuinely wedged turn is interrupted. Set `0` to interrupt at the grace window regardless of activity (old behavior).
 - `startup_orphan_sweep` (default `true`) — the WS-orphan reap timer above is in-process, so a gateway restart (update, crash, systemd) before it fires leaves the session row open forever — phantom "active" work in `/resume` and dashboards. On every gateway boot — both the stdio TUI (`entry.main`) and the desktop/dashboard WebSocket sidecar (`handle_ws`) — rows with source `tui` / `desktop` / `subagent` whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, live in-memory sessions (a client that already resumed) are excluded, and swept sessions remain resumable.
+- `telegram_miniapp` — fail-closed by design: even with `enabled: true`, the provider stays unregistered unless `TELEGRAM_BOT_TOKEN` is also set (there's nothing to verify Telegram's signed `initData` against without it). When active, it exposes a read-only slice of the dashboard (status, skills, cron, and the caller's own DM sessions) inside a Telegram Mini App, gated by the same pairing/allowlist decision (`TELEGRAM_ALLOWED_USERS`) the bot itself uses for DMs, plus an optional `TELEGRAM_DASHBOARD_ADMIN_USERS` allowlist for unrestricted (non-DM-scoped) access.

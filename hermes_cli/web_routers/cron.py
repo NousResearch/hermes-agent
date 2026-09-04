@@ -48,6 +48,7 @@ _gateway_intentionally_stopped = late("_gateway_intentionally_stopped")
 _notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile")
 _call_cron_for_profile = late("_call_cron_for_profile")
 _raise_if_cron_registration_error = late("_raise_if_cron_registration_error")
+_require_dashboard_admin = late("_require_dashboard_admin")
 load_config = late("load_config")
 cfg_get = late("cfg_get")
 
@@ -114,22 +115,36 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
 
 
 @router.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+async def pause_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    # Mini App token route (required=False): a non-admin paired caller must
+    # never reach this. Cookie/desktop and admin-tier Mini App both pass
+    # unconditionally, matching this endpoint's existing behavior for the
+    # desktop dashboard operator.
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+async def resume_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+async def trigger_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
 
 
 @router.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+async def delete_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    # Mini App token route (required=False), admin-tier only -- same gate as
+    # pause/resume/trigger above. This endpoint predates the Mini App and had
+    # no per-handler check at all (implicitly desktop-only, gated purely by
+    # the cookie/session auth wrapper around every /api/* route); adding the
+    # explicit check here is a no-op for the desktop operator (scope is None)
+    # and is what makes it safe to register as a Mini App token route below.
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 

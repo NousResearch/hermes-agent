@@ -16,7 +16,7 @@ import asyncio  # noqa: F401 — used by handlers
 import logging
 from typing import Optional  # noqa: F401
 
-from fastapi import APIRouter, HTTPException  # noqa: F401
+from fastapi import APIRouter, HTTPException, Request  # noqa: F401
 
 from hermes_cli.web_deps import late, LateState
 from hermes_cli.web_models import (
@@ -42,6 +42,7 @@ _hub_action_name = late("_hub_action_name")
 _installed_hub_identifiers = late("_installed_hub_identifiers")
 _profile_cli_args = late("_profile_cli_args")
 _profile_scope = late("_profile_scope")
+_require_dashboard_admin = late("_require_dashboard_admin")
 _skill_meta_to_payload = late("_skill_meta_to_payload")
 _spawn_hermes_action = late("_spawn_hermes_action")
 load_config = late("load_config")
@@ -498,7 +499,8 @@ async def get_skills(profile: Optional[str] = None):
 
 
 @router.put("/api/skills/toggle")
-async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
+async def toggle_skill(request: Request, body: SkillToggle, profile: Optional[str] = None):
+    _require_dashboard_admin(request)
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
 
     def _run():
@@ -517,8 +519,18 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
 
 
 @router.get("/api/skills/content")
-async def get_skill_content(name: str, profile: Optional[str] = None):
-    """Return the raw SKILL.md text for a skill, for the dashboard editor."""
+async def get_skill_content(request: Request, name: str, profile: Optional[str] = None):
+    """Return the raw SKILL.md text for a skill, for the dashboard editor.
+
+    Mini App token route (required=False), admin-tier only: the spec's
+    paired/"member" tier gets metadata only (name/category/description via
+    GET /api/skills) -- no skill-content read, no open. The Mini App UI
+    already hides the open affordance for non-admin, but this is the
+    server-side backstop; a cookie/session desktop caller (scope None) and
+    an admin-scoped Mini App token both pass unconditionally, matching
+    every other _require_dashboard_admin call site in this file.
+    """
+    _require_dashboard_admin(request)
     from tools.skill_manager_tool import _find_skill
 
     def _run():

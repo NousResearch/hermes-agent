@@ -174,7 +174,7 @@ Update `get_connected_platforms()` if your platform doesn't use token/api_key
 
 ## 3. Adapter Factory (`gateway/run.py`)
 
-Add to `_create_adapter()`:
+Add to `_instantiate_adapter()`:
 
 ```python
 elif platform == Platform.YOUR_PLATFORM:
@@ -184,6 +184,11 @@ elif platform == Platform.YOUR_PLATFORM:
         return None
     return YourAdapter(config)
 ```
+
+`_create_adapter()` wraps this factory and binds every successful adapter to
+its `GatewayRunner`. Do not construct platform adapters in lifecycle call sites;
+startup and reconnect must keep using the wrapper so profile routing is wired
+before `connect()`.
 
 ---
 

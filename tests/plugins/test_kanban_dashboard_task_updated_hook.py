@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.plugins import get_plugin_manager
 
 
@@ -67,7 +68,7 @@ def captured_updates():
 
 
 def _make_task(title="t"):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         return kb.create_task(conn, title=title, assignee="alice")
     finally:

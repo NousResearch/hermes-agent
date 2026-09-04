@@ -15,7 +15,7 @@ Drive the desktop background-first; escalate on signal.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/autonomous-ai-agents/computer-use` |
+| Path | `skills/autonomous-ai-agents\computer-use` |
 | Version | `2.0.0` |
 | Author | Francesco Bonacci (f-trycua), Hermes Agent |
 | License | MIT |

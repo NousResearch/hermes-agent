@@ -64,7 +64,7 @@ def issue_defs():
 
 class TestStemming:
     def test_tokenize_stems_index_and_query_identically(self):
-        from tools.tool_search import _tokenize
+        from tools.tool_search_catalog import _tokenize
         # Same stem on both sides is the whole contract.
         assert _tokenize("issues") == _tokenize("issue")
         assert _tokenize("creating messages") == _tokenize("create message")
@@ -87,7 +87,7 @@ class TestStemming:
         assert names == ["mq_slack_post_message"]
 
     def test_single_token_stems_are_cached(self):
-        from tools.tool_search import _stem, _tokenize
+        from tools.tool_search_catalog import _stem, _tokenize
 
         _stem.cache_clear()
         corpus = "issues creating issues creating"
@@ -102,12 +102,11 @@ class TestStemming:
     def test_parallel_tokenize_search_and_dispatch_are_deterministic(self, issue_defs):
         from tools.tool_search import (
             ToolSearchConfig,
-            _stem,
-            _tokenize,
             build_catalog,
             dispatch_tool_search,
             search_catalog,
         )
+        from tools.tool_search_catalog import _stem, _tokenize
 
         corpus = (
             "issues",
@@ -174,7 +173,7 @@ class TestStemming:
         concurrently on the underlying per-thread instances. A shared
         stemmer's mutable parse state produces wrong stems or raises here.
         """
-        from tools.tool_search import _stem
+        from tools.tool_search_catalog import _stem
 
         words = ["issues", "creating", "meetings", "categories", "searching"]
 

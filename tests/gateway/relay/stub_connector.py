@@ -36,7 +36,7 @@ class StubConnector:
         self.follow_ups: List[Dict[str, Any]] = []
         self.follow_up_platforms: List[Optional[str]] = []
         # The fronted (platform, bot_id) identity set (Phase 1.5). Mirrors the real
-        # transport's _identities so RelayAdapter._platform_is_fronted resolves; a
+        # transport's _identities so RelayAdapter.fronts_platform resolves; a
         # single-identity default keeps existing tests' behaviour unchanged.
         self._identities: List[tuple] = [(descriptor.platform, "")]
         self.chat_info: Dict[str, Dict[str, Any]] = {}

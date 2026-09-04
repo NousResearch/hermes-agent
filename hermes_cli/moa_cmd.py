@@ -49,7 +49,27 @@ def _model_options() -> list[dict[str, Any]]:
     ]
 
 
-def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
+def _prompt_max_tokens_override() -> int | None:
+    """Return a per-reference token cap, or None to inherit the preset default."""
+    while True:
+        try:
+            raw = input("Max tokens override (blank to inherit preset default): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("\nMoA configuration cancelled.") from None
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        print("Enter a positive integer, or leave blank to inherit the preset default.")
+
+
+def _pick_slot(
+    current: dict[str, Any] | None = None, *, configure_max_tokens: bool = True
+) -> dict[str, Any]:
     providers = _model_options()
     if not providers:
         raise RuntimeError("No configured model providers found. Run `hermes model` first.")
@@ -66,13 +86,27 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     current_model = (current or {}).get("model", "")
     model_default = models.index(current_model) if current_model in models else 0
     model = models[_prompt_choice(f"Select model for {provider.get('slug')}", models, model_default)]
-    return {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    slot: dict[str, Any] = {
+        "provider": str(provider.get("slug") or ""),
+        "model": str(model),
+    }
+    if configure_max_tokens:
+        max_tokens = _prompt_max_tokens_override()
+        if max_tokens is not None:
+            slot["max_tokens"] = max_tokens
+    return slot
 
 
-def _format_slot(slot: dict[str, Any]) -> str:
+def _format_slot(slot: dict[str, Any], *, include_max_tokens: bool = True) -> str:
     label = f"{slot['provider']}:{slot['model']}"
+    details: list[str] = []
     effort = str(slot.get("reasoning_effort") or "").strip()
-    return f"{label} [reasoning={effort}]" if effort else label
+    if effort:
+        details.append(f"reasoning={effort}")
+    max_tokens = slot.get("max_tokens")
+    if include_max_tokens and max_tokens is not None:
+        details.append(f"max_tokens={max_tokens}")
+    return f"{label} [{', '.join(details)}]" if details else label
 
 
 def _print_config(config: dict[str, Any]) -> None:
@@ -88,7 +122,7 @@ def _print_config(config: dict[str, Any]) -> None:
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {_format_slot(slot)}")
         agg = preset["aggregator"]
-        print(f"  Aggregator: {_format_slot(agg)}")
+        print(f"  Aggregator: {_format_slot(agg, include_max_tokens=False)}")
 
 
 def cmd_moa(args) -> None:
@@ -106,7 +140,7 @@ def cmd_moa(args) -> None:
         current = moa["presets"].get(preset_name, moa["presets"][moa["default_preset"]])
         print(f"Configure MoA preset: {preset_name}")
         print("Pick at least one reference model; choose Done when finished.")
-        refs: list[dict[str, str]] = []
+        refs: list[dict[str, Any]] = []
         existing = list(current.get("reference_models") or [])
         idx = 0
         while True:
@@ -121,7 +155,9 @@ def cmd_moa(args) -> None:
         print("Configure aggregator model.")
         current = dict(current)
         current["reference_models"] = refs
-        current["aggregator"] = _pick_slot(current.get("aggregator"))
+        current["aggregator"] = _pick_slot(
+            current.get("aggregator"), configure_max_tokens=False
+        )
         moa["presets"][preset_name] = current
         moa.setdefault("default_preset", preset_name)
         cfg["moa"] = normalize_moa_config(moa)

@@ -92,6 +92,41 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     return dirs
 
 
+def _provider_source(provider_dir: Path) -> str:
+    """Return the discovery source for a provider directory without importing it."""
+    if _is_bundled(provider_dir):
+        return "bundled"
+    project_dir = _get_project_plugins_dir()
+    if project_dir is not None and (provider_dir == project_dir or project_dir in provider_dir.parents):
+        return "project"
+    return "user"
+
+
+def _external_memory_compat_manifests() -> list:
+    """Return external memory-provider references without importing provider code."""
+    from hermes_cli.plugin_compat import category_plugin_manifest
+
+    result = []
+    seen = set()
+    for name, provider_dir in _iter_provider_dirs():
+        seen.add(name)
+        if _provider_source(provider_dir) != "bundled":
+            result.append(category_plugin_manifest(name, provider_dir, _provider_source(provider_dir)))
+    for entry_point in _iter_entry_points():
+        if entry_point.name not in seen:
+            result.append(category_plugin_manifest(entry_point.name, getattr(entry_point, "value", ""), "entrypoint"))
+    return result
+
+
+def _compat_disable_reason(name: str, path: object, source: str) -> str | None:
+    """Use the compat layer's one post-removal decision for memory loading."""
+    try:
+        from hermes_cli.plugin_compat import external_plugin_disable_reason
+    except ImportError:
+        return None
+    return external_plugin_disable_reason(name, path, source)
+
+
 def _iter_entry_points():
     """Yield pip-installed memory provider entry points."""
     try:
@@ -212,6 +247,10 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     """Import a provider entry point and extract the MemoryProvider instance: an
     instance, a subclass, a module with ``register(ctx)``, a factory / ``register``
     callable, or a namespace holding a subclass — in that order."""
+    reason = _compat_disable_reason(entry_point.name, getattr(entry_point, "value", ""), "entrypoint")
+    if reason:
+        logger.warning("Skipping entry-point memory provider %r: %s", entry_point.name, reason)
+        return None
     from agent.memory_provider import MemoryProvider
 
     loaded = entry_point.load()
@@ -246,6 +285,11 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
 
 def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
+    source = _provider_source(provider_dir)
+    reason = _compat_disable_reason(provider_dir.name, provider_dir, source)
+    if reason:
+        logger.warning("Skipping %s memory provider %s: %s", source, provider_dir.name, reason)
+        return None
     name = provider_dir.name
     mod = _loader.load_plugin_module(
         _module_name(provider_dir, name), provider_dir,
@@ -374,6 +418,11 @@ def discover_plugin_cli_commands() -> List[dict]:
     active_provider = _get_active_memory_provider() if _MEMORY_PLUGINS_DIR.is_dir() else None
     plugin_dir = find_provider_dir(active_provider) if active_provider else None
     if not plugin_dir or not (plugin_dir / "cli.py").exists():
+        return []
+    source = _provider_source(plugin_dir)
+    reason = _compat_disable_reason(active_provider or "", plugin_dir, source)
+    if reason:
+        logger.warning("Skipping %s memory provider CLI %s: %s", source, active_provider, reason)
         return []
 
     module_name = _module_name(plugin_dir, active_provider) + ".cli"

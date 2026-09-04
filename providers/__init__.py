@@ -124,6 +124,75 @@ def _installed_plugins_dir() -> Path | None:
         return None
 
 
+def _iter_provider_entry_points() -> list:
+    """Return the shared provider entry-point group without importing targets."""
+    try:
+        import importlib.metadata as _md
+        eps = _md.entry_points()
+        if hasattr(eps, "select"):
+            return list(eps.select(group="hermes_agent.plugins"))
+        return list(eps.get("hermes_agent.plugins", []))  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.debug("entry-point provider scan skipped: %s", exc)
+        return []
+
+
+def _entry_point_enabled(name: str) -> bool:
+    """Mirror the provider scan's opt-in and deny-list gate for reporting."""
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+        enabled = _get_enabled_plugins()
+        return bool(enabled and name in enabled and name not in _get_disabled_plugins())
+    except Exception:
+        return False
+
+
+def _external_provider_compat_manifests() -> list:
+    """Return external model-provider references without importing provider code."""
+    from hermes_cli.plugin_compat import category_plugin_manifest
+    from hermes_cli.plugins_manifest import _detect_kind_from_source, _resolve_module_source
+
+    result = []
+    user_dir = _user_plugins_dir()
+    if user_dir is not None:
+        for child in sorted(user_dir.iterdir()):
+            if (
+                child.is_dir()
+                and not child.name.startswith(("_", "."))
+                and (child / "__init__.py").is_file()
+            ):
+                result.append(category_plugin_manifest(child.name, child, "user"))
+
+    installed_dir = _installed_plugins_dir()
+    if installed_dir is not None:
+        for child in sorted(installed_dir.iterdir()):
+            if (
+                child.is_dir()
+                and not child.name.startswith(("_", "."))
+                and child.name != "model-providers"
+                and (child / "__init__.py").is_file()
+                and _declares_model_provider_kind(child)
+            ):
+                result.append(category_plugin_manifest(child.name, child, "user"))
+
+    for entry_point in _iter_provider_entry_points():
+        if not _entry_point_enabled(entry_point.name):
+            continue
+        module_name = (getattr(entry_point, "value", "") or "").split(":", 1)[0].strip()
+        if _detect_kind_from_source(_resolve_module_source(module_name)) == "model-provider":
+            result.append(category_plugin_manifest(entry_point.name, getattr(entry_point, "value", ""), "entrypoint"))
+    return result
+
+
+def _compat_disable_reason(name: str, path: object, source: str) -> str | None:
+    """Use the compat layer's one post-removal decision for provider loading."""
+    try:
+        from hermes_cli.plugin_compat import external_plugin_disable_reason
+    except ImportError:
+        return None
+    return external_plugin_disable_reason(name, path, source)
+
+
 def _declares_model_provider_kind(plugin_dir: Path) -> bool:
     """Whether ``plugin_dir``'s manifest declares ``kind: model-provider``.
 
@@ -166,6 +235,10 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     """
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
+        return
+    reason = _compat_disable_reason(plugin_dir.name, plugin_dir, source)
+    if reason:
+        logger.warning("Skipping %s provider plugin %s: %s", source, plugin_dir.name, reason)
         return
 
     # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
@@ -230,11 +303,6 @@ def _discover_entry_point_providers() -> None:
     ``register_provider()`` — a pip package cannot hijack a first-party
     provider name.
     """
-    try:
-        import importlib.metadata as _md
-    except Exception:  # pragma: no cover — importlib.metadata always present ≥3.8
-        return
-
     # Same opt-in gate as the general PluginManager: only entry points named
     # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
     try:
@@ -247,23 +315,17 @@ def _discover_entry_point_providers() -> None:
     if not enabled:
         return
 
-    group = "hermes_agent.plugins"
-    try:
-        eps = _md.entry_points()
-        # Python 3.10+ exposes .select(); older returns a dict-like mapping.
-        if hasattr(eps, "select"):
-            group_eps = list(eps.select(group=group))
-        else:  # pragma: no cover — legacy interpreters
-            group_eps = list(eps.get(group, []))  # type: ignore[attr-defined]
-    except Exception as exc:
-        logger.debug("entry-point provider scan skipped: %s", exc)
-        return
+    group_eps = _iter_provider_entry_points()
 
     for ep in group_eps:
         if ep.name not in enabled or ep.name in disabled:
             logger.debug(
                 "entry-point provider %r skipped: not enabled in config", ep.name
             )
+            continue
+        reason = _compat_disable_reason(ep.name, getattr(ep, "value", ""), "entrypoint")
+        if reason:
+            logger.warning("Skipping entry-point provider plugin %r: %s", ep.name, reason)
             continue
         try:
             loaded = ep.load()

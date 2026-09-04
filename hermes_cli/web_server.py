@@ -19868,6 +19868,17 @@ def start_server(
         # provider to be registered, else fail closed — there is no longer an
         # escape hatch that serves the dashboard without authentication.
         from hermes_cli.dashboard_auth import list_providers
+        # Plugin-registered auth providers (e.g. the bundled basic password
+        # provider) only register during plugin discovery, which this server
+        # process doesn't otherwise run before this gate — trigger it
+        # explicitly (idempotent) or a fully-configured provider stays
+        # invisible here and the gate fails closed.
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+        except Exception:
+            _log.warning("plugin discovery before auth gate failed", exc_info=True)
         if not list_providers():
             # Surface the *specific* reason any bundled provider declined
             # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).

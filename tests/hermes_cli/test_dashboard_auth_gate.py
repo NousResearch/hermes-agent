@@ -479,3 +479,78 @@ def test_should_require_dashboard_auth_truth_table(
     else:
         monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", public_url)
     assert should_require_dashboard_auth(host) is expected
+
+
+# ---------------------------------------------------------------------------
+# Plugin discovery before the auth gate
+# ---------------------------------------------------------------------------
+
+
+def test_start_server_auth_gate_runs_plugin_discovery(monkeypatch):
+    """The gate triggers plugin discovery before checking for providers.
+
+    Plugin-registered auth providers (e.g. the bundled basic password
+    provider) only register during plugin discovery, and the dashboard
+    server process doesn't otherwise run discovery before this gate — so
+    a fully configured provider was invisible here and the bind failed
+    closed even with valid ``dashboard.basic_auth`` credentials on disk.
+    """
+    import hermes_cli.plugins as plugins_mod
+
+    calls: list = []
+
+    def _fake_discover_plugins(*args, **kwargs):
+        calls.append(1)
+        # Simulate the bundled basic provider plugin registering during
+        # discovery.
+        from hermes_cli.dashboard_auth import register_provider
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+        register_provider(StubAuthProvider())
+
+    monkeypatch.setattr(
+        plugins_mod, "discover_plugins", _fake_discover_plugins
+    )
+    from hermes_cli.dashboard_auth import clear_providers
+
+    clear_providers()
+    captured = _stub_uvicorn_run(monkeypatch)
+    try:
+        web_server.app.state.auth_required = None
+        web_server.start_server(
+            host="0.0.0.0", port=9119,
+            open_browser=False, allow_public=False,
+        )
+        # Discovery ran before the gate and its provider satisfied it.
+        assert calls == [1]
+        assert web_server.app.state.auth_required is True
+        assert captured["kwargs"].get("host") == "0.0.0.0"
+    finally:
+        clear_providers()
+
+
+def test_start_server_auth_gate_still_fails_closed_without_providers(monkeypatch):
+    """Discovery running is not an escape hatch — zero providers still fails.
+
+    Even when discovery runs and registers nothing (e.g. no basic-auth
+    credentials configured), the gate must keep failing closed.
+    """
+    import hermes_cli.plugins as plugins_mod
+
+    monkeypatch.setattr(
+        plugins_mod, "discover_plugins", lambda *a, **kw: None
+    )
+    from hermes_cli.dashboard_auth import clear_providers
+
+    clear_providers()
+    _stub_uvicorn_run(monkeypatch)
+    web_server.app.state.auth_required = None
+    try:
+        with pytest.raises(SystemExit):
+            web_server.start_server(
+                host="0.0.0.0", port=9119,
+                open_browser=False, allow_public=False,
+            )
+        assert web_server.app.state.auth_required is True
+    finally:
+        clear_providers()

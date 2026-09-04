@@ -5110,6 +5110,28 @@ class TestHeadlessServeTokenPage:
         assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
 
+    def test_root_serves_updated_token_after_apply_ssh_session_token(self, monkeypatch):
+        import re
+        import json as _json
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        updated_token = "updated_token_" + "a" * 50
+        original_token = ws._SESSION_TOKEN
+        try:
+            ws._apply_ssh_session_token(updated_token)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            match = re.search(
+                r'window\.__HERMES_SESSION_TOKEN__\s*=\s*(\"(?:\\.|[^\"\\])*\")',
+                resp.text,
+            )
+            assert match
+            assert _json.loads(match.group(1)) == updated_token
+        finally:
+            # _apply_ssh_session_token rebinds the module global; restore it so
+            # later by-value importers in this file keep seeing a valid token.
+            ws._apply_ssh_session_token(original_token)
+
     def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=True)
         resp = client.get("/")

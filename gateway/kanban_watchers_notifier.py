@@ -61,8 +61,10 @@ def _mobile_excerpt(value: Any, limit: int) -> str:
         return text
     if limit == 1:
         return "…"
-    excerpt = text[: limit - 1].rstrip()
-    if " " in excerpt:
+    raw_excerpt = text[: limit - 1]
+    excerpt = raw_excerpt.rstrip()
+    cut_splits_token = raw_excerpt[-1].isalnum() and text[limit - 1].isalnum()
+    if cut_splits_token and " " in excerpt:
         excerpt = excerpt.rsplit(" ", 1)[0]
     return f"{excerpt}…"
 

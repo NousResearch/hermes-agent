@@ -86,6 +86,8 @@ def _unseen_terminal_events(tid):
 
 def test_mobile_excerpt_preserves_word_boundary_and_limit():
     assert notifier._mobile_excerpt("alpha beta gamma delta", 14) == "alpha beta…"
+    assert notifier._mobile_excerpt("alpha beta gamma", 11) == "alpha beta…"
+    assert notifier._mobile_excerpt("alpha beta gamma", 12) == "alpha beta…"
     assert notifier._mobile_excerpt("x" * 20, 8) == "xxxxxxx…"
 
 
@@ -100,7 +102,8 @@ def test_completed_handoff_uses_explicit_word_boundary_truncation(tmp_path, monk
     assert len(adapter.sent) == 1
     handoff = adapter.sent[0]["text"].split("\n", 1)[1]
     assert handoff.endswith("…")
-    assert handoff.removesuffix("…").endswith("replayed")
+    assert len(handoff) <= 200
+    assert handoff.removesuffix("…").endswith("safely.")
 
 
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):

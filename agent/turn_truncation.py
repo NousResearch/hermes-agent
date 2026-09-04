@@ -60,6 +60,18 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
         return agent._get_transport().normalize_response(
             response, strip_tool_prefix=agent._is_anthropic_oauth
         )
+    if agent.api_mode == "chat_completions":
+        try:
+            from providers import get_provider_profile
+
+            provider_profile = get_provider_profile(getattr(agent, "provider", "") or "")
+        except Exception:
+            provider_profile = None
+        return agent._get_transport().normalize_response(
+            response,
+            provider_profile=provider_profile,
+            model=getattr(agent, "model", None),
+        )
     return agent._get_transport().normalize_response(response)
 
 

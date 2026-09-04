@@ -2935,6 +2935,28 @@ class TestAnthropicAuxiliaryReasoningTranslation:
 class TestAuxiliaryProviderProfileReasoning:
     """Auxiliary calls must reuse provider-profile reasoning wire shapes."""
 
+    def test_profile_normalizes_final_auxiliary_extra_body(self, monkeypatch):
+        from providers.base import ProviderProfile
+
+        class NormalizingProfile(ProviderProfile):
+            def normalize_auxiliary_extra_body(self, extra_body, *, model=None, **context):
+                return {"profile_only": model, "incoming": extra_body.get("incoming")}
+
+        profile = NormalizingProfile(name="test-provider")
+        monkeypatch.setattr(
+            "providers.get_provider_profile",
+            lambda provider: profile if provider == "test-provider" else None,
+        )
+
+        kwargs = _build_call_kwargs(
+            "test-provider",
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            extra_body={"incoming": "value", "removed": True},
+        )
+
+        assert kwargs["extra_body"] == {"profile_only": "test-model", "incoming": "value"}
+
     def test_kimi_reasoning_uses_top_level_effort(self):
         kwargs = _build_call_kwargs(
             "kimi-coding",

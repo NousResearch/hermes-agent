@@ -12,13 +12,27 @@ Those stay on AIAgent.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Literal, Mapping
 
 logger = logging.getLogger(__name__)
 
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
+
+
+@dataclass(frozen=True)
+class ToolNameNormalizeContext:
+    """Describe where an inbound provider wire tool name appeared."""
+
+    phase: Literal["stream_delta", "final_tool_call"]
+    provider: str
+    model: str | None = None
+    request_wire_aliases: Mapping[str, str] | None = None
+
+
+ResponseToolNameNormalizer = Callable[[str, ToolNameNormalizeContext], str]
 
 
 def _profile_user_agent() -> str:
@@ -77,6 +91,18 @@ class ProviderProfile:
     # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
+
+    # A provider plugin may own the API mode even when the user's saved model
+    # block predates that plugin and contains a stale mode.
+    ignore_configured_api_mode: bool = False
+
+    # Keyless gateways still need a non-empty token for OpenAI-compatible
+    # clients. The placeholder is routing metadata, never a credential.
+    keyless: bool = False
+    api_key_placeholder: str = ""
+
+    # Optional provider-owned restoration of response tool names.
+    response_tool_name_normalizer: ResponseToolNameNormalizer | None = None
 
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
@@ -177,6 +203,38 @@ class ProviderProfile:
         Default: ({}, {}).
         """
         return {}, {}
+
+    def normalize_auxiliary_extra_body(
+        self,
+        extra_body: dict[str, Any],
+        *,
+        model: str | None = None,
+        **context: Any,
+    ) -> dict[str, Any]:
+        """Normalize the final ``extra_body`` for an auxiliary request.
+
+        Called after profile fields, generic reasoning fallbacks, and the
+        caller's extra body have been merged. Override this when an auxiliary
+        endpoint needs to remove or reshape a field without a provider branch
+        in the shared auxiliary client.
+        """
+        return extra_body
+
+    def finalize_api_kwargs(
+        self,
+        api_kwargs: dict[str, Any],
+        *,
+        model: str | None = None,
+        **context: Any,
+    ) -> dict[str, Any]:
+        """Normalize the final chat-completions request mapping.
+
+        Called after generic request assembly, profile extras, user request
+        overrides, and prompt-cache routing. Most providers should leave this
+        as a no-op; gateways with model-specific validation quirks can strip
+        or adjust unsupported fields here without a shared transport branch.
+        """
+        return api_kwargs
 
     def default_vision_model(self) -> str | None:
         """Return a default vision model id for this provider, or None.
@@ -330,3 +388,77 @@ class ProviderProfile:
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
+
+
+def _provider_profile(provider_id: str) -> ProviderProfile | None:
+    """Best-effort profile lookup for shared auth helpers."""
+    try:
+        from providers import get_provider_profile
+
+        return get_provider_profile(provider_id)
+    except Exception:
+        return None
+
+
+def apply_keyless_api_key(provider_id: str, api_key: str, key_source: str) -> tuple[str, str]:
+    """Fill a profile-declared keyless gateway placeholder when no secret exists."""
+    if api_key:
+        return api_key, key_source
+    placeholder = keyless_api_key_placeholder(provider_id)
+    if placeholder:
+        return placeholder, key_source or "default"
+    return api_key, key_source
+
+
+def keyless_api_key_placeholder(provider_id: str) -> str | None:
+    """Return a keyless gateway's non-secret client placeholder, if declared."""
+    profile = _provider_profile(provider_id)
+    placeholder = getattr(profile, "api_key_placeholder", "") if profile is not None else ""
+    if (
+        profile is not None
+        and getattr(profile, "keyless", False)
+        and isinstance(placeholder, str)
+        and placeholder
+    ):
+        return placeholder
+    return None
+
+
+def keyless_provider_status_for_auth(provider_id: str, pconfig: Any) -> dict[str, Any] | None:
+    """Return an auth-status payload for a profile-declared keyless provider."""
+    return keyless_provider_status_payload(
+        provider_id,
+        default_name=getattr(pconfig, "name", provider_id),
+        default_base_url=getattr(pconfig, "inference_base_url", ""),
+    )
+
+
+def keyless_provider_status_payload(
+    provider_id: str,
+    *,
+    default_name: str,
+    default_base_url: str,
+) -> dict[str, Any] | None:
+    """Build a keyless provider status payload from its profile metadata."""
+    profile = _provider_profile(provider_id)
+    if profile is None or not getattr(profile, "keyless", False):
+        return None
+
+    env_url = ""
+    for env_var in getattr(profile, "env_vars", ()) or ():
+        if isinstance(env_var, str) and (
+            env_var.endswith("_BASE_URL") or env_var.endswith("_URL")
+        ):
+            env_url = os.getenv(env_var, "").strip()
+            if env_url:
+                break
+    profile_base_url = str(getattr(profile, "base_url", "") or "").strip()
+    base_url = (env_url or profile_base_url or str(default_base_url or "").strip()).rstrip("/")
+    return {
+        "configured": True,
+        "provider": provider_id,
+        "name": getattr(profile, "display_name", "") or default_name,
+        "key_source": "keyless",
+        "base_url": base_url,
+        "logged_in": True,
+    }

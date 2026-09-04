@@ -5,7 +5,7 @@ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body)
 """
 
 import json
-from typing import Any
+from typing import Any, Literal, Mapping
 from urllib.parse import urlparse
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -205,6 +205,34 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     """
     m = str(model or "").lower()
     return "gemini" in m or "gemma" in m
+
+
+def _normalize_response_tool_name(
+    wire_name: str,
+    *,
+    profile: Any | None = None,
+    phase: Literal["stream_delta", "final_tool_call"] = "final_tool_call",
+    model: str | None = None,
+    request_wire_aliases: Mapping[str, str] | None = None,
+) -> str:
+    """Apply a provider profile's inbound tool-name normalization hook."""
+    if not isinstance(wire_name, str) or not wire_name:
+        return wire_name
+    normalizer = getattr(profile, "response_tool_name_normalizer", None)
+    if normalizer is None:
+        return wire_name
+
+    from providers.base import ToolNameNormalizeContext
+
+    return normalizer(
+        wire_name,
+        ToolNameNormalizeContext(
+            phase=phase,
+            provider=str(getattr(profile, "name", "") or ""),
+            model=model,
+            request_wire_aliases=request_wire_aliases,
+        ),
+    )
 
 
 def _attr_or_model_extra(obj: Any, name: str) -> Any:
@@ -481,8 +509,18 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig")}
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
-        return _finish_kwargs(
+        api_kwargs = _finish_kwargs(
             api_kwargs, sanitized, params, supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
+        )
+        finalize_api_kwargs = getattr(profile, "finalize_api_kwargs", None)
+        if not callable(finalize_api_kwargs):
+            return api_kwargs
+        return finalize_api_kwargs(
+            api_kwargs,
+            model=model,
+            base_url=params.get("base_url"),
+            reasoning_config=reasoning_config,
+            session_id=params.get("session_id"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -498,7 +536,22 @@ class ChatCompletionsTransport(ProviderTransport):
 
         tool_calls = None
         if getattr(msg, "tool_calls", None):
-            tool_calls = [tc for tc in (self._normalize_tool_call(tc) for tc in msg.tool_calls) if tc is not None]
+            tool_names_normalized = bool(getattr(response, "_tool_names_normalized", False))
+            normalized_tool_calls = []
+            for tc in msg.tool_calls:
+                normalized = self._normalize_tool_call(tc)
+                if normalized is None:
+                    continue
+                if not tool_names_normalized:
+                    normalized.name = _normalize_response_tool_name(
+                        normalized.name,
+                        profile=kwargs.get("provider_profile"),
+                        phase="final_tool_call",
+                        model=kwargs.get("model"),
+                        request_wire_aliases=self._last_wire_aliases,
+                    )
+                normalized_tool_calls.append(normalized)
+            tool_calls = normalized_tool_calls
 
         usage = Usage.from_openai(response.usage) if hasattr(response, "usage") and response.usage else None
 

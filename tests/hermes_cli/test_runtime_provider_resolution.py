@@ -8,6 +8,97 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_profile_owned_api_mode_ignores_stale_saved_mode(monkeypatch):
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(
+        name="test-profile-owned-mode",
+        api_mode="anthropic_messages",
+        ignore_configured_api_mode=True,
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_profile",
+        lambda provider: profile if provider == profile.name else None,
+    )
+
+    assert rp._configured_api_mode(profile.name, {
+        "provider": profile.name,
+        "api_mode": "chat_completions",
+    }) is None
+
+    # Providers without the opt-in keep the existing persisted-mode behavior.
+    assert rp._configured_api_mode("test-unowned-mode", {
+        "provider": "test-unowned-mode",
+        "api_mode": "chat_completions",
+    }) == "chat_completions"
+
+
+def test_keyless_profile_with_no_env_vars_is_registered_for_runtime(monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from providers.base import ProviderProfile
+
+    provider_id = "test-keyless-no-env"
+    profile = ProviderProfile(
+        name=provider_id,
+        base_url="https://gateway.example/v1",
+        keyless=True,
+        api_key_placeholder="test-placeholder",
+    )
+    monkeypatch.setattr("providers.get_provider_profile", lambda _provider: profile)
+    previous = auth_mod.PROVIDER_REGISTRY.get(provider_id)
+    try:
+        auth_mod._register_plugin_provider(profile)
+
+        assert auth_mod.PROVIDER_REGISTRY[provider_id].auth_type == "api_key"
+        assert auth_mod.PROVIDER_REGISTRY[provider_id].api_key_env_vars == ()
+    finally:
+        if previous is None:
+            auth_mod.PROVIDER_REGISTRY.pop(provider_id, None)
+        else:
+            auth_mod.PROVIDER_REGISTRY[provider_id] = previous
+
+
+def test_auth_uses_profile_declared_keyless_credentials_and_status(monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from providers import base as provider_base
+    from providers.base import ProviderProfile
+
+    provider_id = "test-keyless-auth"
+    profile = ProviderProfile(
+        name=provider_id,
+        display_name="Test Keyless Auth",
+        base_url="https://gateway.example/v1",
+        keyless=True,
+        api_key_placeholder="test-placeholder",
+    )
+    monkeypatch.setitem(
+        auth_mod.PROVIDER_REGISTRY,
+        provider_id,
+        auth_mod.ProviderConfig(
+            id=provider_id,
+            name="Registry fallback",
+            auth_type="api_key",
+            inference_base_url="https://registry.example/v1",
+        ),
+    )
+    monkeypatch.setattr(
+        provider_base,
+        "_provider_profile",
+        lambda current: profile if current == provider_id else None,
+    )
+    monkeypatch.setattr(auth_mod, "_resolve_api_key_provider_secret", lambda *_args: ("", ""))
+
+    assert auth_mod.get_api_key_provider_status(provider_id) == {
+        "configured": True,
+        "provider": provider_id,
+        "name": "Test Keyless Auth",
+        "key_source": "keyless",
+        "base_url": "https://gateway.example/v1",
+        "logged_in": True,
+    }
+    assert auth_mod.resolve_api_key_provider_credentials(provider_id)["api_key"] == "test-placeholder"
+
+
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
     """A saved provider must not resolve as another authenticated provider."""
     monkeypatch.setattr(
@@ -166,6 +257,7 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
         lambda **kw: (_ for _ in ()).throw(AuthError("stale", provider="qwen-oauth", code="qwen_auth_missing")),
     )
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
 
     # Should NOT raise — falls through to OpenRouter

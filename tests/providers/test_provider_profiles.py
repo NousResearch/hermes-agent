@@ -11,6 +11,47 @@ class TestRegistry:
         assert p.name == "nvidia"
 
 
+class TestProviderProfileRuntimeSeams:
+    def test_keyless_helpers_use_profile_metadata(self, monkeypatch):
+        from providers import base
+
+        profile = ProviderProfile(
+            name="test-keyless",
+            display_name="Test Keyless",
+            base_url="https://gateway.example/v1",
+            env_vars=("TEST_GATEWAY_BASE_URL",),
+            keyless=True,
+            api_key_placeholder="profile-placeholder",
+        )
+        monkeypatch.setattr(
+            base, "_provider_profile", lambda provider_id: profile if provider_id == profile.name else None
+        )
+        monkeypatch.setenv("TEST_GATEWAY_BASE_URL", "https://override.example/v1/")
+
+        assert base.apply_keyless_api_key(profile.name, "", "") == ("profile-placeholder", "default")
+        assert base.apply_keyless_api_key(profile.name, "real-secret", "env") == ("real-secret", "env")
+        assert base.keyless_provider_status_payload(
+            profile.name,
+            default_name="Fallback",
+            default_base_url="https://fallback.example/v1",
+        ) == {
+            "configured": True,
+            "provider": "test-keyless",
+            "name": "Test Keyless",
+            "key_source": "keyless",
+            "base_url": "https://override.example/v1",
+            "logged_in": True,
+        }
+
+    def test_default_runtime_hooks_are_identity(self):
+        profile = ProviderProfile(name="test")
+        body = {"reasoning": {"effort": "low"}}
+        kwargs = {"model": "test-model"}
+
+        assert profile.normalize_auxiliary_extra_body(body, model="test-model") is body
+        assert profile.finalize_api_kwargs(kwargs, model="test-model") is kwargs
+
+
 
 
 

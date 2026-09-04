@@ -76,6 +76,7 @@ def make_agent_and_state():
 def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
     captured = {}
+    resolved = {}
     sentinel_db = NoopDb()
 
     class CapturingAgent(FakeAgent):
@@ -100,14 +101,17 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
         "hermes_cli.runtime_provider",
         mod(
             "hermes_cli.runtime_provider",
-            resolve_runtime_provider=lambda **_kwargs: {
-                "provider": "p",
-                "api_mode": "chat_completions",
-                "base_url": "u",
-                "api_key": "k",
-                "command": None,
-                "args": [],
-            },
+            resolve_runtime_provider=lambda **_kwargs: (
+                resolved.update(_kwargs)
+                or {
+                    "provider": "p",
+                    "api_mode": "chat_completions",
+                    "base_url": "u",
+                    "api_key": "k",
+                    "command": None,
+                    "args": [],
+                }
+            ),
         ),
     )
 
@@ -118,6 +122,7 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+    assert resolved["target_model"] == "m"
 
 
 @pytest.mark.asyncio
@@ -133,6 +138,37 @@ async def test_acp_steer_slash_command_injects_into_running_agent():
     assert response.stop_reason == "end_turn"
     assert fake.steers == ["prefer the simpler fix"]
     assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_model_switch_re_resolves_transport_within_same_provider(monkeypatch):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.provider = "cliproxyapi"
+    fake.base_url = "http://127.0.0.1:8317/v1"
+    fake.api_mode = "codex_responses"
+    captured = {}
+
+    monkeypatch.setattr(
+        acp_agent,
+        "_resolve_model_selection",
+        lambda _model_id, _current_provider: ("cliproxyapi", "grok-4.6"),
+    )
+
+    def make_agent(**kwargs):
+        captured.update(kwargs)
+        replacement = FakeAgent()
+        replacement.provider = "cliproxyapi"
+        replacement.model = "grok-4.6"
+        return replacement
+
+    monkeypatch.setattr(acp_agent.session_manager, "_make_agent", make_agent)
+
+    await acp_agent.set_session_model("grok-4.6", state.session_id)
+
+    assert captured["model"] == "grok-4.6"
+    assert captured["requested_provider"] == "cliproxyapi"
+    assert captured["base_url"] == "http://127.0.0.1:8317/v1"
+    assert captured["api_mode"] is None
 
 
 

@@ -4013,9 +4013,25 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     environment.
     """
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.runtime_provider import (
+            _get_named_custom_provider,
+            resolve_runtime_provider,
+        )
 
-        runtime = resolve_runtime_provider(requested="custom")
+        main_provider = _read_main_provider()
+        requested_provider = str(
+            _runtime_main_value("requested_provider") or ""
+        ).strip().lower()
+        route_provider = "custom"
+        for candidate in (requested_provider, main_provider):
+            if candidate and _get_named_custom_provider(candidate) is not None:
+                route_provider = candidate
+                break
+        main_model = _read_main_model_for_aux()
+        runtime = resolve_runtime_provider(
+            requested=route_provider,
+            target_model=main_model or None,
+        )
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
@@ -7201,9 +7217,6 @@ def resolve_provider_client(
                     "and will 401 on auth-required endpoints",
                     custom_entry.get("name") or provider,
                 )
-            # An explicit per-task api_mode override (from _resolve_task_provider_model)
-            # wins; otherwise fall back to what the provider entry declared.
-            entry_api_mode = (api_mode or custom_entry.get("api_mode") or "").strip()
             if custom_base:
                 final_model = _normalize_resolved_model(
                     model
@@ -7212,6 +7225,42 @@ def resolve_provider_client(
                     or _read_main_model_for_aux()
                     or "gpt-4o-mini",
                     provider,
+                )
+                # Resolve the complete route once so auxiliary calls use the
+                # same selected pool credential, endpoint, headers, and
+                # model-level transport as the main runtime. A task-level
+                # api_mode remains the only higher-precedence override.
+                entry_runtime = {}
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                    entry_runtime = resolve_runtime_provider(
+                        requested=(
+                            provider
+                            if original_provider == "main"
+                            else original_provider or provider
+                        ),
+                        explicit_base_url=explicit_base_url or custom_base,
+                        explicit_api_key=explicit_api_key,
+                        target_model=final_model,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Named custom auxiliary runtime resolution failed for %r; "
+                        "using provider entry fallback",
+                        provider,
+                        exc_info=True,
+                    )
+                custom_base = str(
+                    entry_runtime.get("base_url") or custom_base
+                ).strip()
+                resolved_key = entry_runtime.get("api_key")
+                if resolved_key:
+                    custom_key = resolved_key
+                entry_api_mode = (
+                    (api_mode or "").strip()
+                    or str(entry_runtime.get("api_mode") or "").strip()
+                    or str(custom_entry.get("api_mode") or "").strip()
                 )
                 # anthropic_messages talks to the /anthropic surface directly;
                 # OpenAI-wire paths (chat_completions / codex_responses) need the
@@ -7225,6 +7274,9 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _runtime_headers = entry_runtime.get("extra_headers")
+                if isinstance(_runtime_headers, dict) and _runtime_headers:
+                    _extra2["default_headers"] = dict(_runtime_headers)
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2

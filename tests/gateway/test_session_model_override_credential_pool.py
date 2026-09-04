@@ -24,14 +24,21 @@ def test_fast_session_override_includes_credential_pool(monkeypatch):
         "gateway.run._resolve_gateway_model",
         lambda _uc=None: "default-model",
     )
+    resolved = {}
+
+    def resolve_pool(provider, model=None):
+        resolved.update(provider=provider, model=model)
+        return fake_pool if provider == "custom:hyper" else None
+
     monkeypatch.setattr(
         "gateway.run._credential_pool_for_provider",
-        lambda provider: fake_pool if provider == "custom:hyper" else None,
+        resolve_pool,
     )
 
     model, runtime = runner._resolve_session_agent_runtime(session_key="sess-1")
 
     assert model == "kimi-k2.7"
-    assert runtime.get("credential_pool") is fake_pool
+    assert runtime["credential_pool"] is fake_pool
+    assert resolved == {"provider": "custom:hyper", "model": "kimi-k2.7"}
 
 

@@ -1372,6 +1372,9 @@ def _resolve_named_custom_runtime(
         model_name = target_model or custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        model_api_mode = _model_api_mode_override(custom_provider, model_name)
+        if model_api_mode:
+            pool_result["api_mode"] = model_api_mode
         _lift_model_capabilities(custom_provider, model_name, pool_result)
         if isinstance(custom_provider.get("max_output_tokens"), int):
             pool_result["max_output_tokens"] = custom_provider["max_output_tokens"]

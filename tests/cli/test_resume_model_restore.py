@@ -82,6 +82,74 @@ def test_restore_session_model_restores_model_and_provider():
     assert stub._explicit_base_url == "https://f/v1"
 
 
+def test_restore_session_model_resolves_transport_for_stored_model(monkeypatch):
+    seen = {}
+
+    def fake_resolve_runtime_provider(**kwargs):
+        seen.update(kwargs)
+        return {
+            "provider": "cliproxyapi",
+            "api_key": "k",
+            "base_url": "http://127.0.0.1:8317/v1",
+            "api_mode": "chat_completions",
+        }
+
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", fake_resolve_runtime_provider)
+    stub = _make_stub()
+    stub._restore_session_model(_row(
+        model="grok-4.6",
+        model_config={"gateway_runtime": {"provider": "cliproxyapi"}},
+    ))
+
+    assert seen["target_model"] == "grok-4.6"
+
+
+def test_restore_session_model_replaces_stale_transport_with_fresh_same_provider_resolution(
+    monkeypatch,
+):
+    seen = {}
+
+    def fake_resolve_runtime_provider(**kwargs):
+        seen.update(kwargs)
+        return {
+            "provider": "custom",
+            "requested_provider": "cliproxyapi",
+            "api_key": "fresh-key",
+            "base_url": "http://127.0.0.1:8317/v1",
+            "api_mode": "chat_completions",
+        }
+
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", fake_resolve_runtime_provider)
+    stub = _make_stub(
+        model="gpt-5.6-sol",
+        provider="cliproxyapi",
+        requested_provider="cliproxyapi",
+        base_url="http://127.0.0.1:8317/v1",
+        api_key="old-key",
+        api_mode="codex_responses",
+    )
+
+    stub._restore_session_model(_row(
+        model="grok-4.6",
+        model_config={
+            "gateway_runtime": {
+                "provider": "cliproxyapi",
+                "base_url": "http://127.0.0.1:8317/v1",
+                "api_mode": "codex_responses",
+            }
+        },
+    ))
+
+    assert seen["requested"] == "cliproxyapi"
+    assert seen["target_model"] == "grok-4.6"
+    assert stub.api_key == "fresh-key"
+    assert stub.api_mode == "chat_completions"
+
+
 def test_restore_session_model_explicit_cli_flag_wins():
     stub = _make_stub(model="cli-flag-model", _explicit_model_override=True)
     stub._restore_session_model(_row())

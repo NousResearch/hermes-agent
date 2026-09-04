@@ -1153,6 +1153,73 @@ class TestOpenRouterPaidLaneGuard:
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
+    def test_custom_runtime_resolves_transport_for_active_main_model(self):
+        seen = {}
+
+        def fake_resolve_runtime_provider(**kwargs):
+            seen.update(kwargs)
+            return {
+                "base_url": "http://127.0.0.1:8317/v1",
+                "api_key": "k",
+                "api_mode": "chat_completions",
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=fake_resolve_runtime_provider,
+        ), patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value={"name": "CLIProxyAPI"},
+        ), patch(
+            "agent.auxiliary_client._runtime_main_value",
+            side_effect=lambda field: "cliproxyapi" if field == "requested_provider" else "",
+        ), patch(
+            "agent.auxiliary_client._read_main_provider",
+            return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model_for_aux",
+            return_value="grok-4.6",
+        ):
+            from agent.auxiliary_client import _resolve_custom_runtime
+
+            _resolve_custom_runtime()
+
+        assert seen["requested"] == "cliproxyapi"
+        assert seen["target_model"] == "grok-4.6"
+
+    def test_custom_runtime_does_not_treat_builtin_main_as_custom(self):
+        seen = {}
+
+        def fake_resolve_runtime_provider(**kwargs):
+            seen.update(kwargs)
+            return {
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "k",
+                "api_mode": "chat_completions",
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=fake_resolve_runtime_provider,
+        ), patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=None,
+        ), patch(
+            "agent.auxiliary_client._runtime_main_value",
+            return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_provider",
+            return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model_for_aux",
+            return_value="anthropic/claude-sonnet-4.6",
+        ):
+            from agent.auxiliary_client import _resolve_custom_runtime
+
+            assert _resolve_custom_runtime() == (None, None, None)
+
+        assert seen["requested"] == "custom"
+
     def test_codex_pool_entry_takes_priority_over_auth_store(self):
         class _Entry:
             access_token = "pooled-codex-token"

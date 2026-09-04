@@ -3393,14 +3393,18 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     )
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
+def _resolve_runtime_agent_kwargs_for_provider(
+    provider: str, model: Optional[str] = None
+) -> dict:
     """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = resolve_runtime_provider(
+            requested=provider, target_model=model or None
+        )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {
@@ -3431,14 +3435,16 @@ def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]
     return _deep_merge(base_dict, override_dict)
 
 
-def _credential_pool_for_provider(provider: Optional[str]):
+def _credential_pool_for_provider(
+    provider: Optional[str], model: Optional[str] = None
+):
     """Return the live credential pool for a provider id (e.g. ``custom:hyper``)."""
     if not provider or not str(provider).strip():
         return None
     try:
-        return _resolve_runtime_agent_kwargs_for_provider(str(provider).strip()).get(
-            "credential_pool"
-        )
+        return _resolve_runtime_agent_kwargs_for_provider(
+            str(provider).strip(), model=model
+        ).get("credential_pool")
     except Exception:
         logger.debug(
             "Failed to resolve credential pool for provider=%s",
@@ -3467,6 +3473,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     requested=entry.get("provider"),
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry),
+                    target_model=entry.get("model") or None,
                 )
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the
@@ -8894,7 +8901,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if override_runtime.get("api_key"):
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(
-                        override.get("provider")
+                        override.get("provider"), override_model
                     )
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
@@ -8950,9 +8957,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if ch:
                 if ch.model:
                     model = ch.model
-                if ch.provider:
+                channel_provider = (
+                    ch.provider
+                    or runtime_kwargs.get("requested_provider")
+                    or runtime_kwargs.get("provider")
+                )
+                # Transport can vary by model behind one provider endpoint.
+                # Re-resolve on model-only overrides too; otherwise the channel
+                # keeps the global model's wire protocol (for example CPA GPT
+                # Responses when the channel selects Grok Chat Completions).
+                if channel_provider and (ch.provider or ch.model):
                     runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                        ch.provider
+                        channel_provider, model=model
                     )
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Only adopt the provider's bundled model when the override
@@ -29043,7 +29059,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # credential-less override — _resolve_session_agent_runtime falls
             # back to env-based resolution and applies model/provider on top.
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(
+                    provider, model=persisted.get("model")
+                )
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
@@ -29112,7 +29130,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and override.get("provider")
         ):
             runtime_kwargs["credential_pool"] = _credential_pool_for_provider(
-                override.get("provider")
+                override.get("provider"), model
             )
         return model, runtime_kwargs
 

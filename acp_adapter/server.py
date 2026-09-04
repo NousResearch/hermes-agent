@@ -2581,14 +2581,16 @@ class HermesACPAgent(acp.Agent):
             state.model = resolved_model
             provider_changed = bool(current_provider and requested_provider != current_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
-            current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
             state.agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
                 model=resolved_model,
                 requested_provider=requested_provider,
                 base_url=current_base_url,
-                api_mode=current_api_mode,
+                # A model switch is a new route selection even when the provider
+                # identity stays the same. Re-resolve its transport so a hybrid
+                # provider can move between Responses and Chat Completions.
+                api_mode=None,
             )
             self.session_manager.save_session(session_id)
             logger.info(

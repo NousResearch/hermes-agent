@@ -105,6 +105,35 @@ def test_runtime_refresh_resolves_for_the_selected_model():
     assert host.api_mode == "codex_responses"
 
 
+def test_fallback_credentials_resolve_for_the_fallback_model(monkeypatch):
+    host = _EnsureHost()
+    host._fallback_model = [{"provider": "cliproxyapi", "model": "grok-4.6"}]
+    calls = []
+
+    def fake_resolve_runtime_provider(**kwargs):
+        calls.append(kwargs.get("target_model"))
+        if len(calls) == 1:
+            from hermes_cli.auth import AuthError
+            raise AuthError("primary unavailable")
+        return {
+            "provider": "custom",
+            "requested_provider": "cliproxyapi",
+            "api_key": "k",
+            "base_url": "http://127.0.0.1:8317/v1",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+
+    assert host._ensure_runtime_credentials() is True
+    assert calls == ["gpt-5.6-sol", "grok-4.6"]
+
+
 def test_validate_requested_model_proxy_url_routes_to_custom():
     """/model validation: an 'openrouter' provider pointed at a non-OpenRouter
     host is a custom endpoint, even when the URL contains the substring."""

@@ -749,6 +749,11 @@ def test_named_provider_pool_keeps_model_transport_override(monkeypatch):
         def select(self):
             return _Entry()
 
+    monkeypatch.setattr(
+        rp,
+        "custom_provider_pool_key_candidates",
+        lambda *_args, **_kwargs: ["cliproxyapi"],
+    )
     monkeypatch.setattr(rp, "load_pool", lambda _provider: _Pool())
 
     resolved = rp.resolve_runtime_provider(
@@ -756,6 +761,7 @@ def test_named_provider_pool_keeps_model_transport_override(monkeypatch):
     )
 
     assert resolved["api_mode"] == "codex_responses"
+    assert resolved["source"] == "pool:cliproxyapi"
 
 
 def test_configured_default_model_uses_its_transport_override(monkeypatch):

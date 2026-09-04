@@ -110,6 +110,51 @@ class TestResolveProviderClientNamedCustom:
         assert model == "my-model"
         assert "beans.local" in str(client.base_url)
 
+    def test_named_provider_uses_model_level_transport(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-5.6-sol", "provider": "cliproxyapi"},
+            "providers": {
+                "cliproxyapi": {
+                    "name": "CLIProxyAPI",
+                    "base_url": "http://127.0.0.1:8317/v1",
+                    "api_key": "k",
+                    "transport": "chat_completions",
+                    "models": {
+                        "gpt-5.6-sol": {"transport": "codex_responses"},
+                        "grok-4.6": {},
+                    },
+                },
+            },
+        })
+        from agent.auxiliary_client import CodexAuxiliaryClient, resolve_provider_client
+
+        gpt_client, _ = resolve_provider_client("cliproxyapi", "gpt-5.6-sol")
+        grok_client, _ = resolve_provider_client("cliproxyapi", "grok-4.6")
+
+        assert isinstance(gpt_client, CodexAuxiliaryClient)
+        assert not isinstance(grok_client, CodexAuxiliaryClient)
+
+    def test_main_alias_uses_model_level_transport(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"provider": "cliproxyapi", "default": "gpt-5.6-sol"},
+            "providers": {
+                "cliproxyapi": {
+                    "name": "CLIProxyAPI",
+                    "base_url": "http://localhost:8317/v1",
+                    "api_key": "test-key",
+                    "transport": "chat_completions",
+                    "models": {
+                        "gpt-5.6-sol": {"transport": "codex_responses"},
+                    },
+                },
+            },
+        })
+        from agent import auxiliary_client as ac
+
+        client, model = ac.resolve_provider_client("main", "gpt-5.6-sol")
+
+        assert isinstance(client, ac.CodexAuxiliaryClient)
+        assert model == "gpt-5.6-sol"
 
     def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
         _write_config(tmp_path, {
@@ -155,6 +200,58 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         assert "api.b.ai" in str(client.base_url)
         assert client.api_key == "sk-real-b-ai-pool-key-12345"
+
+
+    def test_providers_dict_pool_outranks_inline_key_for_auxiliary_client(
+        self, tmp_path, monkeypatch
+    ):
+        _write_config(tmp_path, {
+            "providers": {
+                "cliproxyapi": {
+                    "name": "CLIProxyAPI",
+                    "base_url": "http://127.0.0.1:8317/v1",
+                    "api_key": "inline-test-key",
+                    "extra_headers": {"X-Route-Test": "present"},
+                    "transport": "chat_completions",
+                    "models": {
+                        "gpt-5.6-sol": {"transport": "codex_responses"},
+                    },
+                },
+            },
+        })
+        auth_path = tmp_path / ".hermes" / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "cliproxyapi": [
+                    {
+                        "id": "pool-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "pool-test-key",
+                    }
+                ]
+            },
+        }))
+        from agent import auxiliary_client as ac
+
+        captured = {}
+        real_create = ac._create_openai_client
+
+        def capture_create(*, api_key, base_url, **kwargs):
+            captured.update(kwargs)
+            return real_create(api_key=api_key, base_url=base_url, **kwargs)
+
+        monkeypatch.setattr(ac, "_create_openai_client", capture_create)
+        client, model = ac.resolve_provider_client("cliproxyapi", "gpt-5.6-sol")
+
+        assert isinstance(client, ac.CodexAuxiliaryClient)
+        assert model == "gpt-5.6-sol"
+        assert client.api_key == "pool-test-key"
+        assert captured["default_headers"]["X-Route-Test"] == "present"
 
 
 class TestResolveProviderClientModelNormalization:

@@ -96,6 +96,20 @@ def _make_runner(store):
 
 
 def test_runner_rehydrates_override_after_restart(store_factory):
+    resolved = {}
+
+    def resolve_persisted_provider(provider, model=None):
+        resolved.update(provider=provider, model=model)
+        return {
+            "api_key": "sk-fresh-from-keychain",
+            "api_mode": "responses",
+            "base_url": "https://api.openai.example/v1",
+            "provider": "openai",
+            "requested_provider": "custom:chatgpt-tier",
+            "capabilities": {"openai_native_compaction": True},
+            "max_tokens": 32_768,
+        }
+
     store = store_factory()
     entry = store.get_or_create_session(_make_source())
     session_key = entry.session_key
@@ -106,15 +120,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     runner = _make_runner(store_factory())
     with patch(
         "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-        return_value={
-            "api_key": "sk-fresh-from-keychain",
-            "api_mode": "responses",
-            "base_url": "https://api.openai.example/v1",
-            "provider": "openai",
-            "requested_provider": "custom:chatgpt-tier",
-            "capabilities": {"openai_native_compaction": True},
-            "max_tokens": 32_768,
-        },
+        side_effect=resolve_persisted_provider,
     ):
         runner._rehydrate_session_model_override(session_key)
 
@@ -128,6 +134,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert override["requested_provider"] == "custom:chatgpt-tier"
     assert override["capabilities"] == {"openai_native_compaction": True}
     assert override["max_tokens"] == 32_768
+    assert resolved == {"provider": "openai", "model": "gpt-5o"}
 
     model, runtime = runner._resolve_session_agent_runtime(
         session_key=session_key,

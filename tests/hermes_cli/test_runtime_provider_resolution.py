@@ -784,6 +784,126 @@ def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monke
     assert resolved["model"] == "claude-opus-4-8"
 
 
+def _opencode_go_config() -> dict:
+    return {
+        "providers": {
+            "opencode-go": {
+                "name": "OpenCode Go",
+                "base_url": "https://opencode.example.com/v1",
+                "key_env": "OPENCODE_GO_API_KEY",
+            }
+        }
+    }
+
+
+def _forbid_builtin_resolution(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+
+def test_named_custom_provider_key_env_resolved_from_dotenv(monkeypatch):
+    """A key_env variable that lives only in ~/.hermes/.env must resolve (#99604).
+
+    The desktop SSH backend is spawned with a stripped environment, so a raw
+    process-env read never sees the key and the model call fails with
+    "API key not set" even though ``hermes chat`` on the same box works.
+    Resolution must fall back to the .env file, matching the policy
+    ``hermes_cli.config.get_env_value`` already applies on gateway/CLI/auth.
+    """
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env",
+        lambda: {"OPENCODE_GO_API_KEY": "dotenv-secret"},
+    )
+    monkeypatch.setattr(rp, "load_config", _opencode_go_config)
+    _forbid_builtin_resolution(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:opencode-go")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "dotenv-secret"
+
+
+def test_named_custom_provider_process_env_wins_over_dotenv(monkeypatch):
+    """An exported process-env value keeps priority over the .env fallback."""
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "env-secret")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env",
+        lambda: {"OPENCODE_GO_API_KEY": "dotenv-secret"},
+    )
+    monkeypatch.setattr(rp, "load_config", _opencode_go_config)
+    _forbid_builtin_resolution(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:opencode-go")
+
+    assert resolved["api_key"] == "env-secret"
+
+
+def test_named_custom_provider_explicit_empty_env_disables_dotenv_fallback(monkeypatch):
+    """A variable exported as empty is an explicit value, not a miss.
+
+    Exporting ``KEY=""`` is a common way to disable a provider; borrowing the
+    ``.env`` value for it would silently re-enable it. The empty value must
+    flow through so the inline api_key fallback (not the .env file) wins,
+    matching the pre-.env-fallback os.getenv semantics.
+    """
+    key_env_name = "OPENCODE" + "_GO_API_KEY"
+    monkeypatch.setenv(key_env_name, "")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env",
+        lambda: {key_env_name: "dotenv-placeholder"},
+    )
+    config = _opencode_go_config()
+    config["providers"]["opencode-go"]["api_key"] = "inline-placeholder"
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    _forbid_builtin_resolution(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:opencode-go")
+
+    assert resolved["api_key"] == "inline-placeholder"
+
+
+def test_named_custom_provider_dotenv_fallback_fail_closed_under_multiplex(monkeypatch):
+    """Under multiplexing a scoped miss must not borrow the shared .env value.
+
+    ~/.hermes/.env is shared across profiles: reading it after an
+    authoritative scope miss could surface another profile's key. The
+    inline api_key fallback still applies, as it does for env misses.
+    """
+    from agent.secret_scope import (
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env",
+        lambda: {"OPENCODE_GO_API_KEY": "cross-profile-leak"},
+    )
+    config = _opencode_go_config()
+    config["providers"]["opencode-go"]["api_key"] = "inline-fallback"
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    _forbid_builtin_resolution(monkeypatch)
+
+    set_multiplex_active(True)
+    token = set_secret_scope({"UNRELATED_VAR": "scoped"})
+    try:
+        resolved = rp.resolve_runtime_provider(requested="custom:opencode-go")
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)
+
+    assert resolved["api_key"] == "inline-fallback"
+
+
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

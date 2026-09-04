@@ -19,6 +19,7 @@ from agent.credential_pool import (
     load_pool,
 )
 from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import is_multiplex_active as _is_multiplex_active
 from hermes_cli.auth import (
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
@@ -81,9 +82,33 @@ def _getenv(name: str, default: str = "") -> str:
     when on. Genuinely-global vars are handled inside ``get_secret`` and still
     read ``os.environ``. Keeps the ``(name, default) -> str`` contract every
     call site here already relies on.
+
+    Lookup order is process environment → ``~/.hermes/.env`` → ``default``
+    (the same policy ``hermes_cli.config.get_env_value`` already applies for
+    the gateway/CLI/auth paths). The desktop SSH backend
+    is spawned with a stripped environment (``setsid env HERMES_DESKTOP=1 …
+    serve --isolated``), so any key that lives only in ``.env`` is invisible
+    to a raw ``os.environ`` read and every model call fails with "API key
+    not set" even though ``hermes chat`` on the same box works (#99604).
+    Under multiplexing the scoped miss above stays authoritative — the
+    shared ``.env`` file may hold another profile's value, so no fallback
+    happens there. A variable that is set but empty counts as set: exporting
+    ``KEY=""`` keeps disabling the provider instead of borrowing the ``.env``
+    value, matching the pre-fallback ``os.getenv`` semantics.
     """
-    val = _get_secret(name, default)
-    return val if val is not None else default
+    val = _get_secret(name, None)
+    if val is not None:
+        # An explicitly-set (even empty) value is authoritative — exporting
+        # KEY="" disables the provider rather than borrowing the .env value.
+        # A None here means the variable is genuinely absent (get_secret
+        # passes the default through on every miss path), and only that may
+        # borrow from the .env fallback.
+        return val
+    if _is_multiplex_active():
+        return default
+    env_file = _config_mod.load_env()
+    raw = str(env_file.get(name) or "").strip()
+    return raw or default
 
 
 def _normalize_custom_provider_name(value: str) -> str:

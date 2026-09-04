@@ -392,6 +392,26 @@ class TestWorkspaceSwitch:
         )
         assert written["cfg"]["hosts"]["hermes"]["workspace"] == "cosmania-dex"
 
+    def test_browse_client_is_built_for_the_browsed_workspace(self, monkeypatch):
+        """The browse client must carry the browsed workspace, not the configured one.
+        get_honcho_client keys its cache on workspace_id, so this is what keeps a browse
+        from reusing the profile's own client."""
+        import plugins.memory.honcho.client as client_mod
+
+        seen = []
+        base = client_mod.HonchoClientConfig(host="hermes", workspace_id="hermes", api_key="k")
+        monkeypatch.setattr(client_mod.HonchoClientConfig, "from_global_config",
+                            classmethod(lambda cls, host=None, config_path=None: base))
+        monkeypatch.setattr(client_mod, "get_honcho_client", lambda cfg: seen.append(cfg) or object())
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+
+        _, own = honcho_cli._peers_map_client()
+        _, browsed = honcho_cli._peers_map_client(workspace="cosmania-dex")
+
+        assert own.workspace_id == "hermes"
+        assert browsed.workspace_id == "cosmania-dex"
+        assert [c.workspace_id for c in seen] == ["hermes", "cosmania-dex"]
+
     def test_declined_switch_leaves_config_untouched(self, monkeypatch, tmp_path):
         cfg = {"apiKey": "***", "hosts": {"hermes": {"peerName": "eri"}}}
         written = self._run(

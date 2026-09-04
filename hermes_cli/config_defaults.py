@@ -4040,6 +4040,12 @@ DEFAULT_CONFIG = {
         # Ignored on macOS/Windows. Bridged to the HERMES_DESKTOP_PASSWORD_STORE
         # env var the Electron app reads, so an explicit env var still wins.
         "password_store": "auto",
+        # When true, file paths that appear as plain text in conversation
+        # messages (absolute paths with a file extension, outside code fences)
+        # are rendered as clickable links that open the file with the OS
+        # default application. Off by default — preserves the historical
+        # plain-text rendering.
+        "markdown_linkify_paths": False,
         # macOS only: optional persistent code-signing identity (a cert in the
         # login keychain — a self-signed "Code Signing" cert from Keychain
         # Access works; no Apple Developer account needed) used to re-sign

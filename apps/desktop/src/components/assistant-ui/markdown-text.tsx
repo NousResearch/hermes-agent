@@ -8,7 +8,8 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { atom } from 'nanostores'
+import { type ComponentProps, memo, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -18,6 +19,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { linkifyFilePaths } from '@/lib/linkify-file-paths'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -36,12 +38,14 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
+import { $currentCwd } from '@/store/session'
 
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
+import { useHermesConfigRecord } from '../../app/hooks/use-config-record'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -97,11 +101,21 @@ function useCodePlugin(): CodePlugin | null {
 // identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
   try {
-    return tailBoundedRemend(preprocessMarkdown(text))
+    const repaired = tailBoundedRemend(preprocessMarkdown(text))
+    // Opt-in plain-text path linkify (desktop.markdown_linkify_paths). The
+    // flag lives in a module-scope atom set by MarkdownTextSurface so this
+    // function keeps a stable identity (a changing `preprocess` prop would
+    // remount the render pipeline on every config change). Relative paths
+    // resolve against the current session cwd.
+    return $linkifyFilePaths.get() ? linkifyFilePaths(repaired, $currentCwd.get()) : repaired
   } catch {
     return text
   }
 }
+
+// Module-scope flag read by the (stable-identity) preprocess above. Written
+// from MarkdownTextSurface when the shared config record changes.
+const $linkifyFilePaths = atom(false)
 
 function useOpenMediaFile(path: string) {
   const [openFailed, setOpenFailed] = useState(false)
@@ -541,6 +555,18 @@ function MarkdownTextSurface({
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
+
+  // Mirror the opt-in `desktop.markdown_linkify_paths` setting into the
+  // module-scope flag consumed by preprocessWithTailRepair. useLayoutEffect
+  // (not useEffect) so the flag is already set before the first paint — a
+  // paint-timing effect would otherwise leave the first message unlinked.
+  const { data: config } = useHermesConfigRecord()
+  const linkifyPaths = Boolean(
+    ((config?.desktop ?? {}) as { markdown_linkify_paths?: boolean }).markdown_linkify_paths
+  )
+  useLayoutEffect(() => {
+    $linkifyFilePaths.set(linkifyPaths)
+  }, [linkifyPaths])
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by

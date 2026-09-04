@@ -662,7 +662,8 @@ export const zh: Translations = {
       desktop: {
         repoScanEnabled: '自动发现代码仓库',
         repoScanRoots: '代码仓库扫描根目录',
-        repoScanExcludePaths: '排除的代码仓库路径'
+        repoScanExcludePaths: '排除的代码仓库路径',
+        markdownLinkifyPaths: '消息路径链接'
       },
       agent: {
         maxTurns: '最大智能体步数',
@@ -822,7 +823,8 @@ export const zh: Translations = {
       desktop: {
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',
         repoScanRoots: '要扫描的文件夹。留空时扫描主目录。',
-        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'
+        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。',
+        markdownLinkifyPaths: '将会话消息中以纯文本出现的绝对文件路径渲染为可点击链接，点击后使用系统默认应用打开。'
       },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {

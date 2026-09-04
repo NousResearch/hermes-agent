@@ -638,6 +638,16 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
         pricing_version="xai-vertex-2026-08",
     ),
+    (
+        "xai",
+        "grok-4.6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("6.00"),
+        source="official_docs_snapshot",
+        source_url="https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
+        pricing_version="xai-vertex-2026-08",
+    ),
     # Google Gemini
     # Gemini 3.8 Flash — GA 2026-09-02, MoA flash37 seat's lineage successor
     # (config.yaml moa.presets.gate/consult, provisional swap 2026-09-03,

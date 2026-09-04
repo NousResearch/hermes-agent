@@ -47,6 +47,8 @@ def test_vertex_appears_when_credentials_configured():
     assert vertex is not None, "vertex should appear when credentials are configured"
     assert vertex["models"], "vertex row must carry the curated model list"
     assert "google/gemini-3.8-flash" in vertex["models"]
+    assert "xai/grok-4.6" in vertex["models"]
+    assert "zai-org/glm-5.2-maas" in vertex["models"]
 
 
 def test_vertex_hidden_without_credentials():

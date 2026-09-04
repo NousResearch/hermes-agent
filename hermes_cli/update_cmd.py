@@ -4880,8 +4880,8 @@ def _ensure_acp_launcher() -> None:
     reconstruct interpreter/entrypoint paths.
 
     No-op on Windows (install.ps1 stages the ``hermes`` / ``hermes-acp``
-    launchers into the managed binary dir ``$HermesHome\bin`` and puts THAT
-    on the user PATH — never the whole ``venv\Scripts`` dir, which would
+    launchers into the managed binary dir ``$HermesHome\\bin`` and puts THAT
+    on the user PATH — never the whole ``venv\\Scripts`` dir, which would
     shadow the user's ``python`` (#83797); when those launchers go missing,
     ``hermes_cli._install_repair.ensure_windows_bin_launchers`` re-stages
     them) and wherever a ``hermes-acp`` is already present next to the

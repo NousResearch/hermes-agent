@@ -89,6 +89,9 @@ def test_no_probe_available_stays_discrete(monkeypatch):
 
 def _uma_machine(monkeypatch, *, view):
     _no_cache(monkeypatch)
+    # The AMD sysfs probe must not answer from the real machine: these
+    # tests pin a synthetic NVIDIA shape and must stay machine-independent.
+    monkeypatch.setattr(hw, "_amd_sysfs_vram", lambda: None)
     monkeypatch.setattr(hw, "_nvidia_vram",
                         lambda: (UMA_SMI_TOTAL, 14848 << 20))
     monkeypatch.setattr(hw, "_ram_bytes",
@@ -129,6 +132,7 @@ def test_budget_unified_no_smi_still_classifies(monkeypatch):
     (system loader, PATH-independent) still classifies unified, planning
     still budgets the full pool, and live falls back to OS-available."""
     _no_cache(monkeypatch)
+    monkeypatch.setattr(hw, "_amd_sysfs_vram", lambda: None)
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, True))
@@ -165,6 +169,7 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     off and budgeting falls to the conservative RAM-as-UMA path — an
     attribute-less pool claim alone must never flip the verdict."""
     _no_cache(monkeypatch)
+    monkeypatch.setattr(hw, "_amd_sysfs_vram", lambda: None)
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, None))

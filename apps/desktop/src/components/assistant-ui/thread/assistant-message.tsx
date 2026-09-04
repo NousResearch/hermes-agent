@@ -20,6 +20,7 @@ import {
 } from '@/components/assistant-ui/thread/content'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
+import { ScheduledRetryAction } from '@/components/assistant-ui/thread/scheduled-retry-action'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
@@ -489,6 +490,9 @@ const ErrorRecoveryActions: FC = () => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const surface = useAuiState(s => s.message.metadata?.custom?.errorSurface as ErrorSurface | undefined)
+  const failedMessageId = useAuiState(s => s.message.id)
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
 
   const errorText = useAuiState(s => {
     const status = s.message.status as { error?: unknown; type?: string } | undefined
@@ -557,6 +561,9 @@ const ErrorRecoveryActions: FC = () => {
             {copy.errorRetry}
           </button>
         </ActionBarPrimitive.Reload>
+      )}
+      {retryable && sessionId && (
+        <ScheduledRetryAction messageId={failedMessageId} sessionId={sessionId} />
       )}
       {showSwitchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
       {window.hermesDesktop?.logsRoot && (

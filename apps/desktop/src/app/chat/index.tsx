@@ -9,6 +9,7 @@ import { useLocation } from 'react-router'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
+import { ScheduledRetryScheduler } from '@/components/assistant-ui/thread/scheduled-retry-scheduler'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
@@ -355,7 +356,10 @@ function ChatRuntimeBoundary({
 
   return (
     <TranscriptWindowProvider value={transcriptWindow}>
-      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ScheduledRetryScheduler />
+        {children}
+      </AssistantRuntimeProvider>
     </TranscriptWindowProvider>
   )
 }

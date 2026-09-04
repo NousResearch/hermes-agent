@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +33,77 @@ from hermes_cli.config import (
     write_platform_config_field,
     _sanitize_env_lines,
 )
+
+
+@pytest.mark.parametrize("first_action", ["save", "remove"])
+def test_env_write_order_matches_live_publication_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_action: str
+):
+    from hermes_cli import config as config_module
+
+    key = "CONCURRENT_ENV_VALUE"
+    env_path = tmp_path / ".env"
+    env_path.write_text(f"{key}=initial\n", encoding="utf-8")
+    first_at_publish = threading.Event()
+    second_persisted = threading.Event()
+    allow_second_publish = threading.Event()
+    second_done = threading.Event()
+    thread_role = threading.local()
+    errors: list[BaseException] = []
+    original_replace = config_module.atomic_replace
+    original_publish = config_module._publish_env_value
+
+    def controlled_replace(source, target):
+        original_replace(source, target)
+        if getattr(thread_role, "name", None) == "second":
+            second_persisted.set()
+            assert allow_second_publish.wait(5)
+
+    def controlled_publish(name, value):
+        if getattr(thread_role, "name", None) == "first":
+            first_at_publish.set()
+            second_reached_disk = second_persisted.wait(2)
+            allow_second_publish.set()
+            if second_reached_disk:
+                assert second_done.wait(5)
+        original_publish(name, value)
+
+    monkeypatch.setattr(config_module, "atomic_replace", controlled_replace)
+    monkeypatch.setattr(config_module, "_publish_env_value", controlled_publish)
+
+    def run_first():
+        thread_role.name = "first"
+        try:
+            if first_action == "save":
+                config_module.save_env_values({key: "first"})
+            else:
+                config_module.remove_env_value(key)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_second():
+        thread_role.name = "second"
+        try:
+            config_module.save_env_values({key: "second"})
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            second_done.set()
+
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), key: "initial"}):
+        first = threading.Thread(target=run_first)
+        first.start()
+        assert first_at_publish.wait(5)
+        second = threading.Thread(target=run_second)
+        second.start()
+        first.join(timeout=10)
+        second.join(timeout=10)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert not errors
+        assert load_env()[key] == "second"
+        assert os.environ[key] == "second"
 
 
 class TestGetHermesHome:

@@ -249,10 +249,9 @@ config.remove_env_value("DROP")
     assert "DROP" not in values
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-def test_rotation_preserves_existing_env_permissions(
+def _assert_rotation_preserves_existing_env_permissions(
     hermes_home: Path, monkeypatch: pytest.MonkeyPatch
-):
+) -> None:
     from hermes_cli.dashboard_password import cmd_dashboard_password
 
     hermes_home.mkdir(parents=True)
@@ -268,6 +267,20 @@ def test_rotation_preserves_existing_env_permissions(
     )
 
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o640
+
+
+@pytest.mark.linux_only
+def test_rotation_preserves_existing_env_permissions_on_linux(
+    hermes_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _assert_rotation_preserves_existing_env_permissions(hermes_home, monkeypatch)
+
+
+@pytest.mark.macos_only
+def test_rotation_preserves_existing_env_permissions_on_macos(
+    hermes_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _assert_rotation_preserves_existing_env_permissions(hermes_home, monkeypatch)
 
 
 def _load_dotenv(home: Path) -> dict[str, str]:

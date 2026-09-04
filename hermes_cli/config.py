@@ -4796,65 +4796,66 @@ def save_env_values(values: Mapping[str, Optional[str]]) -> bool:
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     write_kw = {"encoding": "utf-8"}
 
-    with _CONFIG_LOCK, _env_write_lock(env_path):
-        lines = []
-        if env_path.exists():
-            with open(env_path, **read_kw) as f:
-                lines = _sanitize_env_lines(f.readlines())
+    with _CONFIG_LOCK:
+        with _env_write_lock(env_path):
+            lines = []
+            if env_path.exists():
+                with open(env_path, **read_kw) as f:
+                    lines = _sanitize_env_lines(f.readlines())
 
-        found: set[str] = set()
-        rewritten = []
-        for line in lines:
-            matched = next(
-                (key for key in prepared if _env_line_defines_key(line, key)),
-                None,
+            found: set[str] = set()
+            rewritten = []
+            for line in lines:
+                matched = next(
+                    (key for key in prepared if _env_line_defines_key(line, key)),
+                    None,
+                )
+                if matched is None:
+                    rewritten.append(line)
+                    continue
+                if matched in found or prepared[matched] is None:
+                    continue
+                rewritten.append(f"{matched}={_quote_env_value(prepared[matched] or '')}\n")
+                found.add(matched)
+
+            if rewritten and not rewritten[-1].endswith("\n"):
+                rewritten[-1] += "\n"
+            for key, value in prepared.items():
+                if value is not None and key not in found:
+                    rewritten.append(f"{key}={_quote_env_value(value)}\n")
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
             )
-            if matched is None:
-                rewritten.append(line)
-                continue
-            if matched in found or prepared[matched] is None:
-                continue
-            rewritten.append(f"{matched}={_quote_env_value(prepared[matched] or '')}\n")
-            found.add(matched)
-
-        if rewritten and not rewritten[-1].endswith("\n"):
-            rewritten[-1] += "\n"
-        for key, value in prepared.items():
-            if value is not None and key not in found:
-                rewritten.append(f"{key}={_quote_env_value(value)}\n")
-
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
-        )
-        original_mode = None
-        if env_path.exists():
-            try:
-                original_mode = stat.S_IMODE(env_path.stat().st_mode)
-            except OSError:
-                pass
-        try:
-            with os.fdopen(fd, "w", **write_kw) as f:
-                f.writelines(rewritten)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, env_path)
-            if original_mode is not None:
+            original_mode = None
+            if env_path.exists():
                 try:
-                    os.chmod(env_path, original_mode)
+                    original_mode = stat.S_IMODE(env_path.stat().st_mode)
                 except OSError:
                     pass
-            else:
-                _secure_file(env_path)
-        except BaseException:
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w", **write_kw) as f:
+                    f.writelines(rewritten)
+                    f.flush()
+                    os.fsync(f.fileno())
+                atomic_replace(tmp_path, env_path)
+                if original_mode is not None:
+                    try:
+                        os.chmod(env_path, original_mode)
+                    except OSError:
+                        pass
+                else:
+                    _secure_file(env_path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
-    for key, value in prepared.items():
-        _publish_env_value(key, value)
-    invalidate_env_cache()
+        for key, value in prepared.items():
+            _publish_env_value(key, value)
+        invalidate_env_cache()
     return True
 
 
@@ -4908,46 +4909,47 @@ def remove_env_value(key: str) -> bool:
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     write_kw = {"encoding": "utf-8"}
 
-    with _CONFIG_LOCK, _env_write_lock(env_path):
-        lines = []
-        if env_path.exists():
-            with open(env_path, **read_kw) as f:
-                lines = _sanitize_env_lines(f.readlines())
+    with _CONFIG_LOCK:
+        with _env_write_lock(env_path):
+            lines = []
+            if env_path.exists():
+                with open(env_path, **read_kw) as f:
+                    lines = _sanitize_env_lines(f.readlines())
 
-        new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
-        found = len(new_lines) < len(lines)
+            new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
+            found = len(new_lines) < len(lines)
 
-        if found:
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
-            )
-            original_mode = None
-            try:
-                original_mode = stat.S_IMODE(env_path.stat().st_mode)
-            except OSError:
-                pass
-            try:
-                with os.fdopen(fd, "w", **write_kw) as f:
-                    f.writelines(new_lines)
-                    f.flush()
-                    os.fsync(f.fileno())
-                atomic_replace(tmp_path, env_path)
-                if original_mode is not None:
-                    try:
-                        os.chmod(env_path, original_mode)
-                    except OSError:
-                        pass
-                else:
-                    _secure_file(env_path)
-            except BaseException:
+            if found:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
+                )
+                original_mode = None
                 try:
-                    os.unlink(tmp_path)
+                    original_mode = stat.S_IMODE(env_path.stat().st_mode)
                 except OSError:
                     pass
-                raise
+                try:
+                    with os.fdopen(fd, "w", **write_kw) as f:
+                        f.writelines(new_lines)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    atomic_replace(tmp_path, env_path)
+                    if original_mode is not None:
+                        try:
+                            os.chmod(env_path, original_mode)
+                        except OSError:
+                            pass
+                    else:
+                        _secure_file(env_path)
+                except BaseException:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
 
-    _publish_env_value(key, None)
-    invalidate_env_cache()
+        _publish_env_value(key, None)
+        invalidate_env_cache()
     return found
 
 

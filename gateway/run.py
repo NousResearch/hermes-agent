@@ -39,6 +39,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from agent.session_activity import ActivityProvenance
 from hermes_cli.fallback_config import get_fallback_chain
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
@@ -941,7 +942,7 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _stamp_hygiene_compression_provenance(
-    agent: Any, desc: str, provenance: "ActivityProvenance", debug_label: str) -> None:
+    agent: Any, desc: str, provenance: ActivityProvenance, debug_label: str) -> None:
     """Best-effort activity provenance stamp for hygiene compression transitions."""
     try:
         agent._touch_activity(desc, provenance=provenance)
@@ -4189,7 +4190,6 @@ class GatewayRunner(
         See #15654, #9051.
         """
         if interrupt_depth == 0:
-            from agent.session_activity import ActivityProvenance
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
             agent._last_activity_provenance = ActivityProvenance.UNKNOWN

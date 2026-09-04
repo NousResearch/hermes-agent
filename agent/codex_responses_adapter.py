@@ -486,8 +486,17 @@ def _chat_messages_to_responses_input(
         message_items = _replay_message_items(msg, is_github_responses=is_github_responses)
         emit(message_items, msg)
         if not message_items:
-            # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
-            fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
+            # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback —
+            # but only when nothing else follows. The function_call items already satisfy the rule, and translating
+            # gateways turn an empty assistant message into an empty text block that Anthropic/Bedrock reject
+            # (HTTP 400 "text content blocks must be non-empty"). Trigger was any Claude turn that thinks, writes
+            # no prose, and calls a tool. Same filter as _replay_tool_call_items so the two agree on "has calls".
+            has_tool_calls = any(
+                isinstance(tc, dict) and _nonblank((tc.get("function") or {}).get("name"))
+                for tc in _as_list(msg.get("tool_calls"))
+            )
+            needs_stub = bool(reasoning_items) and not has_tool_calls
+            fallback = content_parts or (content_text if content_text.strip() else "" if needs_stub else None)
             if fallback is not None:
                 emit([{"role": "assistant", "content": fallback}], msg)
         emit(_replay_tool_call_items(msg, start_index=len(items)), msg)

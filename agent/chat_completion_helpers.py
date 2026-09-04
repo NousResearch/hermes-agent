@@ -2996,6 +2996,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_provider, fb_model, exc,
                 )
 
+        # OpenAI stores callable credentials (key_cmd, Entra ID) in a private
+        # provider slot while exposing ``client.api_key`` as an empty string.
+        # Preserve the callable across the client swap or the first fallback
+        # request is sent without Authorization and incorrectly skips to the
+        # next provider.
+        _fb_key_provider = getattr(fb_client, "_api_key_provider", None)
+        _fb_runtime_api_key = (
+            _fb_key_provider if callable(_fb_key_provider) else fb_client.api_key
+        )
+
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
         # SDK default.
@@ -3004,7 +3014,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-            effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+            effective_key = (_fb_runtime_api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (_fb_runtime_api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
@@ -3016,7 +3026,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._client_kwargs = {}
         else:
             # Swap OpenAI client and config in-place
-            agent.api_key = fb_client.api_key
+            agent.api_key = _fb_runtime_api_key
             agent.client = fb_client
             # Preserve provider-specific headers that
             # resolve_provider_client() may have baked into
@@ -3030,7 +3040,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if not fb_headers:
                 fb_headers = getattr(fb_client, "default_headers", None)
             agent._client_kwargs = {
-                "api_key": fb_client.api_key,
+                "api_key": _fb_runtime_api_key,
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }

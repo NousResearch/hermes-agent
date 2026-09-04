@@ -265,6 +265,46 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    def test_sdk_object_tool_calls_convert_cleanly(self):
+        from types import SimpleNamespace
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        tc_obj = SimpleNamespace(
+            id="call_sdk_123",
+            type="function",
+            function=SimpleNamespace(name="search", arguments='{"q": "hermes"}'),
+        )
+        msg_obj = SimpleNamespace(
+            role="assistant",
+            content=None,
+            tool_calls=[tc_obj],
+        )
+        tool_result_obj = SimpleNamespace(
+            role="tool",
+            tool_call_id="call_sdk_123",
+            content="search result text",
+        )
+
+        messages = [
+            {"role": "user", "content": "find something"},
+            msg_obj,
+            tool_result_obj,
+        ]
+
+        system, msgs = convert_messages_to_converse(messages)
+        assistant_msgs = [m for m in msgs if m["role"] == "assistant"]
+        assert len(assistant_msgs) == 1
+        tu = assistant_msgs[0]["content"][0]["toolUse"]
+        assert tu["toolUseId"] == "call_sdk_123"
+        assert tu["name"] == "search"
+        assert tu["input"] == {"q": "hermes"}
+
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        assert len(user_msgs) >= 1
+        tr = [b["toolResult"] for m in user_msgs for b in m["content"] if "toolResult" in b][0]
+        assert tr["toolUseId"] == "call_sdk_123"
+        assert tr["content"][0]["text"] == "search result text"
+
 
 
 

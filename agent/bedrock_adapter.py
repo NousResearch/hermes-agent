@@ -967,8 +967,8 @@ def convert_messages_to_converse(
     converse_msgs: List[Dict] = []
 
     for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content")
+        role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
 
         if role == "system":
             # System messages become the system prompt. Blank/whitespace-only
@@ -988,11 +988,11 @@ def convert_messages_to_converse(
 
         if role == "tool":
             # Tool result messages → merge into the preceding user turn
-            tool_call_id = msg.get("tool_call_id", "")
+            tool_call_id = msg.get("tool_call_id", "") if isinstance(msg, dict) else getattr(msg, "tool_call_id", "")
             result_content = content if isinstance(content, str) else json.dumps(content)
             tool_result_block = {
                 "toolResult": {
-                    "toolUseId": tool_call_id,
+                    "toolUseId": str(tool_call_id or ""),
                     "content": [{"text": _safe_text(result_content)}],
                 }
             }
@@ -1008,7 +1008,7 @@ def convert_messages_to_converse(
 
         if role == "assistant":
             content_blocks = []
-            ordered_blocks = msg.get("bedrock_content_blocks")
+            ordered_blocks = msg.get("bedrock_content_blocks") if isinstance(msg, dict) else getattr(msg, "bedrock_content_blocks", None)
             if isinstance(ordered_blocks, list) and ordered_blocks:
                 # Rebuild the exact Bedrock block sequence captured at
                 # normalization time. Redacted bytes are stored as base64 so
@@ -1052,7 +1052,7 @@ def convert_messages_to_converse(
                 # Bedrock may return opaque encrypted reasoning instead of text.
                 # Preserve the payload in the provider-neutral reasoning_details
                 # envelope so the next tool turn can replay it byte-for-byte.
-                for detail in (msg.get("reasoning_details") or []):
+                for detail in (msg.get("reasoning_details") or [] if isinstance(msg, dict) else getattr(msg, "reasoning_details", []) or []):
                     if not isinstance(detail, dict) or detail.get("type") != "redacted_thinking":
                         continue
                     encoded = detail.get("data") or detail.get("redactedContentBase64")
@@ -1071,18 +1071,30 @@ def convert_messages_to_converse(
                     content_blocks.extend(_convert_content_to_converse(content))
 
                 # Convert tool calls
-                tool_calls = msg.get("tool_calls", [])
+                tool_calls = msg.get("tool_calls", []) if isinstance(msg, dict) else getattr(msg, "tool_calls", [])
                 for tc in (tool_calls or []):
-                    fn = tc.get("function", {})
-                    args_str = fn.get("arguments", "{}")
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {}) or {}
+                        call_id = tc.get("id", "")
+                    else:
+                        fn = getattr(tc, "function", {}) or {}
+                        call_id = getattr(tc, "id", "")
+                    if isinstance(fn, dict):
+                        args_str = fn.get("arguments", "{}")
+                        fn_name = fn.get("name", "")
+                    else:
+                        args_str = getattr(fn, "arguments", "{}")
+                        fn_name = getattr(fn, "name", "")
                     try:
                         args_dict = json.loads(args_str) if isinstance(args_str, str) else args_str
                     except (json.JSONDecodeError, TypeError):
                         args_dict = {}
+                    if not isinstance(args_dict, dict):
+                        args_dict = {"_value": args_dict}
                     content_blocks.append({
                         "toolUse": {
-                            "toolUseId": tc.get("id", ""),
-                            "name": fn.get("name", ""),
+                            "toolUseId": str(call_id or ""),
+                            "name": str(fn_name or ""),
                             "input": args_dict,
                         }
                     })

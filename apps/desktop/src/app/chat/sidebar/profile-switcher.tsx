@@ -61,6 +61,7 @@ import {
   $activeConnectionId,
   $connectionsRegistry,
   $hasMultipleConnections,
+  refreshConnectionsRegistry,
   selectConnection
 } from '@/store/connections'
 import { $fleetRoster, refreshFleetRoster } from '@/store/fleet-roster'
@@ -322,6 +323,16 @@ export function ProfileRail() {
   // use-profile-rail-refresh-on-active.ts for the extracted (and tested)
   // wiring.
   useProfileRailRefreshOnActive()
+
+  // Own the initial registry load so fleet mode does not wait on Settings →
+  // Gateway or the statusbar switcher (#101257).
+  useEffect(() => {
+    if ($connectionsRegistry.get() !== null) {
+      return
+    }
+
+    void refreshConnectionsRegistry().catch(() => undefined)
+  }, [])
 
   // Which profiles carry a per-profile remote override (connection.json
   // profiles.<name>) — refreshed whenever the profile list changes so the

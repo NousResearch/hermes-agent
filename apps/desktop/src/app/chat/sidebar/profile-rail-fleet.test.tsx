@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -85,12 +85,35 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
-vi.mock('@/store/connections', () => ({
-  $activeConnectionId: atom<null | string>(null),
-  $connectionsRegistry: atom<DesktopConnectionsRegistry | null>(null),
-  $hasMultipleConnections: atom(false),
-  selectConnection: (...args: unknown[]) => selectConnection(...args)
-}))
+vi.mock('@/store/connections', () => {
+  const $activeConnectionId = atom<null | string>(null)
+  const $connectionsRegistry = atom<DesktopConnectionsRegistry | null>(null)
+  const $hasMultipleConnections = atom(false)
+
+  return {
+    $activeConnectionId,
+    $connectionsRegistry,
+    $hasMultipleConnections,
+    selectConnection: (...args: unknown[]) => selectConnection(...args),
+    // Mirrors the real store: list() → publish registry → flip multi-gateway.
+    refreshConnectionsRegistry: vi.fn(async () => {
+      const listed = await (
+        window as {
+          hermesDesktop?: { connections?: { list?: () => Promise<DesktopConnectionsRegistry> } }
+        }
+      ).hermesDesktop?.connections?.list?.()
+
+      if (!listed) {
+        return null
+      }
+
+      $connectionsRegistry.set(listed)
+      $hasMultipleConnections.set(listed.connections.length > 1)
+
+      return listed
+    })
+  }
+})
 
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),
@@ -118,6 +141,7 @@ vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: ()
 const connectionsStore = await import('@/store/connections')
 const hasMultipleConnections = connectionsStore.$hasMultipleConnections as ReturnType<typeof atom<boolean>>
 const activeConnectionId = connectionsStore.$activeConnectionId as ReturnType<typeof atom<null | string>>
+const refreshConnectionsRegistry = vi.mocked(connectionsStore.refreshConnectionsRegistry)
 
 const connectionsRegistry = connectionsStore.$connectionsRegistry as ReturnType<
   typeof atom<DesktopConnectionsRegistry | null>
@@ -220,6 +244,31 @@ describe('ProfileRail fleet mode', () => {
     expect(screen.queryByRole('group', { name: /^Profiles on/ })).toBeNull()
     expect(container.querySelector('[data-slot="profile-rail-divider"]')).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage gateways…' })).toBeTruthy()
+  })
+
+  it('hydrates a null registry on mount so every gateway paints without Settings (#101257)', async () => {
+    // Cold boot with SSH/remote primary: registry atom still null, rail must
+    // not wait for Settings → Gateway (or the statusbar switcher) to publish it.
+    activeConnectionId.set('pandora')
+    profiles.set([{ is_default: true, name: 'default' }])
+    const list = vi.fn().mockResolvedValue(registry)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { connections: { list }, getAgentRoster }
+
+    const container = await renderFleet()
+
+    await waitFor(() => {
+      expect(refreshConnectionsRegistry).toHaveBeenCalled()
+      expect(list).toHaveBeenCalled()
+      expect(connectionsRegistry.get()).toEqual(registry)
+      expect(hasMultipleConnections.get()).toBe(true)
+    })
+
+    await waitFor(() => {
+      const groups = Array.from(container.querySelectorAll('[data-slot="profile-rail-gateway"]')).map(node =>
+        node.getAttribute('data-connection-id')
+      )
+      expect(groups).toEqual(['local', 'pandora', 'vps'])
+    })
   })
 
   it('lays every other gateway on the strip as an at-rest group, in switcher order', async () => {

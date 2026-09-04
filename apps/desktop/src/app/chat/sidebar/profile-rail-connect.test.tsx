@@ -65,6 +65,7 @@ vi.mock('@/store/connections', () => ({
   $activeConnectionId: atom(null),
   $connectionsRegistry: atom(null),
   $hasMultipleConnections: atom(false),
+  refreshConnectionsRegistry: vi.fn(async () => null),
   selectConnection: vi.fn()
 }))
 

@@ -35,3 +35,14 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     )
     assert kwargs["reasoning"]["effort"] == "low"
     assert kwargs["prompt_cache_options"] == {"ttl": "30m"}
+
+
+def test_astra_codex_oauth_fallback_uses_backend_context_limit():
+    """OAuth keeps the Codex backend's 272K fallback; direct API metadata remains 1.05M."""
+    from agent.model_metadata import (
+        DEFAULT_CONTEXT_LENGTHS,
+        _resolve_codex_oauth_context_length_with_source,
+    )
+
+    assert DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"] == 1_050_000
+    assert _resolve_codex_oauth_context_length_with_source("gpt-6-astra") == (272_000, "fallback")

@@ -386,6 +386,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_hosted_room_events_authority_claim
+                 ON hosted_room_events(room_id, authority_epoch, seq DESC) WHERE kind='authority.claimed'""")
     if not _schema_is_current(conn):
         raise HostedRoomError("hosted room schema migration did not complete")
 
@@ -398,6 +400,8 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
         for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'"
+    ).fetchone() is not None and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_authority_claim'"
     ).fetchone() is not None
 
 

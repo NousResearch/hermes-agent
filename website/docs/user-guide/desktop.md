@@ -49,6 +49,23 @@ The center of the app. You get:
 - **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. (It appears once the chat has a handful of turns.)
 - **Find in page** — press **Cmd/Ctrl+F** to open a find bar that searches the rendered chat transcript. Enter / Shift+Enter (or Cmd/Ctrl+G / Cmd/Ctrl+Shift+G while the bar is open) step through matches; Esc closes it.
 
+#### Receiving media from a remote agent
+
+Images and videos sent in chat can be previewed directly from your connected
+gateway. Click an image to enlarge it, or use its **Download image** button to
+save the original file on your computer. Videos have inline playback controls.
+
+PNG, JPEG, GIF, WebP, and BMP images that exceed the 16 MiB inline-preview limit
+automatically use authenticated streaming, up to the gateway's 100 MiB file
+limit. The download keeps the original filename, including spaces and Unicode.
+No public upload or shared folder on your desktop is required.
+
+Update both Desktop and the remote Hermes backend to use large-image streaming.
+The file must still exist and be readable within the gateway's configured file
+access policy. Files that exist only inside an unmounted container need to be
+exported to a location the gateway can read. SVG previews continue to use the
+existing image-preview path.
+
 #### Status bar
 
 The bar along the bottom of the chat shows live session state and exposes quick controls without opening Settings:

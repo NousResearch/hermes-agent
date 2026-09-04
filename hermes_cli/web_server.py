@@ -2243,7 +2243,11 @@ _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
 _STREAMABLE_MEDIA_EXTENSIONS = frozenset(
     {
         ".avi",
+        ".bmp",
         ".flac",
+        ".gif",
+        ".jpeg",
+        ".jpg",
         ".m4a",
         ".mkv",
         ".mov",
@@ -2251,8 +2255,10 @@ _STREAMABLE_MEDIA_EXTENSIONS = frozenset(
         ".mp4",
         ".ogg",
         ".opus",
+        ".png",
         ".wav",
         ".webm",
+        ".webp",
     }
 )
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
@@ -3009,13 +3015,15 @@ async def download_managed_file(request: Request, path: str):
 @app.get("/api/files/stream")
 @app.head("/api/files/stream")
 async def stream_managed_file(request: Request, path: str):
-    """Stream managed audio/video inline with HTTP Range support.
+    """Stream managed raster images and audio/video with HTTP Range support.
 
     Electron's Chromium media pipeline may reject an attachment response used
     as an ``<audio>`` or ``<video>`` source. This route shares the download
     endpoint's authentication, size cap, sensitive-file guard, MIME detection,
     and Starlette ``FileResponse`` range handling, but explicitly marks the
     response inline so metadata loading, playback, and seeking work remotely.
+    Raster images can also use this route when they exceed the base64 preview
+    cap. SVG/HTML remain excluded because they can contain active content.
     """
     return _managed_file_response(
         request,

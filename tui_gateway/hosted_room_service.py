@@ -830,6 +830,31 @@ class HostedRoomService:
         return refreshed
 
 
+    def list_attachments(
+        self,
+        *,
+        room_id: str,
+        cursor: Any = None,
+        limit: Any = None,
+        query: Any = None,
+        producer_member_id: Any = None,
+        recipient_member_id: Any = None,
+    ) -> dict[str, Any]:
+        """List canonical files without starting or locking the execution worker."""
+
+        room = self._owned_room(room_id)
+        return self.attachments.list_published(
+            room_id=room_id,
+            authority_gateway_id=str(room["authority_gateway_id"]),
+            authority_epoch=int(room["authority_epoch"]),
+            cursor=cursor,
+            limit=limit,
+            query=query,
+            producer_member_id=producer_member_id,
+            recipient_member_id=recipient_member_id,
+        )
+
+
 class _RouteStatusPeerClient:
     """Classify scoped-auth failures without exposing route credentials."""
 

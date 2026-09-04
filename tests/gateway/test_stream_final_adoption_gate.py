@@ -75,7 +75,7 @@ class TestGateWiring:
         completed checks — a source-level pin so the contract test above
         cannot drift green while the call site regresses."""
         import inspect
-        import gateway.run as run_mod
+        import gateway.run_turn_runner as run_mod
 
         src = inspect.getsource(run_mod)
         anchor = src.index("_final_for_stream = None")

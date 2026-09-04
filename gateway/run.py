@@ -712,6 +712,17 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+def _turn_scoped_status_key(
+    event_type: str,
+    session_key: Optional[str],
+    run_generation: Optional[int],
+) -> str:
+    """Return a status cache key that is stable only within one gateway turn."""
+    if not session_key or run_generation is None:
+        return event_type
+    return f"{session_key}:run:{run_generation}:{event_type}"
+
+
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 

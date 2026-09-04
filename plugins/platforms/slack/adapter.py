@@ -1275,11 +1275,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
         # Native streaming (chat.startStream/appendStream/stopStream) state.
-        # One active stream per chat, keyed by chat_id. Each value:
+        # Active native streams, keyed by ``(chat_id, draft_id)``. Each value:
         # {"ts": str, "draft_id": int, "sent": str, "started": float}
         # ``sent`` is the raw (pre-mrkdwn) text streamed so far — deltas are
         # computed against it because the streaming API is append-only.
-        self._active_streams: Dict[str, Dict[str, Any]] = {}
+        #
+        # Keyed per TURN, not per chat: two turns in the same channel each own
+        # their own stream.  With a single per-chat slot they alternated in it,
+        # and every hand-off sealed the other turn's stream and opened a fresh
+        # one, so a single answer arrived as several separate Slack messages.
+        self._active_streams: Dict[Tuple[str, int], Dict[str, Any]] = {}
         # Set after the first startStream failure that indicates the Slack
         # app lacks the streaming feature (Agents & AI Apps not enabled /
         # missing scope). Future runs then skip straight to edit-based
@@ -2544,7 +2549,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Seal any dangling native streams so chats aren't left with a
         # live-typing indicator across a restart.
-        for chat_id, stream in list(self._active_streams.items()):
+        for (chat_id, _draft_id), stream in list(self._active_streams.items()):
             await self._seal_stream(chat_id, stream)
         self._active_streams.clear()
 
@@ -3356,6 +3361,22 @@ class SlackAdapter(BasePlatformAdapter):
     # append deltas because the streaming API is append-only.
     _STREAM_CURSOR_GLYPHS = ("\u2589", "▍", "▌", "…")
 
+    # Per-turn keying removed the old single-slot self-limiting: a per-chat
+    # slot was evicted by the next turn, so an interrupted turn's stream could
+    # not outlive one response. Now every turn owns its own key and an
+    # abandoned entry (agent interrupted, process killed mid-turn, a final
+    # `send()` whose text fails the prefix match) would survive until
+    # `disconnect()`, holding a live-typing indicator open. Streams older than
+    # this are sealed and evicted on the next `send_draft`, which bounds the
+    # map without touching the concurrency fix. Well above any real turn
+    # duration so a slow-but-live turn is never reaped.
+    _STREAM_ABANDON_SECONDS = 1800.0
+
+    # A superseded same-turn segment always carries a LOWER draft_id than the
+    # segment replacing it (the stream consumer's counter is monotonic), so a
+    # higher-id stream belongs to a turn that started after us and is never
+    # ours. See `_seal_superseded_segment` for the residual same-thread case.
+
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,
@@ -3400,16 +3421,24 @@ class SlackAdapter(BasePlatformAdapter):
 
         text = self._strip_stream_cursor(content)
         client = self._get_client(chat_id)
-        stream = self._active_streams.get(chat_id)
+        key = (chat_id, draft_id)
+
+        # Bound the (now per-turn) map: collect streams whose turn never
+        # reached a finalize, so an interrupted turn cannot hold a live-typing
+        # indicator open for the life of the process.  Runs before this turn's
+        # slot is read so a reaped entry is never appended to afterwards.
+        await self._reap_abandoned_streams()
+        stream = self._active_streams.get(key)
 
         try:
-            if stream is not None and stream.get("draft_id") != draft_id:
-                # New segment started while a prior stream is open — seal the
-                # old one so it doesn't hang with a live-typing indicator.
-                await self._seal_stream(chat_id, stream)
-                stream = None
-
             if stream is None:
+                # A draft_id bump within the same turn (Telegram-shaped
+                # drafts, which open a new stream per tool boundary) leaves
+                # this turn's previous stream open.  Seal it so it does not
+                # hang with a live-typing indicator.  Streams belonging to
+                # OTHER turns in this channel are left alone — they have
+                # their own key and finalize themselves.
+                await self._seal_superseded_segment(chat_id, draft_id, metadata)
                 thread_ts = self._resolve_thread_ts(None, metadata)
                 if not thread_ts:
                     # Streamed messages must anchor to a thread_ts. The
@@ -3437,9 +3466,10 @@ class SlackAdapter(BasePlatformAdapter):
                 ts = response.get("ts") if response else None
                 if not ts:
                     raise RuntimeError("chat.startStream returned no ts")
-                self._active_streams[chat_id] = {
+                self._active_streams[key] = {
                     "ts": str(ts),
                     "draft_id": draft_id,
+                    "thread_ts": thread_ts,
                     "sent": text,
                     "started": time.time(),
                 }
@@ -3455,7 +3485,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # segment). Fail the frame so the consumer falls back to the
                 # edit path; seal the stream first so it doesn't dangle.
                 await self._seal_stream(chat_id, stream)
-                self._active_streams.pop(chat_id, None)
+                self._active_streams.pop(key, None)
                 return SendResult(
                     success=False, error="stream prefix mismatch"
                 )
@@ -3469,7 +3499,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=stream["ts"])
 
         except Exception as e:  # pragma: no cover - network/API errors
-            self._active_streams.pop(chat_id, None)
+            self._active_streams.pop(key, None)
             err = str(e)
             # Feature-gate errors: cache unsupported so future runs skip the
             # native attempt entirely instead of erroring once per response.
@@ -3530,6 +3560,120 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return False
 
+    async def _seal_superseded_segment(
+        self,
+        chat_id: str,
+        draft_id: int,
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Seal a previous segment of the SAME turn before opening a new one.
+
+        Some transports bump ``draft_id`` at each tool boundary, so one turn
+        can open several streams in sequence; the superseded one must be
+        sealed or it hangs with a live-typing indicator.
+
+        Streams from *other* turns in the same channel must survive: they are
+        keyed separately and finalize themselves.  Same-turn segments are
+        recognized by their thread anchor, which is stable for a turn — the
+        gateway stamps ``reply_to_message_id`` / ``thread_id`` on every frame.
+        Without an anchor to compare, nothing is sealed: leaving a stream open
+        costs a stale indicator, while sealing a live sibling turn splits its
+        answer into two messages, which is the bug this keying fixes.
+
+        The anchor alone separates turns in *different* threads.  Two turns in
+        the SAME thread (an interactive reply and a scheduled/background turn
+        under one parent) share it, so ``draft_id`` ordering narrows the
+        residual case: the stream consumer's counter is monotonic, so a
+        superseded segment of THIS turn always carries a *lower* id.  A stream
+        with a higher id belongs to a turn that started after us and is never
+        ours — previously any different id was sealed.
+
+        That is a narrowing, not an identity: a same-thread sibling that
+        started *before* us and is still live can still be sealed here, because
+        ``draft_id`` is the only turn identity this layer receives.  Closing
+        the gap needs the gateway to stamp a stable per-turn id on draft
+        metadata — the same missing contract noted in
+        ``_find_stream_for_final``.  Until then this errs towards sealing only
+        what is provably older, and ``_reap_abandoned_streams`` collects the
+        indicators left behind by the seals we skip.
+        """
+        anchor = self._resolve_thread_ts(None, metadata)
+        if not anchor:
+            return
+        for other_key, other in list(self._active_streams.items()):
+            if other_key[0] != chat_id or other_key[1] >= draft_id:
+                continue
+            if other.get("thread_ts") != anchor:
+                continue
+            await self._seal_stream(chat_id, other)
+            self._active_streams.pop(other_key, None)
+
+    async def _reap_abandoned_streams(self) -> None:
+        """Seal and evict streams whose turn never reached a finalize.
+
+        Per-turn keying means an entry is no longer displaced by the next
+        turn in the chat, so a turn that opens a stream and then dies
+        (interrupt, process exit, a final ``send()`` that fails the prefix
+        match) leaves a live-typing indicator up indefinitely.  Sweeping by
+        age on each ``send_draft`` bounds the map and clears the indicator
+        without any per-turn bookkeeping; the threshold is far above a real
+        turn, so a slow live turn is never touched.
+        """
+        now = time.time()
+        for key, stream in list(self._active_streams.items()):
+            started = stream.get("started")
+            if not isinstance(started, (int, float)):
+                continue
+            if now - started < self._STREAM_ABANDON_SECONDS:
+                continue
+            if self._active_streams.pop(key, None) is None:
+                continue
+            logger.debug(
+                "[Slack] Reaping abandoned native stream %s/%s (age %.0fs)",
+                key[0], stream.get("ts"), now - started,
+            )
+            await self._seal_stream(key[0], stream)
+
+    def _find_stream_for_final(
+        self,
+        chat_id: str,
+        text: str,
+    ) -> Optional[Tuple[Tuple[str, int], Dict[str, Any]]]:
+        """Locate the open stream this final text belongs to.
+
+        ``send()`` carries no ``draft_id``, so the owning turn is identified by
+        content: the final text extends what that stream already streamed.
+        When several turns are open in the same channel, the longest matching
+        ``sent`` prefix wins — a short prefix could match a sibling turn whose
+        answer happens to start the same way.
+
+        Longest-prefix is a heuristic, not an identity, and it can still
+        mis-attribute when one turn's streamed text nests inside another's:
+        turn A streams ``"The"``, turn B streams ``"The answer"``, and A
+        finalizes with ``"The answer is 42"`` — B's longer prefix wins, so A's
+        final seals B's stream and A's own entry dangles (until the reaper
+        collects it).  This is strictly better than the previous single-slot
+        behavior, where *every* concurrent pair mis-attributed, and it is the
+        floor for content-based matching: ``send()`` has no turn identity to
+        offer.  Removing it needs a ``draft_id`` (or equivalent) on the final
+        send, which is a gateway-side contract change.
+
+        Returns ``(key, stream)`` or ``None`` when no open stream claims it.
+        """
+        best: Optional[Tuple[Tuple[str, int], Dict[str, Any]]] = None
+        best_len = 0
+        for key, stream in self._active_streams.items():
+            if key[0] != chat_id:
+                continue
+            sent = stream.get("sent", "")
+            # An empty ``sent`` prefix would match everything, so require
+            # substance before letting a stream claim the send.
+            if not sent or not text.startswith(sent):
+                continue
+            if len(sent) > best_len:
+                best, best_len = (key, stream), len(sent)
+        return best
+
     async def _try_finalize_stream(
         self,
         chat_id: str,
@@ -3538,23 +3682,17 @@ class SlackAdapter(BasePlatformAdapter):
         """Finalize an active native stream with the turn-final content.
 
         Called from ``send()``.  Returns a SendResult when the final content
-        belongs to the active stream (the stream is sealed and the streamed
+        belongs to an active stream (the stream is sealed and the streamed
         message IS the final message — no new post needed).  Returns None
         when the content is unrelated (e.g. interim commentary), leaving the
         stream open and letting ``send()`` proceed normally.
         """
-        stream = self._active_streams.get(chat_id)
-        if stream is None:
-            return None
-        sent = stream.get("sent", "")
         text = self._strip_stream_cursor(content)
-        # Only treat this send as the stream's finalization when it extends
-        # (or equals) what was streamed. Unrelated sends (e.g. interim
-        # commentary) pass through. An empty ``sent`` prefix would match
-        # everything, so require substance before claiming the send.
-        if not sent or not text.startswith(sent):
+        found = self._find_stream_for_final(chat_id, text)
+        if found is None:
             return None
-        self._active_streams.pop(chat_id, None)
+        key, stream = found
+        self._active_streams.pop(key, None)
         ts = stream["ts"]
         ok = await self._seal_stream(chat_id, stream, final_text=text)
         if not ok:

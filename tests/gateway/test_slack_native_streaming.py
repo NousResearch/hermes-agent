@@ -124,7 +124,7 @@ class TestSendDraft:
         result = await adapter.send_draft("D1", 7, "Rewritten text", metadata=META)
         assert not result.success
         client.chat_stopStream.assert_awaited()
-        assert "D1" not in adapter._active_streams
+        assert ("D1", 7) not in adapter._active_streams
 
     @pytest.mark.asyncio
     async def test_no_thread_ts_fails_cleanly(self):
@@ -141,7 +141,9 @@ class TestSendDraft:
         result = await adapter.send_draft("D1", 8, "Segment two", metadata=META)
         assert result.success
         client.chat_stopStream.assert_awaited()  # sealed segment one
-        assert adapter._active_streams["D1"]["ts"] == "124.000"
+        assert adapter._active_streams[("D1", 8)]["ts"] == "124.000"
+        # The superseded segment is gone; only the new one remains.
+        assert ("D1", 7) not in adapter._active_streams
 
 
 class TestFeatureGateFallback:
@@ -176,7 +178,7 @@ class TestSendFinalization:
         kwargs = client.chat_stopStream.await_args.kwargs
         assert kwargs["markdown_text"] == "rld, done."
         client.chat_postMessage.assert_not_awaited()
-        assert "D1" not in adapter._active_streams
+        assert ("D1", 7) not in adapter._active_streams
 
     @pytest.mark.asyncio
     async def test_final_send_equal_content_seals_without_delta(self):
@@ -196,7 +198,7 @@ class TestSendFinalization:
         assert result.success
         client.chat_postMessage.assert_awaited()
         # Stream stays open for its own finalization.
-        assert "D1" in adapter._active_streams
+        assert ("D1", 7) in adapter._active_streams
 
     @pytest.mark.asyncio
     async def test_stop_stream_failure_falls_back_to_post(self):

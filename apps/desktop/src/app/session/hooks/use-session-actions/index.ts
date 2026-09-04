@@ -169,7 +169,8 @@ import {
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
-  upsertOptimisticSession
+  upsertOptimisticSession,
+  upsertUnlistedSessionOwner
 } from './utils'
 
 interface SessionActionsOptions {
@@ -813,9 +814,16 @@ export function useSessionActions({
         // Seed the per-runtime cache so the tile renders immediately without a
         // redundant resume. Only add the row to the SIDEBAR when `listed` — an
         // unlisted (draft) tab stays out of the session list until its first
-        // turn persists and a refresh surfaces it.
+        // turn persists and a refresh surfaces it. An unlisted draft still
+        // records an ownership stub (same stamps, off-list atom): without it a
+        // draft minted on the legacy ambient route (null route) owns NOTHING
+        // the ladder reads — no tile route, no hint, no row — and its
+        // immediate session.resume fails closed on multi-profile installs
+        // (#102792).
         if (listed) {
           upsertOptimisticSession(created, stored, null, null, null, undefined, capturedRoute)
+        } else {
+          upsertUnlistedSessionOwner(created, stored, capturedRoute)
         }
 
         // A tile lives in its OWN worktree, so it must not run the full

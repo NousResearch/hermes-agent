@@ -30,6 +30,7 @@ import {
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
+  setUnlistedSessionOwnerRows,
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
@@ -1269,6 +1270,53 @@ export function upsertOptimisticSession(
   lastActive?: number,
   owner?: null | SessionProfileRoute
 ) {
+  const session = buildOptimisticSession(created, id, title, preview, parentSessionId, lastActive, owner)
+
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+
+  // A real row supersedes any unlisted-draft stub for the same id (first send
+  // on a ⌘T tab lists it); drop the stub so the atom stays bounded. The
+  // lookup shadow-filter covers any path that lists without passing here.
+  setUnlistedSessionOwnerRows(prev => (prev.some(s => s.id === id) ? prev.filter(s => s.id !== id) : prev))
+
+  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+}
+
+/**
+ * Record the owner of an UNLISTED draft tile without touching the visible
+ * sidebar list (see `openNewSessionTile` with `listed: false`, #102792). The
+ * stub carries the same stamps an optimistic row would — ambient profile for
+ * an unrouted create, exact connection tag for a routed one — and rides only
+ * the owner-lookup path, never the sidebar render path. A later real row for
+ * the same id shadows it; the first send replaces it outright.
+ */
+export function upsertUnlistedSessionOwner(
+  created: SessionCreateResponse,
+  id: string,
+  owner?: null | SessionProfileRoute
+) {
+  const stub = buildOptimisticSession(created, id, null, null, null, undefined, owner)
+  setSessionOwnerHintForStub(id, owner)
+  setUnlistedSessionOwnerRows(prev => [stub, ...prev.filter(s => s.id !== id)])
+}
+
+function setSessionOwnerHintForStub(id: string, owner?: null | SessionProfileRoute): void {
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+}
+
+function buildOptimisticSession(
+  created: SessionCreateResponse,
+  id: string,
+  title: string | null = null,
+  preview: string | null = null,
+  parentSessionId: string | null = null,
+  lastActive?: number,
+  owner?: null | SessionProfileRoute
+): SessionInfo {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on so the scoped sidebar
   // shows the new row immediately instead of filtering it out as "default"
@@ -1307,11 +1355,7 @@ export function upsertOptimisticSession(
     ...(connectionId ? { connection_id: connectionId } : {})
   }
 
-  if (owner) {
-    setSessionOwnerHint(id, owner)
-  }
-
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  return session
 }
 
 export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
@@ -1359,6 +1403,7 @@ export function dropListedSession(storedSessionId: string): void {
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
+  setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {

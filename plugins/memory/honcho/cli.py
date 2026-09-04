@@ -971,7 +971,6 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
                       COUNT(*){profiles_col}
                  FROM sessions
                 WHERE user_id IS NOT NULL AND user_id != ''
-                  AND session_key IS NOT NULL AND session_key != ''
                 GROUP BY source, user_id
                 ORDER BY MAX(COALESCE(started_at, 0)) DESC"""
     try:

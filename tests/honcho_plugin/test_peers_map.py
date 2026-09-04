@@ -79,6 +79,17 @@ class TestSeenGatewayAccounts:
         accounts = _seen_gateway_accounts(db)
         assert [a["user_id"] for a in accounts] == ["111"]
 
+    def test_legacy_rows_without_session_key_still_count(self, tmp_path):
+        """Gateway rows written before session_key was stamped are still accounts."""
+        db = tmp_path / "state.db"
+        _make_state_db(db, [
+            ("s1", "telegram", "111", None, "Eri", None, 100.0),
+            ("s2", "telegram", "111", "", "Eri", None, 200.0),
+        ])
+        accounts = _seen_gateway_accounts(db)
+        assert [a["user_id"] for a in accounts] == ["111"]
+        assert accounts[0]["sessions"] == 2
+
     def test_label_falls_back_to_display_name(self, tmp_path):
         db = tmp_path / "state.db"
         _make_state_db(db, [

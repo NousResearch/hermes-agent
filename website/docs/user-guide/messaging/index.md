@@ -538,6 +538,24 @@ You can also set this via environment variable:
 HERMES_BACKGROUND_NOTIFICATIONS=result
 ```
 
+### Model Fallback and Provider Error Notices
+
+When a provider goes down, Hermes walks its fallback chain. Each hop posts its own "⚠️ Model fallback: … using …" line and each failed attempt can post its own "⚠️ Provider authentication failed …" reply, so one outage can put five near-identical messages in your chat in a second. Control that with `display.fallback_notifications`:
+
+```yaml
+display:
+  fallback_notifications: on            # on | collapse | off
+  fallback_notice_interval_seconds: 3600
+```
+
+| Mode | What you receive |
+|------|-----------------|
+| `on` | One notice per hop and one reply per failed attempt (default; unchanged behaviour) |
+| `collapse` | At most **one** notice per session per `fallback_notice_interval_seconds`. The first names the primary model, the reason, and the model now in use; further hops are counted and folded into the next allowed notice ("3 further fallbacks since 09:12 UTC; now on …"). Provider auth/rate-limit/connection replies are deduped by error class over the same window. |
+| `off` | No user-facing fallback or provider-error notice at all |
+
+The gateway log is unchanged in every mode — `off` silences chat, not diagnostics.
+
 ### Use Cases
 
 - **Server monitoring** — "/bg Check the health of all services and alert me if anything is down"

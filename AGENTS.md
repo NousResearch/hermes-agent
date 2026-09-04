@@ -1369,6 +1369,17 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 - `error` — only the final raw-output message when exit code != 0
 - `off` — no watcher messages at all
 
+### Model Fallback Notices (Gateway)
+
+A provider outage walks the fallback chain and posts one "⚠️ Model fallback: …" line per hop plus
+one "⚠️ Provider authentication failed …" reply per failed attempt. `display.fallback_notifications`
+(`on` | `collapse` | `off`, default `on`) and `display.fallback_notice_interval_seconds` (default
+3600) gate the **user-facing** notices only; the log lines are unconditional. `collapse` emits at
+most one notice per session per interval and folds the suppressed hop count into the next one.
+The shared renderer is `agent/notice_collapse.py` — every gateway site that surfaces a provider
+auth failure must go through `provider_auth_error_reply` / `collapse_provider_error_reply`
+(enforced by `tests/agent/test_notice_collapse.py`).
+
 ---
 
 ## Profiles: Multi-Instance Support

@@ -1510,6 +1510,19 @@ DEFAULT_CONFIG = {
         #   "error"   — final raw-output message only on non-zero exit
         #   "off"     — no watcher messages at all
         "background_process_notifications": "concise",
+        # Model-fallback and provider auth-error notices surfaced in chat.
+        # A provider outage can walk the whole fallback chain in a second,
+        # emitting one notice per hop and one auth-error reply per attempt.
+        #   "on"       — one notice per hop, one reply per failure (default)
+        #   "collapse" — at most one user-facing notice per session per
+        #                display.fallback_notice_interval_seconds; further
+        #                hops are counted and folded into the next notice,
+        #                and auth-error replies dedupe by error class
+        #   "off"      — no user-facing notice (the log lines are unchanged)
+        "fallback_notifications": "on",
+        # Collapse window in seconds for display.fallback_notifications:
+        # collapse. Ignored in "on"/"off".
+        "fallback_notice_interval_seconds": 3600,
         "streaming": False,
         "timestamps": False,      # Show message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")

@@ -593,6 +593,15 @@ def _get_claude_code_version() -> str:
 
 
 
+def _is_opencode_go_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for OpenCode Go's Anthropic-compatible Messages endpoint."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    normalized = normalized.rstrip("/").lower()
+    return normalized.startswith("https://opencode.ai/zen/go")
+
+
 def _common_betas_for_base_url(
     base_url: str | None,
     *,
@@ -617,6 +626,10 @@ def _common_betas_for_base_url(
     betas = list(_COMMON_BETAS)
     if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
         betas.append(_CONTEXT_1M_BETA)
+    if _is_opencode_go_anthropic_endpoint(base_url):
+        # OpenCode Go already routes Anthropic-compatible model endpoints and
+        # some upstreams reject or mis-handle Anthropic beta feature headers.
+        return []
     if _is_minimax_anthropic_endpoint(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in betas if b not in _stripped]
@@ -705,6 +718,46 @@ def _build_anthropic_client_with_bearer_hook(
     return client
 
 
+def _build_opencode_go_anthropic_client(
+    api_key: str,
+    base_url: str = None,
+    timeout: float = None,
+):
+    """Create an Anthropic SDK client for OpenCode Go without ambient bearer auth."""
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for OpenCode Go Anthropic-style "
+            "endpoints. Install with: pip install 'anthropic>=0.39.0'"
+        )
+
+    normalize_proxy_env_vars()
+
+    from httpx import Client, Timeout
+
+    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
+
+    def _strip_ambient_authorization(request):
+        request.headers.pop("authorization", None)
+        request.headers["x-api-key"] = api_key
+
+    http_client = Client(
+        timeout=timeout_obj,
+        event_hooks={"request": [_strip_ambient_authorization]},
+    )
+
+    kwargs = {
+        "timeout": timeout_obj,
+        "http_client": http_client,
+        "api_key": api_key,
+    }
+    normalized_base_url = _normalize_base_url_text(base_url)
+    if normalized_base_url:
+        kwargs["base_url"] = normalized_base_url.rstrip("/")
+    return _anthropic_sdk.Anthropic(**kwargs)
+
+
 def build_anthropic_client(
     api_key,
     base_url: str = None,
@@ -786,6 +839,13 @@ def build_anthropic_client(
         normalized_base_url,
         drop_context_1m_beta=drop_context_1m_beta,
     )
+
+    if _is_opencode_go_anthropic_endpoint(normalized_base_url):
+        return _build_opencode_go_anthropic_client(
+            api_key,
+            normalized_base_url,
+            timeout=timeout,
+        )
 
     if _is_kimi_coding_endpoint(base_url):
         # Kimi's /coding endpoint requires a non-empty User-Agent to be

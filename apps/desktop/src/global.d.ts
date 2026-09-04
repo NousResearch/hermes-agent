@@ -298,7 +298,7 @@ declare global {
         viewport?: { height: number; width: number }
         webContentsId: number
       }) => Promise<string>
-      saveClipboardImage: () => Promise<string>
+      saveClipboardImage: (options?: { wslHostOnly?: boolean }) => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>

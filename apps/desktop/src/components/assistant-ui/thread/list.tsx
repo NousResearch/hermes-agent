@@ -154,6 +154,27 @@ export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; 
   return opts.sessionSwitched || !opts.settledNonEmpty
 }
 
+/** Distance-from-bottom to re-apply after a prepend grows the DOM.
+ *
+ *  Auto-backfill is part of session load: the settle loop may already have
+ *  flipped `loadSettled` while scrollTop is still a mid-switch waypoint, so
+ *  measuring scrollHeight-scrollTop here parks the view partway (#101229).
+ *  Force bottom (0). Only a user-driven expand ("Show earlier") may preserve
+ *  a settled reading position.
+ */
+export function prependRestoreFromBottom(opts: {
+  kind: 'auto-backfill' | 'user-expand'
+  loadSettled: boolean
+  scrollHeight: number
+  scrollTop: number
+}): number {
+  if (opts.kind === 'auto-backfill' || !opts.loadSettled) {
+    return 0
+  }
+
+  return opts.scrollHeight - opts.scrollTop
+}
+
 export function subscribeToThreadForeground(shouldReanchor: () => boolean, onReanchor: () => void): () => void {
   let frameId: number | null = null
   let framePending = false
@@ -495,13 +516,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const settledNonEmptyRef = useRef(false)
 
   // Record where the view should land once a prepend has grown the content,
-  // measured from the BOTTOM so the added height doesn't invalidate it. Only a
-  // settled load has an offset the user chose; mid-load the answer is simply
-  // the bottom.
-  const anchorBeforePrepend = useCallback(() => {
+  // measured from the BOTTOM so the added height doesn't invalidate it.
+  const anchorBeforePrepend = useCallback((kind: 'auto-backfill' | 'user-expand') => {
     const el = scrollRef.current
 
-    restoreFromBottomRef.current = el && loadSettledRef.current ? el.scrollHeight - el.scrollTop : 0
+    restoreFromBottomRef.current = el
+      ? prependRestoreFromBottom({
+          kind,
+          loadSettled: loadSettledRef.current,
+          scrollHeight: el.scrollHeight,
+          scrollTop: el.scrollTop
+        })
+      : 0
   }, [scrollRef])
 
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
@@ -530,8 +556,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // it in the same commit the taller tree lands in — otherwise the view is
       // stranded near the TOP until use-stick-to-bottom's ResizeObserver
       // catches up a frame or two later (measured: an 11.5k px jump showing
-      // ~160ms of unrelated old turns, on every session load).
-      anchorBeforePrepend()
+      // ~160ms of unrelated old turns, on every session load). Always force
+      // bottom for auto-backfill; never capture a mid-switch waypoint.
+      anchorBeforePrepend('auto-backfill')
 
       // Functional max, not a plain set: an urgent "Show earlier" click can
       // land between scheduling and committing this transition, and a plain
@@ -749,7 +776,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
-    anchorBeforePrepend()
+    anchorBeforePrepend('user-expand')
     // Both paths grow the DOM budget by one pane page. Windowed rows are older
     // than the current page, so expand-without-grow paints nothing.
     setRenderBudget(budget => budget + paneBudget)

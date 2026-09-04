@@ -8,6 +8,7 @@ import {
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
+  prependRestoreFromBottom,
   resolveThreadScrollTarget,
   RUN_START_SNAP_THRESHOLD_PX,
   shouldClampTranscriptBudget,
@@ -363,5 +364,53 @@ describe('shouldRePinOnTranscriptReload', () => {
 
   it('pins on a cold-load arrival (same session, never settled non-empty)', () => {
     expect(shouldRePinOnTranscriptReload({ sessionSwitched: false, settledNonEmpty: false })).toBe(true)
+  })
+})
+
+describe('prependRestoreFromBottom', () => {
+  // Session-switch race (#101229): settle can flip loadSettled while scrollTop
+  // is still a mid-waypoint; auto-backfill must not re-apply that distance.
+  it('forces bottom on auto-backfill even when loadSettled and mid-scroll', () => {
+    expect(
+      prependRestoreFromBottom({
+        kind: 'auto-backfill',
+        loadSettled: true,
+        scrollHeight: 10_000,
+        scrollTop: 4_000
+      })
+    ).toBe(0)
+  })
+
+  it('forces bottom on auto-backfill before the settle loop finishes', () => {
+    expect(
+      prependRestoreFromBottom({
+        kind: 'auto-backfill',
+        loadSettled: false,
+        scrollHeight: 10_000,
+        scrollTop: 4_000
+      })
+    ).toBe(0)
+  })
+
+  it('preserves a settled user-expand reading position', () => {
+    expect(
+      prependRestoreFromBottom({
+        kind: 'user-expand',
+        loadSettled: true,
+        scrollHeight: 10_000,
+        scrollTop: 4_000
+      })
+    ).toBe(6_000)
+  })
+
+  it('forces bottom on user-expand while the load is still settling', () => {
+    expect(
+      prependRestoreFromBottom({
+        kind: 'user-expand',
+        loadSettled: false,
+        scrollHeight: 10_000,
+        scrollTop: 4_000
+      })
+    ).toBe(0)
   })
 })

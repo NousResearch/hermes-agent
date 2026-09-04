@@ -720,3 +720,311 @@ class TestOwnerAlivePidProbe:
 
         monkeypatch.setattr(status, "_pid_exists", boom)
         assert dl._owner_alive(12345, 999) is False
+
+
+class TestRecoveredMediaDelivery:
+    """#99846: recovered finals must honor the same explicit media contract
+    as live delivery. A persisted final containing ``MEDIA:<path>`` used to be
+    replayed through ``adapter.send()`` as text only — the obligation was
+    marked delivered without the attachment ever being uploaded."""
+
+    @staticmethod
+    def _media_adapter(tmp_path, *, send_success=True):
+        """Adapter double whose media send methods record calls; the real
+        ``send_image_file``/``send_document``/... are never exercised because
+        the adapters in these tests are MagicMocks — what matters is that
+        redelivery dispatches to the RIGHT method with the RIGHT path."""
+        adapter = MagicMock()
+        adapter.name = "slack"
+        adapter.platform = "slack"
+        adapter.send = AsyncMock(
+            return_value=MagicMock(success=send_success, error="" if send_success else "nope")
+        )
+        for m in (
+            "send_image_file",
+            "send_document",
+            "send_voice",
+            "send_video",
+            "send_multiple_images",
+        ):
+            setattr(adapter, m, AsyncMock(return_value=MagicMock(success=True, error="")))
+        return adapter
+
+    @staticmethod
+    def _runner(adapter):
+        from gateway.config import Platform
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {Platform.SLACK: adapter}
+        runner._profile_adapters = {}
+        runner._active_profile_name = lambda: "default"
+        _store = MagicMock()
+        _store.clear_resume_pending = AsyncMock()
+        _store._store = None
+        runner.session_store = None
+        runner._async_session_store = _store
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_recovered_image_final_calls_send_image_file(self, tmp_path):
+        img = tmp_path / "proof.png"
+        img.write_bytes(b"\x89PNG fake")
+        _record(content=f"proof attached\nMEDIA:{img}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 1
+        # The text part is delivered WITHOUT the MEDIA: directive...
+        sent = adapter.send.call_args.kwargs
+        assert sent["content"] == "proof attached"
+        # ...and the attachment goes out through the image sender.
+        adapter.send_image_file.assert_awaited_once()
+        img_kwargs = adapter.send_image_file.call_args.kwargs
+        assert img_kwargs["image_path"] == str(img)
+        assert img_kwargs["chat_id"] == "C1"
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_image_batch_uses_send_multiple_images(self, tmp_path):
+        img1 = tmp_path / "a.jpg"
+        img1.write_bytes(b"jpg1")
+        img2 = tmp_path / "b.png"
+        img2.write_bytes(b"png1")
+        _record(content=f"MEDIA:{img1}\nMEDIA:{img2}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 1
+        adapter.send_multiple_images.assert_awaited_once()
+        batch = adapter.send_multiple_images.call_args.kwargs["images"]
+        assert [u for u, _ in batch] == [f"file://{img1}", f"file://{img2}"]
+        adapter.send_image_file.assert_not_awaited()
+        # Text reduced to empty after extraction + no fallback send needed:
+        # the batch itself carries the delivery.
+        adapter.send.assert_not_awaited()
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_document_routes_to_send_document(self, tmp_path):
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF fake")
+        _record(content=f"report ready\nMEDIA:{doc}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        await runner._redeliver_pending_obligations()
+
+        adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.call_args.kwargs["file_path"] == str(doc)
+        adapter.send_image_file.assert_not_awaited()
+        adapter.send_voice.assert_not_awaited()
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_video_routes_to_send_video(self, tmp_path):
+        vid = tmp_path / "clip.mp4"
+        vid.write_bytes(b"mp4 fake")
+        _record(content=f"MEDIA:{vid}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        await runner._redeliver_pending_obligations()
+
+        adapter.send_video.assert_awaited_once()
+        assert adapter.send_video.call_args.kwargs["video_path"] == str(vid)
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_audio_routes_to_send_voice(self, tmp_path):
+        audio = tmp_path / "note.mp3"
+        audio.write_bytes(b"mp3 fake")
+        _record(content=f"MEDIA:{audio}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        await runner._redeliver_pending_obligations()
+
+        # Non-Telegram platform: every audio ext routes through the audio sender.
+        adapter.send_voice.assert_awaited_once()
+        assert adapter.send_voice.call_args.kwargs["audio_path"] == str(audio)
+        adapter.send_document.assert_not_awaited()
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_voice_directive_sets_is_voice(self, tmp_path):
+        audio = tmp_path / "note.mp3"
+        audio.write_bytes(b"mp3 fake")
+        _record(
+            content=f"[[audio_as_voice]]\nMEDIA:{audio}",
+        )
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        await runner._redeliver_pending_obligations()
+
+        adapter.send_voice.assert_awaited_once()
+        assert adapter.send_voice.call_args.kwargs["is_voice"] is True
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_unsafe_media_path_is_dropped_not_uploaded(self, tmp_path):
+        # Path does not exist → validate_media_delivery_path rejects it → no
+        # upload, and the directive must NOT leak into the delivered text.
+        _record(content=f"see file\nMEDIA:{tmp_path / 'missing.png'}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 1
+        adapter.send_image_file.assert_not_awaited()
+        adapter.send_multiple_images.assert_not_awaited()
+        sent = adapter.send.call_args.kwargs
+        assert "MEDIA:" not in sent["content"]
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_media_failure_marks_row_failed_not_delivered(self, tmp_path):
+        img = tmp_path / "proof.png"
+        img.write_bytes(b"\x89PNG fake")
+        _record(content=f"MEDIA:{img}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        # Text send succeeds but the attachment upload fails.
+        adapter.send_image_file = AsyncMock(
+            return_value=MagicMock(success=False, error="upload denied")
+        )
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        # Nothing was deliverable in full — the obligation must stay retryable.
+        assert n == 0
+        adapter.send_image_file.assert_awaited_once()
+        assert _row("ob-1")["state"] == "failed"
+        assert _row("ob-1")["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_recovered_media_send_raises_marks_row_failed(self, tmp_path):
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF fake")
+        _record(content=f"MEDIA:{doc}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        adapter.send_document = AsyncMock(side_effect=RuntimeError("boom"))
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 0
+        assert _row("ob-1")["state"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_recovered_media_failure_with_text_still_marks_failed(self, tmp_path):
+        """Text + attachment where the attachment fails: the text may have
+        reached the user, but the obligation is NOT fully delivered — partial
+        delivery must not falsely acknowledge completion (#99846)."""
+        img = tmp_path / "proof.png"
+        img.write_bytes(b"\x89PNG fake")
+        _record(content=f"proof attached\nMEDIA:{img}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        adapter.send_image_file = AsyncMock(
+            return_value=MagicMock(success=False, error="flood wait")
+        )
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 0
+        adapter.send.assert_awaited_once()  # text went out first
+        assert _row("ob-1")["state"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_recovered_marker_prepend_survives_media_extraction(self, tmp_path):
+        """needs_marker rows (attempting/failed) carry the recovered-reply
+        marker — it must land on the cleaned TEXT, after extraction, so it can
+        never be eaten by MEDIA parsing."""
+        img = tmp_path / "proof.png"
+        img.write_bytes(b"\x89PNG fake")
+        _record(content=f"proof attached\nMEDIA:{img}")
+        dl.mark_attempting("ob-1")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 1
+        sent = adapter.send.call_args.kwargs
+        assert sent["content"].startswith(dl.RECOVERED_MARKER)
+        assert sent["content"].endswith("proof attached")
+        assert "MEDIA:" not in sent["content"]
+        adapter.send_image_file.assert_awaited_once()
+        assert _row("ob-1")["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_recovered_as_document_routes_image_to_send_document(self, tmp_path):
+        img = tmp_path / "big.png"
+        img.write_bytes(b"\x89PNG fake")
+        _record(content=f"[[as_document]]\nMEDIA:{img}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        await runner._redeliver_pending_obligations()
+
+        # [[as_document]] preserves bytes: image-ext files skip the photo path.
+        adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.call_args.kwargs["file_path"] == str(img)
+        adapter.send_image_file.assert_not_awaited()
+        adapter.send_multiple_images.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recovered_only_dangling_media_tag_is_not_falsely_acknowledged(self, tmp_path):
+        """Content whose every deliverable part evaporates (only a MEDIA tag
+        with a nonexistent path): send nothing (never echo host paths into
+        chat) and do NOT mark delivered — the obligation stays retryable and
+        the attempts cap retires it (#99846, mirroring the live path's refusal
+        to leak paths)."""
+        _record(content=f"MEDIA:{tmp_path / 'gone.png'}")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 0
+        adapter.send.assert_not_awaited()
+        adapter.send_image_file.assert_not_awaited()
+        assert _row("ob-1")["state"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_recovered_plain_text_final_unchanged(self, tmp_path):
+        """No media → behavior identical to the pre-fix redelivery path."""
+        _record(content="the final answer")
+        _orphan("ob-1")
+        adapter = self._media_adapter(tmp_path)
+        runner = self._runner(adapter)
+
+        n = await runner._redeliver_pending_obligations()
+
+        assert n == 1
+        sent = adapter.send.call_args.kwargs
+        assert sent["content"] == "the final answer"
+        adapter.send_image_file.assert_not_awaited()
+        adapter.send_document.assert_not_awaited()
+        adapter.send_voice.assert_not_awaited()
+        assert _row("ob-1")["state"] == "delivered"

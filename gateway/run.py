@@ -13366,26 +13366,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # + stale cutoff bound later retries.
                 continue
             content = row["content"]
-            if row.get("needs_marker"):
-                content = row.get("marker", RECOVERED_MARKER) + content
             metadata = (
                 {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             )
 
+            # A recovered final must honor the same explicit media contract as
+            # live delivery (#99846): a persisted final containing a valid
+            # ``MEDIA:<path>`` directive is dispatched through the platform's
+            # native media senders, not replayed as raw text — otherwise the
+            # obligation is marked delivered without the attachment ever being
+            # uploaded. Extraction failure falls back to the legacy text-only
+            # replay for that row.
+            text_content = content
+            media_files: list = []
             try:
-                result = await adapter.send(
-                    chat_id=row["chat_id"],
-                    content=content,
-                    metadata=metadata,
+                from gateway.platforms.base import BasePlatformAdapter
+
+                media_files, text_content = BasePlatformAdapter.extract_media(
+                    content
                 )
-            except Exception as send_err:
-                logger.warning(
-                    "obligation %s: redelivery send raised: %s",
-                    row["obligation_id"], send_err,
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                    media_files, session_key=row.get("session_key") or ""
                 )
-                result = None
-            try:
+            except Exception:
+                logger.debug(
+                    "obligation %s: recovered media extraction failed; "
+                    "replaying as text",
+                    row["obligation_id"], exc_info=True,
+                )
+                media_files, text_content = [], content
+            if row.get("needs_marker"):
+                # Prepended to the cleaned text so the ambiguity marker can
+                # never interact with MEDIA parsing.
+                text_content = row.get("marker", RECOVERED_MARKER) + text_content
+
+            text_delivered = not text_content.strip()
+            send_error = ""
+            if not text_delivered:
+                try:
+                    result = await adapter.send(
+                        chat_id=row["chat_id"],
+                        content=text_content,
+                        metadata=metadata,
+                    )
+                except Exception as send_err:
+                    logger.warning(
+                        "obligation %s: redelivery send raised: %s",
+                        row["obligation_id"], send_err,
+                    )
+                    result = None
                 if result is not None and getattr(result, "success", False):
+                    text_delivered = True
+                else:
+                    send_error = str(
+                        getattr(result, "error", "") or "send failed"
+                    )
+            media_delivered = True
+            if media_files:
+                media_delivered, media_error = await self._deliver_recovered_media(
+                    adapter,
+                    platform,
+                    row["chat_id"],
+                    media_files,
+                    metadata,
+                    force_document="[[as_document]]" in content,
+                )
+                if media_error and not send_error:
+                    send_error = media_error
+
+            try:
+                if (
+                    text_delivered
+                    and media_delivered
+                    and (text_content.strip() or media_files)
+                ):
                     await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
@@ -13398,11 +13452,125 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await asyncio.to_thread(
                         mark_failed,
                         row["obligation_id"],
-                        str(getattr(result, "error", "") or "send failed"),
+                        send_error or "no deliverable content",
                     )
             except Exception:
                 logger.debug("delivery ledger update failed", exc_info=True)
         return redelivered
+
+    async def _deliver_recovered_media(
+        self,
+        adapter,
+        platform: Platform,
+        chat_id: str,
+        media_files: list,
+        metadata: Optional[Dict[str, Any]],
+        *,
+        force_document: bool = False,
+    ) -> Tuple[bool, str]:
+        """Dispatch recovered ``MEDIA:`` attachments for one obligation.
+
+        Mirrors the live delivery paths (``BasePlatformAdapter`` response
+        handling and the post-stream rescan): images go out as native photo
+        sends (batched when there are several), audio through the voice
+        sender, video through the video sender, everything else as a
+        document. Returns ``(all_delivered, first_error)`` — the caller marks
+        the obligation delivered only when every required send succeeded, so
+        a partial text/media failure stays retryable (#99846).
+        """
+        from pathlib import Path
+        from urllib.parse import quote as _quote
+
+        from gateway.platforms.base import should_send_media_as_audio
+
+        _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+        _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+        # Partition images out so several can be sent as a single native
+        # batch; ``[[as_document]]`` keeps image-extension files on the
+        # byte-preserving document path (mirrors live delivery).
+        image_paths: list = []
+        non_image_media: list = []
+        for media_path, is_voice in media_files:
+            ext = Path(media_path).suffix.lower()
+            if (
+                ext in _IMAGE_EXTS
+                and not is_voice
+                and not force_document
+            ):
+                image_paths.append(media_path)
+            else:
+                non_image_media.append((media_path, is_voice))
+
+        all_delivered = True
+        first_error = ""
+
+        if image_paths:
+            try:
+                if len(image_paths) == 1:
+                    result = await adapter.send_image_file(
+                        chat_id=chat_id,
+                        image_path=image_paths[0],
+                        metadata=metadata,
+                    )
+                else:
+                    batch = [
+                        (f"file://{_quote(p)}", "") for p in image_paths
+                    ]
+                    result = await adapter.send_multiple_images(
+                        chat_id=chat_id,
+                        images=batch,
+                        metadata=metadata,
+                    )
+                # ``send_multiple_images`` defaults to a None return (the
+                # default impl forwards item-by-item); only an explicit
+                # failure flag or an exception counts against delivery.
+                if result is not None and not getattr(result, "success", False):
+                    all_delivered = False
+                    first_error = first_error or str(
+                        getattr(result, "error", "") or "image delivery failed"
+                    )
+            except Exception as img_err:
+                logger.warning(
+                    "recovered obligation image delivery failed: %s", img_err,
+                )
+                all_delivered = False
+                first_error = first_error or str(img_err)
+
+        for media_path, is_voice in non_image_media:
+            try:
+                ext = Path(media_path).suffix.lower()
+                if should_send_media_as_audio(platform, ext, is_voice=is_voice):
+                    result = await adapter.send_voice(
+                        chat_id=chat_id,
+                        audio_path=media_path,
+                        metadata=metadata,
+                        is_voice=is_voice,
+                    )
+                elif ext in _VIDEO_EXTS:
+                    result = await adapter.send_video(
+                        chat_id=chat_id,
+                        video_path=media_path,
+                        metadata=metadata,
+                    )
+                else:
+                    result = await adapter.send_document(
+                        chat_id=chat_id,
+                        file_path=media_path,
+                        metadata=metadata,
+                    )
+                if result is not None and not getattr(result, "success", False):
+                    all_delivered = False
+                    first_error = first_error or str(
+                        getattr(result, "error", "") or "media delivery failed"
+                    )
+            except Exception as media_err:
+                logger.warning(
+                    "recovered obligation media delivery failed: %s", media_err,
+                )
+                all_delivered = False
+                first_error = first_error or str(media_err)
+        return all_delivered, first_error
 
     async def _redeliver_pending_obligations(self) -> int:
         """Claim + redeliver in one call — composition of

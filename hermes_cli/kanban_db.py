@@ -6514,9 +6514,12 @@ def request_review(
     Unlike :func:`block_task`, this transition never touches block recurrence
     accounting.  The current implementer and resolved reviewer are recorded on
     the event so an autonomous reviewer can route requested changes back to the
-    right profile.  Supplying ``reviewer`` reassigns the task before it is
-    exposed to the review dispatcher.  On re-review, omitting it reuses the
-    reviewer provenance persisted by the latest ``changes_requested`` event.
+    right profile. Supplying ``reviewer`` reassigns the task before it is
+    exposed to the review dispatcher. On a coder-owned first review, omitting
+    it deterministically routes the task to the ``reviewer`` profile; an
+    explicit self-review request is refused. On re-review, omitting it reuses
+    the reviewer provenance persisted by the latest ``changes_requested``
+    event (repairing legacy coder self-review provenance to ``reviewer``).
 
     When the task is ``running`` under a live claim, a caller that supplies no
     ``expected_run_id`` must pass ``force=True`` (explicit human/CLI override)
@@ -6557,7 +6560,8 @@ def request_review(
                 "(worker ownership) or force=True (explicit operator "
                 "override) instead of clearing the live run's claim",
             )
-        implementer = trow["assignee"]
+        implementer = _canonical_assignee(trow["assignee"])
+        reviewer_was_explicit = reviewer is not None
         if reviewer is None:
             changes_run = conn.execute(
                 "SELECT id FROM task_runs "
@@ -6597,6 +6601,15 @@ def request_review(
                     )
                 reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
+        if implementer == "coder":
+            if reviewer_was_explicit and reviewer == implementer:
+                return _ret(
+                    False,
+                    "coder cannot review its own application work; assign an "
+                    "independent reviewer profile",
+                )
+            if reviewer is None or reviewer == implementer:
+                reviewer = "reviewer"
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
         if expected_run_id is None:

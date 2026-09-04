@@ -708,3 +708,119 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+def test_coder_review_defaults_to_independent_reviewer_full_cycle(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Settings/T3 implementation cannot dispatch back to its coder."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: name in {"coder", "reviewer"})
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+
+    dispatched: list[tuple[str, str]] = []
+
+    def spawn(task, workspace):
+        dispatched.append((task.id, task.assignee or ""))
+        return None
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Implement Settings grant controls for T3 MCP orchestration",
+            body="Add select-all grants and profile pickers, then request review.",
+            assignee="coder",
+        )
+        implementation = kb.claim_task(conn, task_id, claimer="coder:implementation")
+        assert implementation is not None
+
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="Settings implementation and tests are complete.",
+            expected_run_id=implementation.current_run_id,
+        )
+        awaiting_review = kb.get_task(conn, task_id)
+        assert awaiting_review is not None
+        assert awaiting_review.status == "review"
+        assert awaiting_review.assignee == "reviewer"
+        requested = _events(conn, task_id, kind="review_requested")[-1][1]
+        assert isinstance(requested, dict)
+        assert requested["implementer"] == "coder"
+        assert requested["reviewer"] == "reviewer"
+
+        dispatched_result = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert [(tid, assignee) for tid, assignee, _ in dispatched_result.spawned] == [
+            (task_id, "reviewer")
+        ]
+        review = kb.get_task(conn, task_id)
+        assert review is not None
+        assert review.status == "running"
+        assert review.assignee == "reviewer"
+        review_run = kb.latest_run(conn, task_id)
+        assert review_run is not None
+        assert review_run.profile == "reviewer"
+        assert dispatched == [(task_id, "reviewer")]
+
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason="Cover the partial-grant reconnect path.",
+            expected_run_id=review.current_run_id,
+        ) == (True, "coder")
+        rework = kb.get_task(conn, task_id)
+        assert rework is not None
+        assert rework.status == "ready"
+        assert rework.assignee == "coder"
+
+        implementation_2 = kb.claim_task(conn, task_id, claimer="coder:rework")
+        assert implementation_2 is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="Reviewer feedback addressed.",
+            expected_run_id=implementation_2.current_run_id,
+        )
+        assert kb.get_task(conn, task_id).assignee == "reviewer"
+
+        review_2 = kb.claim_review_task(conn, task_id, claimer="reviewer:approval")
+        assert review_2 is not None
+        assert review_2.assignee == "reviewer"
+        assert kb.complete_task(
+            conn,
+            task_id,
+            summary="Independent review passed.",
+            expected_run_id=review_2.current_run_id,
+        )
+        assert kb.get_task(conn, task_id).status == "done"
+
+
+def test_coder_cannot_explicitly_assign_itself_as_reviewer(kanban_home: Path) -> None:
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Coder-owned app work", assignee="coder")
+        implementation = kb.claim_task(conn, task_id, claimer="coder:implementation")
+        assert implementation is not None
+
+        ok, reason = kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            reviewer="CODER",
+            expected_run_id=implementation.current_run_id,
+            with_reason=True,
+        )
+
+        assert ok is False
+        assert reason is not None and "cannot review its own" in reason
+        unchanged = kb.get_task(conn, task_id)
+        assert unchanged is not None
+        assert unchanged.status == "running"
+        assert unchanged.assignee == "coder"
+        assert _events(conn, task_id, kind="review_requested") == []

@@ -1,6 +1,7 @@
 import type {
   ActionResponse,
   ComputerUseStatus,
+  RealProfileCandidates,
   TerminalBackendsResponse,
   ToolsetConfig,
   ToolsetInfo,
@@ -122,6 +123,16 @@ export function selectTerminalBackend(backend: string): Promise<{ ok: boolean; b
     path: '/api/tools/terminal/backend',
     method: 'PUT',
     body: { backend }
+  })
+}
+
+/** Read-only discovery for the real-profile browser/profile picker. Capability-scoped
+ *  like the other Capabilities fetchers, so it reports the browser and profile THAT
+ *  profile's config resolves to — on the gateway that actually launches the browser. */
+export function getBrowserRealProfile(profile?: ProfileScope): Promise<RealProfileCandidates> {
+  return window.hermesDesktop.api<RealProfileCandidates>({
+    ...capabilityScoped(profile),
+    path: '/api/tools/browser/real-profile'
   })
 }
 

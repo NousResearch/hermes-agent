@@ -1213,12 +1213,31 @@ export interface Translations {
         disabledTitle: string
         disabledMessage: string
         failedSave: string
+        picker: {
+          browserLabel: string
+          browserDescription: string
+          profileLabel: string
+          profileDescription: string
+          systemDefault: string
+          systemDefaultNamed: (browser: string) => string
+          lastUsed: string
+          lastUsedNamed: (profile: string) => string
+          notInstalled: string
+          noProfile: string
+          loading: string
+          failedLoad: string
+          browsingAs: (browser: string, profile: string) => string
+          unsupportedPlatform: (platform: string) => string
+          savedTitle: string
+          savedMessage: (target: string) => string
+        }
         prompt: {
           title: string
           body: string
           bulletSnapshot: string
           bulletLiveProfile: string
           bulletLocal: string
+          bulletTarget: (target: string) => string
           dontShowAgain: string
           notNow: string
           enable: string

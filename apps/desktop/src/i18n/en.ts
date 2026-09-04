@@ -1390,12 +1390,32 @@ export const en: Translations = {
         disabledTitle: 'Real-profile browsing off',
         disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
         failedSave: 'Could not save the real-profile setting',
+        picker: {
+          browserLabel: 'Browser',
+          browserDescription: 'Which installed browser the agent borrows logins from.',
+          profileLabel: 'Browser profile',
+          profileDescription: 'Which profile inside that browser — its cookies decide who the agent is signed in as.',
+          systemDefault: 'System default',
+          systemDefaultNamed: (browser: string) => `System default (${browser})`,
+          lastUsed: 'Last used',
+          lastUsedNamed: (profile: string) => `Last used (${profile})`,
+          notInstalled: 'Not installed',
+          noProfile: 'Never launched',
+          loading: 'Looking for browsers…',
+          failedLoad: 'Could not list browsers on this machine',
+          browsingAs: (browser: string, profile: string) => `Browsing as ${browser} · ${profile}`,
+          unsupportedPlatform: (platform: string) =>
+            `Real-profile browsing needs a desktop browser and is not available on ${platform}.`,
+          savedTitle: 'Browsing identity updated',
+          savedMessage: (target: string) => `New sessions will browse as ${target}.`
+        },
         prompt: {
           title: 'Stay signed in to your sites',
-          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
+          body: 'Let Hermes browse with a snapshot of your browser profile, so sites open already signed in.',
           bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
           bulletLiveProfile: 'Your live browser profile is never opened directly.',
           bulletLocal: 'Nothing leaves this computer.',
+          bulletTarget: (target: string) => `Uses ${target} — change it in Settings any time.`,
           dontShowAgain: "Don't show again",
           notNow: 'Not now',
           enable: 'Use my profile'

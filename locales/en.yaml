@@ -377,6 +377,14 @@ gateway:
     current_with_title:    "📌 Session: `{session_id}`\nTitle: **{title}**"
     current_no_title:      "📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
+  retitle:
+    db_unavailable:        "Session database not available."
+    disabled:              "Retitle is disabled by config (auxiliary.title_generation.retitle.enabled)."
+    no_history:            "No conversation history to retitle from."
+    done:                  "🔄 Retitled session: **{title}**"
+    no_change:             "Retitle skipped — couldn't generate a better title."
+    user_held:             "Session has a manual title. Pass `force` to overwrite."
+
   topic:
     not_telegram_dm:         "The /topic command is only available in Telegram private chats."
     no_session_db:           "Session database not available."

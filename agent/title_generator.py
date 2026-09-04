@@ -60,6 +60,25 @@ _TITLE_PROMPT_TEMPLATE = (
     'Reply with JSON only: {"title": "..."}'
 )
 
+# Prompt for regenerate_title() — feeds condensed conversation history instead of opening message.
+_RETITLE_PROMPT = (
+    "You name chat sessions. Given the conversation so far, write a title "
+    "that lets the user find this conversation again in a list.\n\n"
+    "Rules:\n"
+    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
+    "- Name what the conversation is actually about or what the user wants DONE.\n"
+    "- Keep technical terms, filenames, numbers, and error codes exact.\n"
+    "- Drop filler words: the, this, my, a, an.\n"
+    "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
+    "- Never summarize the conversation. Name it.\n"
+    "- Always produce something, even if the conversation opened with a greeting.\n"
+    "__LANGUAGE_RULE__\n"
+    'Good: {"title": "Debugging Postgres connection pool"}\n'
+    'Good: {"title": "Hermes session auto-titling explained"}\n'
+    'Too vague: {"title": "Conversation about databases"}\n'
+    'Reply with JSON only: {"title": "..."}'
+)
+
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
 _LANGUAGE_RULE_PINNED = "- Write the title in {language}."
 
@@ -112,6 +131,65 @@ def _auto_title_enabled() -> bool:
         return is_truthy_value(_title_config().get("enabled"), default=True)
     except Exception:
         logger.debug("Failed to read title_generation.enabled", exc_info=True)
+        return True
+
+
+# Defaults for auxiliary.title_generation.retitle. Kept in sync with
+# hermes_cli/config_defaults.py — the merge below preserves any key the user
+# omitted and skips explicit ``None`` overrides so a YAML ``null`` cannot blank
+# out a default. Explicit ``false`` / ``0`` / ``""`` DO override.
+_RETITLE_DEFAULTS = {
+    "enabled": True,
+    "auto_at_turn": 10,
+    "turns_window": 10,
+    "slash_command": True,
+    "cli_command": True,
+    "touch_platform_names": False,
+    "provider": "",
+    "model": "",
+    "base_url": "",
+    "api_key": "",
+    "timeout": 30,
+    "max_concurrency": 2,
+    "prefer_fast_model": None,
+}
+
+
+def _retitle_config() -> dict:
+    """Return the merged ``auxiliary.title_generation.retitle`` config.
+
+    Defaults from ``_RETITLE_DEFAULTS`` are merged with any user overrides.
+    User keys whose value is ``None`` are treated as "use default" so a YAML
+    ``null`` does not blank out a baked-in default. Returns ``{}`` on any
+    config error (fail-open at call sites).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
+        user = title_config.get("retitle") or {}
+        merged = dict(_RETITLE_DEFAULTS)
+        if isinstance(user, dict):
+            for key, value in user.items():
+                if value is None:
+                    continue
+                merged[key] = value
+        return merged
+    except Exception:
+        logger.debug("Failed to read title_generation.retitle", exc_info=True)
+        return {}
+
+
+def _retitle_enabled() -> bool:
+    """Return whether the retitle feature is enabled (default True)."""
+    try:
+        from utils import is_truthy_value
+
+        cfg = _retitle_config()
+        return is_truthy_value(cfg.get("enabled"), default=True)
+    except Exception:
+        logger.debug("Failed to read title_generation.retitle.enabled", exc_info=True)
         return True
 
 
@@ -212,6 +290,33 @@ def _clean_title(text: str) -> Optional[str]:
     return title or None
 
 
+def _looks_like_title(text: Optional[str]) -> bool:
+    """Quality gate: accept a concise 2..12 word phrase, reject verbose prose.
+
+    Used by ``regenerate_title`` to filter chatty small-model output — when
+    handed a whole conversation instead of a single opening message, a
+    tiny-model tier will sometimes answer with a summary sentence ("Here is
+    a summary of the conversation...") instead of a title. This guard drops
+    those before they land as the session name.
+    """
+    if not text:
+        return False
+    words = text.split()
+    if len(words) < 2 or len(words) > 12:
+        return False
+    lowered = text.lower()
+    _BAD_PREFIXES = (
+        "here",
+        "this conversation",
+        "the conversation",
+        "about ",
+    )
+    for bad in _BAD_PREFIXES:
+        if lowered.startswith(bad):
+            return False
+    return True
+
+
 def _safe_callback(callback: Optional[Callable], args: tuple, log_fmt: str, label: str) -> None:
     """Invoke an optional consumer callback, never raising."""
     try:
@@ -296,6 +401,194 @@ def _has_upgraded_title(session_db, session_id: str) -> bool:
         return bool(session_db.get_session_title(session_id))
     except Exception:
         return True
+
+
+def regenerate_title(
+    condensed: str,
+    timeout: Optional[float] = None,
+) -> Optional[str]:
+    """Regenerate a session title from condensed conversation history.
+
+    Structural mirror of :func:`generate_title`, but takes an already-condensed
+    conversation string (see :func:`_condense_history`) instead of a single
+    opening user message. Runs on the same ``title_generation`` auxiliary
+    task, so it inherits the small/fast tier, concurrency cap, and timeout
+    floor configured for auto-titling.
+
+    Returns ``None`` when:
+    - ``condensed`` is empty/whitespace,
+    - the retitle feature is disabled,
+    - the LLM call raises (logged at WARNING),
+    - the response fails the ``_looks_like_title`` quality gate.
+
+    Callers handle failure surfacing and persistence — this function only
+    produces a title candidate, it does not invoke a failure callback and
+    does not touch storage.
+    """
+    if not condensed or not condensed.strip():
+        return None
+    if not _retitle_enabled():
+        logger.debug("Retitle skipped: auxiliary.title_generation.retitle.enabled=false")
+        return None
+
+    language = _title_language()
+    language_rule = (
+        _LANGUAGE_RULE_PINNED.format(language=language)
+        if language
+        else _LANGUAGE_RULE_MATCH_USER
+    )
+    # Placeholder substitution, not str.format: the prompt embeds literal JSON
+    # braces as few-shot examples, which format() would try to interpolate.
+    prompt = _RETITLE_PROMPT.replace("__LANGUAGE_RULE__", language_rule)
+
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": condensed[:MAX_TITLE_INPUT_CHARS]},
+    ]
+
+    try:
+        response = call_llm(
+            task="title_generation",
+            messages=messages,
+            max_tokens=64,
+            temperature=0.3,
+            timeout=timeout,
+            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+        )
+        content = response.choices[0].message.content or ""
+        title = _clean_title(_extract_title_text(content))
+        if not _looks_like_title(title):
+            logger.debug("Retitle rejected by _looks_like_title: %r", title)
+            return None
+        return title
+    except Exception as e:
+        logger.warning("Retitle generation failed: %s", e)
+        logger.debug("Retitle generation traceback", exc_info=True)
+        return None
+
+
+def retitle_session(
+    session_db,
+    session_id: str,
+    conversation_history: Any,
+    *,
+    turns_window: int = 10,
+    force: bool = False,
+    touch_platform_names: bool = False,
+) -> Optional[str]:
+    """Regenerate a session's title from recent history and persist it.
+
+    Shared sync worker for every retitle entry point: the ``maybe_auto_retitle``
+    daemon thread, the ``/retitle`` slash handler (via ``asyncio.to_thread``),
+    and the ``hermes sessions retitle`` CLI. Writes with ``source="llm"`` — the
+    same tier as the initial auto-title upgrade — so the provenance ladder
+    (``derived < llm < user``) at the storage layer still protects any name
+    the user typed.
+
+    Guards:
+
+    - ``session_db`` missing or ``session_id`` empty → returns None.
+    - Unless ``force=True``, a title of ``user`` provenance is left alone.
+      The CLI's ``--force`` flag is the one place that opts in to overwriting.
+
+    Returns the title persisted, or ``None`` if nothing was written (empty
+    condensed history, model returned nothing, or a higher-authority title
+    held the row). Never raises — this is a daemon-thread target when called
+    from :func:`maybe_auto_retitle`, and an escaping exception would spray a
+    raw traceback into the user's terminal via the default threading
+    excepthook.
+
+    ``touch_platform_names`` is accepted but not acted on here: the platform
+    rename callback lives on the agent and isn't threaded through to this
+    worker. Wire the callback when the platform-name integration lands.
+    """
+    if session_db is None or not session_id:
+        return None
+
+    try:
+        # Provenance guard. A user-set title is the only tier we refuse to
+        # overwrite silently — force=True (the CLI opt-in) skips this check.
+        if not force:
+            try:
+                source_fn = getattr(session_db, "get_session_title_source", None)
+                if source_fn is not None:
+                    existing_source = source_fn(session_id)
+                    if existing_source == "user":
+                        logger.debug(
+                            "Retitle skipped: session %s carries a user-set title",
+                            session_id,
+                        )
+                        return None
+            except Exception:
+                # If we can't read provenance, fall through to the write; the
+                # storage layer's own precedence check is the backstop.
+                logger.debug(
+                    "Retitle provenance check failed for %s",
+                    session_id, exc_info=True,
+                )
+
+        # Publish accounting + Portal contexts from the session id we hold,
+        # so the LLM call's token usage and conversation tag land on this
+        # session. Imported lazily to match _auto_title_session's post-update
+        # stale-module hygiene — a daemon thread reloading NEW source here
+        # while agent.portal_tags is still OLD would ImportError forever.
+        from agent.aux_accounting import set_accounting_context
+        from agent.portal_tags import set_conversation_context
+
+        try:
+            conversation_id = session_db.get_conversation_root(session_id) or session_id
+        except Exception:
+            conversation_id = session_id
+        set_conversation_context(conversation_id)
+        set_accounting_context(session_db, session_id)
+
+        condensed = _condense_history(conversation_history, turns_window=turns_window)
+        if not condensed:
+            return None
+
+        title = regenerate_title(condensed)
+        if title is None:
+            return None
+
+        # ``set_auto_title`` refuses equal-rank writes (llm -> llm returns 0)
+        # to stop the first-turn titler renaming a session on every subsequent
+        # turn — see hermes_state._set_session_title docstring. Retitle is an
+        # EXPLICIT rewrite intent, not that accidental case, so demote the row
+        # to ``derived`` first, then land the new llm title on top. Both writes
+        # are single-row updates; the intermediate ``derived`` state is invisible
+        # and — even if the second write raced a manual /title — the CAS in
+        # set_session_title would still reject the demotion cleanly.
+        #
+        # ``None``-source rows come from legacy sessions predating provenance
+        # tracking; ``_title_rank(None)`` returns the same rank as ``user`` as
+        # a safety default so passive re-titling never clobbers them. Explicit
+        # retitle is not passive — the user or an operator-configured auto-fire
+        # asked for the rewrite — so we treat None the same as llm here.
+        try:
+            source_fn = getattr(session_db, "get_session_title_source", None)
+            demote_fn = getattr(session_db, "set_session_title_source", None)
+            if callable(source_fn) and callable(demote_fn):
+                current_src = source_fn(session_id)
+                if current_src in ("llm", None):
+                    demote_fn(session_id, "derived")
+        except Exception:
+            logger.debug(
+                "Retitle pre-write demotion failed for %s (proceeding)",
+                session_id, exc_info=True,
+            )
+
+        persisted = _persist_session_title(
+            session_db, session_id, title, source="llm"
+        )
+        if persisted is None:
+            return None
+
+        logger.debug("Retitled session %s: %s", session_id, persisted)
+        return persisted
+    except Exception as e:
+        logger.warning("Retitle failed (harmless): %s", e)
+        logger.debug("Retitle traceback", exc_info=True)
+        return None
 
 
 def _persist_session_title(session_db, session_id, title, *, source, dedupe=True):
@@ -405,6 +698,56 @@ def _is_real_user_turn(message: Any) -> bool:
     return is_titleable_user_message(content if isinstance(content, str) else flatten_message_text(content))
 
 
+def _condense_history(history: Any, turns_window: int = 10) -> str:
+    """Flatten the last ``turns_window`` user+assistant exchanges into text.
+
+    Produces the compact retitle-input blob handed to the auxiliary title
+    model: recent user turns and non-empty assistant replies, in order, each
+    prefixed with a role label. Machine-authored user turns (compaction
+    handoffs, model-switch markers) are skipped via :func:`_is_real_user_turn`
+    so a session isn't titled after Hermes' own scaffolding. Tool messages are
+    excluded — the titler cares about intent, not tool-call plumbing.
+
+    Individual message bodies are clipped at 200 characters so a pasted log
+    can't dominate the blob, and the final result is tail-clipped at
+    :data:`MAX_TITLE_INPUT_CHARS` because recent context matters more than
+    old.
+    """
+    if not history:
+        return ""
+
+    slice_size = turns_window * 2
+    recent = history[-slice_size:]
+
+    lines = []
+    for message in recent:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+
+        if role == "user":
+            if not _is_real_user_turn(message):
+                continue
+            text = content if isinstance(content, str) else flatten_message_text(content)
+            text = " ".join((text or "").split())
+            if not text:
+                continue
+            lines.append("User: " + text[:200])
+        elif role == "assistant":
+            text = content if isinstance(content, str) else flatten_message_text(content)
+            text = " ".join((text or "").split())
+            if not text:
+                continue
+            lines.append("Assistant: " + text[:200])
+        # skip tool, system, everything else
+
+    joined = "\n".join(lines)
+    if len(joined) > MAX_TITLE_INPUT_CHARS:
+        joined = joined[-MAX_TITLE_INPUT_CHARS:]
+    return joined
+
+
 def _session_is_untitled(session_db, session_id: str) -> bool:
     """No title of any provenance; False when it can't tell (no model call per turn for an unreadable title)."""
     getter = getattr(session_db, "get_session_title", None)
@@ -444,3 +787,56 @@ def maybe_auto_title(
         daemon=True,
         name="auto-title",
     ).start()
+
+
+def maybe_auto_retitle(
+    session_db,
+    session_id: str,
+    conversation_history: Optional[list] = None,
+    *,
+    auto_at_turn: int = 10,
+    turns_window: int = 10,
+) -> None:
+    """One-shot retitle trigger: fire exactly once at the auto_at_turn mark.
+
+    Called from the per-turn prologue. Uses **exactly-N** semantics — fires
+    when ``user_msg_count == auto_at_turn`` and never fires again for the
+    same session. Reasoning: this is a one-shot checkpoint, not periodic
+    drift. If we used ``>=`` we would re-fire every turn afterwards; if the
+    auto-fire got skipped for any reason (user-set title, disabled surface),
+    we accept "manual retitle via /retitle only" over slow-motion spam.
+
+    Nothing runs on the caller's thread beyond a cheap message count and a
+    daemon-thread spawn. ``auto_at_turn=0`` disables the auto-fire.
+    """
+    if session_db is None or not session_id:
+        return
+
+    # Cheap guards first — the config read (below) is deferred so a long
+    # session doesn't touch the config file every turn.
+    if not _retitle_enabled():
+        return
+    if auto_at_turn <= 0:
+        return
+
+    user_msg_count = sum(
+        1 for m in (conversation_history or []) if _is_real_user_turn(m)
+    )
+    if user_msg_count != auto_at_turn:
+        return
+
+    cfg = _retitle_config()
+    touch = bool(cfg.get("touch_platform_names", False))
+
+    thread = threading.Thread(
+        target=retitle_session,
+        args=(session_db, session_id, conversation_history),
+        kwargs={
+            "turns_window": turns_window,
+            "force": False,  # auto-fire never forces
+            "touch_platform_names": touch,
+        },
+        daemon=True,
+        name="auto-retitle",
+    )
+    thread.start()

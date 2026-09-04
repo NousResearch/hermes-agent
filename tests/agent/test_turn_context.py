@@ -495,3 +495,88 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+# ---------------------------------------------------------------------------
+# Auto-retitle dispatch (Task 6)
+# ---------------------------------------------------------------------------
+#
+# The turn-start prologue also fires ``maybe_auto_retitle`` alongside
+# ``maybe_auto_title``. The two dispatches are independent — one failing must
+# not skip the other — and both inherit the ``_UNTITLED_PLATFORMS`` exclusion
+# via the outer early-return, so cron/subagent never even reach the dispatch.
+
+
+def _title_and_retitle_turn(
+    platform,
+    message="Fix the login button",
+    retitle_cfg=None,
+    retitle_cfg_raises=False,
+    title_raises=False,
+):
+    """Run the prologue and return (title_mock, retitle_mock, cfg_mock)."""
+    from agent import turn_context
+
+    cfg = retitle_cfg if retitle_cfg is not None else {
+        "auto_at_turn": 10,
+        "turns_window": 10,
+    }
+
+    with patch("agent.title_generator.maybe_auto_title") as titler, \
+         patch("agent.title_generator.maybe_auto_retitle") as retitler, \
+         patch("agent.title_generator._retitle_config") as cfg_mock:
+        if retitle_cfg_raises:
+            cfg_mock.side_effect = RuntimeError("config read boom")
+        else:
+            cfg_mock.return_value = cfg
+        if title_raises:
+            titler.side_effect = RuntimeError("title dispatch boom")
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent(platform),
+            [{"role": "user", "content": message}],
+        )
+    return titler, retitler, cfg_mock
+
+
+def test_turn_prologue_fires_maybe_auto_retitle_alongside_maybe_auto_title():
+    """A normal human-facing turn dispatches both title and retitle."""
+    titler, retitler, _cfg = _title_and_retitle_turn("cli")
+    assert titler.called, "auto-title should still fire"
+    assert retitler.called, "auto-retitle should fire alongside auto-title"
+
+
+@pytest.mark.parametrize("platform", ["cron", "subagent"])
+def test_turn_prologue_skips_retitle_for_untitled_platforms(platform):
+    """The outer early-return keeps retitle off cron/subagent surfaces."""
+    titler, retitler, _cfg = _title_and_retitle_turn(platform)
+    assert not titler.called
+    assert not retitler.called
+
+
+def test_turn_prologue_reads_retitle_config_for_auto_at_turn():
+    """The dispatch forwards auto_at_turn/turns_window from the merged config."""
+    titler, retitler, cfg_mock = _title_and_retitle_turn(
+        "cli",
+        retitle_cfg={"auto_at_turn": 20, "turns_window": 15, "enabled": True},
+    )
+    assert cfg_mock.called
+    assert retitler.called
+    kwargs = retitler.call_args.kwargs
+    assert kwargs.get("auto_at_turn") == 20
+    assert kwargs.get("turns_window") == 15
+
+
+def test_retitle_dispatch_exception_does_not_break_auto_title():
+    """A retitle-config read failure must not skip the auto-title call."""
+    titler, retitler, _cfg = _title_and_retitle_turn(
+        "cli", retitle_cfg_raises=True
+    )
+    assert titler.called, "auto-title must still fire when retitle-config errors"
+    assert not retitler.called
+
+
+def test_auto_title_exception_does_not_break_retitle_dispatch():
+    """An auto-title failure must not skip the retitle dispatch."""
+    titler, retitler, _cfg = _title_and_retitle_turn("cli", title_raises=True)
+    assert titler.called
+    assert retitler.called, "auto-retitle must still fire when auto-title errors"

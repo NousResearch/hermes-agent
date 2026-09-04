@@ -192,6 +192,28 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
     except Exception:
         logger.debug("Turn-start auto-title dispatch failed", exc_info=True)
 
+    # One-shot auto-retitle at the auto_at_turn checkpoint. Wrapped in its
+    # own nested try/except so a retitle-config read failure cannot break
+    # the auto-title path above, and vice-versa. The outer function has
+    # already returned early for _UNTITLED_PLATFORMS (cron/subagent), so
+    # the exclusion is inherited automatically here — no re-check needed.
+    # The fire-condition inside maybe_auto_retitle is exactly-N, so this
+    # per-turn config read is cheap and the LLM call is bounded to one
+    # shot per session.
+    try:
+        from agent.title_generator import _retitle_config, maybe_auto_retitle
+
+        cfg = _retitle_config()
+        maybe_auto_retitle(
+            session_db,
+            session_id,
+            messages,
+            auto_at_turn=int(cfg.get("auto_at_turn", 10)),
+            turns_window=int(cfg.get("turns_window", 10)),
+        )
+    except Exception:
+        logger.debug("Turn-start auto-retitle dispatch failed", exc_info=True)
+
 
 def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.

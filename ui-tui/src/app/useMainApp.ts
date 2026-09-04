@@ -29,9 +29,10 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { shouldCopyStableSelection } from '../lib/copyOnSelect.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -262,33 +263,30 @@ export function useMainApp(gw: GatewayClient) {
     setDimFallbackColor(ui.theme.color.muted)
   }, [ui.theme.color.muted])
 
-  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
-  // mouse tracking, so the only reliable native-feeling path is iTerm-style
-  // copy-on-select: once a drag creates a stable TUI selection, write it to
-  // the system clipboard while keeping the highlight visible.
+  // iTerm-style copy-on-select: when mouse tracking is enabled, the terminal
+  // forwards drags to the TUI, so the native (shift+drag) selection path is
+  // unavailable. Once a drag creates a stable TUI selection, write it to the
+  // system clipboard (OSC 52 / wl-copy / xclip / tmux) while keeping the
+  // highlight visible — giving shift-less select-and-copy, like Claude Code.
+  // Originally macOS-only (Terminal.app swallows Cmd+C for fullscreen TUIs);
+  // the same copy-on-select is also the right UX on Linux and Windows.
   //
   // Subscribe directly via the ink selection bus (not useSyncExternalStore)
   // so React doesn't re-render MainApp on every drag-move tick. The version
   // ref de-dupes against re-entrant notifications.
   useEffect(() => {
-    if (!isMac) {
-      return
-    }
-
     return selection.subscribe(() => {
-      if (!selection.hasSelection()) {
-        return
-      }
-
       const state = selection.getState() as { isDragging?: boolean } | null
-
-      if (state?.isDragging) {
-        return
-      }
-
       const version = selection.version()
 
-      if (version === lastCopiedVersionRef.current) {
+      if (
+        !shouldCopyStableSelection({
+          hasSelection: selection.hasSelection(),
+          isDragging: state?.isDragging,
+          version,
+          lastCopiedVersion: lastCopiedVersionRef.current
+        })
+      ) {
         return
       }
 

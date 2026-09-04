@@ -271,9 +271,12 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // Sudo password capture (tools/terminal_tool.py). Blocked on
     // sudo.respond {request_id, password}.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    // #79874: the gateway now includes the command being approved so the
+    // dialog can show what the password authorizes.
+    const command = typeof payload?.command === 'string' ? payload.command : ''
 
     if (requestId) {
-      setSudoRequest({ requestId, sessionId: sessionId ?? null })
+      setSudoRequest({ requestId, command, sessionId: sessionId ?? null })
 
       if (sessionId) {
         updateSessionState(sessionId, state => ({ ...state, needsInput: true }))

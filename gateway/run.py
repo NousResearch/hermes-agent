@@ -1509,6 +1509,29 @@ def _stamp_hygiene_compression_provenance(
         logger.debug(debug_label, exc_info=True)
 
 
+_INTERNAL_ACTIVITY_PROVENANCES = frozenset({
+    "agent.compression",
+    "agent.compression_timeout",
+    "agent.compression_cooldown",
+    "agent.compression_turnhold",
+})
+
+
+def _is_internal_activity_provenance(prov: Any) -> bool:
+    """Return True if the activity provenance marks internal maintenance (e.g. compression).
+
+    Internal maintenance tasks (context compression, rotation, timeouts) must not
+    leak diagnostic descriptions into user-facing heartbeat notifications.
+    """
+    if not prov:
+        return False
+    val = getattr(prov, "value", prov)
+    if not isinstance(val, str):
+        val = str(val)
+    val = val.strip().lower()
+    return val in _INTERNAL_ACTIVITY_PROVENANCES or val.startswith("agent.compression")
+
+
 def _is_fresh_gateway_interruption(
     value: Any,
     *,
@@ -32111,6 +32134,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _exec_ref = _executor_task
                 except NameError:
                     _exec_ref = None
+                if agent_holder[0] is None and (_exec_ref is None or not _exec_ref.done()):
+                    continue
                 if not self._should_emit_long_running_notification(
                     session_key, agent_holder[0], _exec_ref
                 ):
@@ -32138,7 +32163,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _parts.append(
                                 f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
                             )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                        _action = _a.get("current_tool")
+                        if not _action:
+                            _prov = _a.get("last_activity_provenance") or _a.get("provenance")
+                            if not _is_internal_activity_provenance(_prov):
+                                _action = _a.get("last_activity_desc")
                         if _action:
                             _parts.append(str(_action))
                         if _parts:
@@ -32150,6 +32179,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _long_running_mode == "generic"
                     else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 )
+                _prepared_heartbeat = _prepare_gateway_status_message(
+                    source.platform,
+                    "heartbeat",
+                    _heartbeat_text,
+                )
+                if not _prepared_heartbeat:
+                    _fallback_text = (
+                        _generic_status_phrase("status")
+                        if _long_running_mode == "generic"
+                        else f"⏳ Working — {_elapsed_mins} min"
+                    )
+                    _prepared_heartbeat = _prepare_gateway_status_message(
+                        source.platform,
+                        "heartbeat",
+                        _fallback_text,
+                    )
+                if not _prepared_heartbeat:
+                    continue
+                _heartbeat_text = _prepared_heartbeat
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:

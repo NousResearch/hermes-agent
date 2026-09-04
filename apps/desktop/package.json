@@ -161,6 +161,7 @@
     "@rolldown/plugin-babel": "0.2.3",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.6",
     "@types/babel__core": "7.20.5",
     "@types/d3-force": "3.0.10",
     "@types/hast": "3.0.5",

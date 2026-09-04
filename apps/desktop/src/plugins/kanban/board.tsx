@@ -237,7 +237,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
   )
 }
 
-function Card({
+export function Card({
   columns,
   onDelete,
   onMove,
@@ -264,9 +264,10 @@ function Card({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div
+        <button
+          aria-label={`${task.title || task.id}, ${task.id}, ${columnLabel(k, task.status)}`}
           className={cn(
-            'group relative flex cursor-grab flex-col gap-2 rounded-md border border-(--ui-stroke-tertiary) border-l-2 bg-(--ui-bg-elevated) p-2.5',
+            'kanban-task-card group relative flex w-full cursor-grab appearance-none flex-col gap-2 rounded-md border border-(--ui-stroke-tertiary) border-l-2 bg-(--ui-bg-elevated) p-2.5 text-left',
             // Hover matches the provider-picker rows: a quiet primary fill;
             // selected = the theme's focus color (same as a focused input).
             'transition-colors hover:bg-primary/[0.06] active:cursor-grabbing',
@@ -285,6 +286,7 @@ function Card({
             setDragging(true)
           }}
           style={{ '--kanban-tone': meta.tone, borderLeftColor: meta.tone } as CSSProperties}
+          type="button"
         >
           {/* Machine-activity arc: animates ONLY while an agent is actually on
               the card (claimed + working; amber when the heartbeat is gone).
@@ -301,7 +303,7 @@ function Card({
             <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
           )}
           <CardFooter arc={arc} task={task} />
-        </div>
+        </button>
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(task.id)}>

@@ -2526,12 +2526,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _resolved_modified = [
                 _path_to_resolved.get(_p) or _p for _p in _paths_to_check
             ]
+            # Preserve the exact targets resolved by this tool invocation even
+            # on failure. Concurrent terminal calls may change the task CWD
+            # before the agent records the result; re-resolving then could
+            # fingerprint a different file and suppress a real warning.
+            if all(_path_to_resolved.get(_p) for _p in _paths_to_check):
+                result_dict["resolved_paths"] = _resolved_modified
+                result_dict["resolved_path_map"] = {
+                    _p: _path_to_resolved[_p] for _p in _paths_to_check
+                }
+                if len(_resolved_modified) == 1:
+                    result_dict["resolved_path"] = _resolved_modified[0]
             # Refresh stored timestamps for all successfully-patched paths so
             # consecutive edits by this task don't trigger false warnings.
             if not result_dict.get("error"):
                 result_dict["files_modified"] = _resolved_modified
-                if len(_resolved_modified) == 1:
-                    result_dict["resolved_path"] = _resolved_modified[0]
                 _mark_verification_stale(task_id, _resolved_modified, session_id=session_id)
                 for _p in _paths_to_check:
                     _update_read_timestamp(_p, task_id)

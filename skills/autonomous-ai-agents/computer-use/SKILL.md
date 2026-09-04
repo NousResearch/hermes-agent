@@ -1,7 +1,7 @@
 ---
 name: computer-use
 description: "Drive the desktop in the background without stealing focus."
-version: 2.0.0
+version: 2.1.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT
 platforms: [macos, windows, linux]
@@ -129,10 +129,18 @@ Walk it in order:
 3. **Pixel, background.** After `effect:"suspected_noop"` or a structured
    refusal recommends `"px"` (or a `degraded` capture has no elements), click
    by `coordinate=[x,y]` instead of `element`.
-4. **Typed page.** When `escalation.recommended == "page"` and the exact
+4. **Keyboard activation (web content).** When an element click keeps
+   "succeeding" without effect on a web page — React/Polaris tables and ⋮
+   popover triggers are the classic case — focus the element with one click,
+   then activate it with a trusted keystroke: `key(keys="return")` (or
+   `"space"` for checkboxes/switches). Keystrokes are trusted at the DOM
+   level; background clicks on macOS are AX-mediated and apps can ignore
+   them. `key(keys="escape")` closes popovers so you can retry cleanly. Full
+   recipe below in "Web controls that ignore clicks".
+5. **Typed page.** When `escalation.recommended == "page"` and the exact
    browser-page contract below is available, use the namespaced typed route
    before native foreground. This is not the legacy `page` workflow.
-5. **Foreground.** After `effect:"suspected_noop"`,
+6. **Foreground.** After `effect:"suspected_noop"`,
    `code:"background_unavailable"`, or a verified pixel no-op,
    re-issue the SAME action with `delivery_mode="foreground"`. This briefly
    raises the window and restores focus after; pair with `bring_to_front=True`
@@ -190,6 +198,56 @@ Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
 permission UI, OS prompts, native dialogs, extension surfaces, unsupported
 engines, and any typed route that cannot prove exact binding or mutation
 permission. `cua_browser_dialog` covers page JavaScript dialogs only.
+
+## Web controls that ignore clicks (trusted events & aria-hidden duplicates)
+
+Web apps built on React-style synthetic events — Shopify's Polaris admin is
+the canonical example — sometimes ignore background clicks that *report
+success*: the app receives events whose `isTrusted` is false, or none at all,
+and its handler never fires. Three facts make this predictable:
+
+- **Background "pixel" clicks on macOS are AX-mediated, not raw mouse
+  events.** A background coordinate click runs an AX hit-test at the point
+  and AXPresses whatever it finds; it is not a CGEvent mouse click. Controls
+  with custom pointer logic (popover triggers, drag handles, color pickers)
+  can ignore it.
+- **Foreground CGEvent is the only true hardware-level mouse path.** And even
+  certified Chromium on macOS refuses *trusted CDP pointer* input
+  (`browser_input_trust_unavailable`), so some engines have no trusted mouse
+  route at all.
+- **Keystrokes ARE trusted.** CGEvent key synthesis lands in the browser as
+  trusted input, so keyboard activation works where clicks fail. This is also
+  why typing a URL into an address bar always works.
+
+### The click→Enter recipe (validated on Polaris ⋮ menus)
+
+1. `click(element=N)` on the control. If the press no-ops, it still moves
+   focus onto the button.
+2. `key(keys="return")` — the trusted key event fires the app's real handler
+   and the popover opens. (Use `"space"` for checkboxes/switches.)
+3. Re-capture: Polaris popovers appear in the AX tree as `AXMenu` +
+   `AXMenuItem` elements — activate menu items directly with
+   `click(element=N)`.
+4. Close stray popovers with `key(keys="escape")` before retrying; focus
+   stays on the trigger button, so a bare Enter reopens the menu.
+
+### aria-hidden duplicate nodes
+
+Web tables frequently expose **two AX nodes with identical bounds** for one
+visible control (the DOM renders the table twice, one copy `aria-hidden` for
+a11y). cua-driver can resolve the click to the *unlabeled* duplicate — the
+click response shows `AXButton ""` — which is a silent no-op. When the click
+response has an empty label, or a table button ignores clicks, suspect a
+duplicate: re-capture and pick the labeled node, or use the click→Enter
+recipe — focus lands on the visible button either way.
+
+### Certified engines only for the typed route
+
+`cua_browser_state` binds only certified engines: standalone Chrome (macOS /
+Windows / Linux), standalone Edge, and Electron builds. Arc, Dia, Brave,
+Firefox, Safari and similar are rejected — drive their page content with the
+native ladder + keyboard activation, or use the separate headless `browser_*`
+tools when the user's session isn't required.
 
 ### Key shortcuts vary per platform
 
@@ -298,6 +356,10 @@ in your conversation context.
 | Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), typed page route when exact, then foreground. Browser chrome/native prompts remain native. Don't conclude the app is undrivable |
 | Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
+| Web button click "succeeds" but nothing happens (React/Polaris tables, ⋮ menus) | Likely an aria-hidden duplicate (click response shows `AXButton ""`) or an untrusted-event ignore. Use the click→Enter recipe: `click(element=N)` to focus, then `key(keys="return")`. Close popovers with `escape` |
+| `cua_browser_state` refuses the browser (Arc, Dia, Firefox, Safari) | Unsupported engine for the typed route — native ladder + keyboard activation only, or headless `browser_*` tools when the user's session isn't needed |
+| `AXUIElementPerformAction(AXPress) returned -25206` | `kAXErrorFailure` — transient macOS AX failure. Retry once; if it persists, use a coordinate click or the keyboard rung |
+| Clicks land off-target or "the coordinates were right but nothing happened" | Capture scale drifts between captures (observed 1.33× → 1.24× on the same window; Retina scaling varies). Re-capture before every click, prefer `element=N` over pixel math, and validate a pixel target with a probe click that has a visible effect |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
 
 ## When NOT to use `computer_use`

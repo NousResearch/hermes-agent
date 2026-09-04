@@ -93,7 +93,15 @@ def is_autonomous_silence_response(response: Any) -> bool:
         return False
 
     def _is_token(line: str) -> bool:
-        return _canonical_silence_candidate(line) in LIVE_GATEWAY_SILENT_MARKERS
+        canonical = _canonical_silence_candidate(line)
+        if canonical in LIVE_GATEWAY_SILENT_MARKERS:
+            return True
+        # Models intermittently drop the closing bracket of the bracketed
+        # sentinel (e.g. emit "[SILENT" instead of "[SILENT]").  The strict
+        # matcher then misses and the bare marker leaks to the user as a
+        # garbage delivery.  In the autonomous lanes a standalone "[SILENT"
+        # token is never meaningful prose, so accept it here.
+        return canonical == "[SILENT"
 
     # Whole response is exactly a token.
     if _is_token(stripped):
@@ -105,8 +113,13 @@ def is_autonomous_silence_response(response: Any) -> bool:
         return True
     # Bracketed sentinel used as a same-line prefix — the documented pattern
     # "[SILENT] No changes detected".  Restricted to the bracketed form so a
-    # bare word like "Silent retry succeeded" is NOT swallowed.
-    if stripped.upper().startswith("[SILENT]"):
+    # bare word like "Silent retry succeeded" is NOT swallowed.  A dropped
+    # closing bracket ("[SILENT No changes detected") is tolerated for the
+    # same reason as in _is_token above.
+    upper = stripped.upper()
+    if upper.startswith("[SILENT]"):
+        return True
+    if upper == "[SILENT" or upper.startswith("[SILENT ") or upper.startswith("[SILENT\n"):
         return True
     return False
 

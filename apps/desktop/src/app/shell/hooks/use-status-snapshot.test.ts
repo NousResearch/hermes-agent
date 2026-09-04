@@ -1,7 +1,10 @@
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { createElement } from 'react'
+import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getStatus } from '@/hermes'
+import { StorageDegradedBanner } from '@/components/storage-degraded-banner'
+import { $storageStatus } from '@/store/storage-status'
 
 import { deferred } from '../../../test/deferred'
 
@@ -22,6 +25,7 @@ async function flushAsync() {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+  $storageStatus.set('ok')
   vi.mocked(getStatus)
     .mockReset()
     .mockResolvedValue({} as never)
@@ -55,6 +59,21 @@ describe('useStatusSnapshot', () => {
 
     expect(getStatus).toHaveBeenCalledOnce()
     expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+
+  it('publishes degraded storage and renders conservative recovery guidance', async () => {
+    vi.mocked(getStatus).mockResolvedValue({ storage: 'degraded' } as never)
+    const requestGateway = vi.fn(async () => ({ ok: true }) as never) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    expect($storageStatus.get()).toBe('degraded')
+    const { container, getByText } = render(createElement(StorageDegradedBanner))
+    expect(getByText('Session database needs repair')).toBeTruthy()
+    expect(container.textContent).toContain(
+      'hermes sessions recover --source <state.db> --inspect-only'
+    )
   })
 
   it('keeps the last authoritative readiness through a transient RPC failure', async () => {

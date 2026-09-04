@@ -2104,6 +2104,65 @@ _MALFORMED_DB_MARKERS = (
 _repair_attempted_paths: set[str] = set()
 _repair_attempt_lock = threading.Lock()
 
+# A corruption report must outlive the particular SessionDB instance that saw
+# it.  Long-running backends create short-lived SessionDBs for sidebar polls,
+# while the gateway keeps another instance for writes; a process-wide latch
+# makes both report the same safe, explicit state.  It intentionally resets on
+# process restart so a completed offline repair can be adopted without a hidden
+# persistent marker in a database that may itself be unreadable.
+# A present entry means storage is visibly degraded. Its boolean value answers
+# the separate safety question: whether canonical writes must be paused.
+_storage_status_by_path: Dict[str, bool] = {}
+_storage_status_lock = threading.Lock()
+
+
+def _storage_status_key(db_path: Path) -> str:
+    """Return a stable process-local key without requiring the path to exist."""
+    return str(Path(db_path).resolve(strict=False))
+
+
+def get_storage_status(db_path: Path) -> str:
+    """Return ``ok`` or the latched ``degraded`` state for *db_path*."""
+    with _storage_status_lock:
+        return (
+            "degraded"
+            if _storage_status_key(db_path) in _storage_status_by_path
+            else "ok"
+        )
+
+
+def _storage_writes_paused(db_path: Path) -> bool:
+    """Whether an unrecoverable error has paused writes for *db_path*."""
+    with _storage_status_lock:
+        return _storage_status_by_path.get(_storage_status_key(db_path), False)
+
+
+def mark_storage_degraded(
+    db_path: Path, exc: BaseException, *, pause_writes: bool = True
+) -> None:
+    """Expose corruption while pausing writes only when canonical rows are unsafe."""
+    key = _storage_status_key(db_path)
+    with _storage_status_lock:
+        already_degraded = key in _storage_status_by_path
+        writes_were_paused = _storage_status_by_path.get(key, False)
+        _storage_status_by_path[key] = writes_were_paused or pause_writes
+    if not already_degraded:
+        logger.error(
+            "state.db at %s entered storage_degraded%s: %s",
+            db_path,
+            "; persistence is paused until the profile is repaired"
+            if pause_writes
+            else "; canonical writes remain available while FTS is recovered",
+            exc,
+        )
+    elif pause_writes and not writes_were_paused:
+        logger.error(
+            "state.db at %s can no longer safely persist canonical rows; "
+            "persistence is paused until the profile is repaired: %s",
+            db_path,
+            exc,
+        )
+
 
 def is_malformed_db_error(exc: BaseException) -> bool:
     """True for explicit malformed-schema or generic corrupt-image errors.
@@ -4429,6 +4488,17 @@ class StateDbCorruptError(sqlite3.DatabaseError):
     """
 
 
+class StorageDegradedError(StateDbCorruptError):
+    """A peer refused writes after this process quarantined its state.db.
+
+    This is the process-wide counterpart to a handle's
+    :class:`StateDbCorruptError`: the fresh peer did not touch SQLite itself,
+    but persistence is equally terminal until recovery.  Subclassing retains
+    the established transcript-diversion and persistence-classification
+    contract for both refusal paths.
+    """
+
+
 _STATE_DB_CORRUPT_MSG = (
     "FATAL: state.db reported structural corruption (database disk image is "
     "malformed outside the FTS shadow tables) on a live handle; refusing further "
@@ -5865,7 +5935,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
-                yield conn
+                try:
+                    yield conn
+                except sqlite3.DatabaseError as exc:
+                    if is_malformed_db_error(exc):
+                        # A read-only observer should still surface the
+                        # recovery guidance. Do not pause canonical writes:
+                        # a MATCH read can self-heal its derived FTS index.
+                        mark_storage_degraded(
+                            self.db_path, exc, pause_writes=False
+                        )
+                    raise
             finally:
                 returned = False
                 with self._read_conns_lock:
@@ -5892,7 +5972,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # close() ran while a reader was still unwinding (#94736
                 # class) — reopen instead of yielding None to a .execute.
                 self._reopen_after_close_locked(context="read")
-            yield cast(sqlite3.Connection, self._conn)
+            try:
+                yield cast(sqlite3.Connection, self._conn)
+            except sqlite3.DatabaseError as exc:
+                if is_malformed_db_error(exc):
+                    # A read-only observer should still surface the recovery
+                    # guidance without blocking canonical writes.
+                    mark_storage_degraded(self.db_path, exc, pause_writes=False)
+                raise
 
     def _reopen_after_close_locked(self, context: str = "write") -> None:
         """Reopen the writer connection after ``close()`` raced a live caller.
@@ -5981,7 +6068,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # cannot have lost it, so no _init_schema here (no DDL races with
         # sibling processes during teardown).
         self._conn = conn
-
     # ── Core write helper ──
 
     @staticmethod
@@ -6310,6 +6396,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         while True:
             self._raise_if_db_corrupt()
+            if _storage_writes_paused(self.db_path):
+                raise StorageDegradedError(
+                    "session database is degraded after a corruption error; "
+                    "persistence is paused until the profile is repaired"
+                )
             self._raise_if_db_replaced()
             fn_started = False
             try:
@@ -6411,11 +6502,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # then retry the canonical write. The existing stale-open and
                 # explicit repair paths retain rebuild ownership.
                 if self._enter_fts_fail_open(exc):
+                    # FTS is derived from canonical messages. Its fail-open
+                    # mode is degraded and must be surfaced, but deliberately
+                    # keeps canonical persistence available.
+                    mark_storage_degraded(self.db_path, exc, pause_writes=False)
                     continue
                 # Bare SQLITE_CORRUPT / NOTADB that survived the replaced-file
                 # check and the FTS-scoped fail-open is structural damage:
                 # quarantine the handle (see StateDbCorruptError).
                 if self._is_structural_corruption_error(exc):
+                    mark_storage_degraded(self.db_path, exc)
                     self._halt_db_corrupt(exc)
                 raise
             except sqlite3.Error as exc:

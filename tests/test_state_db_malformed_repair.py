@@ -25,6 +25,10 @@ import pytest
 import hermes_state
 from hermes_state import (
     SessionDB,
+    StateDbCorruptError,
+    StorageDegradedError,
+    classify_persistence_error,
+    get_storage_status,
     is_malformed_db_error,
     repair_state_db_schema,
 )
@@ -138,6 +142,64 @@ def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):
     assert calls["n"] == 1  # repair attempted only once across both opens
 
     monkeypatch.setattr(hermes_state, "repair_state_db_schema", real_repair)
+
+
+def test_unrepaired_malformed_write_latches_storage_and_pauses_later_writes(
+    tmp_path, monkeypatch
+):
+    """A structural failure must not become a write retry storm."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    try:
+        db.create_session("degraded", source="test")
+        monkeypatch.setattr(db, "_enter_fts_fail_open", lambda exc: False)
+
+        with pytest.raises(StateDbCorruptError):
+            db._execute_write(
+                lambda conn: (_ for _ in ()).throw(
+                    sqlite3.DatabaseError("database disk image is malformed")
+                )
+            )
+
+        assert get_storage_status(db_path) == "degraded"
+
+        # The corrupt handle retains main's stronger per-instance quarantine,
+        # while a fresh handle for the same profile sees this PR's process-wide
+        # pause latch before it can write.
+        with pytest.raises(StateDbCorruptError):
+            db.append_message("degraded", role="user", content="must not write")
+
+        peer = SessionDB(db_path=db_path)
+        try:
+            with pytest.raises(StorageDegradedError) as refusal:
+                peer.append_message("degraded", role="user", content="must not write")
+            # A fresh peer must retain the terminal-corruption contract used
+            # by transcript owners: no SQLite retry and durable diversion.
+            assert isinstance(refusal.value, StateDbCorruptError)
+            assert classify_persistence_error(refusal.value) == "corrupt"
+        finally:
+            peer.close()
+    finally:
+        db.close()
+
+
+def test_malformed_read_surfaces_degraded_storage_without_pausing_writes(tmp_path):
+    """Read-only corruption must reach the UI without blocking FTS self-heal."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    try:
+        db.create_session("read-degraded", source="test")
+
+        with pytest.raises(sqlite3.DatabaseError):
+            with db._read_ctx():
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+        assert get_storage_status(db_path) == "degraded"
+        assert db.append_message(
+            "read-degraded", role="user", content="canonical write survives"
+        ) is not None
+    finally:
+        db.close()
 
 
 
@@ -464,6 +526,7 @@ def _lock_held_by_other_process(db_path: Path, hold_seconds: float = 30.0):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+@pytest.mark.live_system_guard_bypass  # cleanup terminates the lock-holder child
 def test_repair_skips_surgery_while_another_process_holds_the_lock(
     tmp_path, monkeypatch
 ):
@@ -485,6 +548,7 @@ def test_repair_skips_surgery_while_another_process_holds_the_lock(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+@pytest.mark.live_system_guard_bypass  # cleanup terminates the lock-holder child
 def test_repair_reports_success_when_the_holder_already_healed_the_db(
     tmp_path, monkeypatch
 ):

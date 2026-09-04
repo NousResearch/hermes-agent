@@ -270,6 +270,24 @@ async def test_fallback_notice_is_never_reported_as_a_file_send(consumer):
 
 
 @pytest.mark.asyncio
+async def test_unmarked_instance_document_override_never_receives_bytes(consumer):
+    state, runner, adapter = consumer
+    item = publish(state)
+    calls = []
+
+    async def unmarked_override(**kwargs):
+        calls.append(kwargs)
+        return SendResult(success=True, message_id="unexpected")
+
+    adapter.send_document = unmarked_override
+    code = selection_digest(state.room, item)[:8]
+    result = await runner._handle_rooms_command(event(f"/group 1 file {code}"))
+
+    assert "isn't available" in result
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_native_send_requires_an_explicit_send_again(consumer):
     state, runner, adapter = consumer
     publish(state)

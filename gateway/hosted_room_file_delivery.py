@@ -40,12 +40,18 @@ class Document:
     data: bytes
 
 
+def _native_document_sender(adapter):
+    sender = getattr(adapter, "send_document", None)
+    implementation = getattr(sender, "__func__", sender)
+    if sender is None or implementation is BasePlatformAdapter.send_document:
+        raise FileDeliveryError("unsupported")
+    if not getattr(implementation, "strict_native_document_guard", False):
+        raise FileDeliveryError("unsupported")
+    return sender
+
+
 def native_document_limit(adapter, source):
-    method = getattr(type(adapter), "send_document", None)
-    if method is None or method is BasePlatformAdapter.send_document:
-        raise FileDeliveryError("unsupported")
-    if not getattr(method, "strict_native_document_guard", False):
-        raise FileDeliveryError("unsupported")
+    _native_document_sender(adapter)
     platform = str(getattr(source.platform, "value", source.platform))
     if platform not in {
         "telegram",
@@ -264,6 +270,7 @@ async def deliver_document(
         await recheck()
         if native_document_limit(adapter, source) < len(document.data):
             raise FileDeliveryError("too_large")
+        sender = _native_document_sender(adapter)
         await asyncio.to_thread(mark_delivery, db_path, key, "sending")
         await recheck()
         sending = True
@@ -273,7 +280,7 @@ async def deliver_document(
             reply_to=reply_to,
             metadata={**metadata, "group_file_delivery_id": key},
         )
-        parameters = inspect.signature(adapter.send_document).parameters
+        parameters = inspect.signature(sender).parameters
         kwargs[
             "filename"
             if "filename" in parameters and "file_name" not in parameters
@@ -281,7 +288,7 @@ async def deliver_document(
         ] = path.name
         with require_native_document():
             result = await asyncio.wait_for(
-                adapter.send_document(**kwargs), SEND_SECONDS
+                sender(**kwargs), SEND_SECONDS
             )
         if getattr(result, "success", False) is not True:
             await asyncio.to_thread(mark_delivery, db_path, key, "unknown")

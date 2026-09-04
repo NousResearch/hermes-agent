@@ -1500,6 +1500,8 @@ platform_toolsets:
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#     timeout: 300          # read timeout in seconds; long clips synthesize server-side before the first byte
+#     retry: true           # one bounded retry on read timeout / 429 / 5xx; false fails fast
 #   xai:
 #     voice_id: "eve"       # built-in or custom voice ID from xAI Console
 #     language: "en"        # BCP-47 code ("en", "pt-BR") or "auto"

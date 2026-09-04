@@ -252,6 +252,17 @@ DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
+# Gemini TTS is a single non-streaming ``generateContent`` call: the whole
+# clip is synthesized server-side before the first byte comes back, so wall
+# time scales with the length of the *audio*, not with the request. ~3-4k
+# characters routinely runs past a 60s read timeout even though the
+# generation itself succeeds. Override with ``tts.gemini.timeout``.
+DEFAULT_GEMINI_TTS_TIMEOUT_SECONDS = 300
+# One bounded retry (2 attempts total) for transient failures only. Never
+# unbounded: a Gemini TTS call is expensive and the tool call is synchronous.
+GEMINI_TTS_MAX_ATTEMPTS = 2
+GEMINI_TTS_RETRY_BACKOFF_SECONDS = 2.0
+GEMINI_TTS_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 # Base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 # PCM output specs for Gemini TTS (fixed by the API)
@@ -2594,6 +2605,38 @@ def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
         return text
 
 
+def _resolve_gemini_tts_timeout(gemini_config: Dict[str, Any]) -> float:
+    """Return the Gemini TTS read timeout, falling back when invalid.
+
+    Mirrors ``_get_command_tts_timeout``: accept ``timeout`` or
+    ``timeout_seconds``, reject non-numeric and non-positive values.
+    """
+    if not isinstance(gemini_config, dict):
+        return float(DEFAULT_GEMINI_TTS_TIMEOUT_SECONDS)
+    raw = gemini_config.get(
+        "timeout",
+        gemini_config.get("timeout_seconds", DEFAULT_GEMINI_TTS_TIMEOUT_SECONDS),
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_GEMINI_TTS_TIMEOUT_SECONDS)
+    if value <= 0:
+        return float(DEFAULT_GEMINI_TTS_TIMEOUT_SECONDS)
+    return value
+
+
+def _gemini_tts_max_attempts(gemini_config: Dict[str, Any]) -> int:
+    """Return the attempt budget: the bounded default, or 1 when opted out."""
+    if not isinstance(gemini_config, dict):
+        return GEMINI_TTS_MAX_ATTEMPTS
+    if "retry" not in gemini_config:
+        return GEMINI_TTS_MAX_ATTEMPTS
+    return GEMINI_TTS_MAX_ATTEMPTS if _config_bool(
+        gemini_config.get("retry"), default=True
+    ) else 1
+
+
 def _compose_gemini_tts_prompt(
     text: str,
     gemini_config: Dict[str, Any],
@@ -2706,14 +2749,47 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
 
     endpoint = f"{base_url}/models/{model}:generateContent"
-    response = requests.post(
-        endpoint,
-        params={"key": api_key},
-        headers=headers,
-        json=payload,
-        timeout=60,
-        stream=True,
-    )
+    timeout = _resolve_gemini_tts_timeout(gemini_config)
+    max_attempts = _gemini_tts_max_attempts(gemini_config)
+
+    # Bounded transient-failure retry: read timeouts, 429 and 5xx only.
+    # Client errors (bad key, bad voice, bad model) fail fast — retrying
+    # those just burns another full synthesis wait.
+    response = None
+    for attempt in range(1, max_attempts + 1):
+        last_attempt = attempt == max_attempts
+        try:
+            response = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+                stream=True,
+            )
+        except requests.exceptions.Timeout as exc:
+            if last_attempt:
+                raise
+            logger.warning(
+                "Gemini TTS timed out after %.0fs (attempt %d/%d), retrying: %s",
+                timeout, attempt, max_attempts, exc,
+            )
+            time.sleep(GEMINI_TTS_RETRY_BACKOFF_SECONDS * attempt)
+            continue
+
+        if response.status_code in GEMINI_TTS_RETRY_STATUS_CODES and not last_attempt:
+            logger.warning(
+                "Gemini TTS returned HTTP %d (attempt %d/%d), retrying",
+                response.status_code, attempt, max_attempts,
+            )
+            try:
+                response.close()
+            except Exception:
+                pass
+            time.sleep(GEMINI_TTS_RETRY_BACKOFF_SECONDS * attempt)
+            continue
+        break
+
     if response.status_code != 200:
         # Surface the API error message when present
         raw_body = _read_tts_response_bytes(response, label="Gemini TTS")

@@ -1552,6 +1552,13 @@ class APIServerAdapter(BasePlatformAdapter):
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False
         )
+        # client_tools: enable the client-tools bridge on /v1/chat/completions
+        # (Raycast AI Extensions, and any OpenAI-compatible client that ships
+        # executable tool schemas).  Default on; no behavior change for
+        # requests that carry no ``tools`` array.
+        self._client_tools_enabled: bool = _coerce_request_bool(
+            extra.get("client_tools"), default=True
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -5207,13 +5214,63 @@ class APIServerAdapter(BasePlatformAdapter):
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
                 conversation_messages.append({"role": role, "content": content})
+            elif role == "tool" and self._client_tools_enabled:
+                # Client executed one of our tool_calls last turn (OpenAI
+                # protocol).  Preserved verbatim; the client-tools bridge
+                # folds assistant+tool pairs below.  Ignored (and dropped
+                # here) when the bridge is off, matching legacy behavior.
+                conversation_messages.append({
+                    "role": "tool",
+                    "content": _normalize_chat_content(raw_content),
+                    "tool_call_id": str(msg.get("tool_call_id") or ""),
+                })
+            elif role == "assistant" and isinstance(raw_content, dict) and self._client_tools_enabled:
+                pass  # unreachable shape; kept for clarity
+
+        # Client-tools bridge: schemas in, tool_calls out, results folded back.
+        # All bridge logic lives in api_server_client_tools; when the request
+        # carries no ``tools`` array this is None and every path below is the
+        # legacy one, byte-for-byte.
+        client_bridge = None
+        if self._client_tools_enabled and isinstance(body.get("tools"), list) and body["tools"]:
+            from gateway.platforms.api_server_client_tools import (
+                ClientToolsBridge,
+                fold_tool_result,
+            )
+            client_bridge = ClientToolsBridge(body["tools"], body.get("tool_choice"))
+            if client_bridge.suppressed:
+                client_bridge = None  # all schemas invalid -> legacy path
+            else:
+                folded_messages, folded_ok = fold_tool_result(messages, client_bridge)
+                if folded_ok:
+                    # Re-run extraction over the folded transcript: last user
+                    # message becomes the continuation text; the trailing
+                    # assistant/tool pair is replaced by it.
+                    rebuilt: List[Dict[str, str]] = []
+                    system_prompt_fb = None
+                    for m in folded_messages:
+                        if m.get("role") == "system":
+                            c = _normalize_chat_content(m.get("content", ""))
+                            system_prompt_fb = c if system_prompt_fb is None else system_prompt_fb + "\n" + c
+                        else:
+                            rebuilt.append({"role": m.get("role"), "content": m.get("content", "")})
+                    conversation_messages = rebuilt
+                    if system_prompt_fb is not None:
+                        system_prompt = system_prompt_fb
 
         # Extract the last user message as the primary input
         user_message: Any = ""
         history = []
         if conversation_messages:
-            user_message = conversation_messages[-1].get("content", "")
-            history = conversation_messages[:-1]
+            last = conversation_messages[-1]
+            if last.get("role") == "user":
+                user_message = last.get("content", "")
+                history = conversation_messages[:-1]
+            else:
+                # Degenerate transcript (e.g. only a tool result survived):
+                # treat the last message as the input regardless of role.
+                user_message = last.get("content", "")
+                history = conversation_messages[:-1]
 
         if not _content_has_visible_payload(user_message):
             return web.json_response(
@@ -5385,6 +5442,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # The structured callbacks are strictly richer (they carry
             # the tool_call id), so they own the chat-completions SSE channel.
             agent_ref = [None]
+            if client_bridge is not None:
+                system_prompt = (system_prompt + "\n\n" if system_prompt else "") + client_bridge.system_contract()
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
@@ -5406,9 +5465,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                client_bridge=client_bridge,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
+        if client_bridge is not None and not stream:
+            system_prompt = (system_prompt + "\n\n" if system_prompt else "") + client_bridge.system_contract()
+
         async def _compute_completion():
             return await self._run_agent(
                 user_message=user_message,
@@ -5469,6 +5532,18 @@ class APIServerAdapter(BasePlatformAdapter):
         raw_err_msg = result.get("error")
         err_msg = _redact_api_error_text(raw_err_msg) if raw_err_msg else raw_err_msg
 
+        # Client-tools bridge: convert <tool_call> decisions into a proper
+        # OpenAI tool_calls response so the CLIENT executes them.
+        client_tool_calls = None
+        if client_bridge is not None and not is_failed and final_response:
+            try:
+                client_tool_calls, residual = client_bridge.extract_calls(final_response)
+                if client_tool_calls:
+                    final_response = residual or None
+            except Exception:
+                logger.exception("client-tools bridge: extraction failed on final text")
+                client_tool_calls = None
+
         # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
         # for normal completion, and downstream SDKs accept "error" / custom
         # codes. See issue #22496.
@@ -5506,6 +5581,8 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+        if client_tool_calls:
+            finish_reason = "tool_calls"
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -5517,6 +5594,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "message": {
                         "role": "assistant",
                         "content": final_response,
+                        **({"tool_calls": client_tool_calls} if client_tool_calls else {}),
                     },
                     "finish_reason": finish_reason,
                 }
@@ -5545,7 +5623,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None,
+        gateway_session_key: str = None, client_bridge=None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -5573,6 +5651,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             last_activity = time.monotonic()
+
+            # Client-tools bridge state (active only when the request carried tools)
+            bridge = client_bridge
+            _streamed_deltas: list = []
+            _emitted_len = 0
 
             # Role chunk
             role_chunk = {
@@ -5632,6 +5715,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is None:  # End of stream sentinel
                     break
 
+                if bridge is not None and isinstance(delta, str):
+                    _streamed_deltas.append(delta)
+                    # Suppress raw <tool_call> blocks from live content: hold
+                    # back the tail when a partial opener may be in flight.
+                    _pending = "".join(_streamed_deltas)
+                    if "<tool_call>" in _pending:
+                        safe = _pending.rsplit("<tool_call>", 1)[0]
+                    elif "</tool_call>" in _pending:
+                        safe = _pending.rsplit("</tool_call>", 1)[0]
+                    else:
+                        safe = _pending
+                    if len(safe) > _emitted_len:
+                        await _emit(safe[_emitted_len:])
+                        _emitted_len = len(safe)
+                    continue
+
                 last_activity = await _emit(delta)
 
             # Get usage from completed agent. The agent can fail two ways
@@ -5671,6 +5770,52 @@ class APIServerAdapter(BasePlatformAdapter):
                 finish_reason = "error"
             else:
                 finish_reason = "stop"
+
+            # Client-tools bridge: the deltas already streamed may contain raw
+            # <tool_call> blocks.  When the accumulated text holds valid calls,
+            # emit protocol tool_calls deltas instead and finish as tool_calls.
+            bridge_calls = None
+            if bridge is not None and not agent_error and not is_failed:
+                try:
+                    accumulated = "".join(
+                        d for d in _streamed_deltas if isinstance(d, str)
+                    )
+                    bridge_calls, residual = bridge.extract_calls(accumulated)
+                except Exception:
+                    logger.exception("client-tools bridge: stream extraction failed")
+                    bridge_calls = None
+            if bridge_calls:
+                finish_reason = "tool_calls"
+            elif bridge is not None:
+                accumulated = "".join(d for d in _streamed_deltas if isinstance(d, str))
+                if len(accumulated) > _emitted_len:
+                    await _emit(accumulated[_emitted_len:])
+                    _emitted_len = len(accumulated)
+
+            # Emit protocol tool_calls deltas (OpenAI streaming shape) when the
+            # agent decided to call client tools.
+            if bridge_calls:
+                for idx_c, call in enumerate(bridge_calls):
+                    tc_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [{
+                                    "index": idx_c,
+                                    "id": call["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": call["function"]["name"],
+                                        "arguments": call["function"]["arguments"],
+                                    },
+                                }],
+                            },
+                            "finish_reason": None,
+                        }],
+                    }
+                    await response.write(_sse_frame(tc_chunk))
 
             # Finish chunk
             finish_chunk = {

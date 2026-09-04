@@ -274,7 +274,7 @@ def _corrupt_fts_index_data(db_path: Path) -> None:
 
 
 def test_fts_write_corruption_detected_by_write_probe(tmp_path):
-    """_db_opens_cleanly's rolled-back write probe flags FTS write corruption."""
+    """_db_opens_cleanly's committed write probe flags FTS write corruption."""
     from hermes_state import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
@@ -322,6 +322,137 @@ def test_fts_write_corruption_repaired_in_place(tmp_path):
         db.close()
 
 
+# ── FTS trigram idx commit-time constraint (#100227) ─────────────────────
+# A readable state.db can reject every *committed* message write with
+# IntegrityError("constraint failed") when messages_fts_trigram_idx already
+# holds the (segid, term) key FTS5 will insert at COMMIT. INSERT itself
+# succeeds; ROLLBACK therefore never sees the failure. The old single-string
+# rolled-back probe reported healthy, hermes doctor / sessions repair
+# --check-only printed "no repair needed", and repair_state_db_schema
+# short-circuited as already_healthy.
+
+
+def _poison_trigram_future_idx_segments(db_path: Path, *, upto: int = 256) -> int:
+    """Pre-insert directory rows for future FTS5 trigram segment ids.
+
+    FTS5 ``%_idx`` is ``PRIMARY KEY (segid, term)``. Occupying the empty-term
+    directory slot for segments the next COMMIT will allocate makes the
+    engine's ``INSERT INTO messages_fts_trigram_idx(segid, term, pgno)``
+    fail with SQLITE_CONSTRAINT — the on-disk failure class behind
+    ``append_message failed: constraint failed``. Returns how many rows
+    were planted.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        existing = {
+            row[0]
+            for row in conn.execute("SELECT segid FROM messages_fts_trigram_idx")
+        }
+        planted = 0
+        for seg in range(1, upto):
+            if seg in existing:
+                continue
+            conn.execute(
+                "INSERT INTO messages_fts_trigram_idx(segid, term, pgno) "
+                "VALUES (?, ?, ?)",
+                (seg, b"", 2),
+            )
+            planted += 1
+        return planted
+    finally:
+        conn.close()
+
+
+def test_trigram_idx_constraint_missed_by_rollback_seen_on_commit(tmp_path):
+    """Document the real failure shape: INSERT ok, COMMIT IntegrityError."""
+    db_path = tmp_path / "state.db"
+    sid = _build_healthy_db(db_path)
+    planted = _poison_trigram_future_idx_segments(db_path)
+    assert planted > 0
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            (sid, "user", "_fts_health_probe", 0),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="constraint failed"):
+            conn.execute("COMMIT")
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+    finally:
+        conn.close()
+
+
+def test_trigram_idx_commit_corruption_detected_by_write_probe(tmp_path):
+    """_db_opens_cleanly flags idx PK collisions that only fire on COMMIT."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    assert _db_opens_cleanly(db_path) is None
+
+    _poison_trigram_future_idx_segments(db_path)
+
+    reason = _db_opens_cleanly(db_path)
+    assert reason is not None
+    assert "fts write probe failed" in reason
+    assert "constraint failed" in reason
+
+
+def test_trigram_idx_commit_corruption_repaired(tmp_path):
+    """repair_state_db_schema no longer short-circuits as already_healthy."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    sid = _build_healthy_db(db_path)
+    _poison_trigram_future_idx_segments(db_path)
+
+    report = repair_state_db_schema(db_path, backup=False)
+    assert report["repaired"] is True
+    assert report["strategy"] != "already_healthy"
+    assert _db_opens_cleanly(db_path) is None
+
+    db = SessionDB(db_path=db_path)
+    try:
+        db.append_message(sid, role="user", content="post repair pizza message")
+        n = db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        assert n == 11
+    finally:
+        db.close()
+
+
+def test_healthy_db_committed_fts_write_probe_leaves_no_residue(tmp_path):
+    """Committed probe rows are deleted; a healthy DB is unchanged."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    before = sqlite3.connect(str(db_path))
+    try:
+        sessions_before = before.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        messages_before = before.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        before.close()
+
+    assert _db_opens_cleanly(db_path) is None
+
+    after = sqlite3.connect(str(db_path))
+    try:
+        assert after.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == sessions_before
+        assert after.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == messages_before
+        leftover = after.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id LIKE '_hermes_fts_health_probe_%'"
+        ).fetchone()[0]
+    finally:
+        after.close()
+    assert leftover == 0
 
 
 def _corrupt_btree_index(db_path: Path, index_name: str) -> None:

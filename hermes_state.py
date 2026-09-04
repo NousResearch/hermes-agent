@@ -3482,11 +3482,19 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
     malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
-    ``sessions`` read, and finally a rolled-back ``messages`` write so that
-    FTS5 index corruption — which leaves base-table reads and
+    ``sessions`` read, and finally a committed-then-deleted ``messages``
+    write so that FTS5 index corruption — which leaves base-table reads and
     ``integrity_check`` passing while every ``INSERT INTO messages`` fails
     through the FTS triggers — is reported as unhealthy rather than slipping
     past as a false "ok" (#50502).
+
+    The write probe must COMMIT. FTS5 materializes
+    ``INSERT INTO %_idx(segid, term, pgno)`` at transaction end, so a
+    rolled-back INSERT never raises the ``IntegrityError: constraint failed``
+    that a real ``append_message`` (BEGIN + INSERT + COMMIT) hits when the
+    trigram index has a segment-key collision. A single fixed probe string
+    is also insufficient: the collision can be term/segment dependent, so
+    several distinct contents are driven through one committed transaction.
     """
     conn = _connect_repair_durable(db_path)
     try:
@@ -3561,25 +3569,71 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 # while reads of the FTS5 table itself parse fine.
                 return f"fts5 read probe failed on {fts_table}: {exc}"
 
-        # FTS write probe: drive a row through the messages_fts* triggers in a
-        # transaction that is always rolled back, so a corrupt FTS index that
-        # rejects writes is caught even though reads look healthy. The probe is
-        # best-effort — if the messages/sessions tables don't exist yet (brand
-        # new file mid-init) the OperationalError is treated as "not yet a
-        # populated DB", not corruption.
+        # FTS shadow-table consistency: a lagging trigram docsize vs the
+        # non-tool messages the view indexes is the corroborating signal
+        # on live DBs whose idx PK collision is segment-dependent. Skip
+        # while a deferred rebuild is in flight (docsize is expected to
+        # lag the base table then). Missing tables are not corruption.
+        try:
+            pending = conn.execute(
+                "SELECT 1 FROM state_meta WHERE key IN "
+                "('fts_rebuild_high_water', 'fts_cjk_rebuild_high_water') "
+                "LIMIT 1"
+            ).fetchone()
+            if pending is None:
+                expected = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE role <> 'tool'"
+                ).fetchone()[0]
+                actual = conn.execute(
+                    "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+                ).fetchone()[0]
+                if expected != actual:
+                    return (
+                        "fts5 trigram docsize mismatch: "
+                        f"docsize={actual} messages={expected}"
+                    )
+        except sqlite3.OperationalError:
+            pass
+
+        # FTS write probe: drive several rows through the messages_fts*
+        # triggers and COMMIT so FTS5 flushes ``%_idx``. A corrupt trigram
+        # index that rejects the idx insert with SQLITE_CONSTRAINT is
+        # invisible to a rolled-back INSERT — the constraint fires at
+        # commit, which is also how ``SessionDB.append_message`` fails.
+        # Best-effort: missing tables (brand-new file mid-init) are
+        # treated as "not yet a populated DB", not corruption.
         probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
+        probe_variants = (
+            "_fts_health_probe",
+            "the quick brown fox jumps over the lazy dog and then the team "
+            "said it was one of those things for the project",
+            f"hermes fts health probe unique token {time.time_ns()}",
+            "abcdefghijklmnopqrstuvwxyz 0123456789",
+        )
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
                 (probe_session_id, "_health_probe", time.time()),
             )
-            conn.execute(
-                "INSERT INTO messages (session_id, role, content, timestamp) "
-                "VALUES (?, ?, ?, ?)",
-                (probe_session_id, "user", "_fts_health_probe", time.time()),
-            )
-            conn.execute("ROLLBACK")
+            probe_ts = time.time()
+            for probe_content in probe_variants:
+                conn.execute(
+                    "INSERT INTO messages (session_id, role, content, timestamp) "
+                    "VALUES (?, ?, ?, ?)",
+                    (probe_session_id, "user", probe_content, probe_ts),
+                )
+            conn.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            # PRIMARY KEY (segid, term) collision in messages_fts_trigram_idx
+            # surfaces here, on COMMIT, as IntegrityError — not
+            # OperationalError. Roll back any leftover txn and label the
+            # reason so doctor / sessions repair point at the FTS index.
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            return f"fts write probe failed: {exc}"
         except sqlite3.OperationalError as exc:
             # Missing tables / FTS disabled — not the corruption class we probe.
             try:
@@ -3596,6 +3650,21 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 # a tokenizer-less one self-heals by dropping the triggers.
                 return None
             return str(exc)
+        else:
+            # Drop the committed probe rows so a healthy DB is unchanged.
+            # foreign_keys is not guaranteed ON on this connection, so
+            # delete messages explicitly rather than relying on CASCADE.
+            try:
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?",
+                    (probe_session_id,),
+                )
+                conn.execute(
+                    "DELETE FROM sessions WHERE id = ?",
+                    (probe_session_id,),
+                )
+            except sqlite3.Error:
+                pass
         return None
     except sqlite3.DatabaseError as exc:
         return str(exc)

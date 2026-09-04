@@ -716,6 +716,36 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",
             "language": "",
+            # Session retitling — regenerate the title from the last N turns of
+            # conversation instead of only from the opening message. The initial
+            # two-stage titler is limited to the first user message (see the
+            # module docstring in agent/title_generator.py), so long sessions
+            # that drift off their opener carry a stale name until manually
+            # renamed. This block enables an opt-in one-shot auto-retitle at a
+            # configurable turn count, plus manual triggers (`/retitle` slash
+            # command and `hermes sessions retitle <id>` CLI). DB-only by
+            # default: the session title updates but platform names (Telegram
+            # topic, Discord thread) are left untouched unless
+            # ``touch_platform_names`` is set. Related upstream issue: #82655.
+            "retitle": {
+                "enabled": True,
+                "auto_at_turn": 10,  # fire once when user-msg count hits this; 0 disables
+                "turns_window": 10,  # number of recent turns to feed into the retitle call
+                "slash_command": True,  # register /retitle
+                "cli_command": True,  # register `hermes sessions retitle`
+                "touch_platform_names": False,  # if true, also rename Telegram/Discord names
+                # Optional retitle-specific model override. Empty = inherit
+                # from parent title_generation. Resolution: (1) explicit
+                # retitle.provider wins; (2) else pinned parent inherited;
+                # (3) else auto → force prefer_fast_model=True.
+                "provider": "",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+                "timeout": 30,
+                "max_concurrency": 2,
+                "prefer_fast_model": None,  # None = auto-force-true when inheriting auto
+            },
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),

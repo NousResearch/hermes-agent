@@ -130,9 +130,170 @@ class HostedRoomService:
         action: Mapping[str, Any] | None,
     ) -> None:
         key = (room_id, member_id)
+        is_peer = key in self.peer_routes
         if action is None:
+            if not is_peer:
+                driver.clear_member_approval_requests(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                )
+            with self._policy_lock:
+                self._pending_actions.pop(key, None)
+            return
+
+        durable_action = {**action, "member_id": member_id}
+        if is_peer:
+            # Peer approvals remain scoped to their remote receipt and are
+            # intentionally excluded from the local task foreign key table.
+            with self._policy_lock:
+                self._pending_actions[key] = durable_action
+            return
+
+        task_id = str(action.get("task_id") or "")
+        execution_generation = int(action.get("execution_generation") or 0)
+        request_id = str(action.get("request_id") or "")
+        task = next(
+            (
+                candidate
+                for candidate in driver.list_tasks(
+                    self.db_path,
+                    room_id=room_id,
+                )
+                if candidate["identity"].task_id == task_id
+                and int(candidate.get("execution_generation") or 0)
+                == execution_generation
+            ),
+            None,
+        )
+        if task is None:
+            raise driver.InvalidTaskTransitionError(
+                "approval request task is unavailable"
+            )
+        identity = task["identity"]
+
+        existing = next(
+            (
+                request
+                for request in driver.list_pending_approval_requests(
+                    self.db_path,
+                    room_id=room_id,
+                )
+                if request["identity"] == identity
+                and int(request["execution_generation"])
+                == execution_generation
+                and request["member_id"] == member_id
+                and request["request_id"] == request_id
+            ),
+            None,
+        )
+        if existing is None:
+            # A genuinely newer request retires the previous member-scoped
+            # callback. Re-observing the same request must preserve any durable
+            # dashboard decision until the session owner acknowledges it.
             driver.clear_member_approval_requests(
                 self.db_path,
+                room_id=room_id,
+                member_id=member_id,
+            )
+
+        if existing is None:
+            request = driver.publish_approval_request(
+                self.db_path,
+                identity,
+                execution_generation=execution_generation,
+                member_id=member_id,
+                request_id=request_id,
+                session_id=str(action.get("session_id") or ""),
+                action=durable_action,
+                clock=time.time,
+            )
+        else:
+            # The request id is immutable. A later observation can include
+            # richer transient metadata, but it must not mutate the durable
+            # approval row or erase the dashboard decision already recorded.
+            request = existing
+        with self._policy_lock:
+            self._pending_actions[key] = durable_action
+        choice = request.get("choice")
+        if choice not in {"once", "deny"}:
+            return
+        result = self.rpc.approve(
+            session_id=str(request["session_id"]),
+            request_id=str(request["request_id"]),
+            choice=str(choice),
+        )
+        if not isinstance(result, Mapping) or not bool(result.get("resolved")):
+            return
+        if not driver.mark_approval_consumed(
+            self.db_path,
+            identity,
+            execution_generation=int(request["execution_generation"]),
+            member_id=member_id,
+            request_id=str(request["request_id"]),
+            choice=str(choice),
+            clock=time.time,
+        ):
+            raise RuntimeError(
+                "room approval decision changed before acknowledgement"
+            )
+        with self._policy_lock:
+            self._pending_actions.pop(key, None)
+        self.runtime.wakeup()
+
+    def _rotate_route_grant(
+        self,
+        room_id: str,
+        member_id: str,
+        grant: str,
+        catalog: GatewayRoomCatalog | None = None,
+    ) -> None:
+        """Persist a target-refreshed scoped grant before publishing it live."""
+        key = (room_id, member_id)
+        route = self.peer_routes.get(key)
+        if route is None:
+            raise RuntimeError("peer room route is unavailable")
+        stored = next(
+            (
+                link
+                for link in hosted_room_links.load_room_links(self.db_path)
+                if (link.room_id, link.member_id) == key
+            ),
+            None,
+        )
+        if stored is None:
+            raise RuntimeError("peer room route cannot be renewed before persistence")
+        effective_catalog = catalog or stored.catalog
+        if catalog is not None and (
+            catalog.installation_id != route.target_install_id
+            or catalog.execution_policy.target_profile != route.target_profile
+            or PROTOCOL_VERSION not in catalog.protocol_versions
+            or "direct" not in catalog.link_modes
+            or not catalog.text
+            or catalog.execution_policy.policy_digest
+            != route.execution_policy_digest
+        ):
+            self._set_route_status(room_id, member_id, "needs_reauthorization")
+            raise RuntimeError(
+                "peer room execution policy changed; reauthorization is required"
+            )
+        rotated_route = replace(
+            route,
+            grant=grant,
+            capability_digest=(
+                catalog.catalog_digest
+                if catalog is not None
+                else route.capability_digest
+            ),
+            execution_policy_digest=(
+                catalog.execution_policy.policy_digest
+                if catalog is not None
+                else route.execution_policy_digest
+            ),
+        )
+        hosted_room_links.save_room_link(
+            self.db_path,
+            hosted_room_links.make_stored_link(
                 room_id=room_id,
                 member_id=member_id,
             )
@@ -730,43 +891,66 @@ class HostedRoomService:
             )
 
     def approve_room_task(
-        self,
-        room_id: str,
-        *,
-        member_id: str,
-        task_id: str,
-        execution_generation: int,
-        choice: str,
-        request_id: str | None = None,
+        self, room_id: str, *, member_id: str, task_id: str,
+        execution_generation: int, choice: str, request_id: str | None = None,
     ) -> Mapping[str, Any]:
-        """Resolve one exact local approval and wake room observation."""
-
+        """Resolve one exact local or peer approval and wake observation."""
         requested_approval_id = str(request_id or "")
-        pending = next(
-            (
-                request
-                for request in driver.list_pending_approval_requests(
-                    self.db_path,
-                    room_id=room_id,
-                )
-                if request["identity"].task_id == task_id
-                and request["execution_generation"] == execution_generation
-                and request["member_id"] == member_id
-                and request["request_id"] == requested_approval_id
-            ),
-            None,
-        )
-        if pending is None:
+        if not requested_approval_id:
             raise RuntimeError("room approval is no longer pending")
-        result = driver.decide_approval_request(
-            self.db_path,
-            pending["identity"],
-            execution_generation=execution_generation,
-            member_id=member_id,
-            request_id=requested_approval_id,
-            choice=choice,
-            clock=time.time,
-        )
+        if choice not in {"once", "deny"}:
+            raise RuntimeError("room approval choice must be once or deny")
+        key = (room_id, member_id)
+        route = self.peer_routes.get(key)
+        client = self.peer_clients.get(key)
+        if route is not None:
+            with self._policy_lock:
+                action = self._pending_actions.get(key)
+            pending_approval_id = str((action or {}).get("request_id") or "")
+            if (
+                action is None or action.get("task_id") != task_id
+                or int(action.get("execution_generation") or 0) != execution_generation
+                or requested_approval_id != pending_approval_id
+            ):
+                raise RuntimeError("room approval is no longer pending")
+            approve = getattr(client, "approve_receipt", None)
+            if not callable(approve):
+                raise RuntimeError("room approval target is unavailable")
+            result = approve(
+                task_id=task_id, execution_generation=execution_generation,
+                request_id=requested_approval_id, choice=choice, grant=route.grant,
+            )
+            if result is None:
+                raise RuntimeError("room approval target is unavailable")
+            with self._policy_lock:
+                current = self._pending_actions.get(key)
+                if (
+                    current is not None
+                    and str(current.get("request_id") or "") == requested_approval_id
+                    and current.get("task_id") == task_id
+                    and int(current.get("execution_generation") or 0) == execution_generation
+                ):
+                    self._pending_actions.pop(key, None)
+        else:
+            pending = next(
+                (
+                    request for request in driver.list_pending_approval_requests(
+                        self.db_path, room_id=room_id,
+                    )
+                    if request["identity"].task_id == task_id
+                    and request["execution_generation"] == execution_generation
+                    and request["member_id"] == member_id
+                    and request["request_id"] == requested_approval_id
+                ),
+                None,
+            )
+            if pending is None:
+                raise RuntimeError("room approval is no longer pending")
+            result = driver.decide_approval_request(
+                self.db_path, pending["identity"],
+                execution_generation=execution_generation, member_id=member_id,
+                request_id=requested_approval_id, choice=choice, clock=time.time,
+            )
         self.runtime.wakeup()
         return result
 
@@ -798,13 +982,137 @@ class HostedRoomService:
                 room_id=room_id,
             )
         )
+        with self._policy_lock:
+            peer_actions = [
+                dict(action)
+                for (action_room_id, member_id), action in sorted(
+                    self._pending_actions.items(),
+                    key=lambda item: item[0],
+                )
+                if action_room_id == room_id
+                and (action_room_id, member_id) in self.peer_routes
+            ]
+        pending_actions.extend(peer_actions)
         return {
             "running": runtime["running"],
             "working": bool(
-                counts.get("running") or counts.get("queued") or counts.get("stopping")
+                counts.get("running")
+                or counts.get("queued")
+                or counts.get("stopping")
             ),
             "blocked": room_id in runtime["blocked_rooms"]
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts),
             "pending_actions": pending_actions,
         }
+
+class _RouteStatusPeerClient:
+    """Classify scoped-auth failures without exposing route credentials."""
+
+    def __init__(
+        self,
+        client,
+        *,
+        on_ready,
+        on_reauthorization,
+        on_unavailable,
+        on_refreshed,
+    ) -> None:
+        self._client = client
+        self._on_ready = on_ready
+        self._on_reauthorization = on_reauthorization
+        self._on_unavailable = on_unavailable
+        self._on_refreshed = on_refreshed
+
+    def __getattr__(self, name):
+        value = getattr(self._client, name)
+        if not callable(value):
+            return value
+
+        def tracked(*args, **kwargs):
+            if name in {"dispatch", "recover_dispatch"} and "grant" in kwargs:
+                from gateway.hosted_room_peer import (
+                    room_grant_needs_dispatch_refresh,
+                )
+
+                grant = kwargs["grant"]
+                if room_grant_needs_dispatch_refresh(grant):
+                    checked = HostedMemberDispatch.from_mapping(
+                        kwargs["dispatch"]
+                    )
+                    refresh = getattr(self._client, "refresh_grant", None)
+                    if callable(refresh):
+                        try:
+                            refreshed = refresh(
+                                grant=grant,
+                                capability_digest=checked.capability_digest,
+                                execution_policy_digest=(
+                                    checked.execution_policy_digest
+                                ),
+                            )
+                        except Exception as exc:
+                            if bool(
+                                getattr(exc, "needs_reauthorization", False)
+                            ):
+                                self._on_reauthorization()
+                                raise
+                            if room_grant_needs_dispatch_refresh(
+                                grant, leeway_seconds=0
+                            ):
+                                self._on_reauthorization()
+                                raise
+                        else:
+                            replacement = str(refreshed.get("grant") or "")
+                            if not replacement:
+                                raise RuntimeError(
+                                    "peer returned no refreshed room grant"
+                                )
+                            refreshed_catalog = None
+                            if refreshed.get("catalog") is not None:
+                                from gateway.hosted_room_peer import (
+                                    GatewayRoomCatalog,
+                                )
+
+                                refreshed_catalog = GatewayRoomCatalog.from_mapping(
+                                    refreshed.get("catalog")
+                                )
+                                if (
+                                    refreshed_catalog.execution_policy.policy_digest
+                                    != checked.execution_policy_digest
+                                ):
+                                    self._on_reauthorization()
+                                    raise PeerRunsHTTPError(
+                                        "peer room execution policy needs reauthorization",
+                                        status_code=403,
+                                        error_code="room_execution_policy_changed",
+                                        not_admitted=True,
+                                    )
+                                if (
+                                    refreshed_catalog.catalog_digest
+                                    != checked.capability_digest
+                                ):
+                                    self._on_reauthorization()
+                                    raise PeerRunsHTTPError(
+                                        "peer room capabilities need reauthorization",
+                                        status_code=403,
+                                        error_code="room_capability_catalog_changed",
+                                        not_admitted=True,
+                                    )
+                            self._on_refreshed(replacement, refreshed_catalog)
+                            kwargs = {**kwargs, "grant": replacement}
+            try:
+                result = value(*args, **kwargs)
+            except Exception as exc:
+                if bool(getattr(exc, "needs_reauthorization", False)):
+                    self._on_reauthorization()
+                    raise
+                elif bool(getattr(exc, "not_admitted", False)):
+                    self._on_unavailable()
+                    raise
+                else:
+                    raise
+            if name != "prepare":
+                self._on_ready()
+            return result
+
+        return tracked

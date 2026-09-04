@@ -304,6 +304,7 @@ describe('status-chrome timers under an occluding overlay', () => {
     nowSpy.mockReturnValue(T0 + 300_000)
     rule.clear()
     resetOverlayState()
+    await vi.waitFor(() => expect(rule.output()).toContain('6m 0s'))
 
     // Wait on the observable frame instead of assuming React's scheduler
     // completes within 20ms. The full workspace CI runs this suite under

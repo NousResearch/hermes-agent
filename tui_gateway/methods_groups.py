@@ -563,6 +563,5 @@ def _(rid, params: dict) -> dict:
     except Exception as exc:
         return _err(rid, 5119, str(exc))
 
-
 def register(server) -> None:
     _registry.install(server)

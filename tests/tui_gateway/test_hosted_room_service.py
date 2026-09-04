@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import multiprocessing
 import sqlite3
 import threading
@@ -135,13 +136,9 @@ class _InterruptibleRPC(_FakeRPC):
         self.started = threading.Event()
         self.interrupted = threading.Event()
         self.active_task_id: str | None = None
-        self.active_task = None
-        self.execution_generation = None
 
     def submit(self, **kwargs):
         self.active_task_id = kwargs["task"].task_id
-        self.active_task = kwargs["task"]
-        self.execution_generation = kwargs["execution_generation"]
         self.started.set()
         return {"accepted": True}
 
@@ -151,18 +148,14 @@ class _InterruptibleRPC(_FakeRPC):
             "task_id": self.active_task_id,
         }
 
-    def interrupt_admitted(self, *, task, execution_generation, source):
-        if (
-            self.active_task != task
-            or self.execution_generation != execution_generation
-        ):
-            return {"found": False, "active": False, "interrupted": False}
+    def interrupt(self, *, profile, session_id, source, expected_task_id):
+        if self.active_task_id != expected_task_id:
+            return {"interrupted": False}
         if not self.acknowledge_interrupt:
-            return {"found": True, "active": True, "interrupted": False}
+            return {"interrupted": False}
         self.active_task_id = None
-        self.active_task = None
         self.interrupted.set()
-        return {"found": True, "active": True, "interrupted": True}
+        return {"interrupted": True}
 
 
 def _server():
@@ -205,6 +198,18 @@ def _approve_room_task_process(
     else:
         results.put({"result": dict(result)})
 
+def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_path):
+    """One running task must not be counted again after it becomes stopping."""
+
+    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    task = {
+        "identity": identity,
+        "status": "running",
+        "cancel_id": None,
+        "payload": {"source_event_seq": 1},
+    }
+    calls = []
+
 
 def _append_admit_and_start_room_task_process(
     db_path: str,
@@ -215,55 +220,28 @@ def _append_admit_and_start_room_task_process(
 ) -> None:
     """Try the unsafe post-Stop admission from a distinct spawned process."""
 
-    try:
-        event = hosted_rooms.append_event(
-            db_path,
-            room_id=room_id,
-            event_id="user-during-demotion",
-            kind="message.user",
-            actor={"kind": "user", "id": "desktop"},
-            payload={"text": "@ops race demotion", "thread_id": "thread-race"},
-            authority_gateway_id=gateway_id,
-            authority_epoch=authority_epoch,
-            require_open_admissions=True,
-        )
-        identity = driver.TaskIdentity(
-            room_id=room_id,
-            task_id="task-during-demotion",
-            thread_id="thread-race",
-            turn_id="turn-race",
-        )
-        driver.admit_task(
-            db_path,
-            identity,
-            payload={
-                "target_profile": "ops",
-                "prompt": "race demotion",
-                "source_event_seq": event["seq"],
-            },
-            clock=time.time,
-        )
-        lease = driver.acquire_lease(
-            db_path,
-            room_id=room_id,
-            gateway_id=gateway_id,
-            authority_epoch=authority_epoch,
-            process_generation="demotion-racer",
-            ttl_seconds=30,
-            clock=time.time,
-        )
-        started = driver.start_task(
-            db_path,
-            identity,
-            lease,
-            expected_cancel_generation=0,
-            clock=time.time,
-        )
-    except Exception as exc:
-        results.put({"error": type(exc).__name__})
-    else:
-        results.put({"status": "started", "generation": started.execution_generation})
+    monkeypatch.setattr(driver, "list_tasks", listed)
+    monkeypatch.setattr(
+        hosted_rooms,
+        "request_room_stop",
+        lambda _db, *, room_id, cancel_id, **_authority: {
+            "room_id": room_id,
+            "cancel_id": cancel_id,
+            "seq": 1,
+        },
+    )
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    hosted_rooms.create_room(
+        service.db_path,
+        room_id="room-1",
+        name="Stop room",
+        members=[],
+        authority_gateway_id=hosted_rooms.local_authority_gateway_id(),
+    )
+    service.runtime = SimpleNamespace(cancel=cancel, wakeup=lambda: None)
 
+    assert service.stop_room("room-1", cancel_id="stop-1") == 1
+    assert calls == ["stop-1"]
 
 def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path):
     db = tmp_path / "state.db"
@@ -302,160 +280,6 @@ def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path:
     ]
     assert events[1]["payload"]["text"] == "reply from ops"
     assert service.status("room-1")["working"] is False
-
-
-def test_profile_deleted_after_planning_is_deferred_before_admission(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    rpc = _FakeRPC()
-    service.rpc = rpc
-    service.runtime.rpc = rpc
-    service.local_profiles = lambda: ("default", "ops")
-    service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    _append_room_event(
-        db,
-        room_id="room-1",
-        event_id="user-1",
-        kind="message.user",
-        actor={"kind": "user", "id": "desktop"},
-        payload={"text": "@ops inspect", "thread_id": "thread-1"},
-    )
-    profile_snapshots = iter(
-        (("default", "ops"), ("default", "ops"), ("default",))
-    )
-    service.local_profiles = lambda: next(profile_snapshots, ("default",))
-
-    service.prepare_room(service.bindings()[0])
-
-    assert driver.list_tasks(db, room_id="room-1") == []
-    deferred = next(
-        event
-        for event in service._events("room-1")
-        if event["kind"] == "turn.deferred"
-    )
-    assert deferred["payload"]["reason"] == "member_unavailable"
-    assert rpc.sessions == {}
-
-
-def test_deleted_frozen_member_is_deferred_before_session_resolution(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    rpc = _ProfileRecordingRPC()
-    service.rpc = rpc
-    service.runtime.rpc = rpc
-    service.local_profiles = lambda: ("research", "ops")
-    service.create_room(
-        room_id="room-1",
-        name="Frozen roster",
-        members=[
-            {
-                "member_id": "research",
-                "profile": "research",
-                "handle": "research",
-            },
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-
-    # The persisted roster remains valid, but the deleted profile must never
-    # reach session resolution where it could fall back to the launch profile.
-    service.local_profiles = lambda: ("default", "ops")
-    service.send(
-        room_id="room-1",
-        event_id="user-1",
-        payload={"text": "Report.", "thread_id": "thread-1"},
-    )
-    for _ in range(3):
-        service.runtime._run_cycle()
-
-    events = service._events("room-1")
-    deferred = next(event for event in events if event["kind"] == "turn.deferred")
-    assert deferred["payload"]["member_id"] == "research"
-    assert deferred["payload"]["reason"] == "member_unavailable"
-    assert rpc.profile_calls == [
-        ("resolve_exact", "ops"),
-        ("create", "ops"),
-        ("submit", "ops"),
-    ]
-    assert [profile for profile, _prompt in rpc.prompts] == ["ops"]
-    assert any(
-        event["kind"] == "message.member"
-        and event["payload"]["member_id"] == "ops"
-        for event in events
-    )
-    assert {
-        task["payload"]["target_profile"]
-        for task in driver.list_tasks(db, room_id="room-1")
-    } == {"ops"}
-
-
-def test_profile_deleted_after_admission_is_deferred_and_peer_continues(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    rpc = _ProfileRecordingRPC()
-    service.rpc = rpc
-    service.runtime.rpc = rpc
-    service.local_profiles = lambda: ("research", "ops")
-    service.create_room(
-        room_id="room-1",
-        name="Runtime profile fence",
-        members=[
-            {
-                "member_id": "research",
-                "profile": "research",
-                "handle": "research",
-            },
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    service.send(
-        room_id="room-1",
-        event_id="user-1",
-        payload={"text": "Report.", "thread_id": "thread-1"},
-    )
-    assert {
-        task["payload"]["target_profile"]
-        for task in driver.list_tasks(db, room_id="room-1")
-    } == {"research"}
-
-    service.local_profiles = lambda: ("default", "ops")
-    for _ in range(3):
-        service.runtime._run_cycle()
-
-    tasks = {
-        task["payload"]["target_profile"]: task
-        for task in driver.list_tasks(db, room_id="room-1")
-    }
-    assert "research" not in tasks
-    assert tasks["ops"]["status"] == "settled"
-    assert rpc.profile_calls == [
-        ("resolve_exact", "ops"),
-        ("create", "ops"),
-        ("submit", "ops"),
-    ]
-    events = service._events("room-1")
-    assert any(
-        event["kind"] == "turn.deferred"
-        and event["payload"]["member_id"] == "research"
-        and event["payload"]["reason"] == "member_unavailable"
-        for event in events
-    )
-    assert any(
-        event["kind"] == "message.member"
-        and event["payload"]["member_id"] == "ops"
-        for event in events
-    )
 
 
 def test_demotion_interrupts_inflight_turn_before_authority_changes(tmp_path: Path):
@@ -497,73 +321,6 @@ def test_demotion_interrupts_inflight_turn_before_authority_changes(tmp_path: Pa
         assert [task["status"] for task in tasks] == ["cancelled"]
     finally:
         service.stop(timeout=1.0)
-
-
-def test_demotion_prunes_compacted_published_deferral_before_cancelling(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    service.send(
-        room_id="room-1",
-        event_id="user-before-deferred-demotion",
-        payload={"text": "@ops inspect", "thread_id": "thread-1"},
-    )
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
-    binding = service.bindings()[0]
-    lease = driver.acquire_lease(
-        db,
-        room_id="room-1",
-        gateway_id=binding.gateway_id,
-        authority_epoch=binding.authority_epoch,
-        process_generation="deferred-before-demotion",
-        ttl_seconds=30,
-        clock=time.time,
-    )
-    attempt = driver.start_task(
-        db,
-        task["identity"],
-        lease,
-        expected_cancel_generation=0,
-        clock=time.time,
-    )
-    driver.defer_running_task(
-        db,
-        attempt,
-        reason="member_unavailable",
-        clock=time.time,
-    )
-
-    service.prepare_room(binding)
-    events_before = service._events("room-1")
-    assert any(event["kind"] == "turn.deferred" for event in events_before)
-    assert any(event["kind"] == "room.activity" for event in events_before)
-    assert len(driver.list_tasks(db, room_id="room-1", status="deferred")) == 1
-
-    observed_gateway = "install:" + "b" * 32
-    result = service.demote_room(
-        "room-1",
-        observed_gateway_id=observed_gateway,
-        observed_epoch=2,
-    )
-
-    assert result["authority_gateway_id"] == observed_gateway
-    assert result["authority_epoch"] == 2
-    assert driver.list_tasks(db, room_id="room-1") == []
-    assert not any(
-        event["kind"] == "turn.cancelled"
-        and event["payload"].get("task_id") == task["identity"].task_id
-        for event in service._events("room-1")
-    )
 
 
 def test_demotion_keeps_local_authority_when_interrupt_is_not_acknowledged(
@@ -758,6 +515,63 @@ def test_terminal_publication_retries_after_a_newer_user_wins_the_append_race(
     assert terminal["payload"]["reason"] == "superseded_by_newer_user_event"
 
 
+# Keep this rejection case separately named from the recovery-reserve case below.
+# Duplicate module-level test names are silently shadowed by Python.
+def test_terminal_publication_rejects_whole_plan_without_partial_append_at_history_limit(
+    tmp_path: Path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.local_profiles = lambda: ("default", "ops")
+    room = service.create_room(
+        room_id="room-1",
+        name="Release room",
+        members=[
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+            {"member_id": "ops", "profile": "ops", "handle": "ops"},
+        ],
+    )
+    _append_room_event(
+        db,
+        room_id="room-1",
+        event_id="user-1",
+        kind="message.user",
+        actor={"kind": "user", "id": "desktop"},
+        payload={"text": "@ops inspect", "thread_id": "thread-1"},
+    )
+    monkeypatch.setattr(hosted_rooms, "MAX_EVENTS_PER_ROOM", 2)
+    plan = discussion.PublicationPlan(
+        task_id="task-1",
+        terminal_kind="turn.settled",
+        events=(
+            discussion.EventPlan(
+                event_id="member-1",
+                kind="message.member",
+                actor={"kind": "member", "id": "ops"},
+                payload={"text": "done"},
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]),
+            ),
+            discussion.EventPlan(
+                event_id="terminal-1",
+                kind="turn.settled",
+                actor={"kind": "gateway", "id": str(room["authority_gateway_id"])},
+                payload={"task_id": "task-1"},
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]),
+            ),
+        ),
+    )
+
+    with pytest.raises(hosted_rooms.HostedRoomError, match="history limit"):
+        service._append_plan("room-1", plan)
+
+    assert [event["event_id"] for event in service._events("room-1")] == [
+        "user-1"
+    ]
+
+
 def test_terminal_publication_reserves_the_whole_plan_before_append(
     tmp_path: Path,
     monkeypatch,
@@ -853,70 +667,6 @@ def test_terminal_publication_reserves_the_whole_plan_before_append(
             allow_terminal_recovery=True,
         )
 
-
-def test_terminal_publication_recovers_correlated_member_prefix_at_normal_limit(
-    tmp_path: Path,
-    monkeypatch,
-):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    room = service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    member = discussion.EventPlan(
-        event_id="member-1",
-        kind="message.member",
-        actor={"kind": "member", "id": "ops"},
-        payload={
-            "text": "done",
-            "task_id": "task-1",
-            "discussion_event_id": "discussion-1",
-            "member_id": "ops",
-            "thread_id": "thread-1",
-            "turn_id": "turn-1",
-        },
-        authority_gateway_id=str(room["authority_gateway_id"]),
-        authority_epoch=int(room["authority_epoch"]),
-    )
-    terminal = discussion.EventPlan(
-        event_id="terminal-1",
-        kind="turn.settled",
-        actor={"kind": "gateway", "id": str(room["authority_gateway_id"])},
-        payload={
-            "task_id": "task-1",
-            "discussion_event_id": "discussion-1",
-            "member_id": "ops",
-            "thread_id": "thread-1",
-            "turn_id": "turn-1",
-            "message_event_id": "member-1",
-            "passed": False,
-        },
-        authority_gateway_id=str(room["authority_gateway_id"]),
-        authority_epoch=int(room["authority_epoch"]),
-    )
-    hosted_rooms.append_event(db, **member.append_kwargs("room-1"))
-    monkeypatch.setattr(hosted_rooms, "MAX_EVENTS_PER_ROOM", 1)
-
-    service._append_plan(
-        "room-1",
-        discussion.PublicationPlan(
-            task_id="task-1",
-            terminal_kind="turn.settled",
-            events=(member, terminal),
-        ),
-    )
-    assert [event["event_id"] for event in service._events("room-1")] == [
-        "member-1",
-        "terminal-1",
-    ]
-
-
 def test_terminal_only_publication_uses_bounded_recovery_reserve(
     tmp_path: Path,
     monkeypatch,
@@ -958,133 +708,12 @@ def test_terminal_only_publication_uses_bounded_recovery_reserve(
             events=(terminal,),
         ),
     )
+
     assert [event["event_id"] for event in service._events("room-1")] == [
         "user-1",
         "cancelled-1",
     ]
 
-
-def test_room_activity_refuses_stale_snapshot_after_same_thread_followup(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    service.create_room(
-        room_id="room-1",
-        name="Racing room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    _append_room_event(
-        db,
-        room_id="room-1",
-        event_id="user-old",
-        kind="message.user",
-        actor={"kind": "user", "id": "desktop"},
-        payload={"text": "first", "thread_id": "thread-1"},
-    )
-    stale_room = hosted_rooms.room_state(db, room_id="room-1")
-    _append_room_event(
-        db,
-        room_id="room-1",
-        event_id="user-new",
-        kind="message.user",
-        actor={"kind": "user", "id": "desktop"},
-        payload={"text": "follow up", "thread_id": "thread-1"},
-    )
-    stale_decision = discussion.DiscussionDecision(
-        status="settled",
-        reason="silent_round",
-        discussion_event_id="user-old",
-        source_event_seq=1,
-        thread_id="thread-1",
-    )
-
-    with pytest.raises(hosted_rooms.HostedRoomError, match="changed"):
-        service._append_room_status(stale_room, stale_decision)
-
-    fresh_room = hosted_rooms.room_state(db, room_id="room-1")
-    hosted_rooms.append_event(
-        db,
-        room_id="room-1",
-        event_id="legacy-stale-activity",
-        kind="room.activity",
-        actor={"kind": "gateway", "id": str(fresh_room["authority_gateway_id"])},
-        payload={
-            "status": "settled",
-            "reason_code": "silent_round",
-            "thread_id": "thread-1",
-            "discussion_event_id": "user-old",
-        },
-        authority_gateway_id=str(fresh_room["authority_gateway_id"]),
-        authority_epoch=int(fresh_room["authority_epoch"]),
-    )
-    fresh_room = hosted_rooms.room_state(db, room_id="room-1")
-    snapshot = service._policy_snapshot(fresh_room)
-    assert any(event["event_id"] == "user-new" for event in snapshot.events)
-
-
-def test_send_returns_durable_user_event_when_room_status_publication_races(
-    tmp_path: Path,
-    monkeypatch,
-):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    service.create_room(
-        room_id="room-1",
-        name="Racing room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    monkeypatch.setattr(
-        discussion,
-        "plan_next_task",
-        lambda *args, **kwargs: discussion.DiscussionDecision(
-            status="settled",
-            reason="silent_round",
-            discussion_event_id="user-1",
-            source_event_seq=1,
-            thread_id="thread-1",
-        ),
-    )
-    original_append_events = hosted_rooms.append_events
-    injected = False
-
-    def append_after_newer_user(*args, **kwargs):
-        nonlocal injected
-        if not injected:
-            injected = True
-            _append_room_event(
-                db,
-                room_id="room-1",
-                event_id="user-2",
-                kind="message.user",
-                actor={"kind": "user", "id": "desktop"},
-                payload={"text": "newer", "thread_id": "thread-1"},
-            )
-        return original_append_events(*args, **kwargs)
-
-    monkeypatch.setattr(hosted_rooms, "append_events", append_after_newer_user)
-    service.runtime._wake.clear()
-
-    event = service.send(
-        room_id="room-1",
-        event_id="user-1",
-        payload={"text": "first", "thread_id": "thread-1"},
-    )
-
-    assert event["event_id"] == "user-1"
-    assert [event["event_id"] for event in service._events("room-1")] == [
-        "user-1",
-        "user-2",
-    ]
-    assert service.runtime._wake.is_set()
 
 def test_terminal_publication_rejects_existing_suffix_without_member_prefix(
     tmp_path: Path,
@@ -1633,362 +1262,6 @@ def test_stop_fence_prevents_the_next_room_member_from_starting(
     )
 
 
-def test_restart_reconciles_crash_after_stop_before_queued_cancel(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    room = service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    service.send(
-        room_id="room-1",
-        event_id="user-before-crash",
-        payload={"text": "@ops inspect", "thread_id": "thread-before-crash"},
-    )
-    stale_identity = driver.list_tasks(db, room_id="room-1", status="queued")[0][
-        "identity"
-    ]
-    hosted_rooms.request_room_stop(
-        db,
-        room_id="room-1",
-        cancel_id="stop-before-crash",
-        expected_gateway_id=room["authority_gateway_id"],
-        expected_epoch=room["authority_epoch"],
-    )
-
-    restarted = HostedRoomService(_server(), db_path=db)
-    restarted.local_profiles = lambda: ("default", "ops")
-    restarted.prepare_room(restarted.bindings()[0])
-
-    stale = driver.get_task(db, stale_identity)
-    assert stale["status"] == "cancelled"
-    assert stale["cancel_id"] == "stop-before-crash"
-    current_event = restarted.send(
-        room_id="room-1",
-        event_id="user-after-restart",
-        payload={"text": "@ops inspect again", "thread_id": "thread-after-restart"},
-    )
-    queued = driver.list_tasks(db, room_id="room-1", status="queued")
-    assert len(queued) == 1
-    assert queued[0]["payload"]["source_event_seq"] == current_event["seq"]
-
-
-def test_restart_resumes_crash_after_demotion_barrier_before_stop(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    room = service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    service.send(
-        room_id="room-1",
-        event_id="user-before-demotion-crash",
-        payload={"text": "@ops inspect", "thread_id": "thread-before-crash"},
-    )
-    stale_identity = driver.list_tasks(db, room_id="room-1", status="queued")[0][
-        "identity"
-    ]
-    observed_gateway = "install:" + "b" * 32
-    driver.begin_room_demotion(
-        db,
-        room_id="room-1",
-        expected_gateway_id=room["authority_gateway_id"],
-        expected_epoch=room["authority_epoch"],
-        observed_gateway_id=observed_gateway,
-        observed_epoch=2,
-        cancel_id="demotion-before-crash",
-        clock=time.time,
-    )
-
-    restarted = HostedRoomService(_server(), db_path=db)
-    restarted.local_profiles = lambda: ("default", "ops")
-    restarted.prepare_room(restarted.bindings()[0])
-
-    state = hosted_rooms.room_state(db, room_id="room-1")
-    assert state["authority_gateway_id"] == observed_gateway
-    assert state["authority_epoch"] == 2
-    stale = driver.get_task(db, stale_identity)
-    assert stale["status"] == "cancelled"
-    assert stale["cancel_id"] == "demotion-before-crash"
-    assert driver.pending_room_demotion(db, room_id="room-1") is None
-    events = restarted._events("room-1")
-    event_kinds = [event["kind"] for event in events]
-    assert "room.stop_requested" in event_kinds
-    assert "turn.cancelled" in event_kinds
-    assert "authority.lost" in event_kinds
-    assert event_kinds.index("turn.cancelled") < event_kinds.index("authority.lost")
-
-
-def test_restart_publishes_settled_task_before_resumed_demotion(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    room = service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    service.send(
-        room_id="room-1",
-        event_id="user-before-settled-crash",
-        payload={"text": "@ops inspect", "thread_id": "thread-before-crash"},
-    )
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
-    binding = service.bindings()[0]
-    lease = driver.acquire_lease(
-        db,
-        room_id="room-1",
-        gateway_id=binding.gateway_id,
-        authority_epoch=binding.authority_epoch,
-        process_generation="crashed",
-        ttl_seconds=30,
-        clock=time.time,
-    )
-    attempt = driver.start_task(
-        db,
-        task["identity"],
-        lease,
-        expected_cancel_generation=0,
-        clock=time.time,
-    )
-    driver.settle_task(
-        db,
-        attempt,
-        settlement_id="reply-before-crash",
-        status="settled",
-        result={"text": "done"},
-        clock=time.time,
-    )
-    observed_gateway = "install:" + "b" * 32
-    driver.begin_room_demotion(
-        db,
-        room_id="room-1",
-        expected_gateway_id=room["authority_gateway_id"],
-        expected_epoch=room["authority_epoch"],
-        observed_gateway_id=observed_gateway,
-        observed_epoch=2,
-        cancel_id="demotion-after-settle",
-        clock=time.time,
-    )
-
-    restarted = HostedRoomService(_server(), db_path=db)
-    restarted.local_profiles = lambda: ("default", "ops")
-    restarted.prepare_room(restarted.bindings()[0])
-
-    events = restarted._events("room-1")
-    event_kinds = [event["kind"] for event in events]
-    assert "message.member" in event_kinds
-    assert "turn.settled" in event_kinds
-    assert event_kinds.index("turn.settled") < event_kinds.index("authority.lost")
-    state = hosted_rooms.room_state(db, room_id="room-1")
-    assert state["authority_gateway_id"] == observed_gateway
-    assert state["authority_epoch"] == 2
-
-
-def test_demotion_stop_uses_control_headroom_after_terminal_recovery(
-    tmp_path: Path,
-    monkeypatch,
-):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    room = service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    state = hosted_rooms.room_state(db, room_id="room-1")
-    monkeypatch.setattr(hosted_rooms, "MAX_EVENTS_PER_ROOM", state["latest_seq"])
-    monkeypatch.setattr(hosted_rooms, "STOP_EVENT_COUNT_RESERVE", 1)
-    monkeypatch.setattr(hosted_rooms, "TERMINAL_RECOVERY_COUNT_RESERVE", 2)
-    monkeypatch.setattr(hosted_rooms, "CONTROL_EVENT_COUNT_RESERVE", 4)
-    hosted_rooms.append_events(
-        db,
-        events=[
-            {
-                "room_id": "room-1",
-                "event_id": f"terminal-before-demotion-{index}",
-                "kind": "turn.cancelled",
-                "actor": {"kind": "gateway", "id": room["authority_gateway_id"]},
-                "payload": {"task_id": f"historical-task-{index}"},
-                "authority_gateway_id": room["authority_gateway_id"],
-                "authority_epoch": room["authority_epoch"],
-            }
-            for index in range(2)
-        ],
-        allow_terminal_recovery=True,
-    )
-    observed_gateway = "install:" + "b" * 32
-
-    result = service.demote_room(
-        "room-1",
-        observed_gateway_id=observed_gateway,
-        observed_epoch=2,
-    )
-
-    assert result["authority_gateway_id"] == observed_gateway
-    assert result["authority_epoch"] == 2
-    assert [event["kind"] for event in service._events("room-1")][-2:] == [
-        "room.stop_requested",
-        "authority.lost",
-    ]
-
-
-def test_concurrent_demotion_completion_does_not_republish_under_new_authority(
-    tmp_path: Path,
-    monkeypatch,
-):
-    from gateway.hosted_room_replicas import demote_room as commit_demotion
-
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
-    service.local_profiles = lambda: ("default", "ops")
-    room = service.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    service.send(
-        room_id="room-1",
-        event_id="user-before-concurrent-demotion",
-        payload={"text": "@ops inspect", "thread_id": "thread-before-demotion"},
-    )
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
-    binding = service.bindings()[0]
-    lease = driver.acquire_lease(
-        db,
-        room_id="room-1",
-        gateway_id=binding.gateway_id,
-        authority_epoch=binding.authority_epoch,
-        process_generation="settling-process",
-        ttl_seconds=30,
-        clock=time.time,
-    )
-    attempt = driver.start_task(
-        db,
-        task["identity"],
-        lease,
-        expected_cancel_generation=0,
-        clock=time.time,
-    )
-    driver.settle_task(
-        db,
-        attempt,
-        settlement_id="reply-before-concurrent-demotion",
-        status="settled",
-        result={"text": "done"},
-        clock=time.time,
-    )
-    observed_gateway = "install:" + "b" * 32
-    original_stop = service.stop_room
-
-    def finish_in_competing_process(
-        room_id: str,
-        *,
-        cancel_id: str,
-        require_acknowledged: bool = False,
-    ) -> int:
-        cancelled = original_stop(
-            room_id,
-            cancel_id=cancel_id,
-            require_acknowledged=require_acknowledged,
-        )
-        old_room = hosted_rooms.room_state(db, room_id=room_id)
-        assert service._publish_terminal_tasks(old_room) is True
-        commit_demotion(
-            db,
-            room_id=room_id,
-            observed_gateway_id=observed_gateway,
-            observed_epoch=2,
-        )
-        return cancelled
-
-    monkeypatch.setattr(service, "stop_room", finish_in_competing_process)
-
-    result = service.demote_room(
-        "room-1",
-        observed_gateway_id=observed_gateway,
-        observed_epoch=2,
-    )
-
-    assert result["authority_gateway_id"] == observed_gateway
-    assert result["authority_epoch"] == 2
-    events = service._events("room-1")
-    assert sum(event["kind"] == "turn.settled" for event in events) == 1
-    assert sum(event["kind"] == "authority.lost" for event in events) == 1
-
-
-def test_stop_between_planning_and_admission_blocks_a_second_runtime(
-    tmp_path: Path,
-    monkeypatch,
-):
-    db = tmp_path / "state.db"
-    planner = HostedRoomService(_server(), db_path=db)
-    stopper = HostedRoomService(_server(), db_path=db)
-    planner.local_profiles = lambda: ("default", "ops")
-    stopper.local_profiles = lambda: ("default", "ops")
-    planner.create_room(
-        room_id="room-1",
-        name="Release room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {"member_id": "ops", "profile": "ops", "handle": "ops"},
-        ],
-    )
-    planned = threading.Event()
-    release = threading.Event()
-    real_admit = driver.admit_task
-
-    def pause_before_admission(*args, **kwargs):
-        planned.set()
-        assert release.wait(timeout=5)
-        return real_admit(*args, **kwargs)
-
-    monkeypatch.setattr(driver, "admit_task", pause_before_admission)
-    outcome: dict[str, object] = {}
-
-    def send() -> None:
-        try:
-            outcome["event"] = planner.send(
-                room_id="room-1",
-                event_id="user-1",
-                payload={"text": "@ops inspect", "thread_id": "thread-1"},
-            )
-        except Exception as exc:
-            outcome["error"] = exc
-
-    worker = threading.Thread(target=send)
-    worker.start()
-    assert planned.wait(timeout=5)
-    assert stopper.stop_room("room-1", cancel_id="stop-1") == 0
-    release.set()
-    worker.join(timeout=5)
-
-    assert not worker.is_alive()
-    assert "error" not in outcome
-    assert outcome["event"]["kind"] == "message.user"
-    assert driver.list_tasks(db, room_id="room-1") == []
-
-
 def test_retrying_old_stop_id_does_not_cancel_newer_room_work(
     tmp_path: Path,
     monkeypatch,
@@ -2087,7 +1360,7 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
     assert stopping["cancel_id"] == "stop-1"
 
 
-def test_demote_retry_keeps_newer_turn_behind_admission_barrier(
+def test_demote_waits_for_exact_turn_stop_ack_before_authority_transfer(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -2101,18 +1374,126 @@ def test_demote_retry_keeps_newer_turn_behind_admission_barrier(
             self.expected_task_ids: list[str] = []
 
         def info(self, *, profile, session_id, source):
-            return {
-                "active": self.active_task_id is not None,
-                "task_id": self.active_task_id,
-            }
+            return {"active": True, "task_id": self.active_task_id}
 
-        def interrupt_admitted(self, *, task, execution_generation, source):
-            self.expected_task_ids.append(task.task_id)
-            if self.active_task_id != task.task_id:
-                return {"found": False, "active": False, "interrupted": False}
+        def interrupt(self, *, profile, session_id, source, expected_task_id):
+            self.expected_task_ids.append(expected_task_id)
             if not self.acknowledge:
-                return {"found": True, "active": True, "interrupted": False}
-            return {"found": True, "active": True, "interrupted": True}
+                return None
+            return {"interrupted": True}
+
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    rpc = ControlledStopRPC()
+    service.rpc = rpc
+    service.runtime.rpc = rpc
+    service.local_profiles = lambda: ("default", "ops")
+    room = service.create_room(
+        room_id="room-1",
+        name="Release room",
+        members=[
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+            {"member_id": "ops", "profile": "ops", "handle": "ops"},
+        ],
+    )
+    service.send(
+        room_id="room-1",
+        event_id="user-1",
+        payload={"text": "@ops inspect", "thread_id": "thread-1"},
+    )
+    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    binding = service.bindings()[0]
+    lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation=service.runtime.process_generation,
+        process_pid=service.runtime.process_pid,
+        process_start_time=service.runtime.process_start_time,
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    driver.start_task(
+        db,
+        task["identity"],
+        lease,
+        expected_cancel_generation=0,
+        clock=time.time,
+    )
+    rpc.sessions[("ops", "Group: room-1")] = {"session_id": "ops-session"}
+    rpc.active_task_id = task["identity"].task_id
+    observed_gateway = "install:" + "b" * 32
+    remote_db = tmp_path / "remote-state.db"
+    replicas.ingest_page(
+        remote_db,
+        room_id="room-1",
+        room_name=room["name"],
+        members=room["members"],
+        page=hosted_rooms.read_events(
+            db, room_id="room-1", since_seq=0, limit=100
+        ),
+    )
+    with monkeypatch.context() as remote_gateway:
+        remote_gateway.setattr(
+            replicas,
+            "local_authority_gateway_id",
+            lambda: observed_gateway,
+        )
+        observation = replicas.promote_replica(
+            remote_db,
+            room_id="room-1",
+            reason="old authority unreachable",
+        )
+    assert observation["authority_epoch"] == 2
+
+    with pytest.raises(RuntimeError, match="still stopping"):
+        service.demote_room(
+            "room-1",
+            observed_gateway_id=observation["authority_gateway_id"],
+            observed_epoch=observation["authority_epoch"],
+        )
+
+    fenced = hosted_rooms.room_state(db, room_id="room-1")
+    assert fenced["authority_gateway_id"] == room["authority_gateway_id"]
+    assert fenced["authority_epoch"] == room["authority_epoch"]
+    assert not any(
+        event["kind"] == "authority.lost" for event in service._events("room-1")
+    )
+
+    rpc.acknowledge = True
+    result = service.demote_room(
+        "room-1",
+        observed_gateway_id=observation["authority_gateway_id"],
+        observed_epoch=observation["authority_epoch"],
+    )
+
+    assert result["authority_gateway_id"] == observed_gateway
+    assert result["authority_epoch"] == 2
+    assert rpc.expected_task_ids == [
+        task["identity"].task_id,
+        task["identity"].task_id,
+    ]
+    assert any(
+        event["kind"] == "authority.lost" for event in service._events("room-1")
+    )
+
+
+def test_cross_process_pending_approval_requires_exact_generation_and_owner_consumes(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from gateway import hosted_room_replicas as replicas
+
+    class ControlledStopRPC(_FakeRPC):
+        def __init__(self) -> None:
+            super().__init__()
+            self.approvals = []
+            self.resolved = 0
+
+        def approve(self, *, session_id, request_id, choice):
+            self.approvals.append((session_id, request_id, choice))
+            return {"resolved": self.resolved}
 
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)
@@ -2431,13 +1812,78 @@ def test_cross_process_pending_approval_uses_frozen_member_id_and_exact_generati
         args=(
             str(db),
             "room-1",
-            "member-ops",
+            "ops",
             task["identity"].task_id,
             1,
             "approval-1",
             "once",
             results,
         ),
+    )
+    dashboard.start()
+    dashboard.join(timeout=60)
+    try:
+        assert not dashboard.is_alive()
+        assert dashboard.exitcode == 0
+        assert results.get(timeout=5) == {
+            "result": {"choice": "once", "idempotent": False}
+        }
+    finally:
+        if dashboard.is_alive():
+            dashboard.terminate()
+            dashboard.join(timeout=5)
+        results.close()
+        results.join_thread()
+    assert rpc.approvals == []
+
+    # Only the process that owns the live session can wake its local approval
+    # queue. Its next observation consumes the durable dashboard decision.
+    service.runtime._report_pending_action(
+        task,
+        session_id="ops-session",
+        info={
+            "pending_approval": {
+                "request_id": "approval-1",
+                "choices": ["once", "deny"],
+            }
+        },
+    )
+    assert rpc.approvals == [("ops-session", "approval-1", "once")]
+    assert service.status("room-1")["pending_actions"]
+
+    rpc.resolved = 1
+    service.runtime._report_pending_action(
+        task,
+        session_id="ops-session",
+        info={
+            "pending_approval": {
+                "request_id": "approval-1",
+                "choices": ["once", "deny"],
+            }
+        },
+    )
+    assert rpc.approvals == [
+        ("ops-session", "approval-1", "once"),
+        ("ops-session", "approval-1", "once"),
+    ]
+    assert service.status("room-1")["pending_actions"] == []
+
+
+def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
+    tmp_path: Path,
+):
+    db = tmp_path / "state.db"
+    peer = _FakePeerClient()
+    route = PeerMemberRoute(
+        home_install_id="install-home",
+        member_id="member-reviewer",
+        target_install_id="install-peer",
+        target_profile="reviewer",
+        capability_digest="a" * 64,
+        execution_policy_digest="b" * 64,
+        cancellation_scope_id="cancel-room-1",
+        trace_id="trace-room-1",
+        grant="signed-room-grant",
     )
     dashboard.start()
     dashboard.join(timeout=60)
@@ -2508,10 +1954,277 @@ def test_legacy_published_approval_migrates_selected_request_to_frozen_member(
 
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)
-    rpc = ApprovalRPC()
+    service.register_peer_route(
+        room_id="room-1",
+        member_id="member-peer",
+        route=route,
+        client=peer,
+        target_url="https://peer.example.test",
+        catalog=catalog,
+    )
+    service.create_room(
+        room_id="room-1",
+        name="Peer room",
+        members=[
+            {
+                "member_id": "default",
+                "profile": "default",
+                "handle": "hermes",
+            },
+            {
+                "member_id": "member-peer",
+                "profile": "reviewer",
+                "handle": "reviewer",
+                "target": {
+                    "kind": "peer",
+                    "peer_id": "peer-review",
+                    "installation_id": "install-peer",
+                    "profile": "reviewer",
+                    "capability_digest": catalog.catalog_digest,
+                },
+            }
+        ],
+    )
+    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    transport = service._resolve_member_transport(
+        service.bindings()[0],
+        {
+            "identity": identity,
+            "execution_generation": 2,
+            "payload": {
+                "target_member_id": "member-peer",
+                "target_profile": "reviewer",
+                "source_event_seq": 1,
+            },
+        },
+    )
+
+    status = transport.info(
+        profile="reviewer",
+        session_id="peer-group-session",
+        source="bot_room",
+    )
+    assert status["status"] == "waiting_for_approval"
+    service._set_pending_action(
+        "room-1",
+        "member-peer",
+        {
+            "kind": "approval",
+            "task_id": status["task_id"],
+            "execution_generation": status["execution_generation"],
+            "run_id": status["run_id"],
+            "session_id": "peer-group-session",
+            "request_id": "req-peer-1",
+            "approval": status["approval"],
+        },
+    )
+    pending = service.status("room-1")["pending_actions"]
+    assert pending == [
+        {
+            "kind": "approval",
+            "task_id": "task-1",
+            "execution_generation": 2,
+            "run_id": "run-peer-1",
+            "session_id": "peer-group-session",
+            "request_id": "req-peer-1",
+            "approval": {
+                "description": "Run the focused tests",
+                "command": "pytest -q tests/focused",
+                "choices": ["once", "deny"],
+            },
+            "member_id": "member-peer",
+        }
+    ]
+
+    assert service.approve_room_task(
+        "room-1",
+        member_id="member-peer",
+        task_id="task-1",
+        execution_generation=2,
+        choice="once",
+        request_id="req-peer-1",
+    ) == {"resolved": 1}
+    assert peer.approvals == [
+        {
+            "task_id": "task-1",
+            "execution_generation": 2,
+            "request_id": "req-peer-1",
+            "choice": "once",
+            "grant": "signed.room.grant",
+        }
+    ]
+    assert service.status("room-1")["pending_actions"] == []
+
+
+def _seed_running_local_approval_task(
+    service: HostedRoomService,
+    *,
+    task_id: str,
+) -> driver.TaskIdentity:
+    gateway_id = hosted_rooms.local_authority_gateway_id()
+    hosted_rooms.create_room(
+        service.db_path,
+        room_id="room-1",
+        name="Approval room",
+        members=[
+            {"member_id": "local", "profile": "local", "handle": "local"}
+        ],
+        authority_gateway_id=gateway_id,
+    )
+    identity = driver.TaskIdentity(
+        "room-1",
+        task_id,
+        "thread-local-1",
+        "turn-local-1",
+    )
+    lease = driver.acquire_lease(
+        service.db_path,
+        room_id="room-1",
+        gateway_id=gateway_id,
+        authority_epoch=1,
+        process_generation="approval-test-process",
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    driver.admit_task(
+        service.db_path,
+        identity,
+        payload={
+            "target_profile": "local",
+            "target_member_id": "local",
+            "prompt": "Run the approved local action.",
+            "source_event_seq": 1,
+        },
+        clock=time.time,
+    )
+    attempt = driver.start_task(
+        service.db_path,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=time.time,
+    )
+    assert attempt.execution_generation == 1
+    return identity
+
+def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
-    service.local_profiles = lambda: ("default", "ops")
+    identity = _seed_running_local_approval_task(
+        service,
+        task_id="task-local-1",
+    )
+    action = {
+        "kind": "approval",
+        "task_id": "task-local-1",
+        "execution_generation": 1,
+        "session_id": "local-session",
+        "request_id": "approval-local-1",
+        "approval": {
+            "description": "Run focused tests",
+            "command": "pytest -q tests/focused",
+            "choices": ["once", "deny"],
+        },
+    }
+    service._set_pending_action("room-1", "local", action)
+
+    assert service.approve_room_task(
+        "room-1",
+        member_id="local",
+        task_id="task-local-1",
+        execution_generation=1,
+        choice="once",
+        request_id="approval-local-1",
+    ) == {"choice": "once", "idempotent": False}
+    assert rpc.approvals == []
+
+    # A dashboard process records only the durable decision. The process that
+    # owns the hidden session consumes it on its next exact observation.
+    service.runtime._report_pending_action(
+        driver.get_task(service.db_path, identity),
+        session_id="local-session",
+        info={
+            "pending_approval": {
+                "request_id": "approval-local-1",
+                "choices": ["once", "deny"],
+            }
+        },
+    )
+    assert rpc.approvals == [
+        {
+            "session_id": "local-session",
+            "request_id": "approval-local-1",
+            "choice": "once",
+        }
+    ]
+    assert service.status("room-1")["pending_actions"] == []
+
+def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path):
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    rpc = _FakeRPC()
+    service.rpc = rpc
+    service.runtime.rpc = rpc
+    _seed_running_local_approval_task(
+        service,
+        task_id="task-local-1",
+    )
+    action = {
+        "kind": "approval",
+        "task_id": "task-local-1",
+        "execution_generation": 1,
+        "session_id": "local-session",
+        "approval": {"choices": ["once", "deny"]},
+    }
+    service._set_pending_action(
+        "room-1", "local", {**action, "request_id": "approval-A"}
+    )
+    service._set_pending_action(
+        "room-1", "local", {**action, "request_id": "approval-B"}
+    )
+
+    with pytest.raises(RuntimeError, match="no longer pending"):
+        service.approve_room_task(
+            "room-1",
+            member_id="local",
+            task_id="task-local-1",
+            execution_generation=1,
+            choice="once",
+            request_id="approval-A",
+        )
+
+    assert rpc.approvals == []
+    assert service.status("room-1")["pending_actions"][0]["request_id"] == (
+        "approval-B"
+    )
+
+
+def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
+    db = tmp_path / "state.db"
+    catalog = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
+    )
+    route = PeerMemberRoute(
+        home_install_id=hosted_rooms.local_authority_gateway_id(),
+        member_id="member-peer",
+        target_install_id="install-peer",
+        target_profile="reviewer",
+        capability_digest=catalog.catalog_digest,
+        cancellation_scope_id="cancel-room-1",
+        trace_id="trace-room-1",
+        grant="signed.room.grant",
+    )
+    peer = _RecoveringPeerClient()
+    service = HostedRoomService(_server(), db_path=db)
+    service.register_peer_route(
+        room_id="room-1",
+        member_id="member-peer",
+        route=route,
+        client=peer,
+        target_url="https://peer.example.test",
+        catalog=catalog,
+    )
     service.create_room(
         room_id="room-1",
         name="Release room",

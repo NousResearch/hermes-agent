@@ -51,12 +51,11 @@ jobs:
     name: nix flake check
     needs: [detect]
     if: needs.detect.outputs.nix == 'true'
-    # The build compiles the package and its whole dependency closure, so this
-    # takes minutes and not seconds when the cache misses. `nix flake check`
-    # builds 21 checks, and --max-jobs defaults to the core count. It uses the
-    # wider runner with no more configuration.
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
-    timeout-minutes: 60
+    # This fork does not have access to the upstream private 32-core label.
+    # Use the standard GitHub-hosted runner and bound Nix parallelism so the
+    # dependency closure does not exhaust the smaller host.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,4 +116,4 @@ jobs:
       - name: nix flake check
         # --print-build-logs: a check that fails then prints the assertion
         # that failed, and not only the derivation that failed to build.
-        run: nix flake check --print-build-logs
+        run: nix flake check --print-build-logs --max-jobs 2

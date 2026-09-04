@@ -218,6 +218,47 @@ async def test_lifespan_shutdown_coordinates_with_startup_thread(monkeypatch):
     assert all(thread_id != loop_thread for thread_id in stop_threads)
 
 
+def test_hosted_room_shutdown_does_not_block_event_loop(monkeypatch):
+    from tui_gateway import methods_groups
+
+    stop_started = threading.Event()
+    loop_progressed = threading.Event()
+    progress_observed_while_stopping = threading.Event()
+
+    def blocked_stop(*, timeout):
+        assert timeout == 5.0
+        stop_started.set()
+        if loop_progressed.wait(timeout=2.0):
+            progress_observed_while_stopping.set()
+        return True
+
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(
+        methods_groups,
+        "start_hosted_room_service",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(methods_groups, "stop_hosted_room_service", blocked_stop)
+
+    async def exercise_shutdown():
+        lifespan = web_server_mod._lifespan(web_server_mod.app)
+        await lifespan.__aenter__()
+
+        async def observe_worker_start():
+            while not stop_started.is_set():
+                await asyncio.sleep(0)
+            loop_progressed.set()
+
+        observer = asyncio.create_task(observe_worker_start())
+        await lifespan.__aexit__(None, None, None)
+        await observer
+
+        assert stop_started.is_set()
+        assert progress_observed_while_stopping.is_set()
+
+    asyncio.run(exercise_shutdown())
+
+
 # ---------------------------------------------------------------------------
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
 # ---------------------------------------------------------------------------

@@ -286,18 +286,89 @@ def validate_user_payload(value: Any) -> dict[str, Any]:
     return {"text": text, "thread_id": thread_id}
 
 
+def _validate_member_target(
+    value: Any,
+    *,
+    profile: str,
+    known_profiles: set[str],
+    require_current_profiles: bool,
+    index: int,
+) -> dict[str, Any]:
+    if value is None:
+        if require_current_profiles and profile not in known_profiles:
+            raise DiscussionValidationError(
+                f"member {index} profile '{profile}' is not local to this gateway"
+            )
+        return {"kind": "local", "profile": profile}
+    if not isinstance(value, Mapping):
+        raise DiscussionValidationError(f"member {index} target must be an object")
+    kind = value.get("kind")
+    if kind == "local":
+        target = _exact_fields(
+            value,
+            label=f"member {index} local target",
+            required=_LOCAL_TARGET_FIELDS,
+        )
+        target_profile = _identifier(
+            target["profile"], label=f"member {index} target profile"
+        )
+        if target_profile != profile or (
+            require_current_profiles and profile not in known_profiles
+        ):
+            raise DiscussionValidationError(
+                f"member {index} local target does not match a local profile"
+            )
+        return {"kind": "local", "profile": profile}
+    if kind == "peer":
+        target = _exact_fields(
+            value,
+            label=f"member {index} peer target",
+            required=_PEER_TARGET_FIELDS,
+        )
+        target_profile = _identifier(
+            target["profile"], label=f"member {index} target profile"
+        )
+        if target_profile != profile:
+            raise DiscussionValidationError(
+                f"member {index} peer target profile does not match member profile"
+            )
+        capability_digest = target["capability_digest"]
+        if (
+            not isinstance(capability_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", capability_digest)
+        ):
+            raise DiscussionValidationError(
+                f"member {index} capability_digest must be a sha256 digest"
+            )
+        return {
+            "kind": "peer",
+            "peer_id": _identifier(
+                target["peer_id"], label=f"member {index} peer_id"
+            ),
+            "installation_id": _identifier(
+                target["installation_id"],
+                label=f"member {index} installation_id",
+            ),
+            "profile": target_profile,
+            "capability_digest": capability_digest,
+        }
+    raise DiscussionValidationError(
+        f"member {index} target kind must be local or peer"
+    )
+
+
 def validate_roster(
     value: Any,
     *,
     local_profiles: Iterable[str],
-    require_local_profiles: bool = True,
+    require_current_profiles: bool = True,
 ) -> tuple[DiscussionMember, ...]:
-    """Validate a frozen 2-6 member roster of profiles on this gateway.
+    """Validate a frozen 2-6 member roster of local or peer targets.
 
-    Current-profile membership is a creation-time boundary. Persisted room
-    replay keeps the frozen roster valid when a profile is later renamed or
-    removed so the unavailable-member policy can defer it without disabling
-    the remaining members.
+    Room creation requires each local target to exist on this gateway. Replay
+    preserves the stored roster without reapplying that time-varying check, so
+    an unavailable local member can be deferred while healthy local and peer
+    members continue.
     """
 
     if not isinstance(value, list):
@@ -334,10 +405,13 @@ def validate_roster(
         member_id = _identifier(member["member_id"], label=f"member {index} id")
         profile = _identifier(member["profile"], label=f"member {index} profile")
         handle = _identifier(member["handle"], label=f"member {index} handle")
-        if require_local_profiles and profile not in known_profiles:
-            raise DiscussionValidationError(
-                f"member {index} profile '{profile}' is not local to this gateway"
-            )
+        target = _validate_member_target(
+            member.get("target"),
+            profile=profile,
+            known_profiles=known_profiles,
+            require_current_profiles=require_current_profiles,
+            index=index,
+        )
         display_name = member.get("display_name", "")
         if not isinstance(display_name, str):
             raise DiscussionValidationError(
@@ -376,7 +450,7 @@ def validate_room(
     value: Any,
     *,
     local_profiles: Iterable[str],
-    require_local_profiles: bool = True,
+    require_current_profiles: bool = True,
 ) -> DiscussionRoom:
     """Project a hosted-room row into the strict same-gateway policy shape."""
 
@@ -402,7 +476,7 @@ def validate_room(
     members = validate_roster(
         value.get("members"),
         local_profiles=local_profiles,
-        require_local_profiles=require_local_profiles,
+        require_current_profiles=require_current_profiles,
     )
     return DiscussionRoom(
         room_id=room_id,
@@ -749,6 +823,82 @@ def _validate_authority_event(
     return event, next_gateway_id, next_epoch
 
 
+def _validate_authority_event(
+    raw: Mapping[str, Any],
+    *,
+    previous_seq: int,
+    room: DiscussionRoom,
+    authority_gateway_id: str,
+    authority_epoch: int,
+) -> tuple[_ValidatedEvent, str, int]:
+    event = _validate_event(
+        raw,
+        room=room,
+        previous_seq=previous_seq,
+        authority_gateway_id=authority_gateway_id,
+        authority_epoch=authority_epoch,
+    )
+    payload = _exact_fields(
+        event.payload,
+        label=f"{event.kind} payload",
+        required=_AUTHORITY_EVENT_FIELDS,
+        optional=(
+            _AUTHORITY_PROMOTION_FIELDS
+            if event.kind == "authority.claimed"
+            else frozenset()
+        ),
+    )
+    if event.actor != {"kind": "system", "id": "authority-control"}:
+        raise DiscussionValidationError(
+            f"{event.kind} requires the authority-control actor"
+        )
+    previous_gateway_id = _identifier(
+        payload.get("previous_gateway_id"),
+        label="previous_gateway_id",
+    )
+    next_gateway_id = _identifier(
+        payload.get("authority_gateway_id"),
+        label="authority_gateway_id",
+    )
+    next_epoch = _positive_int(
+        payload.get("authority_epoch"),
+        label="authority_epoch",
+    )
+    promotion_fields = frozenset(payload) & _AUTHORITY_PROMOTION_FIELDS
+    if promotion_fields:
+        if promotion_fields != _AUTHORITY_PROMOTION_FIELDS:
+            raise DiscussionValidationError(
+                "authority.claimed replica proof is incomplete"
+            )
+        if payload.get("promoted_from_replica") is not True:
+            raise DiscussionValidationError(
+                "authority.claimed replica proof must be explicit"
+            )
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason or len(reason) > 200:
+            raise DiscussionValidationError(
+                "authority.claimed replica reason must be a non-empty string"
+            )
+    if previous_gateway_id != authority_gateway_id:
+        raise DiscussionValidationError(
+            f"{event.kind} does not continue the authority lineage"
+        )
+    if raw.get("authority_epoch") != next_epoch:
+        raise DiscussionValidationError(
+            f"{event.kind} event and payload epochs do not match"
+        )
+    if event.kind == "authority.claimed":
+        if next_epoch != authority_epoch + 1:
+            raise DiscussionValidationError(
+                "authority.claimed must advance exactly one epoch"
+            )
+    elif next_epoch <= authority_epoch:
+        raise DiscussionValidationError(
+            "authority.lost must advance to a newer epoch"
+        )
+    return event, next_gateway_id, next_epoch
+
+
 def _validated_events(
     events: Sequence[Mapping[str, Any]],
     *,
@@ -867,7 +1017,7 @@ def derive_member_watermarks(
     room = validate_room(
         room_value,
         local_profiles=local_profiles,
-        require_local_profiles=False,
+        require_current_profiles=False,
     )
     validated = _validated_events(events, room=room)
     return _derive_member_watermarks(validated)
@@ -1121,7 +1271,7 @@ def plan_next_task(
     room = validate_room(
         room_value,
         local_profiles=local_profiles,
-        require_local_profiles=False,
+        require_current_profiles=False,
     )
     validated = _validated_events(events, room=room)
     user_events = _discussion_user_events(validated)
@@ -1307,7 +1457,7 @@ def reconstruct_task_plan(
     room = validate_room(
         room_value,
         local_profiles=local_profiles,
-        require_local_profiles=False,
+        require_current_profiles=False,
     )
     validated = _validated_events(events, room=room)
     identity = task.get("identity")
@@ -1430,7 +1580,7 @@ def plan_publication(
     room = validate_room(
         room_value,
         local_profiles=local_profiles,
-        require_local_profiles=False,
+        require_current_profiles=False,
     )
     validated = _validated_events(events, room=room)
     if task.identity.room_id != room.room_id:

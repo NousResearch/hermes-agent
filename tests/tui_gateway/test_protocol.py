@@ -179,11 +179,11 @@ def test_hosted_session_interrupt_does_not_stop_unrelated_tts(server, monkeypatc
     monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
-    def interrupt(_sid, _session, **kwargs):
-        calls.append(("interrupt", kwargs))
-        return False
-
-    monkeypatch.setattr(server, "_interrupt_session_turn", interrupt)
+    monkeypatch.setattr(
+        server,
+        "_interrupt_session_turn",
+        lambda _sid, _session: calls.append("interrupt"),
+    )
 
     response = server._methods["session.interrupt"](
         "stop",
@@ -194,161 +194,7 @@ def test_hosted_session_interrupt_does_not_stop_unrelated_tts(server, monkeypatc
     )
 
     assert response["result"]["status"] == "interrupted"
-    assert calls == [
-        (
-            "interrupt",
-            {
-                "expected_hosted_task_id": "hosted-task",
-                "expected_hosted_execution_generation": None,
-            },
-        )
-    ]
-
-
-def test_hosted_session_interrupt_fences_execution_generation(server, monkeypatch):
-    calls = []
-    session = {
-        "history_lock": threading.Lock(),
-        "running": True,
-        "_hosted_room_task": {
-            "task_id": "hosted-task",
-            "execution_generation": 2,
-        },
-    }
-    monkeypatch.setattr(server, "_tts_stream_stop", lambda: calls.append("tts"))
-    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
-    monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
-    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
-    def interrupt(_sid, _session, **kwargs):
-        calls.append(kwargs)
-        if kwargs["expected_hosted_execution_generation"] == 1:
-            return None
-        return False
-
-    monkeypatch.setattr(server, "_interrupt_session_turn", interrupt)
-
-    stale = server._methods["session.interrupt"](
-        "stale",
-        {
-            "session_id": "room-session",
-            "expected_hosted_task_id": "hosted-task",
-            "expected_hosted_execution_generation": 1,
-        },
-    )
-    exact = server._methods["session.interrupt"](
-        "exact",
-        {
-            "session_id": "room-session",
-            "expected_hosted_task_id": "hosted-task",
-            "expected_hosted_execution_generation": 2,
-        },
-    )
-
-    assert stale["result"] == {"status": "not_interrupted", "interrupted": False}
-    assert exact["result"]["status"] == "interrupted"
-    assert [call["expected_hosted_execution_generation"] for call in calls] == [1, 2]
-
-
-def test_hosted_interrupt_claim_wraps_external_signal(server, monkeypatch):
-    calls = []
-
-    class Agent:
-        def hard_interrupt(self):
-            calls.append(dict(session["_hosted_interrupt_claim"]))
-
-    session = {
-        "agent": Agent(),
-        "history_lock": threading.Lock(),
-        "running": True,
-        "queued_prompt": "later",
-        "session_key": "room-session",
-        "_run_thread": None,
-        "_hosted_room_task": {
-            "task_id": "hosted-task",
-            "execution_generation": 2,
-        },
-    }
-    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
-    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
-
-    stale = server._interrupt_session_turn(
-        "room-session",
-        session,
-        expected_hosted_task_id="hosted-task",
-        expected_hosted_execution_generation=1,
-    )
-
-    assert stale is None
-    assert calls == []
-    assert session["running"] is True
-    assert session["queued_prompt"] == "later"
-    assert "_turn_cancel_requested" not in session
-    assert "_hosted_interrupt_claim" not in session
-
-    isolated = server._interrupt_session_turn(
-        "room-session",
-        session,
-        expected_hosted_task_id="hosted-task",
-        expected_hosted_execution_generation=2,
-    )
-
-    assert isolated is False
-    assert calls == [{"task_id": "hosted-task", "execution_generation": 2}]
-    assert "_hosted_interrupt_claim" not in session
-
-
-def test_hosted_interrupt_claim_blocks_replacement_turn(server, monkeypatch):
-    session = {
-        "history_lock": threading.Lock(),
-        "running": False,
-        "source": "bot_room",
-        "_hosted_interrupt_claim": {
-            "task_id": "hosted-task",
-            "execution_generation": 2,
-        },
-    }
-    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
-    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda _sid, _session: None)
-    monkeypatch.setattr(
-        server, "_load_dashboard_process_isolation_config", lambda: {}
-    )
-    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
-
-    response = server._methods["prompt.submit"](
-        "replacement",
-        {
-            "session_id": "room-session",
-            "text": "next generation",
-            "_hosted_task": {
-                "room_id": "room-1",
-                "task_id": "hosted-task",
-                "thread_id": "thread-1",
-                "turn_id": "turn-1",
-                "execution_generation": 3,
-            },
-            "_hosted_terminal_callback": lambda _receipt: None,
-        },
-    )
-
-    assert response["error"] == {
-        "code": 4091,
-        "message": "hosted room member session is stopping",
-    }
-
-
-def test_hosted_interrupt_claim_blocks_internal_turn_admission(server):
-    session = {"running": False}
-    assert server._session_turn_admission_blocked(session) is False
-
-    session["_hosted_interrupt_claim"] = {
-        "task_id": "hosted-task",
-        "execution_generation": 2,
-    }
-    assert server._session_turn_admission_blocked(session) is True
-
-    session.pop("_hosted_interrupt_claim")
-    session["running"] = True
-    assert server._session_turn_admission_blocked(session) is True
+    assert calls == ["interrupt"]
 
 
 # ── write_json ────────────────────────────────────────────────

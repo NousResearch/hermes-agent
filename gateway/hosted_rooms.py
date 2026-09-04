@@ -145,6 +145,7 @@ _FINAL_TERMINAL_EVENT_KINDS = frozenset({
     "turn.failed",
     "turn.cancelled",
 })
+
 _ACTOR_FIELDS = frozenset({"kind", "id", "display_name", "profile", "connection_id"})
 
 
@@ -184,7 +185,6 @@ class RoomAdmissionBlockedError(HostedRoomError):
     """Raised when the current authority is fenced against new user work."""
 
     reason = "room_admissions_blocked"
-
 
 class AuthoritySupersededError(AuthorityConflictError):
     """Raised when a successful authority claim was later superseded."""
@@ -599,7 +599,6 @@ def _stop_event_id(cancel_id: str) -> str:
     digest = hashlib.sha256(cancel_id.encode()).hexdigest()[:32]
     return f"room-stop:{digest}"
 
-
 def _remaining_demotion_control_events(
     conn: sqlite3.Connection,
     *,
@@ -654,10 +653,8 @@ def _remaining_demotion_control_events(
         return DEMOTION_CONTROL_EVENT_COUNT_RESERVE
     return DEMOTION_CONTROL_EVENT_COUNT_RESERVE - 1
 
-
 def _discussion_liability_key(room_id: str, thread_id: str) -> tuple[str, str]:
     return room_id, f"{_DISCUSSION_LIABILITY_PREFIX}{thread_id}"
-
 
 def _discussion_source_state(
     conn: sqlite3.Connection,
@@ -715,7 +712,6 @@ def _discussion_source_state(
             )
     return latest_by_thread, stopped_through, completed
 
-
 def _pending_discussion_sources(
     conn: sqlite3.Connection,
     *,
@@ -741,7 +737,6 @@ def _pending_discussion_sources(
             continue
         pending[_discussion_liability_key(room_id, thread_id)] = seq
     return pending
-
 
 def _terminal_event_matches_driver_task(
     task: sqlite3.Row,
@@ -835,7 +830,6 @@ def _terminal_event_matches_driver_task(
     }
     return kind in allowed_final_kinds.get(status, frozenset())
 
-
 def _published_terminal_task_outcomes(
     conn: sqlite3.Connection,
 ) -> tuple[set[tuple[str, str]], set[tuple[str, str, int]]]:
@@ -892,7 +886,6 @@ def _published_terminal_task_outcomes(
             final.add((room_id, task_id))
     return final, deferred
 
-
 def _correlated_terminal_task_ids(
     conn: sqlite3.Connection,
     *,
@@ -946,7 +939,6 @@ def _correlated_terminal_task_ids(
         and _terminal_event_matches_driver_task(task, kind=kind, payload=payload)
     )
 
-
 def _terminal_task_discussion_liability_keys(
     conn: sqlite3.Connection,
     *,
@@ -970,7 +962,6 @@ def _terminal_task_discussion_liability_keys(
         if pending.get(key) == int(row["source_event_seq"]):
             keys.add(key)
     return frozenset(keys)
-
 
 def _closing_discussion_liability_keys(
     conn: sqlite3.Connection,
@@ -1015,7 +1006,6 @@ def _closing_discussion_liability_keys(
             keys.add(key)
     return frozenset(keys)
 
-
 def _pending_discussion_liability_key_for_source(
     conn: sqlite3.Connection,
     *,
@@ -1026,7 +1016,6 @@ def _pending_discussion_liability_key_for_source(
     key = _discussion_liability_key(room_id, thread_id)
     pending = _pending_discussion_sources(conn, consumed_task_sources=set())
     return key if pending.get(key) == source_event_seq else None
-
 
 def _terminal_publication_liabilities(
     conn: sqlite3.Connection,
@@ -1088,7 +1077,6 @@ def _terminal_publication_liabilities(
         )
     )
     return liabilities
-
 
 def _assert_terminal_recovery_headroom(
     conn: sqlite3.Connection,
@@ -1189,7 +1177,6 @@ def _assert_terminal_recovery_headroom(
             "Finish pending member turns before continuing."
         )
 
-
 def _assert_event_capacity(
     conn: sqlite3.Connection,
     *,
@@ -1262,6 +1249,60 @@ def _assert_event_capacity(
         remaining_demotion_control_events=remaining_demotion_control_events,
     )
 
+def _is_terminal_recovery_plan(
+    plan: list[tuple[int, dict[str, Any]]],
+) -> bool:
+    """Return whether one complete batch is a bounded terminal publication."""
+
+    if all(
+        event["kind"] in _TERMINAL_COMPLETION_EVENT_KINDS
+        for _, event in plan
+    ):
+        return True
+    if len(plan) != 2:
+        return False
+    member = plan[0][1]
+    terminal = plan[1][1]
+    if member["kind"] != "message.member" or terminal["kind"] != "turn.settled":
+        return False
+    try:
+        member_payload = json.loads(member["payload_json"])
+        terminal_payload = json.loads(terminal["payload_json"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(member_payload, dict) or not isinstance(
+        terminal_payload, dict
+    ):
+        return False
+
+    for field in (
+        "task_id",
+        "discussion_event_id",
+        "member_id",
+        "thread_id",
+        "turn_id",
+    ):
+        member_value = member_payload.get(field)
+        terminal_value = terminal_payload.get(field)
+        if (
+            not isinstance(member_value, str)
+            or not member_value.strip()
+            or not isinstance(terminal_value, str)
+            or not terminal_value.strip()
+            or terminal_value != member_value
+        ):
+            return False
+
+    member_event_id = member.get("event_id")
+    message_event_id = terminal_payload.get("message_event_id")
+    return (
+        terminal_payload.get("passed") is False
+        and isinstance(member_event_id, str)
+        and bool(member_event_id.strip())
+        and isinstance(message_event_id, str)
+        and bool(message_event_id.strip())
+        and message_event_id == member_event_id
+    )
 
 def _is_terminal_recovery_plan(
     plan: list[tuple[int, dict[str, Any]]],
@@ -1632,6 +1673,103 @@ def list_rooms(
     return [_room_from_row(row) for row in rows]
 
 
+def rename_room(
+    db_path: Path | str,
+    *,
+    room_id: Any,
+    event_id: Any,
+    name: Any,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Rename a live room and append its replay event atomically."""
+    room_id = _validate_identifier(
+        room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
+    )
+    event_id = _validate_identifier(
+        event_id, label="event_id", max_chars=MAX_EVENT_ID_CHARS
+    )
+    name = _validate_room_name(name)
+    now = time.time() if now is None else float(now)
+    actor_json = _canonical_json(
+        {"kind": "system", "id": "room-control"},
+        label="actor",
+        max_bytes=4 * 1024,
+    )
+    payload_json = _canonical_json(
+        {"name": name}, label="payload", max_bytes=MAX_EVENT_JSON_BYTES
+    )
+    with _transaction(db_path, immediate=True) as conn:
+        room = conn.execute(
+            """SELECT room_id, name, members_json, authority_gateway_id,
+                      authority_epoch, next_seq, event_bytes, revision, created_at,
+                      updated_at, disbanded_at
+                 FROM hosted_rooms WHERE room_id=?""",
+            (room_id,),
+        ).fetchone()
+        if room is None:
+            _raise_room_not_found(conn, room_id)
+        if room["disbanded_at"] is not None:
+            raise RoomNotFoundError("hosted room not found")
+        existing = conn.execute(
+            """SELECT room_id, seq, event_id, kind, actor_json,
+                      authority_epoch, payload_json, created_at
+                 FROM hosted_room_events WHERE room_id=? AND event_id=?""",
+            (room_id, event_id),
+        ).fetchone()
+        if existing is not None:
+            if existing["kind"] != "room.renamed" or existing["payload_json"] != payload_json:
+                raise EventConflictError(
+                    "event_id already exists with different immutable content"
+                )
+            result = _room_from_row(room, idempotent=True)
+            result["event"] = _event_from_row(existing, idempotent=True)
+            return result
+        seq = int(room["next_seq"])
+        epoch = int(room["authority_epoch"])
+        event_bytes = _event_storage_bytes(
+            event_id=event_id,
+            kind="room.renamed",
+            actor_json=actor_json,
+            payload_json=payload_json,
+        )
+        _assert_event_capacity(
+            conn,
+            room_id=room_id,
+            room=room,
+            additional_bytes=event_bytes,
+        )
+        conn.execute(
+            """UPDATE hosted_rooms
+               SET name=?, next_seq=?, event_bytes=event_bytes+?,
+                   revision=revision+1, updated_at=?
+               WHERE room_id=?""",
+            (name, seq + 1, event_bytes, now, room_id),
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_events(
+                   room_id, seq, event_id, kind, actor_json,
+                   authority_epoch, payload_json, created_at
+               ) VALUES (?, ?, ?, 'room.renamed', ?, ?, ?, ?)""",
+            (room_id, seq, event_id, actor_json, epoch, payload_json, now),
+        )
+        updated = conn.execute(
+            """SELECT room_id, name, members_json, authority_gateway_id,
+                      authority_epoch, next_seq, revision, created_at,
+                      updated_at, disbanded_at
+                 FROM hosted_rooms WHERE room_id=?""",
+            (room_id,),
+        ).fetchone()
+        event = conn.execute(
+            """SELECT room_id, seq, event_id, kind, actor_json,
+                      authority_epoch, payload_json, created_at
+                 FROM hosted_room_events WHERE room_id=? AND event_id=?""",
+            (room_id, event_id),
+        ).fetchone()
+    result = _room_from_row(updated)
+    result["event"] = _event_from_row(event)
+    return result
+
+
 def append_event(
     db_path: Path | str,
     *,
@@ -1844,6 +1982,292 @@ def append_event(
     result["actor"] = normalized_actor
     return result
 
+def append_events(
+    db_path: Path | str,
+    *,
+    events: list[dict[str, Any]],
+    allow_terminal_recovery: bool = False,
+    expected_latest_seq: int | None = None,
+) -> list[dict[str, Any]]:
+    """Append one same-room publication plan in a single transaction.
+
+    Capacity is reserved for every new event before the first insert. Existing
+    events retain the same idempotency and conflict semantics as
+    :func:`append_event`.
+    """
+
+    if not isinstance(events, list) or not events:
+        raise HostedRoomError("events must be a non-empty list")
+    if expected_latest_seq is not None and (
+        isinstance(expected_latest_seq, bool)
+        or not isinstance(expected_latest_seq, int)
+        or expected_latest_seq < 0
+    ):
+        raise HostedRoomError("expected_latest_seq must be a non-negative integer")
+    required = frozenset({"room_id", "event_id", "kind", "actor", "payload"})
+    optional = frozenset({"authority_gateway_id", "authority_epoch", "now"})
+    prepared: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
+    room_ids: set[str] = set()
+
+    for raw in events:
+        if not isinstance(raw, dict):
+            raise HostedRoomError("each event must be an object")
+        fields = frozenset(raw)
+        missing = required - fields
+        unknown = fields - required - optional
+        if missing:
+            raise HostedRoomError(
+                f"event is missing fields: {', '.join(sorted(missing))}"
+            )
+        if unknown:
+            raise HostedRoomError(
+                f"event has unknown fields: {', '.join(sorted(unknown))}"
+            )
+
+        room_id = _validate_identifier(
+            raw["room_id"],
+            label="room_id",
+            max_chars=MAX_ROOM_ID_CHARS,
+        )
+        event_id = _validate_identifier(
+            raw["event_id"],
+            label="event_id",
+            max_chars=MAX_EVENT_ID_CHARS,
+        )
+        if event_id in seen_event_ids:
+            raise HostedRoomError("event ids must be unique within a batch")
+        seen_event_ids.add(event_id)
+        room_ids.add(room_id)
+
+        kind = _validate_event_kind(raw["kind"])
+        normalized_actor, actor_json = _validate_actor(raw["actor"], kind=kind)
+        authority_scoped = normalized_actor["kind"] in {
+            "user",
+            "member",
+            "gateway",
+            "system",
+        }
+        normalized_gateway_id: str | None = None
+        normalized_epoch: int | None = None
+        authority_gateway_id = raw.get("authority_gateway_id")
+        authority_epoch = raw.get("authority_epoch")
+        if authority_scoped:
+            normalized_gateway_id = _validate_identifier(
+                authority_gateway_id,
+                label="authority_gateway_id",
+                max_chars=MAX_ACTOR_ID_CHARS,
+            )
+            if (
+                normalized_actor["kind"] == "gateway"
+                and normalized_actor["id"] != normalized_gateway_id
+            ):
+                raise HostedRoomError(
+                    "gateway actor.id must match authority_gateway_id"
+                )
+            if (
+                isinstance(authority_epoch, bool)
+                or not isinstance(authority_epoch, int)
+                or authority_epoch < 1
+            ):
+                raise HostedRoomError("authority_epoch must be a positive integer")
+            normalized_epoch = authority_epoch
+        elif authority_gateway_id is not None or authority_epoch is not None:
+            raise HostedRoomError(
+                "authority fields are only valid for room-scoped events"
+            )
+        payload = raw["payload"]
+        if not isinstance(payload, dict):
+            raise HostedRoomError("payload must be an object")
+        payload_json = _canonical_json(
+            payload,
+            label="payload",
+            max_bytes=MAX_EVENT_JSON_BYTES,
+        )
+        created_at = (
+            time.time() if raw.get("now") is None else float(raw["now"])
+        )
+        prepared.append(
+            {
+                "room_id": room_id,
+                "event_id": event_id,
+                "kind": kind,
+                "normalized_actor": normalized_actor,
+                "actor_json": actor_json,
+                "payload": payload,
+                "payload_json": payload_json,
+                "authority_scoped": authority_scoped,
+                "authority_gateway_id": normalized_gateway_id,
+                "authority_epoch": normalized_epoch,
+                "created_at": created_at,
+                "event_bytes": _event_storage_bytes(
+                    event_id=event_id,
+                    kind=kind,
+                    actor_json=actor_json,
+                    payload_json=payload_json,
+                ),
+            }
+        )
+
+    if len(room_ids) != 1:
+        raise HostedRoomError("an event batch must target exactly one room")
+
+    results: list[dict[str, Any] | None] = [None for _ in prepared]
+    with _transaction(db_path, immediate=True) as conn:
+        pending: list[tuple[int, dict[str, Any]]] = []
+        for index, event in enumerate(prepared):
+            existing = conn.execute(
+                """SELECT room_id, seq, event_id, kind, actor_json, authority_epoch,
+                          payload_json, created_at
+                   FROM hosted_room_events WHERE room_id=? AND event_id=?""",
+                (event["room_id"], event["event_id"]),
+            ).fetchone()
+            if existing is None:
+                pending.append((index, event))
+                continue
+            if (
+                existing["kind"] != event["kind"]
+                or existing["actor_json"] != event["actor_json"]
+                or existing["authority_epoch"] != event["authority_epoch"]
+                or existing["payload_json"] != event["payload_json"]
+            ):
+                raise EventConflictError(
+                    "event_id already exists with different content"
+                )
+            result = _event_from_row(existing, idempotent=True)
+            result["actor"] = event["normalized_actor"]
+            results[index] = result
+
+        if pending:
+            existing_indices = [
+                index for index, result in enumerate(results) if result is not None
+            ]
+            if existing_indices != list(range(len(existing_indices))):
+                raise EventConflictError(
+                    "existing batch events must form an ordered prefix"
+                )
+            room_id = next(iter(room_ids))
+            room = conn.execute(
+                """SELECT next_seq, event_bytes, authority_gateway_id,
+                          authority_epoch
+                     FROM hosted_rooms
+                    WHERE room_id=? AND disbanded_at IS NULL""",
+                (room_id,),
+            ).fetchone()
+            if room is None:
+                _raise_room_not_found(conn, room_id)
+            if (
+                expected_latest_seq is not None
+                and int(room["next_seq"]) - 1 != expected_latest_seq
+            ):
+                raise RoomConflictError(
+                    "hosted room latest sequence changed before event publication"
+                )
+            for _, event in pending:
+                if event["authority_scoped"] and (
+                    room["authority_gateway_id"]
+                    != event["authority_gateway_id"]
+                    or int(room["authority_epoch"]) != event["authority_epoch"]
+                ):
+                    raise AuthorityConflictError("stale hosted room authority")
+
+            additional_bytes = sum(event["event_bytes"] for _, event in pending)
+            terminal_recovery = allow_terminal_recovery and _is_terminal_recovery_plan(
+                list(enumerate(prepared))
+            )
+            released_task_ids = (
+                _correlated_terminal_task_ids(
+                    conn,
+                    room_id=room_id,
+                    events=[event for _, event in pending],
+                )
+                if terminal_recovery
+                else frozenset()
+            )
+            prospective_discussion_keys = (
+                _terminal_task_discussion_liability_keys(
+                    conn,
+                    room_id=room_id,
+                    task_ids=released_task_ids,
+                )
+                if terminal_recovery
+                else frozenset()
+            )
+            closing_discussion_keys = _closing_discussion_liability_keys(
+                conn,
+                room_id=room_id,
+                events=[event for _, event in pending],
+            )
+            _assert_event_capacity(
+                conn,
+                room_id=room_id,
+                room=room,
+                additional_bytes=additional_bytes,
+                additional_events=len(pending),
+                allow_control=all(
+                    event["kind"] in _CRITICAL_CONTROL_EVENT_KINDS
+                    for _, event in pending
+                ),
+                allow_stop=all(
+                    event["kind"] == "room.stop_requested" for _, event in pending
+                ),
+                allow_terminal_recovery=(
+                    terminal_recovery or bool(closing_discussion_keys)
+                ),
+                released_task_ids=released_task_ids,
+                released_liability_keys=closing_discussion_keys,
+                prospective_liability_keys=prospective_discussion_keys,
+            )
+            first_seq = int(room["next_seq"])
+            next_seq = first_seq
+            for index, event in pending:
+                conn.execute(
+                    """INSERT INTO hosted_room_events
+                       (room_id, seq, event_id, kind, actor_json,
+                        authority_epoch, payload_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        room_id,
+                        next_seq,
+                        event["event_id"],
+                        event["kind"],
+                        event["actor_json"],
+                        event["authority_epoch"],
+                        event["payload_json"],
+                        event["created_at"],
+                    ),
+                )
+                row = conn.execute(
+                    """SELECT room_id, seq, event_id, kind, actor_json,
+                              authority_epoch, payload_json, created_at
+                       FROM hosted_room_events WHERE room_id=? AND seq=?""",
+                    (room_id, next_seq),
+                ).fetchone()
+                if row is None:  # pragma: no cover - guarded by the insert above
+                    raise RuntimeError("appended event could not be reloaded")
+                result = _event_from_row(row)
+                result["actor"] = event["normalized_actor"]
+                results[index] = result
+                next_seq += 1
+
+            advanced = conn.execute(
+                """UPDATE hosted_rooms
+                   SET next_seq=?, event_bytes=event_bytes+?, updated_at=?
+                   WHERE room_id=? AND next_seq=?""",
+                (
+                    next_seq,
+                    additional_bytes,
+                    max(event["created_at"] for _, event in pending),
+                    room_id,
+                    first_seq,
+                ),
+            )
+            if advanced.rowcount != 1:
+                raise RuntimeError("hosted room sequence advance lost its write fence")
+
+    if any(result is None for result in results):  # pragma: no cover - internal fence
+        raise RuntimeError("event batch did not produce every requested result")
+    return [result for result in results if result is not None]
 
 def append_events(
     db_path: Path | str,
@@ -2337,7 +2761,6 @@ def _request_room_stop_locked(
         raise RuntimeError("Stop event could not be reloaded")
     return _event_from_row(row)
 
-
 def request_room_stop(
     db_path: Path | str,
     *,
@@ -2357,7 +2780,6 @@ def request_room_stop(
             expected_epoch=expected_epoch,
             now=time.time(),
         )
-
 
 def claim_authority(
     db_path: Path | str,
@@ -2527,7 +2949,6 @@ def claim_authority(
     )
     return state
 
-
 def disband_room(
     db_path: Path | str,
     *,
@@ -2683,7 +3104,6 @@ def disband_room(
         "idempotent": False,
         "event": _event_from_row(event),
     }
-
 
 def read_events(
     db_path: Path | str,

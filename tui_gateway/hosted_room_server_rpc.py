@@ -15,15 +15,13 @@ from types import ModuleType
 from typing import Any, Callable
 
 from gateway import hosted_room_driver as state
-from tui_gateway.hosted_room_driver import HostedRoomProfileUnavailableError
-from tui_gateway.transport import Transport, bind_transport, reset_transport
+from tui_gateway.transport import bind_transport, reset_transport
 
 
 class _InternalDropTransport:
     """Accept internal frames without publishing private room traffic."""
 
-    def write(self, obj: dict) -> bool:
-        del obj
+    def write(self, _obj: dict) -> bool:
         return True
 
     def close(self) -> None:
@@ -52,19 +50,7 @@ class HostedRoomServerRPC:
         self.server = server
         self.profile_available = profile_available or (lambda _profile: True)
         self._ids = itertools.count(1)
-        self._transport: Transport = _InternalDropTransport()
-
-    def _require_profile_available(self, profile: str) -> None:
-        try:
-            available = self.profile_available(profile)
-        except Exception as exc:
-            raise HostedRoomProfileUnavailableError(
-                "hosted room target profile availability could not be verified"
-            ) from exc
-        if not available:
-            raise HostedRoomProfileUnavailableError(
-                "hosted room target profile is unavailable"
-            )
+        self._transport = _InternalDropTransport()
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         handler = self.server._methods[method]
@@ -88,7 +74,6 @@ class HostedRoomServerRPC:
     def resolve_exact(
         self, *, profile: str, title: str, source: str
     ) -> Mapping[str, Any] | None:
-        self._require_profile_available(profile)
         result = self._call(
             "session.list",
             {

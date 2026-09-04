@@ -659,7 +659,6 @@ def _write_managed_memory(
             raise KnowledgeError("built-in memory is disabled; write refused")
         path = _memory_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-
         with MemoryStore._file_lock(path):
             before_exists = path.exists()
             raw, read_ok = MemoryStore._read_raw_checked(path)
@@ -1039,7 +1038,9 @@ def _verified_memory_path(memory: Any) -> Path:
     if not isinstance(memory, dict):
         raise KnowledgeError("audit memory record is invalid")
     raw_path = memory.get("path")
-    if raw_path is not None and not isinstance(raw_path, str):
+    if raw_path is not None and (
+        not isinstance(raw_path, str) or _CONTROL_CHARACTER_RE.search(raw_path)
+    ):
         raise KnowledgeError("audit memory path is invalid")
     try:
         candidate = (

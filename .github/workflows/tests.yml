@@ -6,7 +6,6 @@ on:
 permissions:
   contents: read
 
-# Cancel in-progress runs for the same ref
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -14,23 +13,10 @@ concurrency:
 jobs:
   test:
     name: Run tests
-    # Nous uses one 96-core runner for the whole suite. Forks use standard
-    # runners and let the test harness derive bounded concurrency from each
-    # runner's actual CPU count.
-    #
-    # 96 cores clear the floor that the slowest single test file sets (about
-    # 82s), so upstream stays on one slice. Fork slicing below exists only to
-    # stay below the hosted runner's external 30-minute shutdown boundary.
-    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-96-core' || 'ubuntu-latest' }}
-    # Standard fork runners can be reclaimed by the hosted service before a
-    # larger job timeout is reached. Keep upstream's 96-core run intact, but
-    # split the identical per-file suite across twelve fork jobs so every
-    # collected file still runs and each job stays below that external limit.
-    strategy:
-      fail-fast: false
-      matrix:
-        slice: ${{ fromJSON(github.repository == 'NousResearch/hermes-agent' && '["1/1"]' || '["1/12", "2/12", "3/12", "4/12", "5/12", "6/12", "7/12", "8/12", "9/12", "10/12", "11/12", "12/12"]') }}
-    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 30 }}
+    # This fork does not have access to NousResearch's private 96-core runner.
+    # Use a standard GitHub-hosted runner with bounded per-file concurrency.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,16 +38,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
-          # Pin the uv version: unpinned, setup-uv resolves "latest" by
-          # fetching a manifest from raw.githubusercontent.com on EVERY job —
-          # a transient fetch failure fails the whole job (2026-07-28 slice-5
-          # incident). Pinned, the binary downloads directly; no manifest hop.
           version: "0.9.28"
-          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
-          # Keyed on the dependency manifests, so the cache is reused until
-          # pyproject.toml or uv.lock changes. `uv sync` still runs every
-          # time, but resolves from the warm cache instead of re-downloading
-          # and re-building wheels.
           enable-cache: true
           cache-dependency-glob: |
             pyproject.toml
@@ -73,83 +50,19 @@ jobs:
           command: uv python install 3.11
 
       - name: Install dependencies
-        # `uv sync --locked` installs the exact pinned set from uv.lock (and
-        # fails if the lock is out of sync with pyproject.toml), giving a
-        # reproducible env. It also creates .venv itself, so no separate
-        # `uv venv` step is needed.
-        #
-        # The trailing extras beyond all/dev are the lazy-install features
-        # (tools/lazy_deps.py) that tests exercise for real: provider.anthropic,
-        # stt/tts.mistral, image.fal, terminal.modal, terminal.daytona,
-        # memory.hindsight, search.parallel. The hermetic test env forbids
-        # mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
-        # tests/conftest.py), so the SDKs those tests need must be in the
-        # venv up front — resolved from uv.lock like everything else, which
-        # also honors the exact supply-chain pins these extras carry.
         uses: ./.github/actions/retry
         with:
           command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
-        # Optimized for CI: prunes pre-built wheels that are cheap to
-        # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
       - name: Run tests
-        # Per-file isolation via scripts/run_tests.sh: each test file runs
-        # in its own freshly-spawned `python -m pytest <file>` subprocess
-        # with bounded parallelism. No xdist, no shared workers, no
-        # module-level state leakage between files.
-        #
-        # No --files: the runner discovers the suite itself. The discovered
-        # set is identical to the list the removed matrix job used to pass in.
         run: |
           source .venv/bin/activate
-          if [ "${GITHUB_REPOSITORY}" = "NousResearch/hermes-agent" ]; then
-            scripts/run_tests.sh
-          else
-            # A hosted fork runner can occasionally lose a test descendant
-            # while the job stays marked in progress. Run the whole command
-            # under a recursive process-tree supervisor so the watchdog can
-            # terminate workers even when they start separate sessions.
-            python scripts/ci/timebox_process.py \
-              --timeout-seconds 1500 \
-              --grace-seconds 60 \
-              -- scripts/run_tests.sh
-          fi
+          scripts/run_tests.sh
         env:
-          # Bind each matrix job to its own test slice. Without this, all 12
-          # fork jobs rediscover and run the entire suite.
-          HERMES_TEST_SLICE: ${{ matrix.slice }}
-          # This is the maximum number of test FILES that run together.
-          # run_tests_parallel.py starts one pytest subprocess for each file
-          # from a single ThreadPoolExecutor, so this value IS the limit. The
-          # default is cpu_count*2. The explicit 96-worker tuning applies only
-          # to the 96-core Nous runner; forks leave this empty so the harness
-          # sizes itself for the standard runner instead of oversubscribing it.
-          #
-          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
-          # two repetitions for each value. See run 32549672063:
-          #
-          #     workers   x cores   mean
-          #        48       0.5x    138s
-          #        96       1.0x    126s   <- fastest
-          #       144       1.5x    132s
-          #       192       2.0x    132s
-          #       240       2.5x    140s
-          #       288       3.0x    142s
-          #
-          # One worker for each core wins. The curve is shallow: 126s to 142s
-          # across a 6x range. The suite has sufficient concurrency at this
-          # size. The remaining time is the slowest files plus the setup.
-          # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
-          # On a standard fork runner the state-suite's isolated subprocess
-          # can legitimately exceed the default five-minute cap under load.
-          # Retrying that killed process costs the same ten-minute budget but
-          # still leaves CI red; allow one bounded six-minute attempt instead.
-          HERMES_TEST_FILE_TIMEOUT: ${{ github.repository == 'NousResearch/hermes-agent' && '300' || '600' }}
-          # Ensure tests don't accidentally call real APIs
+          HERMES_TEST_WORKERS: 4
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
@@ -178,16 +91,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
-          # Pin the uv version: unpinned, setup-uv resolves "latest" by
-          # fetching a manifest from raw.githubusercontent.com on EVERY job —
-          # a transient fetch failure fails the whole job (2026-07-28 slice-5
-          # incident). Pinned, the binary downloads directly; no manifest hop.
           version: "0.9.28"
-          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
-          # Keyed on the dependency manifests, so the cache is reused until
-          # pyproject.toml or uv.lock changes. `uv sync` still runs every
-          # time, but resolves from the warm cache instead of re-downloading
-          # and re-building wheels.
           enable-cache: true
           cache-dependency-glob: |
             pyproject.toml
@@ -197,22 +101,11 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        # `uv sync --locked` installs the exact pinned set from uv.lock (and
-        # fails if the lock is out of sync with pyproject.toml), giving a
-        # reproducible env. It also creates .venv itself, so no separate
-        # `uv venv` step is needed.
-        #
-        # Same extras as the test job's sync above: the hermetic test env
-        # forbids mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
-        # tests/conftest.py), so lazy-install SDKs exercised by tests must be
-        # in the venv up front.
         uses: ./.github/actions/retry
         with:
           command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
-        # Optimized for CI: prunes pre-built wheels that are cheap to
-        # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
       - name: Run e2e tests

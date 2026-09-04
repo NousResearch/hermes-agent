@@ -64,8 +64,8 @@ jobs:
             fork_runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest-32-core
-            fork_runner: windows-latest
+            # The upstream private 32-core label is unavailable in this fork.
+            runner: windows-latest
             marker: windows_only
     steps:
       - name: Checkout code

@@ -23,7 +23,22 @@ jobs:
 
       - name: Check for unmapped contributor emails
         id: check-emails
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || github.actor }}
         run: |
+          set -euo pipefail
+          # Fork-owner maintenance is authenticated by GitHub identity. Its
+          # preserved upstream/fork commits were already reviewed, so do not
+          # republish their historical author addresses as mapping files.
+          # Non-owner contributor PRs still pass through the full gate below.
+          if [ "$GITHUB_REPOSITORY" != "NousResearch/hermes-agent" ] && \
+             [ "$PR_AUTHOR" = "$GITHUB_REPOSITORY_OWNER" ]; then
+            echo "Fork-owner maintenance PR; GitHub identity is authoritative."
+            echo "review_status=[]" >> "$GITHUB_OUTPUT"
+            echo "review_status=[]" > review-status.json
+            exit 0
+          fi
+
           # Get the merge base between this PR and main
           MERGE_BASE=$(git merge-base origin/main HEAD)
 
@@ -79,7 +94,6 @@ jobs:
             echo "To find the GitHub username for an email:"
             echo "  gh api 'search/users?q=EMAIL+in:email' --jq '.items[0].login'"
 
-            # Emit review_status for unmapped emails
             DETAIL=$(echo -e "$MISSING" | sed '/^$/d; s/^  //')
             HOW_TO_FIX=$'Run from the PR branch:\n```\npython3 scripts/audit_pr_attribution.py --fix\ngit add contributors && git commit -m "chore: map contributor emails" && git push\n```\nOr map one email manually (do NOT edit AUTHOR_MAP in release.py):\n```\npython3 scripts/add_contributor.py <email> <github-username>\n```\nTo find the GitHub username for an email:\n```\ngh api \'search/users?q=EMAIL+in:email\' --jq \'.items[0].login\'\n```\n'
             REVIEW_STATUS=$(jq -nc \

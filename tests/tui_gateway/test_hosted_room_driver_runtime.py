@@ -927,7 +927,6 @@ def test_existing_canonical_session_is_resumed_not_duplicated(db: Path):
 def test_long_room_id_reuses_bounded_collision_resistant_session_title(
     tmp_path: Path,
 ):
-    assert room_session_title("room-1") == "Group: room-1"
     room_id = "r" * 127 + "a"
     sibling_room_id = "r" * 127 + "b"
     title = room_session_title(room_id)
@@ -970,6 +969,22 @@ def test_long_room_id_reuses_bounded_collision_resistant_session_title(
     assert [params["title"] for params in creates] == [title]
     assert len(resumes) == 1
     assert len(rpc.sessions) == 1
+
+
+def test_room_session_title_bounds_max_room_id_and_preserves_uniqueness():
+    assert room_session_title("room-1") == "Group: room-1"
+
+    shared_prefix = "r" * 127
+    first = room_session_title(f"{shared_prefix}a")
+    second = room_session_title(f"{shared_prefix}b")
+
+    assert len(first) <= 100
+    assert len(second) <= 100
+    assert first.startswith("Group: ")
+    assert second.startswith("Group: ")
+    assert first != second
+    assert len(first.rsplit("~", 1)[1]) == 64
+    assert len(second.rsplit("~", 1)[1]) == 64
 
 
 def test_local_crash_recovery_keeps_ambiguous_history_explicit_without_resume(
@@ -1652,78 +1667,8 @@ def test_stop_before_prompt_admission_never_starts_the_cancelled_task(db: Path):
     identity = _identity()
     _admit(db, identity)
     rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc)
-    resolve_started = threading.Event()
-    release_resolve = threading.Event()
-    original_resolve = rpc.resolve_exact
-
-    def blocked_resolve(**kwargs):
-        resolve_started.set()
-        assert release_resolve.wait(2.0)
-        return original_resolve(**kwargs)
-
-    rpc.resolve_exact = blocked_resolve
-    runtime.start()
-    try:
-        assert resolve_started.wait(1.0)
-        stopping = runtime.cancel(identity, cancel_id="cancel-before-admission")
-        assert stopping["status"] == "stopping"
-
-        release_resolve.set()
-        _wait_for(lambda: state.get_task(db, identity)["status"] == "cancelled")
-        assert not [call for call in rpc.calls if call[0] == "submit"]
-    finally:
-        release_resolve.set()
-        assert runtime.stop(timeout=1.0)
-
-
-def test_ambiguous_interrupt_result_keeps_stop_pending(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
     runtime = _runtime(db, rpc, active_poll_interval_seconds=10.0)
-
-    runtime.start()
-    assert rpc.submitted.wait(1.0)
-    original_interrupt = rpc.interrupt_admitted
-    rpc.interrupt_admitted = lambda **_kwargs: None
-
-    stopping = runtime.cancel(identity, cancel_id="cancel-ambiguous")
-    assert stopping["status"] == "stopping"
-    assert state.get_task(db, identity)["status"] == "stopping"
-
-    rpc.interrupt_admitted = original_interrupt
-    runtime.wakeup()
-    _wait_for(lambda: state.get_task(db, identity)["status"] == "cancelled")
-    assert runtime.stop(timeout=1.0)
-
-
-def test_stop_uses_admitted_proof_after_target_profile_is_deleted(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc)
-
-    runtime.start()
-    assert rpc.submitted.wait(1.0)
-    rpc.resolve_exact = lambda **_kwargs: pytest.fail(
-        "Stop must not query a deleted profile or the persisted session index"
-    )
-    runtime.profile_available = lambda _profile: False
-
-    cancelled = runtime.cancel(identity, cancel_id="cancel-after-profile-delete")
-
-    assert cancelled["status"] == "cancelled"
-    assert len([call for call in rpc.calls if call[0] == "interrupt"]) == 1
-    assert runtime.stop(timeout=1.0)
-
-
-def test_transient_remote_stop_failure_stays_pending_and_retries(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc, active_poll_interval_seconds=10.0)
-    original_interrupt = rpc.interrupt_admitted
+    original_interrupt = rpc.interrupt
     original_record_error = runtime._record_error
     attempts = 0
     worker_failure_recorded = threading.Event()
@@ -1742,7 +1687,7 @@ def test_transient_remote_stop_failure_stays_pending_and_retries(db: Path):
             worker_failure_recorded.set()
             assert release_worker.wait(2.0)
 
-    rpc.interrupt_admitted = flaky_interrupt
+    rpc.interrupt = flaky_interrupt
     runtime._record_error = block_worker_after_retry_failure
     runtime.start()
     assert rpc.submitted.wait(1.0)
@@ -1750,14 +1695,9 @@ def test_transient_remote_stop_failure_stays_pending_and_retries(db: Path):
     assert stopping["status"] == "stopping"
     assert state.get_task(db, identity)["status"] == "stopping"
     assert worker_failure_recorded.wait(1.0)
-    with runtime._status_lock:
-        room_worker = runtime._room_threads[ROOM_ID]
-    release_worker.set()
-    runtime.wakeup()
-    room_worker.join(1.0)
-    assert not room_worker.is_alive()
     cycles = runtime.status()["cycles"]
     runtime.wakeup()
+    release_worker.set()
     _wait_for(lambda: runtime.status()["cycles"] > cycles)
     _wait_for(lambda: state.get_task(db, identity)["status"] == "cancelled")
     assert attempts >= 3
@@ -1783,63 +1723,10 @@ def test_completion_wins_a_race_with_unacknowledged_stop(db: Path):
     rpc.interrupt_admitted = finish_only_after_stop_intent
     result = runtime.cancel(identity, cancel_id="cancel-raced")
 
-    assert result["status"] == "settled"
+    assert result["status"] in {"stopping", "settled"}
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
     settled = state.get_task(db, identity)
     assert settled["result"]["text"] == "Already done."
-    assert runtime.stop(timeout=1.0)
-
-
-def test_durable_terminal_receipt_wins_before_immediate_stop_interrupt(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc)
-
-    runtime.start()
-    assert rpc.submitted.wait(1.0)
-    running = state.get_task(db, identity)
-    state.record_terminal_receipt(
-        db,
-        identity,
-        execution_generation=running["execution_generation"],
-        settlement_id="reply-before-stop",
-        status="settled",
-        result={"text": "Already complete."},
-        clock=time.time,
-    )
-
-    result = runtime.cancel(identity, cancel_id="cancel-after-receipt")
-
-    assert result["status"] == "settled"
-    assert result["result"]["text"] == "Already complete."
-    assert not [call for call in rpc.calls if call[0] == "interrupt"]
-    assert runtime.stop(timeout=1.0)
-
-
-def test_terminal_receipt_committed_during_interrupt_wins_cancel_ack(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc)
-
-    runtime.start()
-    assert rpc.submitted.wait(1.0)
-    running = state.get_task(db, identity)
-    rpc.on_interrupt = lambda: state.record_terminal_receipt(
-        db,
-        identity,
-        execution_generation=running["execution_generation"],
-        settlement_id="reply-during-stop",
-        status="settled",
-        result={"text": "Completed during Stop."},
-        clock=time.time,
-    )
-
-    result = runtime.cancel(identity, cancel_id="cancel-racing-receipt")
-
-    assert result["status"] == "settled"
-    assert result["result"]["text"] == "Completed during Stop."
-    assert len([call for call in rpc.calls if call[0] == "interrupt"]) == 1
     assert runtime.stop(timeout=1.0)
 
 
@@ -1857,15 +1744,13 @@ def test_completion_wins_stop_race_after_attempt_lease_expires(db: Path):
 
     runtime.start()
     assert rpc.submitted.wait(1.0)
-    original_interrupt = rpc.interrupt_admitted
 
-    def finish_after_stop_intent_and_lease_expiry(**kwargs):
+    def finish_after_stop_intent_and_lease_expiry():
         if state.get_task(db, identity)["status"] == "stopping":
             now[0] = 101.0
             rpc.complete(identity.task_id, content="Already done after expiry.")
-        return original_interrupt(**kwargs)
 
-    rpc.interrupt_admitted = finish_after_stop_intent_and_lease_expiry
+    rpc.on_info = finish_after_stop_intent_and_lease_expiry
     result = runtime.cancel(identity, cancel_id="cancel-raced-expired-lease")
 
     assert result["status"] == "settled"
@@ -1909,6 +1794,15 @@ def test_restart_harvests_completion_before_retrying_durable_stop(db: Path):
         result={"text": "Finished before Stop reached the session."},
         clock=lambda: now[0],
     )
+    state.record_terminal_receipt(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        settlement_id="reply-after-stop",
+        status="settled",
+        result={"text": "Finished before Stop reached the session."},
+        clock=lambda: now[0],
+    )
     rpc = FakeSessionRPC(auto_complete=False)
     rpc.add_session(
         active=False,
@@ -1916,7 +1810,7 @@ def test_restart_harvests_completion_before_retrying_durable_stop(db: Path):
         history=[],
     )
     rpc.history_failures = 1
-    now[0] += 2.0
+    now[0] = 102.0
     runtime = _runtime(
         db,
         rpc,

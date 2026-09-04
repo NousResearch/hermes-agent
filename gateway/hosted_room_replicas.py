@@ -29,11 +29,12 @@ from pathlib import Path
 from typing import Any
 
 from gateway.hosted_rooms import (
+    HostedRoomError,
+    MAX_ACTIVE_ROOMS,
     MAX_ACTOR_ID_CHARS,
     MAX_ACTIVE_ROOMS,
     MAX_EVENT_JSON_BYTES,
     MAX_ROOM_ID_CHARS,
-    HostedRoomError,
     RoomConflictError,
     _CRITICAL_CONTROL_EVENT_KINDS,
     _assert_event_capacity,
@@ -49,7 +50,6 @@ from gateway.hosted_rooms import (
     _validate_room_name,
     local_authority_gateway_id,
 )
-
 MAX_REPLICA_ROOMS = 256
 MAX_REPLICA_EVENT_BYTES = 256 * 1024 * 1024
 
@@ -301,7 +301,6 @@ def ingest_page(
         "authority": authority,
         "caught_up": new_last >= observed_latest_seq,
     }
-
 
 def replica_state(db_path: Path | str, *, room_id: Any) -> dict[str, Any]:
     """Return the stored replica's coverage and authority lineage."""
@@ -594,6 +593,29 @@ def promote_replica(
         "latest_seq": claim_seq,
     }
 
+def validate_demotion_observation(
+    *,
+    room_id: Any,
+    observed_gateway_id: Any,
+    observed_epoch: Any,
+) -> tuple[str, str, int]:
+    """Normalize one externally observed authority lineage."""
+
+    room_id = _validate_identifier(
+        room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
+    )
+    observed_gateway_id = _validate_identifier(
+        observed_gateway_id,
+        label="observed_gateway_id",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    if (
+        isinstance(observed_epoch, bool)
+        or not isinstance(observed_epoch, int)
+        or observed_epoch < 1
+    ):
+        raise ReplicaError("observed_epoch must be a positive integer")
+    return room_id, observed_gateway_id, observed_epoch
 
 def validate_demotion_observation(
     *,

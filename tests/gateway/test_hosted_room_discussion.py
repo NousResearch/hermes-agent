@@ -200,13 +200,15 @@ def test_replay_defers_missing_frozen_member_without_blocking_healthy_members(
     assert missing.task is not None
     assert missing.task.member.profile == "research"
 
-    deferred = discussion.plan_unavailable_member_deferral(
+    deferred = discussion.plan_publication(
         room,
         _events(db),
         missing.task,
+        status="deferred",
+        result={"reason": "member_unavailable"},
+        execution_generation=1,
         local_profiles=remaining_profiles,
     )
-    assert deferred is not None
     assert deferred.terminal_kind == "turn.deferred"
     assert deferred.events[-1].payload["reason"] == "member_unavailable"
     _append_publication(db, deferred)
@@ -219,15 +221,6 @@ def test_replay_defers_missing_frozen_member_without_blocking_healthy_members(
     assert healthy.status == "task"
     assert healthy.task is not None
     assert healthy.task.member.profile == "build"
-    assert (
-        discussion.plan_unavailable_member_deferral(
-            room,
-            _events(db),
-            healthy.task,
-            local_profiles=remaining_profiles,
-        )
-        is None
-    )
 
 
 def test_distinct_threads_are_planned_fifo_without_skipping(room_db):

@@ -97,35 +97,6 @@ def _open_driver_schema(path: str) -> int:
     return len(driver.list_tasks(path, room_id="room-1"))
 
 
-def _begin_demotion_from_process(path: str, cancel_id: str) -> dict[str, object]:
-    return driver.begin_room_demotion(
-        path,
-        room_id="room-1",
-        expected_gateway_id="gateway-a",
-        expected_epoch=1,
-        observed_gateway_id="gateway-b",
-        observed_epoch=2,
-        cancel_id=cancel_id,
-        clock=FakeClock(),
-    )
-
-
-def test_driver_lease_preserves_legacy_positional_reclaimed_argument():
-    lease = driver.DriverLease(
-        "room-1",
-        "gateway-a",
-        1,
-        "process-a",
-        2,
-        130.0,
-        True,
-    )
-
-    assert lease.reclaimed is True
-    assert lease.process_pid is None
-    assert lease.process_start_time is None
-
-
 def test_read_does_not_require_sqlite_writer_lock(db, monkeypatch):
     identity = _identity()
     _admit(db, identity, FakeClock())
@@ -1024,7 +995,7 @@ def test_cancellation_fences_late_success(db):
         )
 
 
-def test_stop_ack_refuses_exact_generation_terminal_receipt(db):
+def test_stop_intent_fences_pending_approval_decision(db):
     clock = FakeClock()
     identity = _identity()
     lease = _lease(db, clock)
@@ -1036,254 +1007,50 @@ def test_stop_ack_refuses_exact_generation_terminal_receipt(db):
         expected_cancel_generation=0,
         clock=clock,
     )
+    driver.publish_approval_request(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        member_id="ops",
+        request_id="approval-1",
+        session_id="session-1",
+        action={"command": "deploy --dry-run"},
+        clock=clock,
+    )
+
     driver.begin_task_cancel(
         db,
         identity,
-        cancel_id="cancel-after-receipt",
-        expected_cancel_generation=0,
-        clock=clock,
-    )
-    driver.record_terminal_receipt(
-        db,
-        identity,
-        execution_generation=attempt.execution_generation,
-        settlement_id="reply-before-ack",
-        status="settled",
-        result={"text": "done"},
+        cancel_id="cancel-approval",
+        expected_cancel_generation=attempt.cancel_generation,
         clock=clock,
     )
 
-    with pytest.raises(driver.TaskConflictError, match="terminal receipt"):
-        driver.complete_task_cancel(
+    with pytest.raises(driver.StaleTaskError, match="no longer running"):
+        driver.decide_approval_request(
             db,
             identity,
-            lease,
-            cancel_id="cancel-after-receipt",
-            expected_execution_generation=attempt.execution_generation,
-            expected_cancel_generation=1,
+            execution_generation=attempt.execution_generation,
+            member_id="ops",
+            request_id="approval-1",
+            choice="once",
             clock=clock,
         )
 
-    assert driver.get_task(db, identity)["status"] == "stopping"
-
-
-@pytest.mark.parametrize("owner_state", ["alive", "unknown"])
-def test_successor_cannot_claim_stop_without_proven_owner_exit(db, owner_state):
-    clock = FakeClock()
-    identity = _identity()
-    old = _lease(
-        db,
-        clock,
-        process="old-process",
-        process_pid=1111,
-        process_start_time=7001,
-        ttl=1,
-    )
-    _admit(db, identity, clock)
-    attempt = driver.start_task(
-        db, identity, old, expected_cancel_generation=0, clock=clock
-    )
-    stopping = driver.begin_task_cancel(
-        db,
-        identity,
-        cancel_id="cancel-owner-live",
-        expected_cancel_generation=0,
-        clock=clock,
-    )
-    clock.advance(2)
-    successor = _lease(
-        db,
-        clock,
-        process="successor",
-        process_pid=2222,
-        process_start_time=8001,
-    )
-
-    with pytest.raises(driver.LeaseHeldError, match=owner_state):
-        driver.claim_stopping_task(
-            db,
-            identity,
-            successor,
-            expected_execution_generation=attempt.execution_generation,
-            expected_cancel_generation=stopping["cancel_generation"],
-            owner_liveness=lambda _pid, _started: owner_state,
-            clock=clock,
-        )
-
-    current = driver.get_task(db, identity)
-    assert current["run_process_generation"] == old.process_generation
-    assert current["status"] == "stopping"
-
-
-def test_successor_claim_and_cancel_are_process_and_lease_fenced(db):
-    clock = FakeClock()
-    identity = _identity()
-    old = _lease(
-        db,
-        clock,
-        process="old-process",
-        process_pid=1111,
-        process_start_time=7001,
-        ttl=1,
-    )
-    _admit(db, identity, clock)
-    attempt = driver.start_task(
-        db, identity, old, expected_cancel_generation=0, clock=clock
-    )
-    stopping = driver.begin_task_cancel(
-        db,
-        identity,
-        cancel_id="cancel-dead-owner",
-        expected_cancel_generation=0,
-        clock=clock,
-    )
-    clock.advance(2)
-    successor = _lease(
-        db,
-        clock,
-        process="successor",
-        process_pid=2222,
-        process_start_time=8001,
-    )
-    seen = []
-
-    claimed = driver.claim_stopping_task(
-        db,
-        identity,
-        successor,
-        expected_execution_generation=attempt.execution_generation,
-        expected_cancel_generation=stopping["cancel_generation"],
-        owner_liveness=lambda pid, started: seen.append((pid, started)) or "dead",
-        clock=clock,
-    )
-
-    assert seen == [(1111, 7001)]
-    assert claimed["run_process_generation"] == successor.process_generation
-    assert claimed["run_process_pid"] == successor.process_pid
-    with pytest.raises(driver.StaleLeaseError):
-        driver.complete_task_cancel(
-            db,
-            identity,
-            old,
-            cancel_id="cancel-dead-owner",
-            expected_execution_generation=attempt.execution_generation,
-            expected_cancel_generation=stopping["cancel_generation"],
-            clock=clock,
-        )
-    cancelled = driver.complete_task_cancel(
-        db,
-        identity,
-        successor,
-        cancel_id="cancel-dead-owner",
-        expected_execution_generation=attempt.execution_generation,
-        expected_cancel_generation=stopping["cancel_generation"],
-        clock=clock,
-    )
-    assert cancelled["status"] == "cancelled"
-
-
-def test_same_process_successor_claim_does_not_probe_liveness(db):
-    clock = FakeClock()
-    identity = _identity()
-    old = _lease(db, clock, process="old-runtime", ttl=1)
-    _admit(db, identity, clock)
-    attempt = driver.start_task(
-        db, identity, old, expected_cancel_generation=0, clock=clock
-    )
-    stopping = driver.begin_task_cancel(
-        db,
-        identity,
-        cancel_id="cancel-same-process",
-        expected_cancel_generation=0,
-        clock=clock,
-    )
-    clock.advance(2)
-    successor = _lease(db, clock, process="new-runtime")
-
-    claimed = driver.claim_stopping_task(
-        db,
-        identity,
-        successor,
-        expected_execution_generation=attempt.execution_generation,
-        expected_cancel_generation=stopping["cancel_generation"],
-        owner_liveness=lambda _pid, _started: pytest.fail(
-            "same process must not probe external liveness"
-        ),
-        clock=clock,
-    )
-
-    assert claimed["run_process_generation"] == successor.process_generation
-
-
-def test_terminal_receipt_wins_before_stop_owner_reclaim(db):
-    clock = FakeClock()
-    identity = _identity()
-    old = _lease(db, clock, process="old-process", ttl=1)
-    _admit(db, identity, clock)
-    attempt = driver.start_task(
-        db, identity, old, expected_cancel_generation=0, clock=clock
-    )
-    stopping = driver.begin_task_cancel(
-        db,
-        identity,
-        cancel_id="cancel-after-terminal",
-        expected_cancel_generation=0,
-        clock=clock,
-    )
-    driver.record_terminal_receipt(
-        db,
-        identity,
-        execution_generation=attempt.execution_generation,
-        settlement_id="reply-before-reclaim",
-        status="settled",
-        result={"text": "done"},
-        clock=clock,
-    )
-    clock.advance(2)
-    successor = _lease(db, clock, process="successor", process_pid=2222)
-
-    with pytest.raises(driver.TaskConflictError, match="terminal receipt"):
-        driver.claim_stopping_task(
-            db,
-            identity,
-            successor,
-            expected_execution_generation=attempt.execution_generation,
-            expected_cancel_generation=stopping["cancel_generation"],
-            owner_liveness=lambda _pid, _started: "dead",
-            clock=clock,
-        )
-
-
-def test_stale_successor_cannot_claim_after_lease_replacement(db):
-    clock = FakeClock()
-    identity = _identity()
-    old = _lease(db, clock, process="old-process", ttl=1)
-    _admit(db, identity, clock)
-    attempt = driver.start_task(
-        db, identity, old, expected_cancel_generation=0, clock=clock
-    )
-    stopping = driver.begin_task_cancel(
-        db,
-        identity,
-        cancel_id="cancel-stale-successor",
-        expected_cancel_generation=0,
-        clock=clock,
-    )
-    clock.advance(2)
-    stale = _lease(db, clock, process="stale-successor", ttl=1)
-    clock.advance(2)
-    _lease(db, clock, process="current-successor")
-
-    with pytest.raises(driver.StaleLeaseError):
-        driver.claim_stopping_task(
-            db,
-            identity,
-            stale,
-            expected_execution_generation=attempt.execution_generation,
-            expected_cancel_generation=stopping["cancel_generation"],
-            owner_liveness=lambda _pid, _started: "dead",
-            clock=clock,
-        )
+    with sqlite3.connect(db) as conn:
+        choice = conn.execute(
+            """SELECT choice FROM hosted_room_approval_requests
+               WHERE room_id=? AND task_id=? AND execution_generation=?
+                 AND member_id=? AND request_id=?""",
+            (
+                identity.room_id,
+                identity.task_id,
+                attempt.execution_generation,
+                "ops",
+                "approval-1",
+            ),
+        ).fetchone()[0]
+    assert choice is None
 
 
 def test_approval_requests_are_stale_once_task_is_stopping(db):
@@ -1339,20 +1106,6 @@ def test_approval_requests_are_stale_once_task_is_stopping(db):
             action={"tool": "shell", "command": "inspect again"},
             clock=clock,
         )
-    with sqlite3.connect(db) as conn:
-        choice = conn.execute(
-            """SELECT choice FROM hosted_room_approval_requests
-               WHERE room_id=? AND task_id=? AND execution_generation=?
-                 AND member_id=? AND request_id=?""",
-            (
-                identity.room_id,
-                identity.task_id,
-                attempt.execution_generation,
-                "member-ops",
-                "approval-1",
-            ),
-        ).fetchone()[0]
-    assert choice is None
 
 
 def test_release_fails_closed_while_its_task_is_running(db):

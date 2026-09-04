@@ -115,19 +115,6 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
     assert resume["source"] == "bot_room"
 
 
-def test_unavailable_profile_is_rejected_before_any_server_handler():
-    server, calls = _server()
-    rpc = HostedRoomServerRPC(
-        server,
-        profile_available=lambda profile: profile == "default",
-    )
-
-    with pytest.raises(HostedRoomProfileUnavailableError):
-        rpc.resolve_exact(profile="deleted", title="Group: room", source="bot_room")
-
-    assert calls == []
-
-
 def test_handler_calls_use_a_private_drop_transport_and_restore_the_caller():
     server, _calls = _server()
     seen = []

@@ -30,6 +30,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { $paneStates, setPaneHeightLocked, setPaneHeightOverride, setPaneWidthLocked, setPaneWidthOverride } from '@/store/panes'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -43,10 +44,12 @@ import {
   resolveRememberedActivePane,
   workspaceScopeKey
 } from '../../workspace-scope'
+import { allPaneIds, findParentSplit } from '../model'
 import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
+  $layoutTree,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -91,12 +94,22 @@ import { paneChrome } from './track-model'
  *  tab's menu, so every tab in a strip answers a right-click the same way —
  *  a pane with no domain menu of its own (the file tree, a terminal, the main
  *  tab on a fresh draft) falls through to this one. */
+interface SizeLock {
+  axis: 'height' | 'width'
+  key: string
+  label: string
+  locked: boolean
+  toggle: () => void
+}
+
 function ZoneMenu({
   children,
   closable,
+  disabled,
   minimizable = true,
   minimized,
   nodeId,
+  sizeLocks,
   stripVisible,
   tabMenuPrefix,
   targetPane
@@ -105,11 +118,13 @@ function ZoneMenu({
   /** The pane the menu closes (the right-clicked chip / the active pane);
    *  undefined = not closable (the main zone). */
   closable?: () => string | undefined
+  disabled?: boolean
   /** False for the zone hosting the uncloseable workspace — collapsing the
    *  MAIN pane strands the app behind a strip. */
   minimizable?: boolean
   minimized?: boolean
   nodeId: string
+  sizeLocks?: SizeLock[]
   /** Whether the strip is on screen — the Hide/Show row toggles against what
    *  the user can see, not against the stored mode (a zone on auto has none). */
   stripVisible?: boolean
@@ -183,6 +198,19 @@ function ZoneMenu({
             </>
           )
         })()}
+        {sizeLocks && sizeLocks.length > 0 && (
+          <>
+            <kit.Separator />
+            {sizeLocks.map(sizeLock =>
+              renderActionItem(kit, {
+                icon: sizeLock.locked ? 'unlock' : 'lock',
+                key: `zone-lock-${sizeLock.key}`,
+                label: `${sizeLock.locked ? 'Unlock' : 'Lock'} ${sizeLock.label}`,
+                onSelect: sizeLock.toggle
+              })
+            )}
+          </>
+        )}
         <kit.Separator />
         {renderActionItem(kit, {
           icon: stripVisible ? 'eye-closed' : 'eye',
@@ -210,7 +238,7 @@ function ZoneMenu({
   }
 
   return (
-    <ActionsContextMenu contentClassName="w-40" items={items}>
+    <ActionsContextMenu contentClassName="w-40" disabled={disabled} items={items}>
       {children}
     </ActionsContextMenu>
   )
@@ -277,6 +305,10 @@ export function TreeGroup({
     ? node.active
     : (resolveRememberedActivePane(memoryKey, shown) ?? shown[0] ?? '')
 
+  // Locks can be owned by any shown tenant in a zone or its containing column,
+  // so subscribe to the consolidated snapshot rather than only the active tab.
+  const paneStates = useStore($paneStates)
+
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
 
@@ -337,16 +369,10 @@ export function TreeGroup({
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
-  // WIDTH collapses — a full-width horizontal header would strand a tall
-  // empty column, so the minimized form is a narrow vertical rail instead
-  // (tabs reading top-to-bottom). In a column (stacked zones) the horizontal
-  // header IS the collapsed form, exactly as before.
-  //
-  // EXCEPTION: when the zone has ≥2 shown panes, keep the horizontal tab bar
-  // even when minimized — the user can still switch (and restore) without
-  // expanding first. The vertical rail is only for a lone pane, where it
-  // still renders that pane's tab as the restore handle.
-  const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty && shown.length <= 1
+  // WIDTH collapses — use a narrow vertical rail with every shown tab, rather
+  // than clipping a horizontal header into an unusable edge sliver. In a
+  // column (stacked zones) the horizontal header remains the collapsed form.
+  const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty
   // A minimized group IS its header, so it shows one regardless.
   const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible)
 
@@ -404,19 +430,80 @@ export function TreeGroup({
   // the zone and take the tab with it.
   const toggleCollapse = () => (node.minimized ? restoreTreePane(activeId) : collapseTreePane(activeId))
 
-  // Same menu on the header strip and the edit veil — one prop bag.
+  // A direct split answers the local dimension. A vertically stacked column
+  // nested in a row also exposes one column-wide width lock: its members share
+  // the same outer track, so a width lock must be written to every visible pane
+  // in that column—not merely the tab the user happened to right-click.
+  const tree = $layoutTree.get()
+  const parent = tree ? findParentSplit(tree, node.id) : null
+  const columnParent = tree && parent?.orientation === 'column' ? findParentSplit(tree, parent.id) : null
+
+  const lockAxis: 'height' | 'width' | null =
+    parent?.orientation === 'row' ? 'width' : parent?.orientation === 'column' ? 'height' : null
+
+  const columnPaneIds = parent?.orientation === 'column' && columnParent?.orientation === 'row' ? allPaneIds(parent).filter(paneShown) : []
+
+  const makeSizeLock = (axis: 'height' | 'width', paneIds: string[], key: string, label: string): SizeLock => {
+    const locked = paneIds.some(id => Boolean(paneStates[id]?.[axis === 'width' ? 'widthLocked' : 'heightLocked']))
+
+    return {
+      axis,
+      key,
+      label,
+      locked,
+      toggle: () => {
+        const bounds = ref.current?.getBoundingClientRect()
+
+        if (!bounds) {
+          return
+        }
+
+        const size = Math.round(axis === 'width' ? bounds.width : bounds.height)
+
+        for (const paneId of paneIds) {
+          if (axis === 'width') {
+            if (!locked) {
+              setPaneWidthOverride(paneId, size)
+            }
+
+            setPaneWidthLocked(paneId, !locked)
+          } else {
+            if (!locked) {
+              setPaneHeightOverride(paneId, size)
+            }
+
+            setPaneHeightLocked(paneId, !locked)
+          }
+        }
+      }
+    }
+  }
+
+  const sizeLocks: SizeLock[] = []
+
+  if (lockAxis && parent && parent.children.length > 1 && shown.length > 0) {
+    sizeLocks.push(makeSizeLock(lockAxis, shown, lockAxis, lockAxis))
+  }
+
+  if (columnPaneIds.length > 0 && columnParent && columnParent.children.length > 1) {
+    sizeLocks.push(makeSizeLock('width', columnPaneIds, 'column-width', 'column width'))
+  }
+
+  // Same menu on the header strip, hidden-strip fallback, and edit veil.
   const zoneMenu = {
     closable,
     minimizable,
     minimized: node.minimized,
     nodeId: node.id,
+    sizeLocks,
     stripVisible,
     tabMenuPrefix: (kit: MenuKit) => paneChrome(paneFor(targetPane())).tabMenuPrefix?.(kit),
     targetPane
   }
 
   return (
-    <div
+    <ZoneMenu {...zoneMenu} disabled={stripVisible || verticalCollapse || editMode}>
+      <div
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
       data-tree-group={node.id}
       // Advertises the visible tab strip so panes can drop their own
@@ -455,8 +542,20 @@ export function TreeGroup({
             onClick={() => restoreTreePane(activeId)}
             title={t.zones.restore}
           >
+            <button
+              aria-label={`${t.zones.restore} ${tabLabel(activeId)}`}
+              className="grid size-7 shrink-0 place-items-center text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:outline-2 focus-visible:outline-(--ui-focus-ring)"
+              onClick={event => {
+                event.stopPropagation()
+                restoreTreePane(activeId)
+              }}
+              title={`${t.zones.restore} ${tabLabel(activeId)}`}
+              type="button"
+            >
+              <Codicon name={railSide === 'right' ? 'chevron-left' : 'chevron-right'} size="0.875rem" />
+            </button>
             <div
-              className="flex min-h-0 flex-col overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="flex min-h-0 flex-1 flex-col overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               role="tablist"
             >
               {shown.map(paneId => {
@@ -752,7 +851,8 @@ export function TreeGroup({
       {/* FancyZones drop overlay — its own component so the per-frame drop
           hint re-renders only this (tiny) node, not the whole zone. */}
       <ZoneDropOverlay node={node} />
-    </div>
+      </div>
+    </ZoneMenu>
   )
 }
 

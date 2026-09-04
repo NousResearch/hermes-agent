@@ -73,7 +73,13 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
 
   const snapshot = useCallback(() => {
     const all = $paneStates.get()
-    const sig = paneIds.map(id => `${id}:${all[id]?.widthOverride ?? ''}:${all[id]?.heightOverride ?? ''}`).join('|')
+
+    const sig = paneIds
+      .map(
+        id =>
+          `${id}:${all[id]?.widthOverride ?? ''}:${all[id]?.widthLocked ? 'locked' : ''}:${all[id]?.heightOverride ?? ''}:${all[id]?.heightLocked ? 'locked' : ''}`
+      )
+      .join('|')
 
     if (cache.current.sig !== sig) {
       cache.current = { sig, value: Object.fromEntries(paneIds.flatMap(id => (all[id] ? [[id, all[id]]] : []))) }
@@ -222,14 +228,17 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         // release minimizes the zone instead of leaving a useless sliver.
         const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
         const floor = toolZone ? COLLAPSED_ZONE_PX : MIN_PANE_PX
+        const paneIds = zone ? shownPaneIds(zone, trackCtx) : allPaneIds(child).filter(id => !paneGone(id))
+        const lockKey = horizontal ? 'widthLocked' : 'heightLocked'
 
         return {
           // EVERY shown pane of the zone: the zone's track is the max() of its
           // panes' sizes, so the sash writes the same px to all of them —
           // writing only the active pane would leave the zone pinned at a
           // larger sibling's width.
-          paneIds: zone ? shownPaneIds(zone, trackCtx) : [],
+          paneIds,
           fixed: Boolean(zone),
+          locked: paneIds.some(id => Boolean(overrides[id]?.[lockKey])),
           size: sizeOf(zoneEl ?? wrapper),
           min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
           max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),
@@ -245,14 +254,145 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         return
       }
 
-      const a = sideFor(node.children[aIndex], kidA, 'end')
-      const b = sideFor(node.children[bIndex], kidB, 'start')
-      const a0px = a.fixed ? a.size : sizeOf(kidA)
-      const b0px = b.fixed ? b.size : sizeOf(kidB)
-      const lo = Math.max(a.min - a0px, b0px - b.max)
-      const hi = Math.min(a.max - a0px, b0px - b.min)
+      const tracks = node.children.map((child, index) => {
+        const element = container.children[index] as HTMLElement | undefined
 
+        if (!element) {
+          return null
+        }
+
+        const side = sideFor(child, element, index <= aIndex ? 'end' : 'start')
+
+        return {
+          ...side,
+          element,
+          index,
+          initial: side.fixed ? side.size : sizeOf(element),
+          visible: !isCollapsed(child)
+        }
+      })
+
+      if (tracks.some(track => !track)) {
+        return
+      }
+
+      const sashTracks = tracks as Array<NonNullable<(typeof tracks)[number]>>
       const setOverride = horizontal ? setPaneWidthOverride : setPaneHeightOverride
+
+      const planFor = (requestedShift: number, allowCascade: boolean) => {
+        const targetIndex = requestedShift >= 0 ? aIndex : bIndex
+        const donorStep = requestedShift >= 0 ? 1 : -1
+        const target = sashTracks[targetIndex]
+        const requested = Math.abs(requestedShift)
+        const next = sashTracks.map(track => track.initial)
+        const targetCapacity = target.locked ? 0 : Math.max(0, target.max - target.initial)
+        let remaining = Math.min(requested, targetCapacity)
+        let transferred = 0
+        let cascaded = false
+        const immediateDonorIndex = targetIndex + donorStep
+        // A tool rail is locally resizable at its own seam, but must not make
+        // every unrelated seam in the row local-only. It also remains the
+        // terminal donor when reached only after another regular track.
+        const cascade = allowCascade && !target.collapseId
+
+        for (let donorIndex = immediateDonorIndex; donorIndex >= 0 && donorIndex < sashTracks.length; donorIndex += donorStep) {
+          const donor = sashTracks[donorIndex]
+
+          if (donor.collapseId && donorIndex !== immediateDonorIndex) {
+            break
+          }
+
+          if (!donor.visible || donor.locked) {
+            if (!cascade) {
+              break
+            }
+
+            continue
+          }
+
+          const take = Math.min(remaining, Math.max(0, donor.initial - donor.min))
+          next[donorIndex] -= take
+          transferred += take
+          remaining -= take
+
+          if (take > 0 && donorIndex !== targetIndex + donorStep) {
+            cascaded = true
+          }
+
+          if (remaining === 0 || !cascade) {
+            break
+          }
+        }
+
+        next[targetIndex] += transferred
+
+        return { cascaded, moved: Math.sign(requestedShift) * transferred, sizes: next }
+      }
+
+      const commitPlan = (plan: ReturnType<typeof planFor>) => {
+        const weights = [...node.weights]
+        let weightsChanged = false
+        sashTracks.forEach((track, index) => {
+          const px = Math.round(plan.sizes[index])
+
+          if (track.fixed) {
+            if (!track.locked && px !== Math.round(track.initial)) {
+              track.paneIds.forEach(id => setOverride(id, px))
+            }
+          } else if (track.visible) {
+            // Flex weights are relative. Pixel values preserve the on-screen
+            // ratio after fixed tracks have claimed their current widths.
+            weights[index] = Math.max(0.01, plan.sizes[index] / pxPerWeight)
+            weightsChanged = true
+          }
+        })
+
+        if (weightsChanged) {
+          setTreeSplitWeights(node.id, weights)
+        }
+      }
+
+      const styleSnapshots = sashTracks.map(track => track.element.getAttribute('style'))
+
+      const restoreStyles = () => {
+        sashTracks.forEach((track, index) => {
+          const style = styleSnapshots[index]
+
+          if (style === null) {
+            track.element.removeAttribute('style')
+          } else {
+            track.element.setAttribute('style', style)
+          }
+        })
+      }
+
+      const previewPlan = (plan: ReturnType<typeof planFor>) => {
+        sashTracks.forEach((track, index) => {
+          if (!track.visible) {
+            return
+          }
+
+          const px = plan.sizes[index]
+
+          // Outside a gesture a restored tool has the normal usable 80px CSS
+          // floor. While its sash is actively dragging, temporarily release
+          // that floor so it can reach the 28px collapse threshold; the next
+          // render clears this preview-only inline value.
+          if (track.collapseId) {
+            if (horizontal) {
+              track.element.style.minWidth = '0px'
+            } else {
+              track.element.style.minHeight = '0px'
+            }
+          }
+
+          if (track.fixed) {
+            track.element.style.flexBasis = `${px}px`
+          } else {
+            track.element.style.flex = `0 1 ${px}px`
+          }
+        })
+      }
 
       try {
         handle.setPointerCapture?.(pointerId)
@@ -262,80 +402,29 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
-      // Webview/iframe guests must not swallow the gesture — without this the
-      // drag froze the moment the pointer entered the in-app browser, so the
-      // seam could only shrink it a few px per press.
       const releaseGuests = guardGuestPointers()
-      // Suppress :root geometry-var writes for the gesture (see geometry.ts —
-      // each one restyles the whole document; they republish on release).
       beginSashDrag()
 
-      // pointermove outpaces 60fps and each write relayouts the whole pane tree,
-      // so coalesce to one apply per frame (rafCoalesce commits on cleanup).
-      //
-      // During the gesture the store is NOT written. setTreeSplitWeights /
-      // setPaneWidthOverride each mint a new tree/pane-state object, and the
-      // resulting commit walks every mounted pane — measured live on a real
-      // 2-session layout: 31 commits across a 58-frame drag, 20.7fps, with
-      // TreeNode at 490ms and Block/Ct re-parsing markdown for 620ms. The
-      // store is written ONCE on release; during the drag the seam is
-      // previewed with inline styles on the same wrappers React sizes.
-      //
-      // Preview rules (learned the hard way — a wrong shape here left a
-      // phantom gap where a hidden sidebar lived):
-      //  - a FIXED side gets ONLY a flex-basis override. Its wrapper renders
-      //    as `flex: 0 1 <track>`, so basis is the whole difference; grow and
-      //    shrink stay React's. Crucially the flex partner is left untouched,
-      //    so it keeps absorbing the remainder and no leftover gap can open.
-      //  - a flex-vs-flex seam pins both sides to `0 1 <px>`. Their combined
-      //    px is constant, so sibling flex tracks see the same leftover.
-      //  - cleanup: a real drag commits the store once, and React's re-render
-      //    rewrites the `flex` shorthand, which clears the overrides (writing
-      //    the shorthand resets the longhands). A no-movement click restores
-      //    the captured style attribute instead, since nothing re-renders.
-      const applyShift = (shiftPx: number) => {
-        if (a.fixed) {
-          a.paneIds.forEach(id => setOverride(id, Math.round(a0px + shiftPx)))
-        }
-
-        if (b.fixed) {
-          b.paneIds.forEach(id => setOverride(id, Math.round(b0px - shiftPx)))
-        }
-
-        if (!a.fixed && !b.fixed) {
-          const weights = [...node.weights]
-          // Clamped px → weights so persisted weights match what's on screen.
-          weights[aIndex] = (a0px + shiftPx) / pxPerWeight
-          weights[bIndex] = (b0px - shiftPx) / pxPerWeight
-          setTreeSplitWeights(node.id, weights)
-        }
-      }
-
-      const styleA = kidA.getAttribute('style')
-      const styleB = kidB.getAttribute('style')
-
-      const previewSide = (el: HTMLElement, fixed: boolean, px: number) => {
-        if (fixed) {
-          el.style.flexBasis = `${px}px`
-        } else if (!a.fixed && !b.fixed) {
-          el.style.flex = `0 1 ${px}px`
-        }
-        // Mixed seam, flex side: untouched — it absorbs what the fixed side
-        // gives up, exactly as the track model would render it.
-      }
-
-      const previewShift = (shiftPx: number) => {
-        previewSide(kidA, a.fixed, a0px + shiftPx)
-        previewSide(kidB, b.fixed, b0px - shiftPx)
-      }
-
-      const resize = rafCoalesce(previewShift)
-      let lastShift: null | number = null
+      const resize = rafCoalesce(previewPlan)
+      // A return drag stays local only after this gesture has actually crossed
+      // a second donor. A one-pixel opposite wobble must not poison the real
+      // forward movement that follows.
+      let cascadeDirection: -1 | 1 | null = null
+      let lastPlan: null | ReturnType<typeof planFor> = null
       let done = false
 
       const onMove = (ev: PointerEvent) => {
-        lastShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
-        resize.push(lastShift)
+        const shift = (horizontal ? ev.clientX : ev.clientY) - start
+        const direction = Math.sign(shift) as -1 | 0 | 1
+
+        const allowCascade = cascadeDirection === null || direction === cascadeDirection
+        lastPlan = planFor(shift, allowCascade)
+
+        if (cascadeDirection === null && direction !== 0 && lastPlan.cascaded) {
+          cascadeDirection = direction
+        }
+
+        resize.push(lastPlan)
       }
 
       // Ends through several racing paths (pointerup, pointercancel, window
@@ -349,36 +438,21 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         done = true
         resize.finish()
 
-        if (lastShift !== null) {
-          // Dragged a tool panel down to its collapsed header? Fold the zone
-          // to its rail instead of persisting a sliver — and DON'T write the
-          // sliver size, so restoring brings back the size it had before.
-          const collapsedSide =
-            (a.collapseId && a0px + lastShift <= a.floor && a.collapseId) ||
-            (b.collapseId && b0px - lastShift <= b.floor && b.collapseId) ||
-            null
+        if (lastPlan && lastPlan.moved !== 0) {
+          const collapsedSide = sashTracks.find(
+            (track, index) => track.collapseId && lastPlan!.sizes[index] <= track.floor
+          )?.collapseId
 
           if (collapsedSide) {
             setTreeGroupMinimized(collapsedSide, true)
           } else {
-            // One store commit; the re-render rewrites `flex` and clears the
-            // preview overrides.
-            applyShift(lastShift)
+            // One store commit; React rewrites the flex styles after release.
+            commitPlan(lastPlan)
           }
         } else {
-          // Click without movement: nothing will re-render, so put the
-          // wrappers' inline styles back exactly as React last wrote them.
-          if (styleA === null) {
-            kidA.removeAttribute('style')
-          } else {
-            kidA.setAttribute('style', styleA)
-          }
-
-          if (styleB === null) {
-            kidB.removeAttribute('style')
-          } else {
-            kidB.setAttribute('style', styleB)
-          }
+          // No usable movement means React will not rerender. Restore every
+          // track, not merely the two immediate seam partners.
+          restoreStyles()
         }
 
         // Geometry vars re-enable AFTER the final store commit above, so the
@@ -520,13 +594,14 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const tracks = node.children.map((child, i) => {
     const minimized = isMinimized(child)
     const collapsed = isCollapsed(child) || sideGone(i)
+    const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
     const track = minimized || collapsed ? null : fixedTrackSize(child, axis, trackCtx)
     const sizing = minimized || collapsed ? null : sizingFor(child, track)
     // Narrow-collapse UNMOUNTS (the edge overlay owns the live instance) — but
     // only for panes the breakpoint collapsed, not ones a chrome toggle hid.
     const narrowCollapsed = narrow && collapsed && allPaneIds(child).some(id => !hiddenPanes.has(id))
 
-    return { child, collapsed, minimized, narrowCollapsed, sizing, track }
+    return { child, collapsed, minimized, narrowCollapsed, sizing, toolZone, track }
   })
 
   const growable = tracks.map((_, i) => i).filter(i => !tracks[i].collapsed && !tracks[i].minimized)
@@ -578,7 +653,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       data-tree-split={node.id}
       ref={containerRef}
     >
-      {tracks.map(({ child, collapsed, minimized, narrowCollapsed, sizing, track }, i) => {
+      {tracks.map(({ child, collapsed, minimized, narrowCollapsed, sizing, toolZone, track }, i) => {
         const partner = collapsed ? -1 : seamPartner(i)
         const absorbs = i === absorberIndex
 
@@ -603,9 +678,13 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
                       // (a rail's width clamp shouldn't constrain its height).
                       // The absorber is uncapped by selection, so dropping its
                       // max is a no-op; capped tracks always keep theirs.
-                      minWidth: (horizontal && sizing?.minWidth) || 0,
+                      // A restored tool can remain a flex track, so its CSS
+                      // floor must match the 80px floor used by the sash.
+                      // Otherwise a tiny remembered weight redraws Terminal as
+                      // a 0px edge sliver before the user can grab its divider.
+                      minWidth: horizontal ? (sizing?.minWidth ?? (toolZone ? `${MIN_PANE_PX}px` : 0)) : 0,
                       maxWidth: horizontal && !absorbs ? sizing?.maxWidth : undefined,
-                      minHeight: (!horizontal && sizing?.minHeight) || 0,
+                      minHeight: !horizontal ? (sizing?.minHeight ?? (toolZone ? `${MIN_PANE_PX}px` : 0)) : 0,
                       maxHeight: horizontal || absorbs ? undefined : sizing?.maxHeight
                     }
             }

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -202,7 +202,7 @@ describe('docked tool tile — collapsing keeps the restore chip', () => {
   })
 })
 
-describe('a stacked tool zone collapsed in a row keeps the horizontal strip', () => {
+describe('a stacked tool zone collapsed in a row keeps a usable vertical rail', () => {
   beforeEach(() => {
     registerPane('workspace', { placement: 'main', uncloseable: true }, 'Chat')
     registerPane('terminal', { placement: 'bottom' }, 'Terminal')
@@ -219,12 +219,21 @@ describe('a stacked tool zone collapsed in a row keeps the horizontal strip', ()
     )
   })
 
-  it('keeps both tab labels after minimize so either pane can be restored', () => {
+  it('gives a collapsed right-edge tool an explicit restore control', () => {
+    setTreeGroupMinimized('g-tools', true)
+    render(<LiveTreeGroup index={1} parentAxis="row" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Terminal' }))
+
+    expect(zoneAt(1).minimized).toBe(false)
+  })
+
+  it('keeps both tool tabs in the vertical rail so either can be restored', () => {
     setTreeGroupMinimized('g-tools', true)
     render(<LiveTreeGroup index={1} parentAxis="row" />)
 
     expect(tabEl('terminal')).toBeTruthy()
     expect(tabEl('logs')).toBeTruthy()
-    expect(globalThis.document.querySelector('[data-zone-tabstrip="g-tools"]')).toBeTruthy()
+    expect(screen.getByRole('tablist')).toBeTruthy()
   })
 })

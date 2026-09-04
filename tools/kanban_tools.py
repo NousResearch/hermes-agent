@@ -193,11 +193,19 @@ def _worker_completion_evidence(
     """
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return False, None
+    # At this point we know HERMES_KANBAN_TASK == task_id, so this IS a
+    # dispatcher-owned worker call on its own task.  Missing or unparseable
+    # identity variables are NOT a signal that evidence is not applicable;
+    # they are a signal that the environment is malformed.  Falling back to
+    # (False, None) here would be a fail-open transition at exactly the
+    # boundary this gate is meant to harden.  Return (True, None) instead:
+    # "evidence required, but we cannot build a receipt" — which causes
+    # complete_task to reject the transition.
     session_id = os.environ.get("HERMES_SESSION_ID")
     workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
     run_id = _worker_run_id(task_id)
     if not session_id or not workspace or run_id is None:
-        return False, None
+        return True, None
     try:
         from agent.verification_evidence import verification_status
 

@@ -817,18 +817,27 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        # Claim the task so it is in running state and has a current_run_id.
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
     finally:
         conn.close()
 
-    import os
-    os.environ["HERMES_KANBAN_TASK"] = tid
-    try:
-        kt._handle_complete({
-            "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
-        })
-    finally:
-        os.environ.pop("HERMES_KANBAN_TASK", None)
+    # Set up identity vars and mock verifier as not_applicable (no-code workspace)
+    # so the completion gate passes without requiring real verification evidence.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-artifact-test")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "not_applicable"},
+    )
+
+    kt._handle_complete({
+        "summary": "one real, one ghost",
+        "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+    })
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True

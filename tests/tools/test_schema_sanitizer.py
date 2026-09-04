@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 
+from tools.delegate_tool import DELEGATE_TASK_SCHEMA
 from tools.schema_sanitizer import (
     sanitize_tool_schemas,
     strip_pattern_and_format,
@@ -26,7 +27,7 @@ def test_object_without_properties_gets_empty_properties():
     assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
 
-def test_annotated_nested_object_does_not_get_empty_properties():
+def test_annotated_nested_object_drops_description_before_empty_properties():
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -37,7 +38,22 @@ def test_annotated_nested_object_does_not_get_empty_properties():
     })]
     out = sanitize_tool_schemas(tools)
     args = out[0]["function"]["parameters"]["properties"]["arguments"]
-    assert args == {"type": "object", "description": "free-form"}
+    assert args == {"type": "object", "properties": {}}
+
+
+def test_delegate_output_schema_is_safe_for_bedrock_and_llama_cpp():
+    tools = [{
+        "type": "function",
+        "function": copy.deepcopy(DELEGATE_TASK_SCHEMA),
+    }]
+
+    out = sanitize_tool_schemas(tools)
+    output_schema = out[0]["function"]["parameters"]["properties"]["tasks"][
+        "items"
+    ]["properties"]["output_schema"]
+
+    assert output_schema["properties"] == {}
+    assert "description" not in output_schema
 
 
 def test_bare_nested_object_still_gets_empty_properties():

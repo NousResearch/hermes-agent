@@ -428,6 +428,28 @@ class _FakeProc:
         self.killed = True
 
 
+def test_stop_desktop_build_lock_waits_after_force_kill(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    locker_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+    locker_exe.parent.mkdir(parents=True)
+    locker_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+
+    locker = _FakeProc(101, str(locker_exe))
+    with patch("psutil.process_iter", return_value=[locker]), patch(
+        "psutil.wait_procs", side_effect=[([], [locker]), ([locker], [])]
+    ) as wait_procs:
+        stopped = cli_main._stop_desktop_processes_locking_build(desktop_dir)
+
+    assert stopped == [101]
+    assert locker.terminated is True
+    assert locker.killed is True
+    assert wait_procs.call_args_list == [
+        (([locker],), {"timeout": 5}),
+        (([locker],), {"timeout": 5}),
+    ]
+
+
 
 
 

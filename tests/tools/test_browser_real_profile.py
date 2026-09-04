@@ -9,6 +9,7 @@ are limited to OS detection and process launch.
 import json
 import os
 import ntpath
+import posixpath
 from unittest.mock import Mock, patch
 
 import pytest
@@ -33,6 +34,39 @@ class TestRealProfileResolvers:
     def test_data_dir_unknown_browser_is_none(self):
         import hermes_cli.browser_connect as bc
         assert bc.real_profile_data_dir("firefox", "Windows") is None
+
+    def test_data_dir_linux_skips_hermes_profile_home(self, tmp_path, monkeypatch):
+        # #98815: under a Hermes profile HOME points at {HERMES_HOME}/home, so
+        # resolution must repair to the OS account home instead of looking for
+        # a Chromium profile inside the Hermes profile.
+        import hermes_cli.browser_connect as bc
+
+        hermes_home = tmp_path / "hermes-home"
+        (hermes_home / "home").mkdir(parents=True)
+        real_home = tmp_path / "real-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(hermes_home / "home"))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        got = bc.real_profile_data_dir("brave", "Linux")
+        assert got == posixpath.join(
+            str(real_home), ".config", "BraveSoftware", "Brave-Browser"
+        )
+
+    def test_data_dir_windows_skips_hermes_profile_home(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+
+        hermes_home = tmp_path / "hermes-home"
+        (hermes_home / "home").mkdir(parents=True)
+        real_home = tmp_path / "real-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(hermes_home / "home"))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        got = bc.real_profile_data_dir("chrome", "Windows")
+        assert got == ntpath.join(
+            str(real_home), "AppData", "Local", "Google", "Chrome", "User Data"
+        )
 
     def test_detect_default_windows_progid_maps(self):
         import hermes_cli.browser_connect as bc

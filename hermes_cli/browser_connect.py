@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_real_home
 
 logger = logging.getLogger(__name__)
 
@@ -260,12 +260,21 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
     Darwin/Windows paths are not stat'ed. Paths are built with the TARGET
     system's separator (posix for Darwin/Linux, backslash for Windows) so an
     explicit ``system`` argument resolves correctly regardless of the host OS.
+    The base directory is ``get_real_home()`` so a Hermes profile HOME
+    (``{HERMES_HOME}/home``) never misdirects resolution (#98815).
     """
     if browser not in _CHROMIUM_BROWSERS:
         return None
     system = system or platform.system()
     mac_parts, win_parts, linux_name = _real_profile_relparts(browser)
-    home = os.path.expanduser("~")
+    home = get_real_home()
+    expanded = os.path.expanduser("~")
+    if os.path.normcase(expanded) != os.path.normcase(home):
+        logger.info(
+            "real-profile: resolving from real home %s, ignoring Hermes profile HOME %s",
+            home,
+            expanded,
+        )
     if system == "Darwin":
         return posixpath.join(home, "Library", "Application Support", *mac_parts)
     if system == "Windows":

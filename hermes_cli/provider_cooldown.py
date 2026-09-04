@@ -196,19 +196,6 @@ class Demotion:
         """
         return self.entry is not None
 
-    def explicit_pins(self) -> tuple[Optional[str], Optional[str]]:
-        """``(base_url, api_key)`` a caller should pin to re-reach this route.
-
-        A caller that resolves again on a later turn cannot get back to a
-        chain entry defined by an inline ``base_url`` from its provider name
-        alone. Reading that off the entry is this object's job, not the
-        caller's -- the entry is chain-config shape, and only this module
-        should have to know it.
-        """
-        from hermes_cli.fallback_config import resolve_entry_api_key
-
-        entry = self.entry or {}
-        return (entry.get("base_url") or None, resolve_entry_api_key(entry) or None)
 
 
 def demote_if_rate_limited(

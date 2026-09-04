@@ -20,6 +20,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home  # noqa: F401 — config paths
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.local_runtime.binaries import runtimes_root
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ def _detect_gpu_vendor() -> str | None:
     try:
         out = subprocess.run(
             [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=10,
+            creationflags=windows_hide_flags())
         if out.returncode == 0 and out.stdout.strip():
             return "nvidia " + out.stdout.strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired):

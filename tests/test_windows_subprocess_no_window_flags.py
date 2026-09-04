@@ -428,3 +428,92 @@ def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
     # Idempotent + never raises on repeat calls.
     _subprocess_compat.suppress_platform_ver_console()
     assert platform._syscmd_ver() == ("", "", "")
+
+
+# ── #101895 nvidia-smi statusbar / hardware probes ──────────────────────────
+#
+# The desktop GPU statusbar polls /api/local-models/hardware every 5s. That
+# endpoint shells out to Console-subsystem nvidia-smi twice per request
+# (VRAM budget in hardware._nvidia_vram, then name/util in the router).
+# A windowless parent (Electron backend / pythonw) therefore flashes two
+# consoles on every poll. Hide-only (creationflags); capture_output must
+# stay intact. bootstrap._detect_gpu_vendor is the same nvidia-smi spawn
+# at runtime-select time.
+
+
+def test_nvidia_vram_probe_hides_console_window(monkeypatch):
+    from hermes_cli.local_runtime import hardware as hw
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="8192, 4096\n")
+
+    monkeypatch.setattr(hw, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: r"C:\Windows\System32\nvidia-smi.exe")
+    monkeypatch.setattr(hw.subprocess, "run", fake_run)
+
+    result = hw._nvidia_vram()
+
+    assert result == (8192 << 20, 4096 << 20)
+    spawns = _spawns(captured, "--query-gpu=memory.total,memory.free")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    assert spawns[0][1]["capture_output"] is True
+
+
+def test_local_models_hardware_smi_hides_console_window(monkeypatch):
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.local_runtime import hardware as hw
+    from hermes_cli.web_routers import local_models
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="NVIDIA GeForce RTX 4060 Ti, 12, 2048\n")
+
+    monkeypatch.setattr(
+        hw, "probe_budget",
+        lambda: SimpleNamespace(
+            uma=False, total_device_bytes=8 << 30, usable_vram_bytes=6 << 30,
+        ),
+    )
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (16 << 30, 8 << 30))
+    monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: r"C:\Windows\System32\nvidia-smi.exe")
+    # Router imports windows_hide_flags inside the handler; stub the source
+    # module so Linux CI does not assert against the POSIX helper's 0.
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out = local_models.local_models_hardware()
+
+    assert out["gpu_name"] == "NVIDIA GeForce RTX 4060 Ti"
+    assert out["gpu_util_percent"] == 12
+    assert out["vram_used_bytes"] == 2048 << 20
+    spawns = _spawns(captured, "--query-gpu=name,utilization.gpu,memory.used")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    assert spawns[0][1]["capture_output"] is True
+
+
+def test_detect_gpu_vendor_hides_console_window(monkeypatch):
+    from hermes_cli.local_runtime import bootstrap
+    from hermes_cli.local_runtime import hardware as hw
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="NVIDIA GeForce RTX 4060 Ti\n")
+
+    monkeypatch.setattr(bootstrap, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: r"C:\Windows\System32\nvidia-smi.exe")
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+
+    assert bootstrap._detect_gpu_vendor() == "nvidia NVIDIA GeForce RTX 4060 Ti"
+    spawns = _spawns(captured, "--query-gpu=name")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    assert spawns[0][1]["capture_output"] is True

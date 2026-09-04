@@ -306,6 +306,40 @@ def label_from_token(token: str, fallback: str) -> str:
     return fallback
 
 
+def _codex_principal_identity(access_token: Any) -> Optional[Tuple[str, str]]:
+    """``(chatgpt_account_id, sub)`` of a Codex access token, or None when either claim is missing.
+
+    Decoded without signature verification: this only decides whether two credentials Hermes
+    already holds belong to the same principal, never whether a token is valid. Both claims are
+    required because members of one ChatGPT workspace share ``chatgpt_account_id`` yet have their
+    own subjects and quotas.
+    """
+    claims = _decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else None
+    account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
+    subject = claims.get("sub") if isinstance(claims, dict) else None
+    if not (isinstance(account_id, str) and account_id.strip() and isinstance(subject, str) and subject.strip()):
+        return None
+    return account_id.strip(), subject.strip()
+
+
+def _codex_entry_tracks_singleton(entry: PooledCredential, singleton_tokens: Dict[str, Any]) -> bool:
+    """Whether a Codex pool entry may adopt the auth.json singleton's token pair.
+
+    ``device_code`` IS the singleton. ``manual:device_code`` is ambiguous: a legacy alias of the
+    singleton (same account, must follow its rotations) or an independent account added with
+    ``hermes auth add openai-codex`` (must never be overwritten — adopting turned two logins into
+    one account, both hitting the same usage limit). Same principal proves the alias; unknown
+    identity fails closed.
+    """
+    if entry.source == "device_code":
+        return True
+    if entry.source != SOURCE_MANUAL_DEVICE_CODE:
+        return False
+    entry_identity = _codex_principal_identity(entry.access_token)
+    return entry_identity is not None and entry_identity == _codex_principal_identity(singleton_tokens.get("access_token"))
+
+
 def _next_priority(entries: List[PooledCredential]) -> int:
     return max((entry.priority for entry in entries), default=-1) + 1
 
@@ -1042,6 +1076,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 state = _load_provider_state(_load_auth_store(), self.provider)
             tokens = state.get("tokens") if isinstance(state, dict) else None
             if not isinstance(tokens, dict):
+                return entry
+            if is_codex and not _codex_entry_tracks_singleton(entry, tokens):
                 return entry
             store_access = tokens.get("access_token", "")
             store_refresh = tokens.get("refresh_token", "")

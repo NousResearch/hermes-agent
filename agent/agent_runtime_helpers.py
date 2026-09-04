@@ -5092,47 +5092,101 @@ def _iter_pool_sockets(client: Any):
                 yield sock
 
 
-def cleanup_dead_connections(agent) -> bool:
-    """Detect and clean up dead TCP connections on the primary client.
+def _count_dead_pool_sockets(client: Any) -> int:
+    """Return the number of sockets in ``client`` that have reached EOF."""
+    import socket as _socket
 
-    Inspects the httpx connection pool for sockets in unhealthy states
-    (CLOSE-WAIT, errors).  If any are found, force-closes all sockets
-    and rebuilds the primary client from scratch.
-
-    Returns True if dead connections were found and cleaned up.
-    """
-    client = getattr(agent, "client", None)
-    if client is None:
-        return False
-    try:
-        dead_count = 0
-        for sock in _iter_pool_sockets(client):
-            # Probe socket health with a non-blocking recv peek
-            import socket as _socket
-            try:
-                sock.setblocking(False)
-                data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)
-                if data == b"":
-                    dead_count += 1
-            except BlockingIOError:
-                pass  # No data available — socket is healthy
-            except OSError:
+    dead_count = 0
+    for sock in _iter_pool_sockets(client):
+        # Probe socket health with a non-blocking recv peek.  A zero-length
+        # read means the provider sent FIN and the connection is in
+        # CLOSE-WAIT until the client closes its side.
+        try:
+            sock.setblocking(False)
+            data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)
+            if data == b"":
                 dead_count += 1
-            finally:
-                try:
-                    sock.setblocking(True)
-                except OSError:
-                    pass
-        if dead_count > 0:
-            _ra().logger.warning(
-                "Found %d dead connection(s) in client pool — rebuilding client",
-                dead_count,
+        except BlockingIOError:
+            pass  # No data available — socket is healthy
+        except OSError:
+            dead_count += 1
+        finally:
+            try:
+                sock.setblocking(True)
+            except OSError:
+                pass
+    return dead_count
+
+
+def cleanup_dead_connections(agent) -> bool:
+    """Detect and clean up dead TCP connections owned by an agent.
+
+    Long-lived chat-completion turns use a cached per-request OpenAI client
+    for sequential calls, while ``agent.client`` remains the primary client
+    used for runtime rebuilds and provider management.  Inspect both pools:
+    a provider FIN on the cached client otherwise stays in CLOSE-WAIT until
+    session teardown and can be handed back to the next request.
+
+    Dead sockets on the primary client rebuild that client.  Dead sockets on
+    the request cache go through the cache's ownership-aware teardown hook so
+    an in-flight worker is aborted safely and an idle client is closed by its
+    owner.  Returns True if dead connections were found and cleaned up.
+    """
+    primary = getattr(agent, "client", None)
+    cache = getattr(agent, "_request_client_cache", None)
+    request_client = cache.get("client") if isinstance(cache, dict) else None
+
+    clients: list[tuple[str, Any]] = []
+    if primary is not None:
+        clients.append(("primary", primary))
+    if request_client is not None and request_client is not primary:
+        clients.append(("request", request_client))
+    if not clients:
+        return False
+
+    dead_clients: list[tuple[str, Any, int]] = []
+    for label, client in clients:
+        try:
+            dead_count = _count_dead_pool_sockets(client)
+            if dead_count:
+                dead_clients.append((label, client, dead_count))
+        except Exception as exc:
+            _ra().logger.debug(
+                "Dead connection check error for %s client: %s",
+                label,
+                exc,
             )
-            agent._replace_primary_openai_client(reason="dead_connection_cleanup")
-            return True
-    except Exception as exc:
-        _ra().logger.debug("Dead connection check error: %s", exc)
-    return False
+
+    if not dead_clients:
+        return False
+
+    total_dead = sum(count for _label, _client, count in dead_clients)
+    labels = ", ".join(label for label, _client, _count in dead_clients)
+    _ra().logger.warning(
+        "Found %d dead connection(s) in %s client pool(s) — cleaning up",
+        total_dead,
+        labels,
+    )
+
+    for label, _client, _count in dead_clients:
+        try:
+            if label == "primary":
+                agent._replace_primary_openai_client(
+                    reason="dead_connection_cleanup"
+                )
+            else:
+                # This hook clears the cache and chooses close() vs socket
+                # shutdown based on whether another worker owns the client.
+                agent._close_cached_request_openai_client(
+                    reason="dead_connection_cleanup"
+                )
+        except Exception as exc:
+            _ra().logger.debug(
+                "Dead connection cleanup error for %s client: %s",
+                label,
+                exc,
+            )
+    return True
 
 
 

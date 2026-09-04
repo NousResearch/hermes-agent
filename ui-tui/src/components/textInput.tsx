@@ -454,6 +454,73 @@ export function resolveCursorLayout(display: string, cur: number, curRefCurrent:
   return cursorLayout(display, curRefCurrent, columns)
 }
 
+/** Readline `beginning-of-line`: move to the current logical line start. */
+export function logicalLineStart(value: string, cursor: number): number {
+  if (cursor <= 0) {
+    return 0
+  }
+
+  return value.lastIndexOf('\n', cursor - 1) + 1
+}
+
+/** Readline `end-of-line`: move to the current logical line end. */
+export function logicalLineEnd(value: string, cursor: number): number {
+  const newline = value.indexOf('\n', cursor)
+
+  return newline < 0 ? value.length : newline
+}
+
+/**
+ * Home first moves to the current logical line start. Repeating it at that
+ * boundary walks to the previous logical line start, matching Claude Code's
+ * multiline composer navigation without changing readline Ctrl+A semantics.
+ */
+export function smartHomeTarget(value: string, cursor: number): number {
+  const currentStart = logicalLineStart(value, cursor)
+
+  if (cursor !== currentStart || currentStart === 0) {
+    return currentStart
+  }
+
+  return logicalLineStart(value, currentStart - 1)
+}
+
+/** Home's forward counterpart: repeat at a line end to reach the next one. */
+export function smartEndTarget(value: string, cursor: number): number {
+  const currentEnd = logicalLineEnd(value, cursor)
+
+  if (cursor !== currentEnd || currentEnd === value.length) {
+    return currentEnd
+  }
+
+  return logicalLineEnd(value, currentEnd + 1)
+}
+
+/** Resolve physical Home/End, preserving Ctrl variants as whole-buffer navigation. */
+export function homeEndTarget(
+  value: string,
+  cursor: number,
+  key: Pick<Key, 'ctrl' | 'end' | 'home'>
+): number | null {
+  if (key.ctrl && key.home) {
+    return 0
+  }
+
+  if (key.ctrl && key.end) {
+    return value.length
+  }
+
+  if (key.home) {
+    return smartHomeTarget(value, cursor)
+  }
+
+  if (key.end) {
+    return smartEndTarget(value, cursor)
+  }
+
+  return null
+}
+
 /**
  * Readline `unix-line-discard` (Ctrl+U / Cmd+Backspace): kill backward to
  * the start of the *current logical line*, not to the start of the whole
@@ -1428,8 +1495,8 @@ export function TextInput({
       let v = vRef.current
       const mod = isActionMod(k)
       const wordMod = mod || k.meta
-      const actionHome = k.home || (!isMac && mod && inp === 'a') || isMacActionFallback(k, inp, 'a')
-      const actionEnd = k.end || (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
+      const actionHome = (!isMac && mod && inp === 'a') || isMacActionFallback(k, inp, 'a')
+      const actionEnd = (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
       const actionDeleteToStart = (mod && inp === 'u') || isMacActionFallback(k, inp, 'u')
       const actionKillToEnd = (mod && inp === 'k') || isMacActionFallback(k, inp, 'k')
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
@@ -1455,13 +1522,15 @@ export function TextInput({
         return selectAll()
       }
 
-      if (actionHome) {
-        c = 0
+      const physicalHomeEndTarget = homeEndTarget(v, c, k)
+
+      if (physicalHomeEndTarget !== null || actionHome) {
+        c = physicalHomeEndTarget ?? logicalLineStart(v, c)
         moveCursor(c, k.shift)
 
         return
       } else if (actionEnd) {
-        c = v.length
+        c = logicalLineEnd(v, c)
         moveCursor(c, k.shift)
 
         return

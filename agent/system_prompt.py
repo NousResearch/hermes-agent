@@ -474,8 +474,9 @@ def _zone_bits(now: Any, tz: Any) -> List[str]:
     """IANA key, abbreviation (if different) and UTC offset — all constant for
     the day, so the byte-stable date line stays cacheable."""
     _iana = getattr(tz, "key", None)
-    _abbrev = now.strftime("%Z")
-    _offset = now.strftime("%z")  # '-0400' -> 'UTC-04:00'
+    from hermes_time import safe_strftime
+    _abbrev = safe_strftime(now, "%Z")
+    _offset = safe_strftime(now, "%z")  # '-0400' -> 'UTC-04:00'
     bits = [_iana] if _iana else []
     if _abbrev and _abbrev != _iana:
         bits.append(_abbrev)
@@ -488,12 +489,12 @@ def _timestamp_line(agent: Any) -> str:
     """Date-only so the prompt is byte-stable for the day; zone + offset so
     tools needn't guess EST vs EDT. Long-lived sessions get an "as of" line on
     rebuild days (the cache prefix is already invalidated at that boundary)."""
-    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now
+    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now, safe_strftime
     now = _hermes_now()
     _bits = _zone_bits(now, _hermes_tz())
     _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""
     _start = _session_start_like(agent, now)
-    timestamp_line = f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+    timestamp_line = f"Conversation started: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     # Second line (maintainer design, salvaging #96224's anchor): long-lived sessions — Bot Mode
     # forever-chats, messenger channels people never close — span many days and many compactions. A lone
     # birth date leads the model to believe it is still living in that old day. The prompt is rebuilt at
@@ -502,7 +503,7 @@ def _timestamp_line(agent: Any) -> str:
     # line costs no extra cache churn. Same-day sessions skip the second line entirely — nothing to correct,
     # and the single-line shape stays byte-identical for the day (prefix-cache safe).
     if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
-        timestamp_line += (f"\nToday's date (as of the last context rebuild): {now.strftime('%A, %B %d, %Y')} "
+        timestamp_line += (f"\nToday's date (as of the last context rebuild): {safe_strftime(now, '%A, %B %d, %Y')} "
                            "— trust this over the start date for what day it is now; query tools for exact time.")
     if getattr(agent, "_bot_chat_timeless_prompt", False):
         timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""

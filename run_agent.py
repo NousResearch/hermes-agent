@@ -1870,6 +1870,13 @@ class AIAgent:
         # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
         if ord(last) >= 0x1F300:
             return True
+        # URL ending — a response whose final token is a scheme-URL
+        # (http/https/ftp) is intentionally finished.  Without this a bare
+        # URL like ``http://host/index.html`` (ending in ``l``) would be
+        # classified as truncated, triggering a spurious continuation that
+        # concatenates run-on text onto the URL (#78359).
+        if re.search(r"(?:https?|ftp)://\S+$", stripped):
+            return True
         return False
 
     def _is_ollama_glm_backend(self) -> bool:

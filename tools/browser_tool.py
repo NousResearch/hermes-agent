@@ -2188,6 +2188,11 @@ BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
 # Deliberately a large multiple of the inactivity timeout so a legitimately
 # busy session is never touched.
 BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20)
+# A daemon PID file is not an atomic record: Browser Harness opens it with
+# truncate-then-write semantics.  Let the file settle before parsing so an
+# all-digit prefix (for example ``2`` while writing ``222``) can never be
+# mistaken for a complete, already-dead PID and trigger runtime deletion.
+BROWSER_PID_FILE_SETTLE_SECONDS = 1.0
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -2671,15 +2676,21 @@ def _reap_orphaned_browser_sessions():
             "bu.pid" if harness_daemon else f"{session_name}.pid",
         )
         if not os.path.isfile(pid_file):
-            # A newly-created session directory exists briefly before
-            # agent-browser writes its PID/owner files. Another Hermes process
-            # may run this global reaper during that window. Treat a pidless
-            # directory as stale only after the orphan grace period; deleting
-            # it immediately races the creator's first stdout/stderr open.
-            idle_s = _socket_dir_idle_seconds(socket_dir)
-            if idle_s is None or idle_s < BROWSER_ORPHAN_GRACE_SECONDS:
-                continue
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            # Without a PID there is no process identity to verify and no way
+            # to prove the daemon is dead. The directory may also be in the
+            # creator's mkdir→pid-write window. Retain it fail-closed; bounded
+            # namespaced residue is preferable to deleting the only endpoint
+            # evidence for a live orphan.
+            continue
+
+        # PID files are written truncate-then-write rather than via atomic
+        # replace.  Even an integer-looking snapshot can therefore be an
+        # incomplete prefix.  Never parse or delete from a fresh PID file.
+        try:
+            pid_file_age = time.time() - os.path.getmtime(pid_file)
+        except OSError:
+            continue
+        if pid_file_age < BROWSER_PID_FILE_SETTLE_SECONDS:
             continue
 
         try:

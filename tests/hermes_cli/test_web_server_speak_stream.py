@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_server
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 @pytest.fixture
@@ -113,7 +114,7 @@ def test_long_text_is_split_across_provider_requests(stream_client, monkeypatch)
 
 def test_split_text_respects_cap_and_preserves_content():
     text = "Alpha beta. Gamma delta epsilon. Zeta eta theta iota kappa."
-    pieces = web_server._split_text_for_speak_stream(text, 30)
+    pieces = _web_server_gateway._split_text_for_speak_stream(text, 30)
     assert pieces
     assert all(len(piece) <= 30 for piece in pieces)
     joined = " ".join(pieces)

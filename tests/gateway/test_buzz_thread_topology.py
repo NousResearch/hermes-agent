@@ -270,7 +270,7 @@ class TestReplyThreadingConfig:
 
         captured = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
             captured["args"] = args
             return 0, json.dumps({"accepted": True, "event_id": "evt-cron"}), ""
 
@@ -291,7 +291,7 @@ class TestReplyThreadingConfig:
         fake_cli.chmod(0o755)
         captured = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
             captured["args"] = args
             return 0, json.dumps({"accepted": True, "event_id": "evt-cron"}), ""
 

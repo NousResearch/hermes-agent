@@ -4,6 +4,7 @@ import {
   applyConnectionChange,
   commitConnectionFailure,
   resolveTerminalConnection,
+  sshQuitShouldBlock,
   teardownSshState
 } from './connection-apply'
 
@@ -88,6 +89,48 @@ describe('resolveTerminalConnection', () => {
         async () => undefined
       )
     ).rejects.toThrow('not ready')
+  })
+})
+
+describe('sshQuitShouldBlock', () => {
+  it('waits when connections exist and teardown has not finished', () => {
+    expect(sshQuitShouldBlock({ teardownDone: false, connectionCount: 1, bootstrapPending: 0, inFlight: null })).toBe(
+      true
+    )
+  })
+
+  it('waits when bootstrap is still running', () => {
+    expect(sshQuitShouldBlock({ teardownDone: false, connectionCount: 0, bootstrapPending: 1, inFlight: null })).toBe(
+      true
+    )
+  })
+
+  it('waits when the map is empty but a remote kill is already in flight', () => {
+    expect(
+      sshQuitShouldBlock({
+        teardownDone: false,
+        connectionCount: 0,
+        bootstrapPending: 0,
+        inFlight: Promise.resolve()
+      })
+    ).toBe(true)
+  })
+
+  it('does not block a second quit after teardown finished', () => {
+    expect(
+      sshQuitShouldBlock({
+        teardownDone: true,
+        connectionCount: 1,
+        bootstrapPending: 1,
+        inFlight: Promise.resolve()
+      })
+    ).toBe(false)
+  })
+
+  it('does not block quit when there is nothing to tear down', () => {
+    expect(sshQuitShouldBlock({ teardownDone: false, connectionCount: 0, bootstrapPending: 0, inFlight: null })).toBe(
+      false
+    )
   })
 })
 

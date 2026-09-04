@@ -241,6 +241,76 @@ def test_host_local_background_command_bypasses_configured_backend(tmp_path, mon
     assert calls[0][1]["task_id"] == f"host-local-{task_id}"
 
 
+def test_concurrent_commands_record_their_own_observed_cwd(monkeypatch, tmp_path):
+    """A shared env's mutable cwd must not cross-write concurrent sessions."""
+    import threading
+
+    cwd_a = tmp_path / "a"
+    cwd_b = tmp_path / "b"
+    cwd_a.mkdir()
+    cwd_b.mkdir()
+    a_set = threading.Event()
+    b_set = threading.Event()
+
+    class SharedEnv:
+        env = {}
+        cwd = str(tmp_path)
+
+        def execute(self, command, **kwargs):
+            observed = str(cwd_a if command == "session-a" else cwd_b)
+            if command == "session-a":
+                self.cwd = observed
+                a_set.set()
+                assert b_set.wait(timeout=5)
+            else:
+                assert a_set.wait(timeout=5)
+                self.cwd = observed
+                b_set.set()
+            return {
+                "output": "ok",
+                "returncode": 0,
+                "cwd_observed": True,
+                "cwd": observed,
+            }
+
+    shared = SharedEnv()
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"default": shared})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _value: "default")
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+    terminal_tool.record_session_cwd("task-a", str(cwd_a))
+    terminal_tool.record_session_cwd("task-b", str(cwd_b))
+
+    results = {}
+
+    def run(name, task_id):
+        results[task_id] = json.loads(
+            terminal_tool.terminal_tool(command=name, task_id=task_id)
+        )
+
+    threads = [
+        threading.Thread(target=run, args=("session-a", "task-a")),
+        threading.Thread(target=run, args=("session-b", "task-b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert results["task-a"]["exit_code"] == 0
+    assert results["task-b"]["exit_code"] == 0
+    assert terminal_tool.get_session_cwd("task-a") == str(cwd_a)
+    assert terminal_tool.get_session_cwd("task-b") == str(cwd_b)
+
+
 def test_safe_getcwd_falls_back_to_home_when_no_terminal_cwd(monkeypatch):
     def _boom():
         raise FileNotFoundError()

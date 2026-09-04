@@ -80,6 +80,41 @@ class TestHooksList:
 
 
 class TestHooksTest:
+    def test_gateway_message_delivered_uses_its_documented_synthetic_payload(self):
+        assert hooks_cli._DEFAULT_PAYLOADS["gateway_message_delivered"] == {
+            "source": "cron",
+            "execution_id": "test-execution",
+            "job_id": "test-job",
+            "platform": "telegram",
+            "chat_id": "test-chat",
+            "thread_id": "test-thread",
+            "message_id": "test-message",
+        }
+
+    def test_gateway_message_delivered_test_command_serializes_its_payload(self, tmp_path):
+        capture = tmp_path / "captured.json"
+        script = _hook_script(
+            tmp_path,
+            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+        )
+        cfg = {"hooks": {"gateway_message_delivered": [{"command": str(script)}]}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            _run(SimpleNamespace(
+                hooks_action="test", event="gateway_message_delivered",
+                for_tool=None, payload_file=None,
+            ))
+
+        assert json.loads(capture.read_text())["extra"] == {
+            "source": "cron",
+            "execution_id": "test-execution",
+            "job_id": "test-job",
+            "platform": "telegram",
+            "chat_id": "test-chat",
+            "thread_id": "test-thread",
+            "message_id": "test-message",
+        }
+
     def test_synthetic_payload_matches_production_shape(self, tmp_path):
         """`hermes hooks test` must feed the script stdin in the same
         shape invoke_hook() would at runtime.  Prior to this fix,

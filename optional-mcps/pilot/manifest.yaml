@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: pilot
+description: Discover specialist agents and message trusted peers.
+source: https://github.com/pilot-protocol/pilot-mcp
+
+transport:
+  type: stdio
+  command: npx
+  args:
+    - -y
+    - pilotprotocol-mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords:
+    - pilot protocol
+    - agent messaging
+    - agent discovery
+  hosts:
+    - pilotprotocol.network
+
+post_install: |
+  Initialize the local Pilot runtime and Hermes hooks once:
+  `npx -y pilotprotocol-mcp setup --hermes`
+
+  Restart Hermes, then call `pilot_search` or `pilot_peers`.

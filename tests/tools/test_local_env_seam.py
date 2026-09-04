@@ -1,12 +1,12 @@
-"""Tests for the two subclass seams in LocalEnvironment._run_bash.
+"""Tests for the subclass seam in LocalEnvironment._run_bash.
 
-``_wrap_popen_args`` lets a subclass wrap the shell argv (a sandbox prefix)
-and ``_popen_preexec`` lets it supply a ``preexec_fn`` (resource limits).
-LocalEnvironment itself must keep its identity behavior.
+``_wrap_popen_args`` lets a subclass wrap the shell argv (a sandbox prefix).
+LocalEnvironment itself must keep its identity behavior, and no subclass
+gets a ``preexec_fn``: anything a backend needs between fork and exec rides
+the argv (prlimit, bwrap), never Python code in the child.
 """
 
 import os
-import resource
 import shutil
 import sys
 from unittest.mock import MagicMock, patch
@@ -19,16 +19,9 @@ from tools.environments.local import LocalEnvironment
 FAKE_BASH = "/opt/fake/bash"
 
 
-def _sentinel_preexec():
-    pass
-
-
 class WrappingEnvironment(LocalEnvironment):
     def _wrap_popen_args(self, args):
         return ["wrapper", "--flag", "--", *args]
-
-    def _popen_preexec(self):
-        return _sentinel_preexec
 
 
 @pytest.fixture
@@ -41,13 +34,10 @@ def popen_spy():
         yield spy
 
 
-class TestDefaultSeams:
+class TestDefaultSeam:
     def test_wrap_is_identity(self):
         env = LocalEnvironment()
         assert env._wrap_popen_args(["a", "b"]) == ["a", "b"]
-
-    def test_preexec_is_none(self):
-        assert LocalEnvironment()._popen_preexec() is None
 
     def test_popen_receives_plain_bash_args(self, popen_spy, tmp_path):
         env = LocalEnvironment(cwd=str(tmp_path))
@@ -64,13 +54,13 @@ class TestDefaultSeams:
         assert args[0] == [FAKE_BASH, "-l", "-c", "true"]
 
 
-class TestSubclassSeams:
-    def test_popen_receives_wrapped_args_and_preexec(self, popen_spy, tmp_path):
+class TestSubclassSeam:
+    def test_popen_receives_wrapped_args_and_no_preexec(self, popen_spy, tmp_path):
         env = WrappingEnvironment(cwd=str(tmp_path))
         env._run_bash("echo hi")
         args, kwargs = popen_spy.call_args
         assert args[0] == ["wrapper", "--flag", "--", FAKE_BASH, "-c", "echo hi"]
-        assert kwargs["preexec_fn"] is _sentinel_preexec
+        assert "preexec_fn" not in kwargs
 
     def test_login_invocation_is_wrapped_too(self, popen_spy, tmp_path):
         env = WrappingEnvironment(cwd=str(tmp_path))
@@ -95,23 +85,19 @@ class TestSubclassSeams:
         assert all(args[0] == FAKE_BASH for args in seen)
         assert any(args[:2] == [FAKE_BASH, "-l"] for args in seen)
 
+    def test_run_bash_never_passes_a_preexec_fn(self):
+        import inspect
+        assert "preexec_fn" not in inspect.getsource(local_mod)
 
-@pytest.mark.skipif(sys.platform == "win32", reason="preexec_fn and env(1) are POSIX only")
+
+@pytest.mark.skipif(sys.platform == "win32", reason="env(1) is POSIX only")
 @pytest.mark.skipif(shutil.which("bash") is None or shutil.which("env") is None, reason="needs bash and env")
-class TestSeamsEndToEnd:
-    def test_wrapper_and_preexec_reach_the_child(self, tmp_path):
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        target = min(64, soft)
-
-        class Limited(LocalEnvironment):
+class TestSeamEndToEnd:
+    def test_wrapper_reaches_the_child(self, tmp_path):
+        class Marked(LocalEnvironment):
             def _wrap_popen_args(self, args):
                 return [shutil.which("env"), "HERMES_SEAM_MARK=wrapped", *args]
 
-            def _popen_preexec(self):
-                def _limits():
-                    resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
-                return _limits
-
-        proc = Limited(cwd=str(tmp_path))._run_bash('echo "$HERMES_SEAM_MARK $(ulimit -n)"')
+        proc = Marked(cwd=str(tmp_path))._run_bash('echo "$HERMES_SEAM_MARK"')
         out, _ = proc.communicate(timeout=30)
-        assert out.strip() == f"wrapped {target}"
+        assert out.strip() == "wrapped"

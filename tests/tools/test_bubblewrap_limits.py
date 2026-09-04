@@ -1,5 +1,5 @@
-"""Tests for the rlimits BubblewrapEnvironment applies through the preexec
-seam: RLIMIT_AS, RLIMIT_CPU and RLIMIT_NPROC from
+"""Tests for the rlimits BubblewrapEnvironment applies through the prlimit
+prefix in front of bwrap: RLIMIT_AS, RLIMIT_CPU and RLIMIT_NPROC from
 terminal.bubblewrap_memory_mb, _cpu_seconds and _max_procs.
 
 On kernel 6.8.0 with bwrap 0.9.0, RLIMIT_NPROC is counted per uid
@@ -17,6 +17,7 @@ when bwrap is missing or its runtime probe fails, so CI without bwrap
 stays green.
 """
 
+import inspect
 import os
 import resource
 import shutil
@@ -28,11 +29,12 @@ from unittest.mock import patch
 import pytest
 
 from tools.environments import bubblewrap
+from tools.environments import local as local_mod
 from tools.environments.bubblewrap import (
     WRAPPER_PROCESS_ALLOWANCE,
     BubblewrapConfig,
     BubblewrapEnvironment,
-    make_preexec,
+    prlimit_args,
     rlimit_values,
     uid_thread_count,
 )
@@ -62,10 +64,11 @@ BWRAP_USABLE = _bwrap_usable()
 needs_bwrap = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap missing or its namespace probe failed")
 
 MB = 1024 * 1024
-# Threads the uid may gain or lose between the preexec /proc scan and the
+# Threads the uid may gain or lose between the /proc scan and the
 # forks of the concurrent test (the parallel runner spawns sandboxes under
 # the same uid); the ceiling assertion tolerates this much movement.
 NPROC_DRIFT = 128
+PRLIMIT = "/usr/bin/prlimit"
 
 
 @pytest.fixture
@@ -112,10 +115,10 @@ class TestRlimitValues:
         assert res not in limits
         assert len(limits) == 2
 
-    def test_all_zero_gives_no_preexec(self):
+    def test_all_zero_gives_no_prefix(self):
         limits = rlimit_values(BubblewrapConfig(memory_mb=0, cpu_seconds=0, max_procs=0), uid_threads=100)
         assert limits == {}
-        assert make_preexec(limits) is None
+        assert prlimit_args(limits, PRLIMIT) == []
 
     def test_uid_thread_count_covers_this_process_and_its_threads(self):
         count = uid_thread_count(os.getuid())
@@ -123,57 +126,69 @@ class TestRlimitValues:
         assert count >= own_threads >= 1
 
 
-class TestPreexec:
+class TestPrlimitPrefix:
+    """The limits ride the argv as a prlimit(1) prefix; no Python runs in the
+    forked child."""
+
     @pytest.fixture
-    def recorded(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(bubblewrap.resource, "setrlimit", lambda res, pair: calls.append((res, pair)))
-        return calls
+    def unlimited(self, monkeypatch):
+        monkeypatch.setattr(bubblewrap.resource, "getrlimit",
+                            lambda res: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
 
-    def test_preexec_sets_each_limit_soft_and_hard(self, recorded, monkeypatch):
-        monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
-        make_preexec({resource.RLIMIT_AS: 5 * MB, resource.RLIMIT_CPU: 7, resource.RLIMIT_NPROC: 300})()
-        assert recorded == [
-            (resource.RLIMIT_AS, (5 * MB, 5 * MB)),
-            (resource.RLIMIT_CPU, (7, 7)),
-            (resource.RLIMIT_NPROC, (300, 300)),
-        ]
+    def test_prefix_names_each_limit_once(self, unlimited):
+        argv = prlimit_args({resource.RLIMIT_AS: 5 * MB, resource.RLIMIT_CPU: 7, resource.RLIMIT_NPROC: 300}, PRLIMIT)
+        assert argv == [PRLIMIT, f"--as={5 * MB}", "--cpu=7", "--nproc=300"]
 
-    def test_preexec_clamps_to_the_inherited_hard_limit(self, recorded, monkeypatch):
+    def test_prefix_clamps_to_the_inherited_hard_limit(self, monkeypatch):
         monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (10, 20))
-        make_preexec({resource.RLIMIT_NPROC: 300, resource.RLIMIT_CPU: 7})()
-        assert recorded == [(resource.RLIMIT_NPROC, (20, 20)), (resource.RLIMIT_CPU, (7, 7))]
+        argv = prlimit_args({resource.RLIMIT_NPROC: 300, resource.RLIMIT_CPU: 7}, PRLIMIT)
+        assert argv == [PRLIMIT, "--nproc=20", "--cpu=7"]
 
-    def test_environment_preexec_applies_defaults_over_the_uid_count(self, sandbox_root, work_dir, recorded, monkeypatch):
+    @pytest.mark.skipif(shutil.which("prlimit") is None, reason="needs prlimit (util-linux)")
+    def test_prlimit_sets_soft_and_hard_and_stops_at_the_command(self):
+        # One value per flag sets soft and hard alike, and option parsing
+        # ends at the command, so the bwrap argv follows with no separator
+        # and its own options are left alone.
+        probe = subprocess.run(
+            [shutil.which("prlimit"), "--cpu=7", "sh", "-c", "ulimit -St; ulimit -Ht"],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert probe.stdout.split() == ["7", "7"]
+
+    def test_environment_prefix_applies_defaults_over_the_uid_count(self, sandbox_root, work_dir, unlimited, monkeypatch):
         monkeypatch.setattr(bubblewrap, "uid_thread_count", lambda uid: 100)
-        monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
         with _no_session():
             env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
-        preexec = env._popen_preexec()
-        assert callable(preexec)
-        preexec()
-        assert dict(recorded) == {
-            resource.RLIMIT_AS: (256 * MB, 256 * MB),
-            resource.RLIMIT_CPU: (30, 30),
-            resource.RLIMIT_NPROC: (356 + WRAPPER_PROCESS_ALLOWANCE, 356 + WRAPPER_PROCESS_ALLOWANCE),
-        }
+        argv = env._wrap_popen_args(["bash"])
+        nproc = 100 + 256 + WRAPPER_PROCESS_ALLOWANCE
+        assert argv[:4] == [env._prlimit_path, f"--as={256 * MB}", "--cpu=30", f"--nproc={nproc}"]
+        assert argv[4] == env._bwrap_path
+        assert argv[-1] == "bash"
 
-    def test_environment_preexec_skips_zeroed_keys(self, sandbox_root, work_dir, recorded, monkeypatch):
-        monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    def test_environment_prefix_skips_zeroed_keys(self, sandbox_root, work_dir, unlimited, monkeypatch):
         counted = []
         monkeypatch.setattr(bubblewrap, "uid_thread_count", lambda uid: counted.append(uid) or 100)
         config = BubblewrapConfig(memory_mb=1024, cpu_seconds=0, max_procs=0)
         with _no_session():
             env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
-        env._popen_preexec()()
-        assert recorded == [(resource.RLIMIT_AS, (1024 * MB, 1024 * MB))]
+        argv = env._wrap_popen_args(["bash"])
+        assert argv[:2] == [env._prlimit_path, f"--as={1024 * MB}"]
+        assert argv[2] == env._bwrap_path
         assert counted == []  # /proc is not scanned when max_procs is 0
 
-    def test_environment_preexec_none_when_every_key_is_zero(self, sandbox_root, work_dir):
+    def test_environment_has_no_prefix_when_every_key_is_zero(self, sandbox_root, work_dir):
         config = BubblewrapConfig(memory_mb=0, cpu_seconds=0, max_procs=0)
         with _no_session():
             env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
-        assert env._popen_preexec() is None
+        argv = env._wrap_popen_args(["bash"])
+        assert argv[0] == env._bwrap_path
+
+    def test_nothing_runs_between_fork_and_exec(self):
+        # Popen's preexec_fn is unsafe in a threaded process (the gateway is
+        # one); the backend and the local base must never pass one.
+        assert "preexec_fn" not in inspect.getsource(bubblewrap)
+        assert "preexec_fn" not in inspect.getsource(local_mod)
 
 
 FORK_SCRIPT = """
@@ -252,14 +267,14 @@ class TestLimitsIntegration:
 
     def test_max_procs_bounds_what_the_sandbox_adds(self, make_env, fork_script):
         # max_procs=64 leaves room for the parallel test runner's own forks
-        # under the same uid between the preexec scan and bwrap's fork; 300
+        # under the same uid between the /proc scan and bwrap's fork; 300
         # concurrent children still overrun it by a wide margin.
         result = make_env(max_procs=64).execute(f"python3 {fork_script} concurrent 300")
         assert result["returncode"] == 0, result["output"]
         counts = dict(part.split("=") for part in result["output"].split())
         assert int(counts["failed"]) >= 1, counts
         # Host activity (the parallel test runner included) shifts the uid
-        # thread count between the preexec scan and the forks, so the
+        # thread count between the /proc scan and the forks, so the
         # ceiling is asserted within NPROC_DRIFT of max_procs plus the
         # wrapper allowance, not at an exact count.
         assert int(counts["started"]) < 300, counts

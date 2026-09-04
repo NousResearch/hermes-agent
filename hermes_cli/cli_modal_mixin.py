@@ -894,7 +894,9 @@ class CLIModalMixin:
             _put(self._approval_state, "deny")
             self._approval_state = None
         if self._clarify_state:
-            _put(self._clarify_state, "The user cancelled. Use your best judgement to proceed.")
+            # Neutral cancel — same as sudo/secret overlays and the TUI's clarify interrupt.
+            # An interrupt must not read as "use your best judgement and proceed" (#103009).
+            _put(self._clarify_state, "")
             self._clarify_state = None
             self._clarify_freetext = False
             self._clarify_multi_base = None

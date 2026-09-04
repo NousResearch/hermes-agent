@@ -884,17 +884,24 @@ def _looks_like_error_output(content: Any) -> bool:
 
 
 def _normalize_role(r: Optional[str]) -> str:
-    """Normalise a caller-provided role to 'leaf' or 'orchestrator'.
+    """Normalise a caller-provided role to 'leaf', 'orchestrator', or a
+    configured bounded role name.
 
     None/empty -> 'leaf'.  Unknown strings coerce to 'leaf' with a
     warning log (matches the silent-degrade pattern of
-    _get_orchestrator_enabled).  _build_child_agent adds a second
-    degrade layer for depth/kill-switch bounds.
+    _get_orchestrator_enabled).  Configured bounded roles (delegation.roles
+    in config.yaml) pass through unchanged; _build_child_agent resolves
+    them.  _build_child_agent adds a second degrade layer for depth/
+    kill-switch bounds.
     """
     if r is None or not r:
         return "leaf"
     r_norm = str(r).strip().lower()
     if r_norm in {"leaf", "orchestrator"}:
+        return r_norm
+    from tools.agent_roles import get_agent_roles
+
+    if r_norm in get_agent_roles():
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
@@ -1789,6 +1796,16 @@ def _build_child_agent(
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
     effective_role = "orchestrator" if orchestrator_ok else "leaf"
 
+    # ── Bounded custom roles (Codex agent_roles semantic) ────────────────
+    # A configured role may customize the child's instructions, point it at
+    # a model, or trim its toolsets — but never raise it above the parent's
+    # authority.  Instructions are appended (never replace), the model
+    # override only picks a string (credentials stay inherited), and
+    # enabled_toolsets are intersected below with the parent-derived set.
+    from tools.agent_roles import resolve_role
+
+    custom_role = resolve_role(role)
+
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
     # spawn_requested event, and the _active_subagents registry all share
@@ -1875,6 +1892,14 @@ def _build_child_agent(
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
     )
+    # Bounded role override: append role instructions (never replace the
+    # base child prompt) and intersect the role's enabled_toolsets with the
+    # parent-derived set (never widen).
+    if custom_role is not None:
+        from tools.agent_roles import apply_role_instructions, apply_role_toolsets
+
+        child_prompt = apply_role_instructions(child_prompt, custom_role)
+        child_toolsets = apply_role_toolsets(child_toolsets, custom_role)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -1920,6 +1945,20 @@ def _build_child_agent(
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
+    # Bounded role model override sits between the caller-supplied model and
+    # the parent inherit (a role may point the child at a cheaper/faster
+    # model, but can never mint credentials the parent lacks).
+    if custom_role is not None:
+        from tools.agent_roles import apply_role_model
+
+        # apply_role_model already resolves caller > role > parent; the only
+        # remaining job here is the None -> "" guard for downstream code
+        # (nous_api_mode etc.). The old trailing
+        # `or model or parent_agent.model` was dead — apply_role_model never
+        # returns a falsy value unless both caller and parent were falsy.
+        effective_model = (
+            apply_role_model(custom_role, model, parent_agent.model) or ""
+        )
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     if not override_base_url:

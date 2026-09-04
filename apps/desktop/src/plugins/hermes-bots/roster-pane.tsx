@@ -66,6 +66,12 @@ import { displayName } from './labels'
 import { deleteBot, mergeServerMeta, pullServerAvatars } from './profile-ops'
 import { $activityToasts, setActivityToasts, trackInboundActivity } from './roster-actions'
 import {
+  $rosterActivityFilter,
+  $rosterGatewayFilter,
+  $rosterKindFilter,
+  resetRosterFilters
+} from './roster-filters'
+import {
   botNeedsHandleLabel,
   filterBotsByGateway,
   GatewayKindGlyph,
@@ -276,9 +282,12 @@ export function BotsPane() {
 
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
   const [query, setQuery] = useState('')
-  const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
-  const [activityFilter, setActivityFilter] = useState<RosterActivityFilter>('all')
-  const [gatewayFilter, setGatewayFilter] = useState('all')
+  const rowKindFilter = useValue($rosterKindFilter)
+  const setRowKindFilter = (value: RosterKindFilter) => $rosterKindFilter.set(value)
+  const activityFilter = useValue($rosterActivityFilter)
+  const setActivityFilter = (value: RosterActivityFilter) => $rosterActivityFilter.set(value)
+  const gatewayFilter = useValue($rosterGatewayFilter)
+  const setGatewayFilter = (value: string) => $rosterGatewayFilter.set(value)
   const [collapsedRosterSections, setCollapsedRosterSections] = useState<Set<string>>(() => new Set())
   const hiddenSectionRef = useRef<null | HTMLDivElement>(null)
   const activityToasts = useValue($activityToasts)
@@ -869,9 +878,7 @@ export function BotsPane() {
                 {activeFilterCount ? (
                   <DropdownMenuItem
                     onSelect={() => {
-                      setRowKindFilter('all')
-                      setActivityFilter('all')
-                      setGatewayFilter('all')
+                      resetRosterFilters()
                     }}
                   >
                     {b.roster.clearFilters}

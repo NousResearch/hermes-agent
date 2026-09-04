@@ -1647,6 +1647,14 @@ export { formatModifierToken } from '@/lib/keybinds/combo'
  *  a renderer that stays open for days. Only for values that can be
  *  regenerated — eviction costs a recompute or a refetch, never correctness. */
 export { LruCache } from '@/lib/lru-cache'
+/** A plugin-local atom that survives a reload. Same storage choke point core
+ *  view preferences use, so a plugin's remembered filters behave exactly like
+ *  the sidebar's — plugins must not reach for `@/lib/persisted` themselves
+ *  (the plugin fence), so the primitive is offered here. */
+export { Codecs, persistentAtom } from '@/lib/persisted'
+export type { Codec } from '@/lib/persisted'
+
+export const PANES_AREA = 'panes'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors), its translucent tag fill, and the curated picker swatches — so
  *  plugin-rendered identities read the same hue as everywhere else. The
@@ -1654,12 +1662,13 @@ export { LruCache } from '@/lib/lru-cache'
  *  hand-picked color still sits with the generated ones; reach for them
  *  instead of literal hex, which can't follow the theme. */
 export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-color'
+export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
+
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
-
-export const PANES_AREA = 'panes'
 /** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
  *  thinking depth uses the same scale and spelling as the rest of the app. */
 export {
@@ -1669,9 +1678,6 @@ export {
   type ReasoningEffort,
   reasoningEffortLabel
 } from '@/lib/reasoning-effort'
-export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
-
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */

@@ -128,7 +128,7 @@ class TestDeliverOnlyStatusCodes:
 
     @pytest.mark.asyncio
     async def test_delivery_failure_returns_502(self):
-        """If the target adapter returns SendResult(success=False), 502."""
+        """A rejected delivery returns 502 and the same ID remains retryable."""
         routes = {
             "r": {
                 "secret": _INSECURE_NO_AUTH,
@@ -141,21 +141,70 @@ class TestDeliverOnlyStatusCodes:
         adapter = _make_adapter(routes)
         mock_target = _wire_mock_target(adapter)
         mock_target.send = AsyncMock(
-            return_value=SendResult(success=False, error="rate limited by tg")
+            side_effect=[
+                SendResult(success=False, error="rate limited by tg"),
+                SendResult(success=True),
+            ]
         )
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(
+            first = await cli.post(
                 "/webhooks/r",
                 json={},
                 headers={"X-GitHub-Delivery": "d-fail-1"},
             )
-            assert resp.status == 502
-            data = await resp.json()
+            assert first.status == 502
+            data = await first.json()
             # Generic error — no adapter-level detail leaks
             assert data["error"] == "Delivery failed"
             assert "rate limited" not in json.dumps(data)
+
+            retry = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-fail-1"},
+            )
+            assert retry.status == 200
+            assert (await retry.json())["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_delivery_exception_releases_id_for_retry(self):
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[RuntimeError("temporary failure"), SendResult(success=True)]
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-exception-1"},
+            )
+            assert first.status == 502
+
+            retry = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-exception-1"},
+            )
+            assert retry.status == 200
+            assert (await retry.json())["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
 
 
 # ===================================================================

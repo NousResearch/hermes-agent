@@ -53,6 +53,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "WECOM_ALLOW_ALL_USERS",
@@ -213,6 +214,41 @@ def test_own_policy_default_open_dm_is_fail_closed(monkeypatch, platform):
     adapter._dm_policy = "open"  # as the live adapter resolves the default
 
     assert runner._is_user_authorized(_source(platform)) is False
+
+
+def test_non_owning_platform_allow_all_requires_its_explicit_flag(monkeypatch):
+    """The allow-all branch stays behind the platform-specific opt-in."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}
+    )
+    runner, _adapter = _make_runner(Platform.TELEGRAM, config, enforces=False)
+
+    assert runner._is_user_authorized(_source(Platform.TELEGRAM)) is False
+    monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
+    assert runner._is_user_authorized(_source(Platform.TELEGRAM)) is True
+
+
+def test_weixin_allow_all_opens_groups_without_bypassing_pairing_dm(monkeypatch):
+    """The group opt-in must not turn a paired Weixin DM into open access."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WEIXIN_ALLOW_ALL_USERS", "true")
+    config = GatewayConfig(
+        platforms={
+            Platform.WEIXIN: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "pairing", "group_policy": "open"},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+
+    assert runner._is_user_authorized(
+        _source(Platform.WEIXIN, chat_type="group")
+    ) is True
+    assert runner._is_user_authorized(
+        _source(Platform.WEIXIN, chat_type="dm")
+    ) is False
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)

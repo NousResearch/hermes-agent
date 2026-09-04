@@ -376,6 +376,29 @@ class TestSkillView:
         assert skill["linked_files"] is not None
         assert "references" in skill["linked_files"]
 
+    def test_view_file_path_directory_returns_available_files(self, tmp_path):
+        """Requesting a directory (e.g. 'references') must not raise.
+
+        Regression: the local-skill file_path branch checked
+        ``target_file.exists()`` and fell through to ``read_text()`` on a
+        directory, surfacing a raw ``[Errno 21] Is a directory`` error from
+        deep inside the OS instead of the helpful not-found payload with
+        available_files that a missing file gets. The plugin-skill sibling
+        branch already gates on ``is_file()``; this aligns the local path.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+
+            result = json.loads(skill_view("my-skill", file_path="references"))
+
+        assert result["success"] is False
+        assert "not found" in result["error"]
+        # The caller gets the same helpful listing as a truly missing file.
+        assert "references/api.md" in result["available_files"]["references"]
+
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

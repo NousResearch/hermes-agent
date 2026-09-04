@@ -208,7 +208,7 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", AbortedStartupRunner)
     monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
-    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
         await gateway_run.start_gateway(config=GatewayConfig(), replace=False, verbosity=None)

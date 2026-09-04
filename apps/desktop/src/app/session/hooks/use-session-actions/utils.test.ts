@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
-import { $desktopOnboarding } from '@/store/onboarding'
+import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
@@ -23,8 +23,10 @@ import {
   chatMessagesEquivalent,
   chatPartsEquivalent,
   dedupeInflightUserAgainstTranscript,
+  goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
+  preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
@@ -73,25 +75,43 @@ const initialOnboardingState = $desktopOnboarding.get()
 
 describe('applyRuntimeInfo credential warnings', () => {
   beforeEach(() => {
+    consumePendingCredentialWarning()
     $desktopOnboarding.set({ ...initialOnboardingState, reason: null, requested: false })
   })
 
   afterEach(() => {
+    consumePendingCredentialWarning()
     $desktopOnboarding.set(initialOnboardingState)
   })
 
-  it('requests setup for the exact empty-key warning returned by the server', () => {
+  it('defers the empty-key warning to submit time instead of popping onboarding on switch', () => {
     const warning = "No API key configured for provider 'openrouter'. First message will fail."
 
     applyRuntimeInfo({ credential_warning: warning })
 
-    expect($desktopOnboarding.get()).toMatchObject({ reason: warning, requested: true })
+    // Merely switching to (or activating a session on) the unconfigured
+    // profile must NOT open the blocking overlay…
+    expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+    // …but the warning is staged for the submit path to consume.
+    expect(consumePendingCredentialWarning()).toBe(warning)
+    // Consuming clears it — the next submit doesn't double-fire.
+    expect(consumePendingCredentialWarning()).toBeNull()
+  })
+
+  it('a warning-free session event clears the stash (profile healed or switched away)', () => {
+    applyRuntimeInfo({
+      credential_warning: "No API key configured for provider 'openrouter'. First message will fail."
+    })
+    applyRuntimeInfo({ model: 'gpt-5' })
+
+    expect(consumePendingCredentialWarning()).toBeNull()
   })
 
   it('ignores an auxiliary-provider warning', () => {
     applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
 
     expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+    expect(consumePendingCredentialWarning()).toBeNull()
   })
 })
 
@@ -218,6 +238,24 @@ describe('isSessionGoneError', () => {
     expect(isSessionGoneError(new Error('Session not found'))).toBe(true)
     expect(isSessionGoneError(new Error('ECONNREFUSED'))).toBe(false)
     expect(isSessionGoneError(null)).toBe(false)
+  })
+})
+
+describe('goneSessionVerdict', () => {
+  it('drafts only when the id is verifiably gone in calm conditions', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: false, switchInFlight: false })).toBe('draft')
+  })
+
+  it('retries when a profile/connection switch is in flight (#88540 route revert)', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: false, switchInFlight: true })).toBe('retry')
+  })
+
+  it('retries when the session is still listed on some profile', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: true, switchInFlight: false })).toBe('retry')
+  })
+
+  it('never discards a session created by this window in this run', () => {
+    expect(goneSessionVerdict({ createdThisRun: true, stillListed: false, switchInFlight: false })).toBe('retry')
   })
 })
 
@@ -1678,5 +1716,45 @@ describe('overlayConcurrentMessageChanges', () => {
       { type: 'text', text: 'partial A' },
       { type: 'text', text: ' + delta B' }
     ])
+  })
+})
+
+describe('preserveEquivalentTranscript', () => {
+  it('keeps the current array BY REFERENCE when the replacement is content-equivalent', () => {
+    // The exact warm-resume shape of #95595: fresh objects, identical content.
+    const current = [msg('u-1', 'user', 'hello'), msg('a-1', 'assistant', 'const x = 1')]
+    const freshObjects = current.map(message => ({ ...message, parts: [...message.parts] }))
+
+    const preserved = preserveEquivalentTranscript(current, freshObjects)
+
+    expect(preserved).toBe(current)
+    expect(preserved[0]).toBe(current[0])
+  })
+
+  it('keeps the current array when the arrays are the same reference', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+
+    expect(preserveEquivalentTranscript(current, current)).toBe(current)
+  })
+
+  it('accepts the replacement when anything changed', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello'), msg('a-1', 'assistant', 'new turn')]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
+  })
+
+  it('rejects the replacement when a message diverges in content', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello world')]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
+  })
+
+  it('rejects the replacement when metadata a row renders diverges', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello', { pending: true })]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
   })
 })

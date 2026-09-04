@@ -5,7 +5,7 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-from tools.terminal_hints import annotate_failure
+from tools.terminal_hints import annotate_failure, annotate_masked_success
 
 
 class TestAnnotateFailureBasics:
@@ -107,9 +107,9 @@ class TestTerminalIntegration:
     def test_hint_field_wired(self):
         # Exercise the wiring path shape without a live environment: the
         # result assembly guards on returncode != 0 and no exit_note.
-        from tools import terminal_tool
+        from tools import terminal_tool_result
         # simulate: interpret gives None, hints give a value
-        note = terminal_tool._interpret_exit_code("python x.py", 127)
+        note = terminal_tool_result._interpret_exit_code("python x.py", 127)
         assert note is None
         hint = annotate_failure("python x.py", 127, "bash: python: command not found")
         assert hint and "python3" in hint
@@ -118,5 +118,131 @@ class TestTerminalIntegration:
         # grep exit 1 is informational; annotate_failure must not be reached
         # for it in the wiring (exit_note wins). Just verify the semantics
         # table still covers it.
-        from tools import terminal_tool
-        assert terminal_tool._interpret_exit_code("grep foo bar.txt", 1) is not None
+        from tools import terminal_tool_result
+        assert terminal_tool_result._interpret_exit_code("grep foo bar.txt", 1) is not None
+
+
+class TestMaskedSuccess:
+    """annotate_masked_success: exit-0 pipelines that hide real failures."""
+
+    def _fail_out(self):
+        return (
+            "error[E0308]: mismatched types\n"
+            "error: could not compile `llama_manager` due to 11 previous errors\n"
+        )
+
+    def test_cargo_pipe_tail_flagged(self):
+        hint = annotate_masked_success(
+            "cargo build --release 2>&1 | tail -20", self._fail_out()
+        )
+        assert hint and "last pipeline command" in hint
+
+    def test_pipe_head_flagged(self):
+        hint = annotate_masked_success("cargo check | head -50", self._fail_out())
+        assert hint is not None
+
+    def test_or_echo_fallback_flagged(self):
+        hint = annotate_masked_success(
+            'cargo build || echo "BUILD FAILED"',
+            "error: could not compile `x`\nBUILD FAILED\n",
+        )
+        assert hint and "||" in hint
+
+    def test_or_true_flagged(self):
+        hint = annotate_masked_success(
+            "pytest tests/ || true",
+            "FAILED tests/test_x.py::test_y - AssertionError\n= 3 failed in 1.2s\n",
+        )
+        assert hint is not None
+
+    def test_bare_command_not_flagged(self):
+        # No pipe, no ||: exit 0 with error-looking output is not our call.
+        assert annotate_masked_success("cargo build", self._fail_out()) is None
+
+    def test_clean_output_pipe_not_flagged(self):
+        assert (
+            annotate_masked_success(
+                "cargo build 2>&1 | tail -20",
+                "   Compiling llama_manager v0.1.0\n    Finished release\n",
+            )
+            is None
+        )
+
+    def test_grep_pipeline_excluded(self):
+        # Search output legitimately CONTAINS failure text; grep|head exit 0
+        # is a real success (matches found).
+        assert (
+            annotate_masked_success(
+                "grep -rn 'error\\[E' build.log | head -20",
+                "build.log:12:error[E0308]: mismatched types\n",
+            )
+            is None
+        )
+
+    def test_rg_pipeline_excluded(self):
+        assert (
+            annotate_masked_success(
+                "rg 'could not compile' logs/ | tail -5",
+                "logs/b.txt:error: could not compile `x`\n",
+            )
+            is None
+        )
+
+    def test_pipe_into_grep_not_flagged(self):
+        # grep as CONSUMER filters and its exit status is meaningful
+        # (0 = matched) — not a passthrough truncation consumer.
+        assert (
+            annotate_masked_success(
+                "cargo build 2>&1 | grep -c error",
+                "error[E0308]: mismatched types\n",
+            )
+            is None
+        )
+
+    def test_or_operator_alone_not_confused_with_pipe(self):
+        # `a || b` must not match the single-pipe regex.
+        assert (
+            annotate_masked_success(
+                "test -f x || stat y",
+                "error[E0308]\n",  # would need a masking shape too
+            )
+            is None
+        )
+
+    def test_generic_error_word_not_enough(self):
+        # Weak signal ("error" substring) must not fire the note.
+        assert (
+            annotate_masked_success(
+                "make install 2>&1 | tail -30",
+                "checking error handling support... yes\nInstall complete.\n",
+            )
+            is None
+        )
+
+    def test_pytest_summary_via_tee(self):
+        hint = annotate_masked_success(
+            "pytest tests/ | tee /tmp/out.log",
+            "FAILED tests/a.py::test_b\n=========== 2 failed, 10 passed ===========\n",
+        )
+        assert hint is not None
+
+    def test_empty_inputs(self):
+        assert annotate_masked_success("", "") is None
+        assert annotate_masked_success("cargo build | tail", "") is None
+        assert annotate_masked_success("", "error[E0308]") is None
+
+    def test_echo_printf_heads_excluded(self):
+        assert (
+            annotate_masked_success(
+                "printf 'a.rs:1:error[E0308]: x\\n' | cat | tail -3",
+                "a.rs:1:error[E0308]: x\n",
+            )
+            is None
+        )
+        assert (
+            annotate_masked_success(
+                'echo "error: could not compile x" | tee log.txt',
+                "error: could not compile x\n",
+            )
+            is None
+        )

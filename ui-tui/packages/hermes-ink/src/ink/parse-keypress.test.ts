@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
+describe('legacy modified return parsing', () => {
+  it.each(['\r', '\n'])('parses ESC+%j as one Alt+Enter keypress', lineEnding => {
+    const sequence = `\x1b${lineEnding}`
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    expect(keys).toEqual([expect.objectContaining({ name: 'return', ctrl: false, meta: true, shift: false, sequence })])
+  })
+})
+
 describe('parseMultipleKeypresses bracketed paste recovery', () => {
   it('emits empty bracketed pastes when the terminal sends both markers', () => {
     const [keys, state] = parseMultipleKeypresses(INITIAL_STATE, PASTE_START + PASTE_END)
@@ -102,6 +111,64 @@ describe('parseMultipleKeypresses text control splitting', () => {
     const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'a\rb')
 
     expect(keys).toEqual([expect.objectContaining({ raw: 'a\rb' })])
+  })
+})
+
+describe('parseMultipleKeypresses CSI u (Kitty keyboard protocol)', () => {
+  it('parses Shift+Enter (CSI 13;2u) as return with shift=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;2u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: true,
+      ctrl: false,
+      meta: false,
+      super: false
+    })
+  })
+
+  it('parses Ctrl+Enter (CSI 13;5u) as return with ctrl=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;5u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: true,
+      meta: false,
+      super: false
+    })
+  })
+
+  it('parses Cmd+Enter (CSI 13;9u) as return with super=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;9u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: true
+    })
+  })
+
+  it('parses plain Enter (CSI 13u) as return with no modifiers', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: false
+    })
   })
 })
 

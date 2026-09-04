@@ -80,6 +80,20 @@ def codex_config(monkeypatch):
     )
 
 
+def _set_startup_config(
+    monkeypatch, *, provider="custom", default="safe-model", base_url="", ack=None
+):
+    model = {"provider": provider, "default": default}
+    if base_url:
+        model["base_url"] = base_url
+    config = {"model": model}
+    if ack is not None:
+        config["security"] = {
+            "allow_data_training_tiers_noninteractive": ack,
+        }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+
+
 def test_cmd_chat_rejects_noninteractive_gpt55_pro_startup_override(
     main_mod, fake_cli, codex_config, monkeypatch, capsys
 ):
@@ -107,6 +121,92 @@ def test_cmd_chat_rejects_noninteractive_gpt55_pro_even_with_yolo(
     assert excinfo.value.code == 1
     assert not fake_cli
     assert "EXPENSIVE MODEL WARNING" in capsys.readouterr().err
+
+
+def test_cmd_chat_allows_acknowledged_data_training_tier_noninteractively(
+    main_mod, fake_cli, monkeypatch, capsys
+):
+    monkeypatch.setattr(sys, "stdin", _NonInteractiveStdin())
+    _set_startup_config(monkeypatch, ack=True)
+
+    main_mod.cmd_chat(
+        _chat_args(model="muse-spark-1.2-contributor", provider="custom")
+    )
+
+    assert fake_cli["model"] == "muse-spark-1.2-contributor"
+    err = capsys.readouterr().err
+    assert "TRAINS ON YOUR DATA" in err
+    assert "security.allow_data_training_tiers_noninteractive" in err
+
+
+def test_cmd_chat_rejects_unacknowledged_data_training_tier_with_opt_in_hint(
+    main_mod, fake_cli, monkeypatch, capsys
+):
+    monkeypatch.setattr(sys, "stdin", _NonInteractiveStdin())
+    _set_startup_config(monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_mod.cmd_chat(
+            _chat_args(model="muse-spark-1.2-contributor", provider="custom")
+        )
+
+    assert excinfo.value.code == 1
+    assert not fake_cli
+    err = capsys.readouterr().err
+    assert "TRAINS ON YOUR DATA" in err
+    assert "security.allow_data_training_tiers_noninteractive" in err
+
+
+def test_data_training_acknowledgement_does_not_bypass_cost_guard(
+    main_mod, fake_cli, monkeypatch, capsys
+):
+    monkeypatch.setattr(sys, "stdin", _NonInteractiveStdin())
+    _set_startup_config(
+        monkeypatch,
+        provider="openai-codex",
+        default="gpt-5.5",
+        base_url="https://chatgpt.com/backend-api/codex",
+        ack=True,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_mod.cmd_chat(_chat_args(model="openai/gpt-5.5-pro"))
+
+    assert excinfo.value.code == 1
+    assert not fake_cli
+    assert "EXPENSIVE MODEL WARNING" in capsys.readouterr().err
+
+
+def test_data_training_acknowledgement_requires_literal_true(
+    main_mod, fake_cli, monkeypatch
+):
+    monkeypatch.setattr(sys, "stdin", _NonInteractiveStdin())
+    _set_startup_config(monkeypatch, ack="true")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_mod.cmd_chat(
+            _chat_args(model="muse-spark-1.2-contributor", provider="custom")
+        )
+
+    assert excinfo.value.code == 1
+    assert not fake_cli
+
+
+def test_data_training_acknowledgement_does_not_skip_interactive_confirmation(
+    main_mod, fake_cli, monkeypatch, capsys
+):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    _set_startup_config(monkeypatch, ack=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_mod.cmd_chat(
+            _chat_args(model="muse-spark-1.2-contributor", provider="custom")
+        )
+
+    assert excinfo.value.code == 1
+    assert not fake_cli
+    assert "Model override cancelled" in capsys.readouterr().err
 
 
 def test_cmd_chat_allows_interactive_gpt55_pro_when_confirmed(

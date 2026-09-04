@@ -23,6 +23,18 @@ export function backendScopeKey(connectionId: null | string | undefined, profile
   return `conn:${connection}::${profileKey}`
 }
 
+/** Scope a registry route without collapsing its explicit `local` source id.
+ * Null/empty ids still identify the legacy profile-only route. */
+export function registryBackendScopeKey(
+  connectionId: null | string | undefined,
+  profile: null | string | undefined
+): string {
+  const profileKey = String(profile ?? '').trim() || 'default'
+  const connection = String(connectionId ?? '').trim()
+
+  return connection ? `conn:${connection}::${profileKey}` : profileKey
+}
+
 /** All pool keys owned by a connection share this prefix (teardown on remove). */
 export function backendScopePrefix(connectionId: string): string {
   return `conn:${String(connectionId).trim()}::`

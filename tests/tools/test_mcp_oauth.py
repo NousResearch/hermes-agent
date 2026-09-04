@@ -15,14 +15,25 @@ from tools.mcp_oauth import (
     OAuthNonInteractiveError,
     build_oauth_auth,
     remove_oauth_tokens,
-    _find_free_port,
     _can_open_browser,
     _is_interactive,
-    _wait_for_callback,
     _make_callback_handler,
     _make_redirect_handler,
     _paste_callback_reader,
 )
+
+
+def _find_free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def _wait_for_callback():
+    """Await the per-flow waiter on the legacy module-level port (the removed shim)."""
+    import tools.mcp_oauth as mod
+    return await mod._make_callback_waiter(mod._oauth_port)()
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
@@ -111,6 +122,43 @@ class TestHermesTokenStorage:
             f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
         )
 
+    def test_client_info_with_secret_uses_client_secret_post(self, tmp_path, monkeypatch):
+        from mcp.shared.auth import OAuthClientInformationFull
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("supabase")
+        client_info = OAuthClientInformationFull.model_validate({
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "redirect_uris": ["http://127.0.0.1:12345/callback"],
+        })
+
+        asyncio.run(storage.set_client_info(client_info))
+        loaded = asyncio.run(storage.get_client_info())
+
+        assert loaded is not None
+        assert loaded.token_endpoint_auth_method == "client_secret_post"
+        client_path = tmp_path / "mcp-tokens" / "supabase.client.json"
+        assert json.loads(client_path.read_text())["token_endpoint_auth_method"] == "client_secret_post"
+
+    def test_client_info_with_secret_and_none_method_is_coerced(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        client_path = token_dir / "supabase.client.json"
+        client_path.write_text(json.dumps({
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "redirect_uris": ["http://127.0.0.1:12345/callback"],
+            "token_endpoint_auth_method": "none",
+        }))
+
+        loaded = asyncio.run(HermesTokenStorage("supabase").get_client_info())
+
+        assert loaded is not None
+        assert loaded.token_endpoint_auth_method == "client_secret_post"
+        assert json.loads(client_path.read_text())["token_endpoint_auth_method"] == "client_secret_post"
+
 
     def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -146,6 +194,143 @@ class TestBuildOAuthAuth:
         })
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
+
+    @pytest.mark.asyncio
+    async def test_token_exchange_includes_secret_for_dcr_secret_client(self, tmp_path, monkeypatch):
+        from mcp.shared.auth import OAuthClientInformationFull
+        from urllib.parse import parse_qs
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        redirect_uris = provider.context.client_metadata.redirect_uris
+        assert redirect_uris is not None
+        provider.context.client_info = OAuthClientInformationFull.model_validate({
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "redirect_uris": [str(redirect_uris[0])],
+            "token_endpoint_auth_method": "none",
+        })
+
+        request = await provider._exchange_token_authorization_code("auth-code", "verifier")
+        body = parse_qs(request.content.decode())
+
+        assert body["client_id"] == ["client-id"]
+        assert body["client_secret"] == ["secret"]
+        assert provider.context.client_info is not None
+        assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
+
+    @pytest.mark.asyncio
+    async def test_token_response_accepts_201_created(self, tmp_path, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        response = httpx.Response(201, json={
+            "access_token": "access-token",
+            "token_type": "Bearer",
+            "refresh_token": "refresh-token",
+        })
+
+        await provider._handle_token_response(response)
+
+        tokens = provider.context.current_tokens
+        assert tokens is not None
+        assert tokens.access_token == "access-token"
+        token_path = tmp_path / "mcp-tokens" / "supabase.json"
+        assert token_path.exists()
+        assert json.loads(token_path.read_text())["access_token"] == "access-token"
+
+    @pytest.mark.asyncio
+    async def test_malformed_201_token_response_does_not_expose_body(
+        self, tmp_path, monkeypatch
+    ):
+        import httpx
+        from mcp.client.auth.oauth2 import OAuthTokenError
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+
+        with pytest.raises(OAuthTokenError, match="^Invalid token response$") as exc_info:
+            await provider._handle_token_response(
+                httpx.Response(
+                    201,
+                    content=b'{"access_token": {"secret": "access-secret"}}',
+                )
+            )
+
+        assert "access-secret" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_token_read_error_does_not_expose_body(self, tmp_path, monkeypatch):
+        import httpx
+        from mcp.client.auth.oauth2 import OAuthTokenError
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+
+        class _ReadErrorResponse:
+            status_code = 201
+
+            async def aread(self):
+                raise httpx.ReadError("access-secret refresh-secret")
+
+        with pytest.raises(OAuthTokenError, match="^Invalid token response$") as exc_info:
+            await provider._handle_token_response(_ReadErrorResponse())
+
+        assert "access-secret" not in str(exc_info.value)
+        assert "refresh-secret" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_malformed_201_refresh_response_clears_tokens(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        provider.context.current_tokens = object()
+
+        response = httpx.Response(
+            201, content=b'{"refresh_token": "refresh-secret"}'
+        )
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            result = await provider._handle_refresh_response(response)
+
+        assert result is False
+        assert provider.context.current_tokens is None
+        assert "refresh-secret" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_refresh_read_error_clears_tokens(self, tmp_path, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        provider.context.current_tokens = object()
+
+        class _ReadErrorResponse:
+            status_code = 201
+
+            async def aread(self):
+                raise httpx.ReadError("body read failed")
+
+        result = await provider._handle_refresh_response(_ReadErrorResponse())
+
+        assert result is False
+        assert provider.context.current_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -319,14 +504,17 @@ class TestCallbackPortReservation:
         import threading
         import tools.mcp_oauth as mod
 
-        cfg: dict = {}
+        # cimd: false keeps this on the ephemeral branch. A CIMD-eligible
+        # config would take a pinned port instead, and this test would pass
+        # while never exercising _reserve_callback_port at all.
+        cfg: dict = {"cimd": False}
         port = mod._configure_callback_port(cfg)
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
         # Bypass the non-interactive guard — this test drives the flow directly.
         monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
 
         async def drive():
-            task = asyncio.create_task(mod._wait_for_callback())
+            task = asyncio.create_task(_wait_for_callback())
             threading.Thread(
                 target=_hit_callback_when_ready,
                 args=(f"http://127.0.0.1:{port}/callback?code=abc123&state=xyz",),
@@ -334,9 +522,11 @@ class TestCallbackPortReservation:
             ).start()
             return await asyncio.wait_for(task, timeout=20)
 
-        code, state = asyncio.run(drive())
-        assert code == "abc123"
-        assert state == "xyz"
+        # mcp 2.0's callback_handler contract returns an
+        # AuthorizationCodeResult, not the legacy (code, state) tuple.
+        result = asyncio.run(drive())
+        assert result.code == "abc123"
+        assert result.state == "xyz"
         # Reservation was consumed by adoption.
         assert port not in mod._reserved_sockets
 
@@ -355,11 +545,14 @@ class TestCallbackPortReservation:
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
         monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
 
-        cfg_a: dict = {}
+        # cimd: false keeps both flows on ephemeral ports, which is where the
+        # #34260 clobbering happens; the pinned range has its own coverage in
+        # tests/tools/test_mcp_cimd.py.
+        cfg_a: dict = {"cimd": False}
         port_a = mod._configure_callback_port(cfg_a)
         waiter_a = mod._make_callback_waiter(port_a)
         # Flow B configures afterwards — overwrites mod._oauth_port.
-        cfg_b: dict = {}
+        cfg_b: dict = {"cimd": False}
         port_b = mod._configure_callback_port(cfg_b)
         assert mod._oauth_port == port_b != port_a
 
@@ -375,13 +568,13 @@ class TestCallbackPortReservation:
             return await asyncio.wait_for(task, timeout=20)
 
         try:
-            code, state = asyncio.run(drive())
+            result = asyncio.run(drive())
         finally:
             leftover = mod._reserved_sockets.pop(port_b, None)
             if leftover is not None:
                 leftover.close()
-        assert code == "flowA"
-        assert state == "sA"
+        assert result.code == "flowA"
+        assert result.state == "sA"
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +825,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         monkeypatch.setattr(mod.asyncio, "sleep", no_sleep)
 
         with pytest.raises(OAuthNonInteractiveError, match="interactive session"):
-            asyncio.run(mod._wait_for_callback())
+            asyncio.run(_wait_for_callback())
         fake_server.assert_not_called()
 
     def test_redirect_handler_rejects_and_does_not_open_browser(self, monkeypatch, capsys):
@@ -684,7 +877,7 @@ _PROXY_REDIRECT = "https://oauth.example.ts.net/callback"
 
 
 @pytest.mark.parametrize("cfg, expected_auth", [
-    ({}, "none"),                                    # public client
+    ({"cimd": False}, "none"),                       # public client
     ({"client_secret": "shh"}, "client_secret_post"),  # confidential client
 ])
 def test_build_client_metadata_token_endpoint_auth(cfg, expected_auth):
@@ -729,7 +922,7 @@ def test_build_oauth_auth_preserves_server_url_path():
             captured.update(kwargs)
 
     with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
-         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "HermesOAuthClientProvider", _FakeProvider), \
          patch.object(mcp_oauth, "_is_interactive", return_value=True), \
          patch.object(mcp_oauth, "_maybe_preregister_client"), \
          patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
@@ -890,7 +1083,7 @@ def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
         mo, "HTTPServer", side_effect=OSError("address already in use")
     ):
         with pytest.raises(mo.OAuthNonInteractiveError) as excinfo:
-            asyncio.run(mo._wait_for_callback())
+            asyncio.run(_wait_for_callback())
 
     msg = str(excinfo.value)
     assert "54321" in msg

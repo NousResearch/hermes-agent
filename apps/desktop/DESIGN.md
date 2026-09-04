@@ -139,6 +139,13 @@ Never use native HTML `title=` on buttons — unstyled, ~500ms OS delay, clashes
 with the themed `Tip`. `src/components/ui/__tests__/no-native-title.test.ts`
 fails on any `<button>` / `<Button>` that still carries `title=`.
 
+**Tooltip timing.** A hover is not a click — the cursor crosses triggers on
+the way somewhere else. `Tip` waits 200ms before the first open so a sweep
+does not flash a trail. After a tip has opened the page is warm: the next
+trigger within 300ms opens instantly. The cooldown starts on close, so a
+hover a second later waits again. Close is immediate. `OverflowTip` stays
+on its own longer delay (list titles must not trail while scanning).
+
 **Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
 use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
 current combo from `$bindings`. Pass `text={...}` only when the label is
@@ -150,6 +157,12 @@ Notes:
   fixed heights). Only icon buttons carry the shared 4px radius.
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
 - Polymorph with `asChild` when the button must render as a link/Slot.
+
+## Badges — one component
+
+`src/components/ui/badge.tsx`. Variants: `default` (tinted primary), `muted`,
+`warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
+Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Form controls
 
@@ -190,6 +203,15 @@ Notes:
 - **Empty:** `EmptyState` for plain page bodies; `PanelEmpty` for overlay
   master/detail empties with an icon and action. Don't hand-roll a third
   centered empty.
+- **Confirmation:** `ConfirmDialog` is the only way we ask "are you sure". It
+  opens focused on Confirm, so `Enter` confirms and `Esc` cancels, and it owns
+  the pending → done → close beat and the inline error — a call site passes an
+  async `onConfirm` and nothing else. A third way out (e.g. "Remove from
+  sidebar" beside "Delete worktree") goes in the one `secondaryAction` slot.
+  Never `window.confirm`: it's an unstyled blocking Chromium modal. A handler
+  that wants the answer inline instead of a mounted dialog calls `confirm()`
+  from `src/store/confirm.ts`, which renders this same primitive through the
+  single `ConfirmHost` at the shell — the way `notify()` backs notifications.
 
 ## Chat, tools & boot surfaces
 
@@ -315,7 +337,8 @@ The detailed state contract lives in the scoped
 ## Before you add something — checklist
 
 - [ ] Reuse a primitive (`Button`, `SearchField`, `SegmentedControl`,
-      `ListRow`, `Loader`, `ErrorState`, `LogView`) instead of forking one?
+      `ListRow`, `Loader`, `ErrorState`, `LogView`, `ConfirmDialog`) instead of
+      forking one?
 - [ ] Tokens (`--ui-*`, `shadow-nous`, `--stroke-nous`) — zero raw colors /
       one-off shadows?
 - [ ] No `className` overriding a primitive's padding / size / radius / chrome?

@@ -660,6 +660,24 @@ def test_drain_compute_host_forwards_queued_image_paths(monkeypatch):
 
 
 
+def test_drain_preserves_queued_prompt_when_session_is_closing(monkeypatch):
+    """A compute-host completion must not dispatch a successor after close."""
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(
+        server,
+        "_submit_prompt_to_compute_host",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("closing session must not dispatch")
+        ),
+    )
+    queued = {"text": "queued-after-close", "transport": "ws-9"}
+    session = _session(_closing=True, queued_prompt=queued)
+
+    assert server._drain_queued_prompt("r1", "sid", session) is False
+    assert session["queued_prompt"] is queued
+    assert session["running"] is False
+
+
 def test_drain_releases_running_on_dispatch_failure(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("dispatch failed")
@@ -761,5 +779,4 @@ def test_drain_continues_with_later_queued_prompt_after_dispatch_failure(monkeyp
     assert calls == ["broken", "next"]
     assert session["queued_prompt"] is None
     assert session.get("queued_prompts") is None
-
 

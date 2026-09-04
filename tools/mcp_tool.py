@@ -172,6 +172,12 @@ def _ensure_mcp_sdk() -> bool:
         else:
             logger.debug("mcp package not installed -- MCP tool support disabled")
         if _MCP_AVAILABLE:
+            # mcp==2.0.0's 2025-11-25 wire models reject boolean JSON Schema
+            # sub-schemas under tool properties; widen them before any
+            # tools/list validation runs (#101669). Owned by mcp_tool_schema.
+            from tools.mcp_tool_schema import _patch_mcp_boolean_property_schemas
+
+            _patch_mcp_boolean_property_schemas()
             try:
                 _JSONRPC_METHOD_NOT_FOUND = importlib.import_module("mcp.types").METHOD_NOT_FOUND
             except Exception:  # pragma: no cover — SDK without the constant

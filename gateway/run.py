@@ -4467,13 +4467,14 @@ def _housekeeping_deferred_fts_retry() -> None:
     # Retry here, on the existing tick, against the shared instances this process already holds:
     # non-blocking admission, no new thread, rate-limited inside SessionDB. No-op when nothing is stale (one
     # attribute read per instance). See #100108.
-    from hermes_state_registry import live_shared_session_dbs
-    for _sdb in live_shared_session_dbs():
-        _retry = getattr(_sdb, "retry_deferred_fts_recovery", None)
-        if callable(_retry) and _retry():
-            logger.info(
-                "Deferred state.db FTS rebuild completed in-process for %s; full-text search restored.",
-                getattr(_sdb, "db_path", "state.db"))
+    from hermes_state_registry import borrow_live_shared_session_dbs
+    with borrow_live_shared_session_dbs() as _session_dbs:
+        for _sdb in _session_dbs:
+            _retry = getattr(_sdb, "retry_deferred_fts_recovery", None)
+            if callable(_retry) and _retry():
+                logger.info(
+                    "Deferred state.db FTS rebuild completed in-process for %s; full-text search restored.",
+                    getattr(_sdb, "db_path", "state.db"))
 
 
 def _housekeeping_memory_trim() -> None:

@@ -6032,7 +6032,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
-
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
@@ -6153,16 +6152,26 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
+        def _started_response(run_id: str) -> "web.Response":
+            response_headers = (
+                {"X-Hermes-Session-Key": gateway_session_key}
+                if gateway_session_key
+                else {}
+            )
+            return web.json_response(
+                {"run_id": run_id, "status": "started"},
+                status=202,
+                headers=response_headers,
+            )
 
         try:
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        from agent.mcp_run_context import read_mcp_run_metadata
+
+        request_mcp_metadata = read_mcp_run_metadata()
 
         raw_input = body.get("input")
         if not raw_input:
@@ -6314,17 +6323,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
-        from agent.mcp_run_context import read_mcp_run_metadata
-
-        request_mcp_metadata = read_mcp_run_metadata()
         idempotency_key = request.headers.get("Idempotency-Key")
         idempotency_fingerprint = None
-        effective_profile = _api_request_profile.get() or ""
-        idempotency_storage_key = (
-            f"{effective_profile}:{idempotency_key}"
-            if effective_profile and idempotency_key
-            else idempotency_key
-        )
+        idempotency_storage_key = None
         if idempotency_key:
             if len(idempotency_key) > 256:
                 return web.json_response(
@@ -6335,6 +6336,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=400,
                 )
+            effective_profile = _api_request_profile.get() or ""
+            idempotency_scope = _make_request_fingerprint(
+                {
+                    "profile": effective_profile,
+                    "session_id": session_id,
+                    "session_key": gateway_session_key,
+                },
+                keys=["profile", "session_id", "session_key"],
+                mcp_metadata=request_mcp_metadata,
+            )
+            idempotency_storage_key = f"{effective_profile}:{idempotency_key}:{idempotency_scope}"
             fingerprint_body = dict(body)
             fingerprint_body["_resolved_session_id"] = session_id
             fingerprint_body["_gateway_session_key"] = gateway_session_key
@@ -6412,6 +6424,9 @@ class APIServerAdapter(BasePlatformAdapter):
         cached_response = _cached_idempotency_response()
         if cached_response is not None:
             return cached_response
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
@@ -6462,7 +6477,6 @@ class APIServerAdapter(BasePlatformAdapter):
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()
-
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")

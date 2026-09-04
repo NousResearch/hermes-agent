@@ -66,9 +66,9 @@ decoding, with a maximum nesting depth of 64. Hermes keeps the decoded object
 outside model messages and tool schemas. It is forwarded as MCP
 `tools/call.params._meta` only to an MCP server configured with
 `forward_run_metadata: true`. Delegated child agents inherit the same private
-context. Non-streaming idempotency fingerprints include it, without storing the
-raw object in the idempotency cache, so different employee bindings cannot
-share a cached response.
+context. API idempotency fingerprints include it without storing the raw object
+in the idempotency cache. This includes `/v1/runs` start deduplication, so
+different employee bindings cannot share a cached response or run.
 
 For example, the decoded JSON can contain an opaque, signed binding:
 
@@ -362,6 +362,10 @@ bounded status for the active profile's config, state database, configured
 model, disk space, gateway/platform state, active API runs, pending process
 completions, and active delegations. The response exposes status and counts,
 not config values, credentials, paths, commands, queue payloads, or raw errors.
+It also returns the active `profile` and the SHA-256 digest of that profile's
+exact `capabilities.json` bytes as `capability_manifest_sha256`. The digest is
+`null` when the profile has no manifest, so a control plane can fail closed on
+a missing or unexpected capability set.
 
 The public `/health` route remains a cheap liveness probe and does not run
 readiness checks. A degraded readiness result still uses HTTP 200; inspect the
@@ -612,7 +616,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
-- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
+- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (`/v1/runs` starts are retained by key for one hour)
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

@@ -162,6 +162,44 @@ async def test_two_concurrent_api_runs_keep_private_metadata_isolated():
 
 
 @pytest.mark.asyncio
+async def test_run_idempotency_never_reuses_a_different_employee_binding():
+    adapter = _adapter()
+    observed = []
+
+    class _Agent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            observed.append(read_mcp_run_metadata())
+            return {"final_response": "done"}
+
+    with patch.object(adapter, "_create_agent", side_effect=lambda **_kwargs: _Agent()):
+        async with TestClient(TestServer(_app(adapter))) as client:
+            run_ids = []
+            for employee in ("a", "b"):
+                response = await client.post(
+                    "/v1/runs",
+                    json={"input": "same message"},
+                    headers={
+                        "Authorization": "Bearer sk-test-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-MCP-Metadata": _encode_metadata(
+                            {"employee": employee}
+                        ),
+                    },
+                )
+                assert response.status == 202
+                run_id = (await response.json())["run_id"]
+                run_ids.append(run_id)
+                await _wait_for_run(adapter, run_id)
+
+    assert run_ids[0] != run_ids[1]
+    assert observed == [{"employee": "a"}, {"employee": "b"}]
+
+
+@pytest.mark.asyncio
 async def test_runs_preserve_two_employee_transcripts_without_cross_session_leak():
     adapter = _adapter()
     histories = {}
@@ -572,52 +610,3 @@ async def test_idempotency_cache_is_scoped_by_private_mcp_metadata(
 
     assert responses == ["data-for-a", "data-for-b"]
     assert run_agent.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_run_idempotency_key_cannot_cross_private_mcp_metadata():
-    adapter = _adapter()
-    observed = []
-    mock_agent = MagicMock()
-
-    def _run_conversation(**_kwargs):
-        observed.append(read_mcp_run_metadata()["employee"])
-        return {"final_response": "done", "messages": []}
-
-    mock_agent.run_conversation.side_effect = _run_conversation
-    mock_agent.session_prompt_tokens = 0
-    mock_agent.session_completion_tokens = 0
-    mock_agent.session_total_tokens = 0
-
-    with patch.object(adapter, "_create_agent", return_value=mock_agent):
-        async with TestClient(TestServer(_app(adapter))) as client:
-            first = await client.post(
-                "/v1/runs",
-                json={"input": "hello"},
-                headers={
-                    "Authorization": "Bearer sk-test-secret",
-                    "Idempotency-Key": "same-run-key",
-                    "X-Hermes-MCP-Metadata": _encode_metadata(
-                        {"employee": "a"}
-                    ),
-                },
-            )
-            assert first.status == 202
-            first_run_id = (await first.json())["run_id"]
-
-            second = await client.post(
-                "/v1/runs",
-                json={"input": "hello"},
-                headers={
-                    "Authorization": "Bearer sk-test-secret",
-                    "Idempotency-Key": "same-run-key",
-                    "X-Hermes-MCP-Metadata": _encode_metadata(
-                        {"employee": "b"}
-                    ),
-                },
-            )
-            assert second.status == 409
-            assert (await second.json())["error"]["code"] == "idempotency_conflict"
-            await _wait_for_run(adapter, first_run_id)
-
-    assert observed == ["a"]

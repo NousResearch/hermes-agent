@@ -83,11 +83,11 @@ mcp_servers:
 
 The object is sent in MCP `tools/call.params._meta`. It is not appended to the
 user message, system prompt, tool arguments, or model-facing tool schema. The
-same private context is propagated to delegated child agents. For non-streaming
-API requests, its value also contributes to the idempotency fingerprint so a
-cached response cannot be reused across different bindings; the raw object is
-not stored in the idempotency cache. The MCP server remains responsible for
-validating signatures, expiry, and scope.
+same private context is propagated to delegated child agents. Its value also
+contributes to API idempotency fingerprints, including `/v1/runs` start
+deduplication, so a response or run cannot be reused across different bindings;
+the raw object is not stored in the idempotency cache. The MCP server remains
+responsible for validating signatures, expiry, and scope.
 
 ## `tools` policy keys
 

@@ -84,10 +84,13 @@ def resolve_provider_profile(
     """Resolve the profile for a request, requested-provider-first.
 
     A profile with ``activates_on_requested_provider = True`` claims
-    entries by requested name or alias. Without such a profile,
-    resolution is exactly ``get_provider_profile(provider)``.
+    entries by requested name or alias, bare or as the ``custom:<name>``
+    menu key. Without such a profile, resolution is exactly
+    ``get_provider_profile(provider)``.
     """
     requested_norm = str(requested or "").strip().lower()
+    if requested_norm.startswith("custom:"):
+        requested_norm = requested_norm[len("custom:"):].strip()
     if requested_norm:
         profile = get_provider_profile(requested_norm)
         if profile is not None and getattr(

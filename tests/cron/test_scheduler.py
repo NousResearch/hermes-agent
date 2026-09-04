@@ -1520,6 +1520,22 @@ class TestSilentDelivery:
         deliver_mock.assert_called_once()
 
 
+    def test_silent_response_uses_global_fallback(self):
+        """A configured cron.silent_fallback is delivered instead of suppressing."""
+        job = self._make_job()
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"silent_fallback": "No new information to report."}}), \
+             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[1] == "No new information to report."
+
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \

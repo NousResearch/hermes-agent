@@ -151,6 +151,52 @@ async def test_subprotocol_key_accept_full_turn(monkeypatch):
             await ws.close()
 
 
+@pytest.mark.asyncio
+async def test_turn_runs_under_voice_session_source(monkeypatch):
+    # The converse turn must persist as source="voice" (a chat sub-kind), so the
+    # agent runs inside session_source_scope("voice"). Record what
+    # _session_source_for_agent("api_server") resolves to when _run_agent fires:
+    # inside the scope it is "voice"; the platform ("api_server") is unchanged.
+    from run_agent import _session_source_for_agent
+
+    adapter = _adapter()
+    streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
+    _patch_converse(monkeypatch, streamer, transcript="turn it on")
+
+    seen: dict = {}
+
+    async def _fake_run_agent(user_message, conversation_history, *,
+                              stream_delta_callback=None, session_id=None, **_):
+        seen["source"] = _session_source_for_agent("api_server")
+        if stream_delta_callback is not None:
+            stream_delta_callback("ok.")
+        return {"final_response": "ok."}, {"input_tokens": 0, "output_tokens": 0}
+
+    monkeypatch.setattr(adapter, "_run_agent", _fake_run_agent)
+
+    async with TestClient(TestServer(_app(adapter))) as client:
+        ws = await client.ws_connect(
+            "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            ready = await ws.receive_json()
+            assert ready["type"] == "ready"
+            for frame in _speech_then_silence_pcm():
+                await ws.send_bytes(frame)
+            while True:
+                msg = await ws.receive()
+                if msg.type == web.WSMsgType.TEXT:
+                    if json.loads(msg.data)["type"] == "turn_done":
+                        break
+                elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED,
+                                  web.WSMsgType.ERROR):
+                    break
+        finally:
+            await ws.send_str(json.dumps({"stop": True}))
+            await ws.close()
+
+    assert seen.get("source") == "voice"
+
+
 def _write_tone_wav(path, *, rate=24000, ms=40, freq=440.0):
     """Write a tiny mono s16 WAV — stands in for a one-shot TTS output file."""
     n = int(rate * ms / 1000)

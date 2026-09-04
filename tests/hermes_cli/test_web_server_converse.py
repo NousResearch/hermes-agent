@@ -40,6 +40,25 @@ def _url(token: str | None = None) -> str:
     return f"/api/audio/converse?{urlencode({'token': token or web_server._SESSION_TOKEN})}"
 
 
+def test_create_voice_session_tags_source_voice(monkeypatch):
+    """The dashboard voice session is minted with source="voice" so its durable row
+    (and every prompt.submit turn that re-binds HERMES_SESSION_SOURCE from it) persists
+    as a chat sub-kind labeled "Voice", not under Automations."""
+    from hermes_cli.web_routers import _converse_loop
+
+    captured: dict = {}
+
+    def _fake_dispatch(req, transport):
+        captured["params"] = req.get("params")
+        return {"jsonrpc": "2.0", "id": req.get("id"),
+                "result": {"session_id": "voice-sid"}}
+
+    monkeypatch.setattr("tui_gateway.server.dispatch", _fake_dispatch)
+
+    assert _converse_loop.create_voice_session() == "voice-sid"
+    assert captured["params"]["source"] == "voice"
+
+
 class _FakeStreamer:
     sample_rate = 24000
     channels = 1

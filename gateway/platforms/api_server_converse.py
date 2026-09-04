@@ -286,11 +286,17 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
             async def _run_turn(t=transcript, history=list(conversation_history)) -> None:
                 # The real agent turn on the main loop (preserving the request's profile
                 # scope); deltas stream out via _on_delta as they land, then the None
-                # sentinel closes the synthesis pipeline when the turn ends.
+                # sentinel closes the synthesis pipeline when the turn ends. The turn runs
+                # under session_source_scope("voice") so the persisted session row is
+                # source="voice" (a chat sub-kind the dashboard labels "Voice"); the agent
+                # PLATFORM stays "api_server", so HA toolset resolution is unaffected.
+                from gateway.session_context import session_source_scope
+
                 try:
-                    result, _usage = await self._run_agent(
-                        user_message=t, conversation_history=history,
-                        stream_delta_callback=_on_delta, session_id=session_id)
+                    with session_source_scope("voice"):
+                        result, _usage = await self._run_agent(
+                            user_message=t, conversation_history=history,
+                            stream_delta_callback=_on_delta, session_id=session_id)
                     if isinstance(result, dict) and result.get("failed"):
                         turn_err["err"] = str(result.get("error") or "agent run failed")
                     elif isinstance(result, dict):

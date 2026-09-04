@@ -88,7 +88,13 @@ def create_voice_session(model: Optional[str] = None) -> str:
     """
     from tui_gateway.server import dispatch
 
-    params: dict = {"title": "Voice conversation"}
+    # source="voice" tags the durable session row as a chat sub-kind the dashboard
+    # labels "Voice" (vs. the default "tui"/platform, which buckets under Automations).
+    # _resolve_session_source never rewrites an explicit source, and every subsequent
+    # prompt.submit re-binds HERMES_SESSION_SOURCE from this stored value via
+    # _set_session_context, so all turns persist as source="voice". The agent PLATFORM
+    # is unchanged, leaving toolset resolution untouched.
+    params: dict = {"title": "Voice conversation", "source": "voice"}
     if model:
         params["model"] = model
     req = {"jsonrpc": "2.0", "id": f"converse-new-{uuid.uuid4().hex[:8]}",

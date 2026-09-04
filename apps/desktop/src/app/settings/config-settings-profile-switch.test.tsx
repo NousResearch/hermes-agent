@@ -187,6 +187,9 @@ describe('ConfigSettings profile switching', () => {
     await new Promise(resolve => setTimeout(resolve, 5))
     resolveRefetch?.({ timezone: 'Remote update' })
     await refetch
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
 
     expect(screen.getByTestId('config-value').textContent).toBe('Local edit')
   })

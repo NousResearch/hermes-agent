@@ -55,7 +55,7 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
 def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     """Fresh machine: install runtime -> download recommended -> activate.
     Each leg is asserted by its observable call, in order."""
-    calls: list[str] = []
+    calls: list = []
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
@@ -84,7 +84,8 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         web_deps, "late",
-        lambda name, module="hermes_cli.web_server": (lambda *a, **k: calls.append("assign")))
+        lambda name, module="hermes_cli.web_server": (
+            calls.append((name, module)) or (lambda *a, **k: calls.append("assign"))))
 
     r = client.post("/api/local-models/quickstart", json={})
     assert r.status_code == 200
@@ -100,6 +101,8 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     assert calls[0] == "install"
     assert "download" in calls
     assert calls.index("install") < calls.index("download") < calls.index("assign")
+    # _assign_default binds the defining module, not the web_server facade.
+    assert ("_apply_model_assignment_sync", "hermes_cli.web_server_config") in calls
 
     # Durable effect: the runtime is enabled in config.
     from hermes_cli.config import load_config
@@ -110,7 +113,7 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
 def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     """Runtime present and model already staged: the response says so and
     the job goes straight to activation."""
-    calls: list[str] = []
+    calls: list = []
 
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
@@ -137,7 +140,8 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
 
     monkeypatch.setattr(
         web_deps, "late",
-        lambda name, module="hermes_cli.web_server": (lambda *a, **k: calls.append("assign")))
+        lambda name, module="hermes_cli.web_server": (
+            calls.append((name, module)) or (lambda *a, **k: calls.append("assign"))))
 
     r = client.post("/api/local-models/quickstart", json={})
     assert r.status_code == 200
@@ -150,6 +154,8 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     assert job["status"] == "done", job["error"]
     assert "install" not in calls and "download" not in calls
     assert calls == ["assign"] or calls[-1] == "assign"
+    # _assign_default binds the defining module, not the web_server facade.
+    assert ("_apply_model_assignment_sync", "hermes_cli.web_server_config") in calls
 
 
 @pytest.fixture

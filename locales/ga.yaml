@@ -209,6 +209,7 @@ gateway:
   reasoning:
     level_default:             "medium (réamhshocraithe)"
     level_disabled:            "none (díchumasaithe)"
+    level_provider_default:    "réamhshocrú an tsoláthraí"
     scope_session:             "sárú seisiúin"
     scope_global:              "cumraíocht dhomhanda"
     status:                    "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\n_Úsáid:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
@@ -345,6 +346,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**Gníomhaíocht is déanaí:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    effort:                "**Iarracht:** `{effort}`"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

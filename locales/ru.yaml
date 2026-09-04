@@ -205,6 +205,7 @@ gateway:
   reasoning:
     level_default:             "medium (по умолчанию)"
     level_disabled:            "none (отключено)"
+    level_provider_default:    "по умолчанию у провайдера"
     scope_session:             "переопределение сеанса"
     scope_global:              "глобальная конфигурация"
     status:                    "🧠 **Настройки рассуждений**\n\n**Усилия:** `{level}`\n**Область:** {scope}\n**Отображение:** {display}\n\n_Использование:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
@@ -341,6 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**Последняя активность:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    effort:                "**Усилия:** `{effort}`"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

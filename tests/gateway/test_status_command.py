@@ -60,6 +60,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     # the populated path override this.
     runner._session_db._db.get_session.return_value = None
     runner._reasoning_config = None
+    runner._resolve_session_reasoning_config = MagicMock(return_value=None)
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._agent_cache = {}
@@ -139,6 +140,172 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reasoning_config", "expected"),
+    [
+        # None = resolver found nothing configured; the turn omits `reasoning`
+        # from the request, so the level is the provider's, not "medium".
+        (None, "provider default"),
+        ({"enabled": False}, "none (disabled)"),
+        # Enabled with no effort string is the same story: no level is sent.
+        ({"enabled": True}, "provider default"),
+        ({"enabled": True, "effort": "high"}, "high"),
+    ],
+)
+async def test_status_command_includes_effective_reasoning_effort(
+    reasoning_config,
+    expected,
+):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(return_value=session_entry),
+    )
+    runner._session_db = SimpleNamespace(
+        get_session_title=AsyncMock(return_value=None),
+        get_session=AsyncMock(return_value={"model": "openai/gpt-test"}),
+        get_dominant_session_model_route=AsyncMock(return_value={}),
+    )
+    runner._resolve_session_reasoning_config.return_value = reasoning_config
+
+    result = await runner._handle_status_command(_make_event("/status"))
+
+    assert f"**Effort:** `{expected}`" in result
+    runner._resolve_session_reasoning_config.assert_called_once_with(
+        source=_make_source(),
+        session_key=session_entry.session_key,
+        model="openai/gpt-test",
+    )
+
+
+def _make_reasoning_runner(tmp_path, monkeypatch, config_yaml: str):
+    """Runner whose /status effort line runs the REAL reasoning resolver.
+
+    No stubbed resolver: the chain under test is
+    ``_resolve_session_reasoning_config`` → ``_load_reasoning_config`` →
+    ``hermes_constants.resolve_reasoning_config`` against a real config.yaml,
+    which is where the "None means provider default" contract lives.
+    """
+    import gateway.run as gateway_run
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    del runner._resolve_session_reasoning_config
+    # The session's effective model — per-model overrides resolve against it.
+    runner._session_db._db.get_session.return_value = {"model": "openai/gpt-test"}
+    return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_yaml", "expected"),
+    [
+        # Nothing configured → resolver returns None → the request carries no
+        # `reasoning` field at all, so /status reports the provider's default
+        # rather than asserting a level Hermes never selected.
+        ("agent:\n  max_iterations: 5\n", "provider default"),
+        ("agent:\n  reasoning_effort: high\n", "high"),
+        # Unrecognized level also resolves to None — same provider default.
+        ("agent:\n  reasoning_effort: turbo\n", "provider default"),
+        # Explicit off must stay distinguishable from "not configured".
+        ("agent:\n  reasoning_effort: false\n", "none (disabled)"),
+        ("agent:\n  reasoning_effort: none\n", "none (disabled)"),
+        (
+            "agent:\n"
+            "  reasoning_effort: low\n"
+            "  reasoning_overrides:\n"
+            "    openai/gpt-test: xhigh\n",
+            "xhigh",
+        ),
+    ],
+)
+async def test_status_effort_matches_real_resolver(
+    tmp_path, monkeypatch, config_yaml, expected
+):
+    """/status must report what the real resolver returns for the next turn."""
+    runner = _make_reasoning_runner(tmp_path, monkeypatch, config_yaml)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert f"**Effort:** `{expected}`" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ({"enabled": True, "effort": "minimal"}, "minimal"),
+        # A session override that enables reasoning without naming a level
+        # leaves the level to the provider.
+        ({"enabled": True}, "provider default"),
+        ({"enabled": False}, "none (disabled)"),
+    ],
+)
+async def test_status_effort_follows_session_override(
+    tmp_path, monkeypatch, override, expected
+):
+    """A `/reasoning` session override wins over config.yaml in /status too."""
+    runner = _make_reasoning_runner(
+        tmp_path, monkeypatch, "agent:\n  reasoning_effort: low\n"
+    )
+    runner._set_session_reasoning_override(
+        build_session_key(_make_source()), override
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert f"**Effort:** `{expected}`" in result
+    assert "**Effort:** `low`" not in result
+
+
+@pytest.mark.asyncio
+async def test_status_drops_effort_line_when_resolution_fails(tmp_path, monkeypatch):
+    """A resolver failure degrades to omitting the line, not a wrong level.
+
+    The handler swallows resolution errors on purpose — /status is a
+    diagnostic surface and must still render. Asserting the rest of the card
+    survives keeps that from silently becoming "status is empty".
+    """
+    import gateway.run as gateway_run
+
+    runner = _make_reasoning_runner(
+        tmp_path, monkeypatch, "agent:\n  reasoning_effort: high\n"
+    )
+
+    def _boom():
+        raise RuntimeError("config read failed")
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", _boom)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Effort:**" not in result
+    assert "**Hermes Gateway Status**" in result
+    assert "**Model:** `openai/gpt-test`" in result
+    assert "**Lifetime tokens billed:**" in result
 
 
 @pytest.mark.asyncio

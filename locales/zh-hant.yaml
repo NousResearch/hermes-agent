@@ -205,6 +205,7 @@ gateway:
   reasoning:
     level_default:             "medium（預設）"
     level_disabled:            "none（已停用）"
+    level_provider_default:    "提供方預設"
     scope_session:             "工作階段覆寫"
     scope_global:              "全域設定"
     status:                    "🧠 **推理設定**\n\n**強度：** `{level}`\n**範圍：** {scope}\n**顯示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
@@ -341,6 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**最近活動：** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    effort:                "**強度：** `{effort}`"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

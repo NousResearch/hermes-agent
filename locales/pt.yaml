@@ -205,6 +205,7 @@ gateway:
   reasoning:
     level_default:             "medium (predefinido)"
     level_disabled:            "none (desativado)"
+    level_provider_default:    "predefinição do fornecedor"
     scope_session:             "substituição de sessão"
     scope_global:              "configuração global"
     status:                    "🧠 **Definições de raciocínio**\n\n**Esforço:** `{level}`\n**Âmbito:** {scope}\n**Visualização:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
@@ -341,6 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**Última atividade:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    effort:                "**Esforço:** `{effort}`"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

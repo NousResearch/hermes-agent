@@ -228,6 +228,7 @@ gateway:
   reasoning:
     level_default:             "medium (افتراضي)"
     level_disabled:            "none (مُعطّل)"
+    level_provider_default:    "الإعداد الافتراضي للمزوّد"
     scope_session:             "تجاوز الجلسة"
     scope_global:              "الإعدادات العامة"
     status:                    "🧠 **إعدادات التفكير**\n\n**الجهد:** `{level}`\n**النطاق:** {scope}\n**العرض:** {display}\n\n_الاستخدام:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
@@ -343,6 +344,7 @@ gateway:
     last_activity:         "**آخر نشاط:** {timestamp}"
     model:                 "**النموذج:** `{model}`"
     model_provider:        "**النموذج:** `{model}` ({provider})"
+    effort:                "**الجهد:** `{effort}`"
     context:               "**السياق:** {used} / {total} ({pct}%)"
     context_used:          "**السياق:** ~{used} رمزًا"
     tokens:                "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"

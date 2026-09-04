@@ -205,6 +205,7 @@ gateway:
   reasoning:
     level_default:             "medium (predeterminado)"
     level_disabled:            "none (deshabilitado)"
+    level_provider_default:    "predeterminado del proveedor"
     scope_session:             "anulación de sesión"
     scope_global:              "configuración global"
     status:                    "🧠 **Ajustes de razonamiento**\n\n**Esfuerzo:** `{level}`\n**Alcance:** {scope}\n**Visualización:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
@@ -338,6 +339,7 @@ gateway:
     last_activity:         "**Última actividad:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    effort:                "**Esfuerzo:** `{effort}`"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

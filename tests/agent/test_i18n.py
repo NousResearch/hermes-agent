@@ -139,4 +139,34 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     # In a source checkout this is the repo-root locales dir.
     assert result.name == "locales"
 
+def test_t_status_effort_keys_fall_back_to_english(tmp_path, monkeypatch):
+    """A locale pack lacking the /status effort keys renders English, not key paths.
+
+    Third-party translation packs lag the bundled catalogs, so neither
+    ``gateway.status.effort`` nor ``gateway.reasoning.level_provider_default``
+    may surface a raw dotted key or raise when a pack omits them.
+    """
+    fake_locales = tmp_path / "locales"
+    fake_locales.mkdir()
+    (fake_locales / "en.yaml").write_text(
+        "gateway:\n"
+        "  status:\n"
+        '    effort: "**Effort:** `{effort}`"\n'
+        "  reasoning:\n"
+        '    level_provider_default: "provider default"\n',
+        encoding="utf-8",
+    )
+    (fake_locales / "zh.yaml").write_text("# pack without the new keys\n", encoding="utf-8")
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: fake_locales)
+    i18n.reset_language_cache()
+    try:
+        level = i18n.t("gateway.reasoning.level_provider_default", lang="zh")
+        row = i18n.t("gateway.status.effort", lang="zh", effort=level)
+
+        assert level == "provider default"
+        assert row == "**Effort:** `provider default`"
+        assert "gateway.reasoning" not in row
+        assert "gateway.status" not in row
+    finally:
+        i18n.reset_language_cache()
 

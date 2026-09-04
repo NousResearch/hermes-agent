@@ -134,3 +134,22 @@ def test_doctor_does_not_warn_for_legacy_env_after_new_config_is_selected(
     )
 
     assert findings == []
+
+
+def test_explicit_env_map_does_not_inherit_process_relay_vars(monkeypatch):
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "true")
+    monkeypatch.delenv(RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    findings = collect_relay_plugin_cutover_findings({}, {})
+    assert findings == []
+
+
+def test_merge_process_env_reports_shell_exported_relay_vars(monkeypatch):
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "true")
+    monkeypatch.delenv(RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    findings = dict(
+        collect_relay_plugin_cutover_findings(
+            {}, {}, merge_process_env=True
+        )
+    )
+    assert "now ignored" in findings["HERMES_NEMO_RELAY_ATIF_ENABLED"]
+    assert RELAY_PLUGINS_CONFIG_ENV in findings["HERMES_NEMO_RELAY_ATIF_ENABLED"]

@@ -617,8 +617,16 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
 def collect_relay_plugin_cutover_findings(
     raw_config: dict | None,
     env_map: dict | None,
+    *,
+    merge_process_env: bool = False,
 ) -> list[tuple[str, str]]:
-    """Return actionable findings for the removed Hermes Relay plugin."""
+    """Return actionable findings for the removed Hermes Relay plugin.
+
+    Tests pass an explicit *env_map* and leave *merge_process_env* off so
+    process-level legacy relay vars cannot leak in. ``run_doctor`` loads
+    the on-disk ``.env`` into *env_map* and sets *merge_process_env* so a
+    shell-exported relay var that is not in that file is still reported.
+    """
     from hermes_cli.relay_plugin_cutover import (
         LEGACY_RELAY_EXPORT_ENV_VARS,
         RELAY_PLUGINS_CONFIG_ENV,
@@ -639,12 +647,9 @@ def collect_relay_plugin_cutover_findings(
                 )
 
     effective_env = dict(env_map or {})
-    # Fall through to process-level env ONLY when no explicit env_map was
-    # given: run_doctor passes None and wants live-process vars included, but
-    # callers (and tests) that hand in an explicit map are describing a
-    # complete environment — merging os.environ on top breaks hermeticity on
-    # any box that exports legacy relay vars (10-vs-2 findings, Aug 2026).
-    if env_map is None:
+    # Explicit maps are complete (tests). Live doctor passes the on-disk
+    # .env dict, not None, so env_map is None is not the live path.
+    if env_map is None or merge_process_env:
         for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
             if name not in effective_env and os.environ.get(name) is not None:
                 effective_env[name] = os.environ[name]
@@ -663,6 +668,8 @@ def collect_relay_plugin_cutover_findings(
 def report_deprecated_config_and_env(
     raw_config: dict | None = None,
     env_map: dict | None = None,
+    *,
+    merge_process_env: bool = False,
 ) -> list[tuple[str, str]]:
     """Emit non-failing doctor warnings for deprecated config keys and env vars.
 
@@ -672,7 +679,9 @@ def report_deprecated_config_and_env(
     """
     deprecated = collect_deprecated_config_keys(raw_config)
     deprecated.extend(collect_deprecated_env_vars(env_map))
-    relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
+    relay_cutover = collect_relay_plugin_cutover_findings(
+        raw_config, env_map, merge_process_env=merge_process_env
+    )
     findings = deprecated + relay_cutover
     if not findings:
         check_ok("No deprecated config keys or env vars")
@@ -1873,7 +1882,9 @@ def run_doctor(args):
                 _env_for_depr = _load_env_depr()
             except Exception:
                 _env_for_depr = {}
-            report_deprecated_config_and_env(_raw_for_depr, _env_for_depr)
+            report_deprecated_config_and_env(
+                _raw_for_depr, _env_for_depr, merge_process_env=True
+            )
         except Exception:
             pass
 
@@ -1904,7 +1915,9 @@ def run_doctor(args):
                 _env_for_depr = _load_env_depr()
             except Exception:
                 _env_for_depr = {}
-            report_deprecated_config_and_env({}, _env_for_depr)
+            report_deprecated_config_and_env(
+                {}, _env_for_depr, merge_process_env=True
+            )
         except Exception:
             pass
 

@@ -49,12 +49,13 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
+
+from hermes_cli._subprocess_compat import resolve_executable
 
 _RECOVERY_ENV = "HERMES_UPDATE_RESTART_RECOVERY"
 _GATEWAY_MARKERS = ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE")
@@ -145,7 +146,7 @@ def _systemd_verified_active(profile: str, *, run: Callable[..., Any]) -> bool:
     unit not ``active``) means we could NOT verify — never that the restart
     failed.
     """
-    systemctl = shutil.which("systemctl")
+    systemctl = resolve_executable("systemctl")
     if not systemctl:
         return False
     for unit in _systemd_unit_candidates(profile):
@@ -216,16 +217,17 @@ def _systemctl_scopes() -> list[tuple[str, list[str]]]:
     """``systemctl`` invocations for the user and system scopes, or nothing.
 
     Mirrors the scope pair the in-process restart phase walks. ``systemctl``
-    is resolved through ``shutil.which`` so this module never has to import
-    any Hermes platform helper — importing the freshly pulled tree is exactly
-    what aborted the phase that called us.
+    is resolved through the shared platform-aware helper so reduced-PATH
+    NixOS services can still reach the binary. This is a fresh child process,
+    so importing the helper is safe even though the pre-update parent may have
+    aborted while importing the freshly pulled tree.
 
     Each scope is returned with its label because ``hermes-serve.service`` in
     the user manager and ``hermes-serve.service`` in the system manager are
     two different processes. Every identity this module produces or consumes
     stays qualified by that label; the bare unit name is never the key.
     """
-    systemctl = shutil.which("systemctl")
+    systemctl = resolve_executable("systemctl")
     if not systemctl or sys.platform != "linux":
         return []
     return [("user", [systemctl, "--user"]), ("system", [systemctl])]

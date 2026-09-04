@@ -20,16 +20,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
+
+from hermes_cli._subprocess_compat import resolve_executable
 
 logger = logging.getLogger(__name__)
 
 
 def _serve_unit_recovery_available() -> bool:
     """Can a fresh process restart ``hermes-serve*`` units on this host?"""
-    return sys.platform == "linux" and bool(shutil.which("systemctl"))
+    return sys.platform == "linux" and bool(resolve_executable("systemctl"))
 
 
 def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
@@ -220,7 +221,7 @@ def _recover_gateway_restart_after_abort(
     # process together with the old service. If systemd-run is unavailable,
     # fail closed rather than pretending the in-cgroup child is independent.
     if gateway_mode and sys.platform == "linux":
-        systemd_run = shutil.which("systemd-run")
+        systemd_run = resolve_executable("systemd-run")
         if not systemd_run:
             logger.warning("Cannot isolate fresh gateway recovery from the gateway cgroup")
             return _all_failed()

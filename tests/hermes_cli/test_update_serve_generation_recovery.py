@@ -334,7 +334,11 @@ class _Systemctl:
 @pytest.fixture
 def linux_systemctl(monkeypatch):
     monkeypatch.setattr(recovery.sys, "platform", "linux")
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        recovery,
+        "resolve_executable",
+        lambda name, **kwargs: "/usr/bin/systemctl",
+    )
 
 
 def test_serve_unit_verified_when_main_pid_changes(linux_systemctl):
@@ -469,7 +473,7 @@ def test_gateway_units_are_not_restarted_by_the_serve_pass(linux_systemctl):
 
 
 def test_no_systemctl_means_no_serve_pass(monkeypatch):
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: None)
+    monkeypatch.setattr(recovery, "resolve_executable", lambda name, **kwargs: None)
 
     def unreachable(*a, **k):
         raise AssertionError("systemctl invoked without a systemctl binary")
@@ -482,7 +486,11 @@ def test_no_systemctl_means_no_serve_pass(monkeypatch):
 
 def test_non_linux_hosts_do_not_run_the_serve_pass(monkeypatch):
     monkeypatch.setattr(recovery.sys, "platform", "win32")
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: "systemctl")
+    monkeypatch.setattr(
+        recovery,
+        "resolve_executable",
+        lambda name, **kwargs: "systemctl",
+    )
 
     def unreachable(*a, **k):
         raise AssertionError("serve unit pass ran off Linux")

@@ -286,7 +286,9 @@ def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
 
 def test_recovery_child_verifies_systemd_profiles_via_is_active(monkeypatch):
     recovery = importlib.import_module("hermes_cli.update_restart_recovery")
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        recovery, "resolve_executable", lambda name, **kwargs: f"/bin/{name}"
+    )
     calls = []
 
     def fake_run(argv, **kwargs):
@@ -315,7 +317,7 @@ def test_recovery_child_verifies_systemd_profiles_via_is_active(monkeypatch):
 
 def test_recovery_child_treats_missing_systemctl_as_unverified(monkeypatch):
     recovery = importlib.import_module("hermes_cli.update_restart_recovery")
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: None)
+    monkeypatch.setattr(recovery, "resolve_executable", lambda name, **kwargs: None)
 
     result = recovery.restart_profiles(
         ["default"],

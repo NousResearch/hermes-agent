@@ -46,6 +46,7 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $compactChat } from '@/store/compact-chat'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
@@ -350,6 +351,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
   const statusCopy = t.statusStack
+  const compactChat = useStore($compactChat)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
@@ -401,6 +403,8 @@ function ToolEntry({ part }: ToolEntryProps) {
   // The session whose transcript this row is IN, which is not necessarily the
   // primary one: a tool row inside a session tile must feed that tile's composer.
   const { $cwd: $sessionCwd, $runtimeId: $sessionRuntimeId } = useSessionView()
+  const sessionId = useStore($sessionRuntimeId)
+  const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
 
   useEffect(() => {
     if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
@@ -529,6 +533,10 @@ function ToolEntry({ part }: ToolEntryProps) {
   ) : undefined
 
   if (dismissed) {
+    return null
+  }
+
+  if (compactChat && !(isPending && APPROVAL_TOOLS.has(toolName) && approval)) {
     return null
   }
 
@@ -934,6 +942,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
     endIndex
   )
 
+  const compactChat = useStore($compactChat)
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const disclosureId = `tool-run:${key}`
@@ -942,8 +951,9 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
 
   // A lone call is already its own one-line summary; heading it with a second
-  // line would say the same thing twice.
-  if (count < 2) {
+  // line would say the same thing twice. Compact chat drops the run chrome
+  // entirely so children (approvals, if any) render without "Ran N commands".
+  if (compactChat || count < 2) {
     return <>{children}</>
   }
 

@@ -47,6 +47,7 @@ import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { $compactChat } from '@/store/compact-chat'
 import { notifyError } from '@/store/notifications'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
@@ -586,6 +587,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const compactChat = useStore($compactChat)
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
@@ -600,7 +602,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
-      {durationS !== undefined && (
+      {durationS !== undefined && !compactChat && (
         <span
           className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
           data-slot="aui_turn-duration"

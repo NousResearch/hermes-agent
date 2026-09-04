@@ -542,6 +542,9 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      compactChatTitle: 'Compact chat',
+      compactChatDesc:
+        'Hide thinking, tool rows, timers, and background-process notices. Approvals and agent-to-agent messages stay visible.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
       uiScaleTitle: 'UI Scale',

@@ -14,6 +14,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $compactChat, setCompactChat } from '@/store/compact-chat'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
@@ -347,6 +348,7 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const compactChat = useStore($compactChat)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
@@ -844,6 +846,25 @@ export function AppearanceSettings() {
             description={a.toolViewDesc}
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.toolView)}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setCompactChat(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={compactChat ? 'on' : 'off'}
+              />
+            }
+            description={a.compactChatDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.compactChat)}
+            title={a.compactChatTitle}
           />
 
           <ListRow

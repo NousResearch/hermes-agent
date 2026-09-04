@@ -437,6 +437,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      compactChatTitle: string
+      compactChatDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
       uiScaleTitle: string

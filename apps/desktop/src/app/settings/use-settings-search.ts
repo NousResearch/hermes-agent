@@ -180,6 +180,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.compactChatDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.compactChat}`,
+      keywords: ['compact', 'hide tools', 'quiet', 'thinking'],
+      label: appearance.compactChatTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.compactChat, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.embedsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.embeds}`,

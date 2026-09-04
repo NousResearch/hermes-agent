@@ -1,4 +1,5 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
@@ -14,6 +15,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $compactChat } from '@/store/compact-chat'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
@@ -238,7 +240,10 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   const detail = newline === -1 ? '' : body.slice(newline + 1).trim()
 
   return (
-    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+    <div
+      className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+      data-slot="aui_process-notification"
+    >
       <span className="flex items-center gap-1.5">
         <Codicon className="shrink-0 text-muted-foreground/55" name="terminal" size="0.75rem" />
         <span className="wrap-anywhere">{headline}</span>
@@ -266,6 +271,7 @@ export const UserMessage: FC<{
 }> = ({ onCancel, onRequestRestoreConfirm }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const compactChat = useStore($compactChat)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -370,8 +376,13 @@ export const UserMessage: FC<{
   useResizeObserver(measureClamp, clampInnerRef)
 
   // Injected background-process notification, not a human prompt — render the
-  // compact system-style notice (after all hooks above have run).
+  // compact system-style notice (after all hooks above have run). Compact chat
+  // drops the notice entirely; the agent still received the event.
   if (PROCESS_NOTIFICATION_RE.test(messageText.trim())) {
+    if (compactChat) {
+      return null
+    }
+
     return (
       <MessagePrimitive.Root
         className="flex w-full min-w-0 flex-col items-stretch"

@@ -529,6 +529,8 @@ export const zh: Translations = {
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+      compactChatTitle: '简洁对话',
+      compactChatDesc: '隐藏思考、工具行、计时器和后台进程通知。审批与智能体间消息仍然显示。',
       reasoningCollapsedTitle: '默认折叠推理过程',
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
       uiScaleTitle: '界面缩放',

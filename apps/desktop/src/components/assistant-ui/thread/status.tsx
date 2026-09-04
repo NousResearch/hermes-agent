@@ -14,6 +14,7 @@ import { StatusPulse } from '@/components/ui/status-pulse'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
+import { $compactChat } from '@/store/compact-chat'
 import { sessionCompacting } from '@/store/compaction'
 import { sessionAwaitingInput } from '@/store/prompts'
 import { sessionProviderWait } from '@/store/provider-wait'
@@ -144,6 +145,7 @@ export const CenteredThreadSpinner: FC = () => {
 
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
+  const compactChat = useStore($compactChat)
   const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
   const elapsed = useElapsedSeconds(true, undefined, turnStartedAt)
   const hint = useStatusHint(compacting, drafting, providerWait)
@@ -156,7 +158,7 @@ export const ResponseLoadingIndicator: FC = () => {
         kind="opacity"
       />
       {hint && <HintText>{hint}</HintText>}
-      <ActivityTimerText seconds={elapsed} />
+      {!compactChat && <ActivityTimerText seconds={elapsed} />}
     </StatusRow>
   )
 }
@@ -170,9 +172,10 @@ export const ResponseLoadingIndicator: FC = () => {
 // nothing is parked.
 export const BackgroundResumeNotice: FC = () => {
   const { t } = useI18n()
+  const compactChat = useStore($compactChat)
   const resume = useStore($backgroundResume)
 
-  if (!resume) {
+  if (!resume || compactChat) {
     return null
   }
 
@@ -207,6 +210,7 @@ export const BackgroundResumeNotice: FC = () => {
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
 export const TurnActivityIndicator: FC = () => {
+  const compactChat = useStore($compactChat)
   const activity = useAuiState(s => activitySignature(s.message.content))
 
   // Timestamp of the last visible progress, held from the moment the quiet
@@ -252,7 +256,7 @@ export const TurnActivityIndicator: FC = () => {
     compacting ? turnStartedAt : (quietSince ?? drafting?.since ?? turnStartedAt)
   )
 
-  if (!active) {
+  if (!active || compactChat) {
     return null
   }
 

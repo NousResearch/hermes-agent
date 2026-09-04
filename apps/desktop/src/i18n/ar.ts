@@ -443,6 +443,9 @@ export const ar = defineLocale({
       colorModeDesc: 'اختر الوضع الفاتح أو الداكن أو اتبع النظام.',
       toolViewTitle: 'عرض الأدوات',
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
+      compactChatTitle: 'محادثة مدمجة',
+      compactChatDesc:
+        'إخفاء التفكير وصفوف الأدوات والمؤقتات وإشعارات العمليات الخلفية. تبقى طلبات الموافقة ورسائل الوكيل إلى الوكيل ظاهرة.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
       translucencyTitle: 'شفافية النافذة',

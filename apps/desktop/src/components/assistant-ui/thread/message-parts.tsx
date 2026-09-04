@@ -24,6 +24,7 @@ import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $compactChat } from '@/store/compact-chat'
 import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
@@ -63,6 +64,8 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+  const compactChat = useStore($compactChat)
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
     return null
@@ -88,6 +91,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   }
 
   if (props.toolName === 'delegate_task') {
+    if (compactChat) {
+      return null
+    }
+
     return <DelegateToolPart {...props} />
   }
 
@@ -131,6 +138,7 @@ const ThinkingDisclosure: FC<{
   timerKey: string
 }> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
   const { t } = useI18n()
+  const compactChat = useStore($compactChat)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
   // default, unless the user opts into the low-jitter collapsed presentation.
@@ -212,6 +220,10 @@ const ThinkingDisclosure: FC<{
     // Re-run when the disclosure toggles so the observer attaches to the new
     // DOM after expand/collapse (refs are conditionally rendered on `open`).
   }, [isPreview, open])
+
+  if (compactChat) {
+    return null
+  }
 
   return (
     <div

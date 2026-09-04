@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url'
  * Build the renderer URL for the HUD window.
  *
  * Same query-before-hash contract as `buildSessionWindowUrl`: `?win=hud` and
- * the optional `profile=` MUST sit in the search string before the '#', or
+ * the optional route fields MUST sit in the search string before the '#', or
  * HashRouter swallows them as part of the route.
  *
  * The profile is what the HUD renderer adopts at boot. Session ids are scoped
@@ -21,12 +21,19 @@ export function buildHudWindowUrl(
   sessionId: null | string | undefined,
   {
     devServer,
+    connectionId,
     profile,
     rendererIndexPath
-  }: { devServer?: null | string; profile?: null | string; rendererIndexPath?: string } = {}
+  }: {
+    devServer?: null | string
+    connectionId?: null | string
+    profile?: null | string
+    rendererIndexPath?: string
+  } = {}
 ): string {
+  const connectionKey = typeof connectionId === 'string' ? connectionId.trim() : ''
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
-  const query = `?win=hud${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}`
+  const query = `?win=hud${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${connectionKey ? `&connectionId=${encodeURIComponent(connectionKey)}` : ''}`
   const route = sessionId ? `#/${encodeURIComponent(sessionId)}` : '#/'
 
   if (devServer) {

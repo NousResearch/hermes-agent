@@ -117,7 +117,11 @@ declare global {
           solid: boolean
           workspaceTransfer: boolean
         }
-        open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
+        open: (request?: {
+          connectionId?: null | string
+          sessionId?: null | string
+          profile?: null | string
+        }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
         beginMove: () => void

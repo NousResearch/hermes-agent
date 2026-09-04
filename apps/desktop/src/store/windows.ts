@@ -133,12 +133,40 @@ export function isPeerInstanceWindow(search = typeof window === 'undefined' ? ''
 // before, so ordinary windows and single-profile users are untouched.
 // Not cached: it is read a handful of times per boot and staying cache-free
 // keeps it honest under test.
-export function windowProfileOverride(): null | string {
+function windowRouteOverride(
+  name: string,
+  search = typeof window === 'undefined' ? '' : window.location.search
+): null | string {
   try {
-    return new URLSearchParams(window.location.search).get('profile')?.trim() || null
+    return new URLSearchParams(search).get(name)?.trim() || null
   } catch {
     return null
   }
+}
+
+export function windowProfileOverride(search?: string): null | string {
+  return windowRouteOverride('profile', search)
+}
+
+export function windowConnectionIdOverride(search?: string): null | string {
+  return windowRouteOverride('connectionId', search)
+}
+
+/** Resolve the backend this renderer was opened for. Helper windows carry an
+ * exact registry source; ordinary and older windows keep the legacy profile
+ * route unchanged. */
+export function getWindowConnection(
+  desktop: Pick<Window['hermesDesktop'], 'getConnection' | 'getConnectionFor'>,
+  {
+    connectionId = windowConnectionIdOverride(),
+    profile = windowProfileOverride()
+  }: { connectionId?: null | string; profile?: null | string } = {}
+) {
+  if (connectionId && desktop.getConnectionFor) {
+    return desktop.getConnectionFor({ connectionId, profile })
+  }
+
+  return profile ? desktop.getConnection(profile) : desktop.getConnection()
 }
 
 // True when running inside the Electron desktop shell (the preload bridge is

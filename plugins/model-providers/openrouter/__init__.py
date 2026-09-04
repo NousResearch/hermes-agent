@@ -244,6 +244,7 @@ openrouter = OpenRouterProfile(
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
         "deepseek/deepseek-chat",
+        "google/gemini-3.8-flash",
         "google/gemini-3.7-flash",
         "qwen/qwen3-plus",
     ),

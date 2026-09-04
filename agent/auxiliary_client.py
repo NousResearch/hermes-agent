@@ -783,6 +783,7 @@ _FAST_MODEL_FAMILIES: tuple = (
     "gpt-5.4-mini",
     "gpt-5-mini",
     "haiku-4.5",
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "flash-lite",

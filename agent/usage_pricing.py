@@ -639,6 +639,24 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         pricing_version="xai-vertex-2026-08",
     ),
     # Google Gemini
+    # Gemini 3.8 Flash — GA 2026-09-02, MoA flash37 seat's lineage successor
+    # (config.yaml moa.presets.gate/consult, provisional swap 2026-09-03,
+    # Nick-directed same-lineage upgrade per SEAT-CRITERIA precedent — no
+    # audition required for an intra-lineage model swap). Same introductory
+    # pricing as 3.7 Flash per Google's pricing page (verified 2026-09-03):
+    # $0.75/$3.75 per 1M through 2026-12-31, standard $1.50/$7.50 from
+    # 2027-01-01. Cache read follows the family's 0.1x-input convention.
+    (
+        "google",
+        "gemini-3.8-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.75"),
+        output_cost_per_million=Decimal("3.75"),
+        cache_read_cost_per_million=Decimal("0.075"),
+        source="official_docs_snapshot",
+        source_url="https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
+        pricing_version="google-pricing-2026-09-03-intro",
+    ),
     # Gemini 3.7 Flash — introductory pricing $0.75/$3.75 per 1M through
     # 2026-12-31 (half of 3.6 Flash); standard rates take effect 2027-01-01.
     # Cache read follows the family's 0.1x-input convention.

@@ -100,6 +100,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-mini",                    ""),
     # Google
     ("google/gemini-3.1-pro-preview",          ""),
+    ("google/gemini-3.8-flash",                ""),
     ("google/gemini-3.7-flash",                ""),
     # xAI
     ("x-ai/grok-4.6",                          ""),
@@ -274,6 +275,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-mini",
         # Google
         "google/gemini-3.1-pro-preview",
+        "google/gemini-3.8-flash",
         "google/gemini-3.7-flash",
         # xAI
         "x-ai/grok-4.6",
@@ -359,6 +361,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.1-flash-lite-preview",
     ],
@@ -635,12 +639,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # generations here would break the bare `/model opus` shorthand.
     # Gemini entries validated live against a GCP project (global region,
     # HTTP 200) as of 2026-07-21 (PR #68767); gemini-3.7-flash added and
-    # re-validated live 2026-08-15 (global only — us-central1/us-east5 404).
+    # re-validated live 2026-08-15; gemini-3.8-flash added 2026-09-03 (global only).
     "vertex": [
         "claude-opus-5",
         "claude-fable-5",
         "claude-sonnet-5",
         "google/gemini-3.1-pro-preview",
+        "google/gemini-3.8-flash",
         "google/gemini-3.7-flash",
         "google/gemini-3.6-flash",
         "google/gemini-3.5-flash",
@@ -1715,7 +1720,7 @@ def warm_openrouter_reasoning_caps_async() -> None:
 
 
 # Canonical low→high ordering used for nearest-level clamping. Superset of
-# hermes_constants.VALID_REASONING_EFFORTS ("none" included so an explicit
+# hermes_constants.VALID_REASONING_EFFORTS ("none" included so an explicit  # noqa: secret
 # disable can be clamped too when a provider publishes it as a level).
 _REASONING_EFFORT_ORDER = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",

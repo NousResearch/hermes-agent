@@ -398,17 +398,19 @@ def install_grant(
 ) -> OAuthCredential:
     """Apply a fresh OAuth grant (an OAuthTokenResponse dict) to ``path`` for ``host``: deep-merge the
     grant's ``config`` into the file root (preserving other hosts and root keys), then write the host's
-    ``apiKey`` and ``oauth`` block. ``apply_config=False`` stores tokens only."""
+    ``apiKey`` and ``oauth`` block. ``apply_config=False`` stores tokens only. Runs under the same locks
+    as a refresh so a login cannot interleave with a sibling's read-modify-write of the file."""
     now = time.time() if now is None else now
     cred = OAuthCredential.from_token_response(grant, now=now, client_id=client_id, token_endpoint=token_endpoint)
-    # Strict: a fresh login must not seed its root-merge from a store that exists but could not be read.
-    raw = _read_config_strict(path)
-    granted_config = grant.get("config")
-    if isinstance(granted_config, dict):
-        cred.consent_peer_name = granted_config.get("peerName")
-        if apply_config:
-            _deep_merge(raw, granted_config)
-    _persist_credential(path, host, cred, raw)
+    with _refresh_lock, _config_refresh_lock(path):
+        # Strict: a fresh login must not seed its root-merge from a store that exists but could not be read.
+        raw = _read_config_strict(path)
+        granted_config = grant.get("config")
+        if isinstance(granted_config, dict):
+            cred.consent_peer_name = granted_config.get("peerName")
+            if apply_config:
+                _deep_merge(raw, granted_config)
+        _persist_credential(path, host, cred, raw)
     return cred
 
 def apply_token_to_client(client: Any, token: str) -> bool:

@@ -191,8 +191,11 @@ that live on one gateway.
   **Rename**, **Edit SOUL.md** and **Delete**, all executed on the square's
   own gateway; the delete confirmation names the machine.
 - A gateway the last enumeration could not reach keeps its squares, marked
-  with an amber dot on its glyph — a sleeping box is still yours. Two
-  registrations of one backend collapse to a single group. Past thirteen
+  with an amber dot on its glyph — a sleeping box is still yours. A gateway
+  Desktop simply has not dialed yet (an SSH box, or **This device** while the
+  primary is a remote gateway) is not "unreachable": its squares come from the
+  profile directory listing and sit at rest without the dot; the first click
+  dials it. Two registrations of one backend collapse to a single group. Past thirteen
   squares across the fleet, the strip condenses into one menu sectioned by
   gateway.
 - The selected gateway survives a quit and relaunch only when **Settings →
@@ -316,7 +319,10 @@ multi-gateway roster is the reference consumer.
   gateway auth/origin guard is blocking `/api/ws`.
 - **A remote gateway is missing from the roster** — its backend is down or
   unreachable; the roster lists it under gateways with the error. SSH connections
-  show *connect-on-demand* until first use — that's by design, not a failure.
+  — and **This device** while the primary is a remote gateway — show
+  *connect-on-demand* until first use, with their profiles read from the
+  profile directory rather than a running backend. That's by design, not a
+  failure; the first click on one of their squares starts the backend.
 - **"Update Hermes Desktop to chat with agents on other connections"** — the
   app predates the multi-connection stack; update the desktop app itself.
 - **Duplicate device names** — not possible; names are enforced unique at

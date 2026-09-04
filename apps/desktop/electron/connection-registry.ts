@@ -633,10 +633,21 @@ const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/
 /** Turn `ls ~/.hermes/profiles` output into roster names. Always includes
  *  `default`. Drops rollback snapshots and junk lines. */
 export function parseRemoteProfileListing(text: string): string[] {
+  return profileInventoryFromNames(String(text || '').split(/\r?\n/))
+}
+
+/**
+ * Roster names from a Hermes home's `profiles/` directory entries — the
+ * credential-free inventory both the SSH probe (`ls` over the tunnel) and the
+ * local disk read share. Always includes `default` (the root home is an agent
+ * too); drops rollback snapshots, dotfiles and anything that is not a valid
+ * profile id. Sorted for a stable strip.
+ */
+export function profileInventoryFromNames(entries: Iterable<string>): string[] {
   const names = new Set<string>(['default'])
 
-  for (const raw of String(text || '').split(/\r?\n/)) {
-    const name = raw.trim()
+  for (const raw of entries) {
+    const name = String(raw ?? '').trim()
 
     if (!name || name.startsWith('.') || name.endsWith('.rollback-old')) {
       continue

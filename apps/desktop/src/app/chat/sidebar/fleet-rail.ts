@@ -91,7 +91,10 @@ export function buildRestGroups({
       connectionId: connection.id,
       kind: connection.kind,
       label: connection.label,
-      reachable: source?.reachable ?? true,
+      // "connect-on-demand" is a source Electron chose not to dial yet (an
+      // SSH box, or This device while the primary is remote) — at rest, not
+      // unreachable. Only a probe that actually failed earns the amber dot.
+      reachable: source ? source.reachable || source.error === 'connect-on-demand' : true,
       defaultAgent: toAgent(DEFAULT_PROFILE, defaultRow?.handle),
       named
     })

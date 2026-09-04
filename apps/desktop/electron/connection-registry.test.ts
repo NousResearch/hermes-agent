@@ -25,6 +25,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseRemoteProfileListing,
+  profileInventoryFromNames,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
@@ -824,6 +825,17 @@ test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retr
   assert.equal(shouldRetrySshInventory(false, 1_000, 30_000, 60_000), false)
   assert.equal(shouldRetrySshInventory(false, 1_000, 61_000, 60_000), true)
   assert.equal(shouldRetrySshInventory(true, 1_000, 120_000, 60_000), false)
+})
+
+test('profileInventoryFromNames: a local profiles/ directory listing seeds the same roster names as the SSH probe', () => {
+  // The disk read feeds directory entries straight in — no newline joining.
+  const inventory = profileInventoryFromNames(['omar', '.DS_Store', 'work.rollback-old', 'default', '', 'Bad Name', 'zeta'])
+
+  assert.deepEqual(inventory, ['default', 'omar', 'zeta'])
+  // Always at least the root home, even for an install with no named profiles.
+  assert.deepEqual(profileInventoryFromNames([]), ['default'])
+  // The SSH parser is the same rule over `ls` output.
+  assert.deepEqual(parseRemoteProfileListing('omar\nzeta\n'), profileInventoryFromNames(['omar', 'zeta']))
 })
 
 test('parseRemoteProfileListing: Mini/Spark dirs become roster names and drop rollbacks', () => {

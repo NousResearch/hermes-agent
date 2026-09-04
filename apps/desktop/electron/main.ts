@@ -137,6 +137,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseBackendScopeKey,
+  profileInventoryFromNames,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registrySourceOwnsPrimaryBackend,
@@ -282,7 +283,8 @@ import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
   localRouteFallbackProfiles,
-  undialedSshRouteSeeds
+  undialedSshRouteSeeds,
+  withoutDeferredLocalRoutes
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
@@ -15165,6 +15167,11 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     ? enumerations.find(({ connection }) => connection.id === localSource.id)
     : undefined
 
+  // A DEFERRED local (connect-on-demand) is seeded into the roster from disk
+  // for display only; publishing it as a route would let the relay sweep
+  // dial — and spawn — the backend the deferral exists to avoid.
+  agents = withoutDeferredLocalRoutes(agents, localSource?.id, localEnumeration?.error)
+
   const localFallbackProfiles = localSource
     ? localRouteFallbackProfiles(
         agents,
@@ -15479,6 +15486,60 @@ async function probeSshProfileInventory(connection) {
   }
 }
 
+/**
+ * Whether this Desktop could start a local backend at all — the cheap,
+ * spawn-free subset of resolveHermesBackend's ladder (developer checkout
+ * override, dev source root, the canonical install venv, `hermes` on PATH).
+ * No python is executed: this runs inside the roster enumeration Bot Mode
+ * polls every few seconds.
+ */
+function localRuntimeAvailable(): boolean {
+  const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+
+  if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
+    return true
+  }
+
+  if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
+    return true
+  }
+
+  if (fileExists(getVenvPython(VENV_ROOT))) {
+    return true
+  }
+
+  return process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1' && Boolean(findOnPath(process.env.HERMES_DESKTOP_HERMES || 'hermes'))
+}
+
+/**
+ * The local install's profile names straight from `$HERMES_HOME/profiles`,
+ * without touching (or spawning) a backend. Null when no local Hermes runtime
+ * is available — a remote-gateway-only Desktop must not mint a phantom
+ * `default` agent for "This device" (the Aug 17 2026 duplicate-main-agent
+ * report). Mirrors `listRemoteHermesProfiles` for SSH sources.
+ */
+function readLocalProfileInventory(): null | string[] {
+  if (!localRuntimeAvailable() || !directoryExists(HERMES_HOME)) {
+    return null
+  }
+
+  const profilesDir = path.join(HERMES_HOME, 'profiles')
+  let entries: string[] = []
+
+  try {
+    if (directoryExists(profilesDir)) {
+      entries = fs
+        .readdirSync(profilesDir, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name)
+    }
+  } catch {
+    entries = []
+  }
+
+  return profileInventoryFromNames(entries)
+}
+
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
   // One dead source must not wedge the whole roster: ensureRegistryBackend on
   // an unreachable remote can block up to the 45s readiness timeout, and the
@@ -15540,7 +15601,15 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             })
 
             if (shouldDeferLocalEnumeration(localRoute, backendPool.keys(), connection.id)) {
-              return { connection, profiles: null, error: 'connect-on-demand' }
+              // Still no spawn — but a sleeping local install is not an
+              // unreachable one. Inventory its profiles from disk (the same
+              // credential-free `profiles/` listing the SSH probe takes over
+              // the tunnel) so the fleet rail and Bot Mode show This device
+              // at rest, "on demand", with its real squares, instead of an
+              // amber "unreachable" dot and no bots until the first click.
+              // `profiles: null` stays for desktops with no local runtime:
+              // there is genuinely nothing to seed there.
+              return { connection, profiles: readLocalProfileInventory(), error: 'connect-on-demand' }
             }
           }
 

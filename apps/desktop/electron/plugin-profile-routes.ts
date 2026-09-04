@@ -61,6 +61,28 @@ export function isLocalEnumerationFailure(error?: string): boolean {
   return Boolean(error) && error !== 'connect-on-demand'
 }
 
+/**
+ * Drop the local source's rows when its enumeration was deferred
+ * (`connect-on-demand`: the registry primary is remote and no local child is
+ * pooled). The roster still carries those rows — inventoried from the profiles
+ * directory — so the fleet rail and Bot Mode can show This device at rest;
+ * but they must not become plugin routes, because relay sweeps dial every
+ * published route and would spawn the very backend the deferral exists to
+ * avoid. A clicked bot is dialed by its own (connectionId, profile), not
+ * through this table, so nothing the user can reach is lost.
+ */
+export function withoutDeferredLocalRoutes<T extends RegistryProfileRouteAgent>(
+  agents: T[],
+  localConnectionId: null | string | undefined,
+  localEnumerationError?: string
+): T[] {
+  if (!localConnectionId || localEnumerationError !== 'connect-on-demand') {
+    return agents
+  }
+
+  return agents.filter(agent => agent.connectionId !== localConnectionId)
+}
+
 /** Return cached local profile names only when the local roster read failed. */
 export function localRouteFallbackProfiles(
   agents: RegistryProfileRouteAgent[],

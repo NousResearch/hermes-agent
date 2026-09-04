@@ -12133,6 +12133,13 @@ def _spawn_tree_session_dir(session_id: str):
     safe = (
         "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown"
     )
+    # Cap the segment. An over-long session_id (or the str() of a non-string
+    # value a client sent) would push the path past filesystem limits.
+    # Windows MAX_PATH (260) refuses the mkdir outright. Truncate and keep a
+    # short hash tail so two long ids still map to different directories.
+    if len(safe) > 64:
+        digest = hashlib.sha256(safe.encode("utf-8")).hexdigest()[:12]
+        safe = f"{safe[:48]}-{digest}"
     d = _spawn_trees_root() / safe
     d.mkdir(parents=True, exist_ok=True)
     return d

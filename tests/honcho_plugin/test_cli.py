@@ -793,3 +793,58 @@ class TestWriteRefusesUnparseableStore:
         honcho_cli.cmd_setup(SimpleNamespace())
         assert "Nothing was written" in capsys.readouterr().out
         assert cfg_path.read_text(encoding="utf-8") == "{not json"
+
+
+class TestSetupApiKeyReplacesStaleGrant:
+    """#97990: choosing apikey after a revoked grant left hosts.<name>.oauth in place, so the dead
+    grant kept shadowing the fresh key across every later setup run."""
+
+    def _cfg_with_grant(self):
+        return {"hosts": {"hermes": {
+            "apiKey": "hch-at-dead",
+            "oauth": {"refreshToken": "hch-rt-dead", "expiresAt": 1, "clientId": "hermes-agent",
+                      "tokenEndpoint": "https://api.honcho.dev/oauth/token"},
+        }}}
+
+    def _cloud_auth(self, monkeypatch, tmp_path, cfg, *, key_answer):
+        import plugins.memory.honcho.cli as honcho_cli
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: False)
+        monkeypatch.setattr(honcho_cli, "_headless", lambda: (False, True))
+        shown = []
+
+        def _prompt(label, default=None, secret=False):
+            shown.append(label)
+            return "apikey" if "OAuth" in label else key_answer
+        monkeypatch.setattr(honcho_cli, "_prompt", _prompt)
+        ok = honcho_cli._setup_cloud_auth(cfg, cfg["hosts"]["hermes"], tmp_path / "honcho.json")
+        return ok, cfg["hosts"]["hermes"]
+
+    def test_new_key_clears_oauth_and_lands_on_the_host_block(self, monkeypatch, tmp_path):
+        cfg = self._cfg_with_grant()
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="hch-v3-fresh")
+        assert ok is True
+        assert "oauth" not in host
+        assert host["apiKey"] == "hch-v3-fresh"
+        assert cfg["apiKey"] == "hch-v3-fresh"
+
+    def test_kept_root_key_still_clears_oauth(self, monkeypatch, tmp_path, capsys):
+        cfg = self._cfg_with_grant()
+        cfg["apiKey"] = "hch-v3-rootkey"
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="")
+        assert ok is True
+        assert "oauth" not in host
+        assert host["apiKey"] == "hch-v3-rootkey"
+        assert "...-rootkey" in capsys.readouterr().out
+
+    def test_dead_access_token_is_not_offered_as_current(self, monkeypatch, tmp_path, capsys):
+        cfg = self._cfg_with_grant()
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="")
+        assert ok is False
+        assert "Current API key: not set" in capsys.readouterr().out
+
+    def test_static_host_key_without_grant_is_kept(self, monkeypatch, tmp_path):
+        cfg = {"hosts": {"hermes": {"apiKey": "hch-v3-hostkey"}}}
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="")
+        assert ok is True
+        assert host["apiKey"] == "hch-v3-hostkey"
+        assert "apiKey" not in cfg

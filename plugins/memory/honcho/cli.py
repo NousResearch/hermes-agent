@@ -614,7 +614,7 @@ def _setup_browser_login(hermes_host: dict, write_path: Path) -> bool:
 def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Cloud auth: OAuth (browser), device code, or API key. Returns False on abort."""
     cfg.pop("baseUrl", None)  # cloud uses SDK default
-    from plugins.memory.honcho.oauth import OAuthCredential
+    from plugins.memory.honcho.oauth import OAuthCredential, is_oauth_access_token
     existing_oauth = OAuthCredential.from_host_block(hermes_host)
     device_available = _device_login_available()
     is_remote, can_browse = _headless()
@@ -639,14 +639,20 @@ def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
         return _setup_device_login(hermes_host, write_path, open_browser=can_browse and not is_remote)
     if method in {"oauth", "o"}:
         return _setup_browser_login(hermes_host, write_path)
-    print(f"\n  Current API key: {_mask(cfg.get('apiKey', ''))}")
+    # A grant left on the host block shadows the key (#97990): its access token is not "current".
+    stale_grant = existing_oauth is not None or is_oauth_access_token(hermes_host.get("apiKey"))
+    current = ("" if stale_grant else hermes_host.get("apiKey", "")) or cfg.get("apiKey", "")
+    print(f"\n  Current API key: {_mask(current)}")
     if new_key := _prompt("Honcho API key (leave blank to keep current)", secret=True):
         cfg["apiKey"] = new_key
-    if cfg.get("apiKey"):
-        return True
-    print("\n  No API key configured. Get yours at https://app.honcho.dev\n"
-          "  Run 'hermes honcho setup' again once you have a key.\n")
-    return False
+    key = new_key or current
+    if not key:
+        print("\n  No API key configured. Get yours at https://app.honcho.dev\n"
+              "  Run 'hermes honcho setup' again once you have a key.\n")
+        return False
+    hermes_host.pop("oauth", None)
+    hermes_host["apiKey"] = key
+    return True
 
 
 def _menu(header: str, *lines: str) -> None:

@@ -11,6 +11,11 @@ import { cn } from '@/lib/utils'
 export interface ZoomableImageProps extends ComponentProps<'img'> {
   containerClassName?: string
   slot?: string
+  /** Full-resolution source for the lightbox and download. When set, the inline
+   * `<img>` keeps its bounded `src` (avoiding heavy inline paints) while the
+   * zoom view and Save action use the original — so a click-to-zoom shows real
+   * detail instead of an upscaled thumbnail. Defaults to `src`. */
+  zoomSrc?: string
 }
 
 export interface ImageActionCopy {
@@ -18,10 +23,13 @@ export interface ImageActionCopy {
   savingImage: string
 }
 
-export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
+export function ZoomableImage({ className, containerClassName, src, zoomSrc, alt, slot, ...props }: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
-  const { download, saving } = useImageDownload(src)
+  // The lightbox and Save action prefer the full-resolution source; the inline
+  // thumbnail (`src`) stays the cheap paint.
+  const fullSrc = zoomSrc || src || ''
+  const { download, saving } = useImageDownload(fullSrc)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const canOpen = Boolean(src)
 
@@ -52,7 +60,7 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           onOpenChange={setLightboxOpen}
           open={lightboxOpen}
           saving={saving}
-          src={src}
+          src={fullSrc}
         />
       )}
     </>

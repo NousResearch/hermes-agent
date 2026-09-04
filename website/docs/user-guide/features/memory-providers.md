@@ -670,6 +670,39 @@ hermes memory setup
 
 ---
 
+### deja
+
+Memory from the coding sessions already on the machine. deja indexes the transcripts Hermes, Claude Code, Codex, Cursor and 18 other agents write to disk — including months from before it was installed — and recalls the relevant one before a turn. No model, no key, no server; one Go binary.
+
+| | |
+|---|---|
+| **Best for** | Coding on a machine that already has agent history; recall that works the minute it is installed |
+| **Requires** | `brew install deja-vu` (or `go install github.com/vshulcz/deja-vu/cmd/deja@latest`), then `deja install hermes-auto` |
+| **Data storage** | Local index under `~/.cache/deja` (or `DEJA_INDEX_DIR`); nothing leaves the machine |
+| **Cost** | Free (MIT) |
+
+**Tools:** `deja_recall` (search past sessions across every agent), `deja_fix` (what was run after this error before), `deja_blame` (which sessions touched a file and what they concluded)
+
+**Setup:**
+```bash
+brew install deja-vu
+deja install hermes-auto      # writes ~/.hermes/plugins/deja-memory/
+
+hermes memory setup           # select "deja-memory"
+# Or manually:
+hermes config set memory.provider deja-memory
+```
+
+**Key features:**
+- Starts full: the first session already knows what the last months decided, in Hermes and in every other agent on the disk
+- Per-turn recall is the same digest deja injects in Claude Code and Codex; silent when nothing matches
+- Keys and tokens are stripped as the index is built
+- Sessions are read where the agents write them; nothing is captured or mirrored
+
+See the [deja Hermes guide](https://vshulcz.github.io/deja-vu/guide/memory-for-hermes.html) and the [plugin README](https://github.com/vshulcz/deja-vu).
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -683,12 +716,14 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **deja** | Local | Free | 3 | `deja` binary | Indexes the session history already on disk, across 22 agents |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
+- **deja** keeps one machine-wide index outside `$HERMES_HOME`, shared by every profile and every agent on the machine
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file

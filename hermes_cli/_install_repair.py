@@ -594,6 +594,16 @@ def _load_installable_optional_extras(root: Path, group: str) -> list[str]:
     return referenced
 
 
+def _heal_editable_finder_after_install(root: Path) -> None:
+    """Recompute the editable finder so it never points at site-packages."""
+    try:
+        import hermes_editable_heal as _heal
+
+        _heal.heal(project_root=root)
+    except Exception:
+        pass
+
+
 def run_core_install(root: Path) -> None:
     """Full core ``.[all]`` editable reinstall — the recovery install.
 
@@ -630,6 +640,7 @@ def run_core_install(root: Path) -> None:
             _run_install_cmd(
                 prefix + ["install", "-e", f".[{group}]"], env=env, root=root
             )
+            _heal_editable_finder_after_install(root)
             return
         except subprocess.CalledProcessError:
             print(
@@ -659,6 +670,7 @@ def run_core_install(root: Path) -> None:
                 "  ⚠ Skipped optional extras that still failed: "
                 + ", ".join(failed_extras)
             )
+        _heal_editable_finder_after_install(root)
 
 
 # ---------------------------------------------------------------------------

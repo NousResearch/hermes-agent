@@ -46,7 +46,20 @@ __all__ = [
 
 def project_root_str() -> str:
     """Repo root as a str — the single source for main.py's PROJECT_ROOT."""
-    return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+    here = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+    if os.path.isfile(os.path.join(here, "pyproject.toml")):
+        return here
+    # Stale editable mapping can import hermes_cli from site-packages. Prefer
+    # the checkout recorded on the editable dist-info (#97819).
+    try:
+        import hermes_editable_heal as _heal
+
+        resolved = _heal.resolve_project_root(hint=here)
+        if resolved:
+            return resolved
+    except Exception:
+        pass
+    return here
 
 
 def ensure_project_root_on_path() -> None:

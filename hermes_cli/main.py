@@ -9435,6 +9435,13 @@ def _recover_core_update_marker_locked() -> None:
         "finishing dependency installation now..."
     )
 
+    try:
+        import hermes_editable_heal as _heal
+
+        _heal.heal(project_root=PROJECT_ROOT)
+    except Exception:
+        pass
+
     # Windows: a normal ``hermes.exe`` launch always has the launcher as an
     # ancestor. Full editable reinstall uses quarantine so the live shim can
     # still be replaced. Package-only import repair may help as first aid but
@@ -10417,9 +10424,18 @@ def _install_python_dependencies_with_optional_fallback(
             strict_quarantine=True,
         )
 
+    def _heal_editable_finder() -> None:
+        try:
+            import hermes_editable_heal as _heal
+
+            _heal.heal(project_root=PROJECT_ROOT)
+        except Exception:
+            pass
+
     try:
         _install(["install", "-e", f".[{group}]"])
         _verify_console_scripts_installed(install_cmd_prefix, env=env)
+        _heal_editable_finder()
         return
     except subprocess.CalledProcessError:
         print(
@@ -10458,6 +10474,7 @@ def _install_python_dependencies_with_optional_fallback(
     # downstream.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
     _verify_console_scripts_installed(install_cmd_prefix, env=env)
+    _heal_editable_finder()
 
 
 def _load_console_script_names() -> list[str]:

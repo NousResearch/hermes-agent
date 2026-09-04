@@ -150,7 +150,18 @@ def _should_skip_external_secret_sources() -> bool:
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    here = Path(__file__).resolve().parent.parent
+    if (here / "pyproject.toml").is_file():
+        return here
+    try:
+        import hermes_editable_heal as _heal
+
+        resolved = _heal.resolve_project_root(hint=here)
+        if resolved:
+            return Path(resolved)
+    except Exception:
+        pass
+    return here
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -478,6 +489,18 @@ def recover_if_needed(
         if core_marker.exists():
             if _marker_owner_is_live(core_marker):
                 return
+            # Cheap first: retarget a dangling editable finder before (or
+            # instead of) another dependency reinstall. The console script
+            # dies on ModuleNotFoundError when MAPPING points at deleted
+            # site-packages copies; if we got this far, cwd or a partial
+            # mapping let hermes_cli import — heal so the next launcher
+            # start works (#97819).
+            try:
+                import hermes_editable_heal as _heal
+
+                _heal.heal(project_root=root)
+            except Exception:
+                pass
             completed = _complete_pending_core_install(root, core_marker)
             if completed and "update" in args:
                 _UPDATE_RETRY_RECOVERED = True
@@ -617,6 +640,20 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
             attempts = 0
 
         if attempts >= _EARLY_CORE_INSTALL_MAX_ATTEMPTS:
+            # Retry cap is for the *installer*. A dangling finder is a
+            # local file rewrite and must still run after the cap — that
+            # is the failure the reporter hit (#97819).
+            try:
+                import hermes_editable_heal as _heal
+
+                if _heal.heal(project_root=root):
+                    print(
+                        "  ✓ Regenerated editable finder mapping against the "
+                        "source checkout (interrupted-update recovery).",
+                        file=sys.stderr,
+                    )
+            except Exception:
+                pass
             print(
                 "⚠ Pending interrupted-update install has already failed "
                 f"{attempts} times in the early pass — leaving it for the "

@@ -111,7 +111,10 @@ def test_early_recovery_module_is_stdlib_only(tmp_path):
             import builtins
             import sys
 
-            STDLIB = set(sys.stdlib_module_names) | {"hermes_cli"}
+            STDLIB = set(sys.stdlib_module_names) | {
+                "hermes_cli",
+                "hermes_editable_heal",
+            }
             real_import = builtins.__import__
 
             def guard(name, *args, **kwargs):

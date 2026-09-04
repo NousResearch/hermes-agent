@@ -334,6 +334,7 @@ export interface UiState {
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
+  interleaveThinking: boolean
   mouseTracking: MouseTrackingMode
   notice: Notice | null
   pasteCollapseLines: number

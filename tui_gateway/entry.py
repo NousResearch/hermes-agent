@@ -17,7 +17,7 @@ import threading
 import time
 import traceback
 
-from tui_gateway._stdin_recovery import handle_spurious_eof
+from tui_gateway._stdin_recovery import handle_spurious_eof, handle_stdin_read_error
 
 from tui_gateway import server
 from tui_gateway.event_replay import replay_epoch
@@ -484,7 +484,17 @@ def main():
         logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)
 
     while True:
-        raw = sys.stdin.readline()
+        try:
+            raw = sys.stdin.readline()
+        except OSError as e:
+            # Some PTYs (observed: Orca ADE's WebGL-rendered terminal on
+            # Windows) raise EINVAL out of readline() instead of returning
+            # an empty string — unhandled, this killed the gateway on the
+            # very first reply. Retry within the same rate limit as spurious
+            # EOF recovery rather than letting it propagate to a crash.
+            if not handle_stdin_read_error(e, _recovery_times, _log_exit):
+                break
+            continue
         if not raw:
             # Stdin fell through — check if spurious (O_NONBLOCK flip by a
             # child on the shared open file description) or genuine EOF.

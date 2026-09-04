@@ -5,14 +5,24 @@ lands on the **shared open file description** — not just the child's descripto
 The gateway's next ``read()`` returns ``EAGAIN``, which CPython's buffered
 ``TextIOWrapper`` converts to ``b''`` (apparent EOF), killing the gateway.
 
+Some third-party PTYs (observed: Orca ADE's WebGL-rendered terminal on
+Windows) don't launder a bad read into an empty string at all — they raise
+``OSError: [Errno 22] Invalid argument`` straight out of ``readline()``,
+which previously propagated unhandled and killed the gateway on the very
+first reply.
+
 This module provides:
 - :func:`diagnose_stdin_state` — forensic diagnostic (``O_NONBLOCK`` / ``SO_RCVTIMEO``)
 - :func:`handle_spurious_eof` — check whether an empty ``readline()`` is a genuine
   peer-close or a spurious EOF, and recover if spurious.
+- :func:`handle_stdin_read_error` — same rate-limited recovery, for an
+  ``OSError`` raised directly out of ``readline()`` instead of an empty read.
 
-The recovery is **POSIX-only** (``fcntl``).  On Windows, ``O_NONBLOCK`` on a
-shared file description is not a concern, so the guard simply reports a
-genuine EOF and lets the caller exit.
+The ``O_NONBLOCK`` recovery in :func:`handle_spurious_eof` is **POSIX-only**
+(``fcntl``); on Windows it simply reports a genuine EOF and lets the caller
+exit. :func:`handle_stdin_read_error` has no such platform gate — retrying a
+raised ``OSError`` is safe on every platform since there is no flag state to
+inspect either way.
 """
 
 from __future__ import annotations
@@ -148,4 +158,34 @@ def handle_spurious_eof(
     # ``_io.TextIOWrapper.readline`` returns an empty string on ``EAGAIN``
     # but does NOT stick EOF; after restoring blocking, the next call will
     # block until data arrives or the peer truly closes.
+    return True
+
+
+def handle_stdin_read_error(
+    exc: OSError,
+    recovery_times: list[float],
+    log_fn: object,
+) -> bool:
+    """Check whether an ``OSError`` raised by ``readline()`` is recoverable.
+
+    Shares ``recovery_times`` and its rate limit with
+    :func:`handle_spurious_eof` — both are "the shared stdin description is
+    in a bad state" symptoms of the same underlying class of problem, so a
+    process hitting one repeatedly should not get double the retry budget by
+    alternating between them.
+
+    Returns ``True`` if the caller should retry the read, ``False`` if the
+    rate limit was exceeded and the caller should give up (genuine failure).
+    """
+    now = time.time()
+    recovery_times.append(now)
+    recovery_times[:] = [t for t in recovery_times if t > now - 60]
+    diag = diagnose_stdin_state()
+    if len(recovery_times) > MAX_RECOVERIES_PER_MINUTE:
+        log_fn(  # type: ignore[operator]
+            f"stdin read OSError recovery rate exceeded "
+            f"({len(recovery_times)}/min, cap {MAX_RECOVERIES_PER_MINUTE}): {exc} ({diag})"
+        )
+        return False
+    log_fn(f"stdin readline() raised {exc!r}, retrying ({diag})")  # type: ignore[operator]
     return True

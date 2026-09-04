@@ -28,7 +28,7 @@ import time
 
 import cli as cli_mod
 from cli import HermesCLI
-from tui_gateway._stdin_recovery import handle_spurious_eof
+from tui_gateway._stdin_recovery import handle_spurious_eof, handle_stdin_read_error
 from rich.console import Console
 
 # Env-overridable so the integration test can drive sub-second timing.
@@ -152,7 +152,15 @@ def main():
         print(f"[slash-worker] {reason}", file=sys.stderr, flush=True)
 
     while True:
-        raw = sys.stdin.readline()
+        try:
+            raw = sys.stdin.readline()
+        except OSError as e:
+            # Same PTY-raises-EINVAL-instead-of-EOF symptom as the gateway
+            # entry point (see tui_gateway/_stdin_recovery.py) — retry within
+            # the shared rate limit rather than letting it kill the worker.
+            if not handle_stdin_read_error(e, _sw_recovery_times, _sw_log):
+                break
+            continue
         if not raw:
             if not handle_spurious_eof(_sw_recovery_times, _sw_log):
                 break

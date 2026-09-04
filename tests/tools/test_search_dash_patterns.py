@@ -40,6 +40,11 @@ def test_rg_command_separates_leading_dash_pattern(pattern):
     result = ops._search_with_rg(
         pattern=pattern, path=".", file_glob=None,
         limit=10, offset=0, output_mode="content", context=0,
+        # Pin the executable: the resolver probes `command -v rg` through
+        # the executor, which the capturing fake answers with empty stdout
+        # (and CI runners may not install rg at all). Construction is what
+        # this test pins, independent of the host engine.
+        rg_executable="rg",
     )
     cmd = captured["cmd"]
     assert " -- " in cmd, f"end-of-flags separator missing: {cmd}"

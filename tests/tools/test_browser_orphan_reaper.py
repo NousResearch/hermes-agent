@@ -3,6 +3,7 @@ daemons whose Python parent exited without cleaning up."""
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -139,6 +140,54 @@ class TestReapOrphanedBrowserSessions:
 
         assert terminate_calls == []
 
+
+    def test_nonpositive_pid_file_is_retained(self, fake_tmpdir):
+        """Zero/negative integers are malformed PID records, not dead daemons."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        for index, value in enumerate(("0", "-7")):
+            session = f"hermes_bh_111_invalid{index}"
+            d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+            (d / "bu.pid").write_text(value)
+            with patch("gateway.status._pid_exists", return_value=False):
+                _reap_orphaned_browser_sessions()
+            assert d.exists()
+            assert (d / "bu.pid").read_text() == value
+
+    def test_pid_record_replaced_during_read_is_retained(
+        self, fake_tmpdir, monkeypatch
+    ):
+        """A settled-file check must bind to the bytes actually parsed."""
+        import tools.browser_tool as bt
+
+        session = "hermes_bh_111_replaced"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        pid_file = d / "bu.pid"
+        pid_file.write_text("222")
+        _age_socket_dir(d, 60)
+        monkeypatch.setattr(bt, "BROWSER_PID_FILE_SETTLE_SECONDS", 1.0)
+        original_read_text = Path.read_text
+
+        def replace_during_read(path, *args, **kwargs):
+            if path == pid_file:
+                pid_file.write_text("2")
+                return "2"
+            return original_read_text(path, *args, **kwargs)
+
+        pid_probes = []
+
+        def _pid_exists(pid):
+            pid_probes.append(pid)
+            return False
+
+        with patch.object(Path, "read_text", replace_during_read), patch(
+            "gateway.status._pid_exists", side_effect=_pid_exists
+        ):
+            bt._reap_orphaned_browser_sessions()
+
+        assert pid_probes == [111]
+        assert d.exists()
+        assert pid_file.read_text() == "2"
 
     def test_fresh_numeric_pid_prefix_is_retained(self, fake_tmpdir, monkeypatch):
         """An integer-looking partial write must not select/dead-check that PID."""

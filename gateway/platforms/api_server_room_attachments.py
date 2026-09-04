@@ -32,6 +32,7 @@ from gateway.hosted_room_peer import (
 )
 from gateway.platforms.api_server_room_grants import (
     RoomGrantReauthorizationRequired,
+    _effective_room_profile,
 )
 
 
@@ -1027,7 +1028,7 @@ async def _handle_room_attachment_manifest(
         )
         if verified["grant_id"] != claims["grant_id"]:
             raise RoomAttachmentSpoolError("room grant verification changed")
-        _validate_target_scope(claims, _api_request_profile.get() or "default")
+        _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
         manifest = canonical_attachment_manifest(body["attachments"])
         if (
             any(item["kind"] == "pdf" for item in manifest)
@@ -1080,7 +1081,7 @@ async def _handle_room_attachment_upload(
 ) -> "web.Response":
     try:
         claims = self._room_grant_claims(request, permission="attachment.stage")
-        _validate_target_scope(claims, _api_request_profile.get() or "default")
+        _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
         task_id = str(request.match_info["task_id"])
         generation = int(request.match_info["execution_generation"])
         if generation < 1:
@@ -1158,7 +1159,7 @@ async def _handle_room_attachment_discard(
         # runs can retire their exact private batch after the short write grant
         # expires.
         claims = self._room_grant_claims(request, permission="status")
-        _validate_target_scope(claims, _api_request_profile.get() or "default")
+        _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
         generation = int(request.match_info["execution_generation"])
         if generation < 1:
             raise RoomAttachmentSpoolError("execution_generation is invalid")

@@ -685,6 +685,7 @@ def _grant(
     adapter: APIServerAdapter,
     *,
     permissions=("attachment.stage", "status"),
+    target_profile="default",
 ) -> str:
     token = issue_room_grant(
         adapter._room_grant_secret(),
@@ -695,7 +696,7 @@ def _grant(
         authority_epoch=1,
         member_id="member-reviewer",
         target_install_id=TARGET_INSTALL,
-        target_profile="default",
+        target_profile=target_profile,
         execution_policy_digest="b" * 64,
         permissions=permissions,
     )
@@ -762,12 +763,16 @@ async def test_pdf_manifest_is_refused_before_upload_without_poppler(
 
 
 @pytest.mark.asyncio
-async def test_api_requires_scoped_permission_and_completes_batch(attachment_api):
+@pytest.mark.parametrize("target_profile", ["default", "reviewer"])
+async def test_api_requires_scoped_permission_and_completes_batch(
+    attachment_api, monkeypatch, target_profile
+):
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: target_profile)
     adapter, app = attachment_api
     manifest = _manifest()
-    dispatch = _dispatch(manifest)
-    denied_grant = _grant(adapter, permissions=("dispatch",))
-    grant = _grant(adapter)
+    dispatch = _dispatch(manifest, target_profile=target_profile)
+    denied_grant = _grant(adapter, permissions=("dispatch",), target_profile=target_profile)
+    grant = _grant(adapter, target_profile=target_profile)
     async with TestClient(TestServer(app)) as client:
         denied = await client.post(
             "/v1/room-members/attachments",

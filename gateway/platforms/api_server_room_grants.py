@@ -48,10 +48,21 @@ def _room_identity(source: dict[str, Any], *, coerce: bool = False) -> dict[str,
     return {k: int(source[k]) if k == "authority_epoch" else text(source[k]) for k in _ROOM_IDENTITY_FIELDS}
 
 
+def _effective_room_profile(_api_request_profile) -> str:
+    """Resolve the middleware selection or the daemon's active profile scope."""
+    from hermes_cli.profiles import get_active_profile_name, profile_matches_home
+
+    selected = _api_request_profile.get()
+    if selected:
+        return selected
+    active = get_active_profile_name()
+    return "default" if active == "custom" and not profile_matches_home(active) else active
+
+
 def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[str, str]:
     """Return ``(profile, installation_id)`` for this gateway; *claims* must target it."""
     from gateway import hosted_rooms
-    profile = _api_request_profile.get() or "default"
+    profile = _effective_room_profile(_api_request_profile)
     installation_id = hosted_rooms.local_authority_gateway_id()
     if claims is not None and (claims["target_profile"], claims["target_install_id"]) != (profile, installation_id):
         raise ValueError("room grant target does not match this profile")

@@ -683,6 +683,81 @@ def test_named_cliproxyapi_provider_preserves_first_class_runtime(monkeypatch):
     assert resolved["model"] == "gpt-5.5"
 
 
+def test_named_provider_model_transport_overrides_provider_transport(monkeypatch):
+    """One picker provider may use Responses only for selected models."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "cliproxyapi": {
+                    "name": "CLIProxyAPI",
+                    "base_url": "http://127.0.0.1:8317/v1",
+                    "api_key": "local-proxy-key",
+                    "transport": "openai_chat",
+                    "models": {
+                        "gpt-5.6-sol": {"transport": "codex_responses"},
+                        "grok-4.6": {},
+                    },
+                }
+            }
+        },
+    )
+
+    gpt = rp.resolve_runtime_provider(
+        requested="cliproxyapi", target_model="gpt-5.6-sol"
+    )
+    grok = rp.resolve_runtime_provider(
+        requested="cliproxyapi", target_model="grok-4.6"
+    )
+
+    assert gpt["api_mode"] == "codex_responses"
+    assert grok["api_mode"] == "chat_completions"
+
+
+def test_named_provider_pool_keeps_model_transport_override(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "cliproxyapi": {
+                    "name": "CLIProxyAPI",
+                    "base_url": "http://127.0.0.1:8317/v1",
+                    "key_env": "CLIPROXY_API_KEY",
+                    "transport": "openai_chat",
+                    "models": {
+                        "gpt-5.6-sol": {"transport": "codex_responses"},
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setenv("CLIPROXY_API_KEY", "local-proxy-key")
+
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "http://127.0.0.1:8317/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: _Pool())
+
+    resolved = rp.resolve_runtime_provider(
+        requested="cliproxyapi", target_model="gpt-5.6-sol"
+    )
+
+    assert resolved["api_mode"] == "codex_responses"
+
+
 
 def test_named_custom_provider_filters_capabilities_at_lookup_boundary(monkeypatch):
     monkeypatch.setattr(

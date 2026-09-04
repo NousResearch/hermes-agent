@@ -747,6 +747,26 @@ def _lift_model_capabilities(
         result["capabilities"] = capabilities
 
 
+def _model_api_mode_override(entry: Dict[str, Any], model: Optional[str]) -> Optional[str]:
+    """Return a model-level wire-protocol override for a named provider.
+
+    A gateway can expose several protocol families behind one endpoint and one
+    picker identity.  For example, CLIProxyAPI serves GPT/Codex models through
+    Responses while its Gemini/Grok routes still use Chat Completions.  Keeping
+    the override in ``providers.<name>.models.<id>.transport`` avoids inventing
+    a second visible provider solely to select the wire format.
+    """
+    if not model:
+        return None
+    models = entry.get("models")
+    model_config = models.get(model) if isinstance(models, dict) else None
+    if not isinstance(model_config, dict):
+        return None
+    return _parse_api_mode(
+        model_config.get("api_mode") or model_config.get("transport")
+    )
+
+
 def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     """Propagate a per-provider output cap onto the resolved runtime dict.
 
@@ -856,6 +876,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         result["provider_key"] = provider_key
                     if key_env:
                         result["key_env"] = key_env
+                    models = entry.get("models")
+                    if isinstance(models, dict):
+                        result["models"] = dict(models)
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
@@ -1411,7 +1434,8 @@ def _resolve_named_custom_runtime(
 
     result = {
         "provider": runtime_provider,
-        "api_mode": custom_provider.get("api_mode")
+        "api_mode": _model_api_mode_override(custom_provider, target_model)
+        or custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,

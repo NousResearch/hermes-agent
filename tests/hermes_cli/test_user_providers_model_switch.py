@@ -26,6 +26,35 @@ def _no_live_builtin_provider_probes(monkeypatch):
 # Tests for list_authenticated_providers including full models list
 # =============================================================================
 
+def test_one_provider_row_can_mix_model_transports(monkeypatch):
+    """Per-model transports must not split one endpoint into duplicate rows."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="cliproxyapi",
+        user_providers={
+            "cliproxyapi": {
+                "name": "CLIProxyAPI",
+                "base_url": "http://127.0.0.1:8317/v1",
+                "api_key": "local-proxy-key",
+                "transport": "openai_chat",
+                "models": {
+                    "gpt-5.6-sol": {"transport": "codex_responses"},
+                    "grok-4.6": {},
+                },
+            }
+        },
+        custom_providers=[],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p.get("name") == "CLIProxyAPI"]
+    assert len(rows) == 1
+    assert rows[0]["slug"] == "cliproxyapi"
+    assert set(rows[0]["models"]) == {"gpt-5.6-sol", "grok-4.6"}
+
+
 def test_list_authenticated_providers_includes_full_models_list_from_user_providers(monkeypatch):
     """User-defined providers should expose both default_model and full models list.
     

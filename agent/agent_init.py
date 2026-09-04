@@ -1453,6 +1453,15 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
         # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
         min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
+        # Hard message-count safety valve (mirrors gateway hygiene, #2153/#4750).
+        # When >0, the TUI/CLI preflight path force-compresses at this message
+        # count regardless of token estimates, breaking the death spiral where
+        # should_defer_preflight_to_real_usage() keeps deferring until the
+        # provider disconnects.
+        # NOTE: distinct from the gateway's compression.hygiene_hard_message_limit
+        # (default 5000) — that knob gates the gateway's pre-agent hygiene pass;
+        # this one gates the in-agent TUI/CLI preflight valve and stays opt-in (0).
+        preflight_hard_message_limit=max(0, int(cfg.get("preflight_hard_message_limit", 0) or 0)),
         max_attempts=min(max_attempts, 10),
         # Opt-in proactive tool-result prune trigger (0 = disabled; negatives = disabled).
         proactive_prune_tokens=max(0, _parse_config_int(cfg.get("proactive_prune_tokens", 0), 0)),
@@ -1848,6 +1857,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
+            hygiene_hard_message_limit=cs.preflight_hard_message_limit,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

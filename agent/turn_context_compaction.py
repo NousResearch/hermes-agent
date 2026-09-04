@@ -258,7 +258,25 @@ def _preflight_compression(
     )(_preflight_tokens)
     _codex_native_auto = _codex_native_auto_compaction(agent)
 
-    if not _preflight_deferred:
+    # Hard message-count safety valve: when the session has more messages
+    # than the configured hard limit, force compression regardless of
+    # deferral, cooldown, or anti-thrashing.  This mirrors the gateway
+    # hygiene layer (#2153/#4750) and breaks the death spiral where
+    # token-based checks fail to fire — e.g. when
+    # should_defer_preflight_to_real_usage() keeps deferring because the
+    # last successful API call's prompt_tokens were below threshold, even
+    # though the session has since grown past it.  Without this valve a
+    # TUI session can grow until the provider starts disconnecting, at
+    # which point no usage data is returned to update the compressor and
+    # the session becomes unrecoverable.
+    _hard_limit = getattr(_compressor, "hygiene_hard_message_limit", 0) or 0
+    _hard_limit_breached = (
+        isinstance(_hard_limit, (int, float))
+        and _hard_limit > 0
+        and len(out.messages) >= _hard_limit
+    )
+
+    if not _preflight_deferred or _hard_limit_breached:
         # Display-only seed: a real provider reading wins and the -1 sentinel stays
         # protected. Also feeds the tool-loop gate on usage-less responses.
         _maybe_seed = getattr(_compressor, "maybe_seed_preflight_display_tokens", None)
@@ -271,14 +289,14 @@ def _preflight_compression(
 
     _should_compress_now = False
     _compress_block_reason = None
-    if _preflight_deferred:
+    if _preflight_deferred and not _hard_limit_breached:
         logger.info(
             "Skipping preflight compression: rough estimate ~%s >= %s, "
             "but last real provider prompt was %s after compression",
             f"{_preflight_tokens:,}", f"{_compressor.threshold_tokens:,}",
             f"{_compressor.last_real_prompt_tokens:,}",
         )
-    elif _compression_cooldown:
+    elif _compression_cooldown and not _hard_limit_breached:
         logger.info(
             "Skipping preflight compression: same-session cooldown active "
             "(~%s seconds remaining, session %s)",
@@ -296,7 +314,20 @@ def _preflight_compression(
             getattr(agent, "codex_app_server_auto_compaction", "native"),
         )
     else:
-        _should_compress_now = _compressor.should_compress(_preflight_tokens)
+        if _hard_limit_breached:
+            # The session is too large to leave uncompressed regardless of
+            # token estimates or recent compaction effectiveness: force the
+            # pass with the anti-thrash breaker bypassed.
+            logger.info(
+                "Preflight compression: hard message limit %d reached "
+                "(%d messages, ~%s tokens, model %s, ctx %s)",
+                _hard_limit, len(out.messages),
+                f"{_preflight_tokens:,}", agent.model,
+                f"{_compressor.context_length:,}",
+            )
+            _should_compress_now = True
+        else:
+            _should_compress_now = _compressor.should_compress(_preflight_tokens)
         if not _should_compress_now:
             _compress_block_reason = _blocked_compress_reason(_compressor, _preflight_tokens)
     if _should_compress_now:

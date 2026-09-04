@@ -568,6 +568,11 @@ DEFAULT_CONFIG = {
         "micro_compact_defrag_threshold_tokens": 2000,
         # Gateway session-hygiene force-compress threshold, by message count.
         "hygiene_hard_message_limit": 5000,
+        # In-agent preflight hard message-count safety valve (TUI/CLI path). 0 = off;
+        # mirrors the gateway hygiene layer but stays opt-in so default TUI/CLI
+        # behavior is unchanged. Set e.g. 800 to force preflight compression when
+        # the session message count reaches it, regardless of token estimates.
+        "preflight_hard_message_limit": 0,
         # Max seconds the gateway waits for pre-agent hygiene compression WITHOUT forward progress.
         # Inactivity budget: a slow model still streaming tokens extends the wait.
         "hygiene_timeout_seconds": 30,

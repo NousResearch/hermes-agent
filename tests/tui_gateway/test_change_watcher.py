@@ -26,6 +26,7 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_change_checked_at", {})
     monkeypatch.setattr(server, "_change_broadcast_at", {})
     monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
+    monkeypatch.setattr(server, "_sessions_content_probe_cache", {})
 
     events = []
     monkeypatch.setattr(
@@ -278,4 +279,117 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
     server._broadcast_watched_changes(now=10.0)
 
     # The broken cron probe is skipped; sessions still broadcasts.
+    assert ("sessions.changed", {}) in events
+
+
+def _seed_state_db(home) -> None:
+    """A minimal but real state.db: sessions + messages tables the content
+    probe can fingerprint (the production schema's session-list columns)."""
+    import sqlite3
+
+    con = sqlite3.connect(home / "state.db")
+    con.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, source TEXT, user_id TEXT, title TEXT,
+            display_name TEXT, archived INTEGER, hidden INTEGER, pinned INTEGER,
+            message_count INTEGER, tool_call_count INTEGER, started_at REAL,
+            ended_at REAL, end_reason TEXT, last_read_at REAL,
+            last_activity_at REAL, cwd TEXT, session_key TEXT, chat_id TEXT,
+            thread_id TEXT, profile_name TEXT
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
+            content TEXT
+        );
+        """
+    )
+    con.execute(
+        "INSERT INTO sessions (id, source, started_at, message_count)"
+        " VALUES ('s1', 'desktop', 1.0, 1)"
+    )
+    con.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', 'hi')")
+    con.commit()
+    con.close()
+
+
+def _reset_sessions_sig_state(monkeypatch) -> None:
+    """Fresh watcher baselines + a cleared probe cache between tests."""
+    monkeypatch.setattr(server, "_change_sigs", {})
+    monkeypatch.setattr(server, "_change_checked_at", {})
+    monkeypatch.setattr(server, "_change_broadcast_at", {})
+    monkeypatch.setattr(server, "_sessions_content_probe_cache", {})
+
+
+def test_heartbeat_write_does_not_broadcast_sessions_changed(
+    watcher_home, monkeypatch
+):
+    """The 60s gateway-heartbeat refresh writes gateway_heartbeats through the
+    same state.db WAL. mtime moves; session-visible content does not. With N
+    gateways feeding one Desktop this used to fire an N-per-minute refresh
+    storm (visible flicker) — the content gate must swallow it."""
+    home, events = watcher_home
+    _seed_state_db(home)
+    _reset_sessions_sig_state(monkeypatch)
+    server._broadcast_watched_changes(now=0.0)  # seed
+
+    import sqlite3
+
+    time.sleep(0.02)
+    con = sqlite3.connect(home / "state.db")
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS gateway_heartbeats ("
+        " backend_id TEXT PRIMARY KEY, pid INTEGER, started_at REAL,"
+        " last_heartbeat REAL, profile TEXT, host TEXT)"
+    )
+    con.execute("INSERT OR REPLACE INTO gateway_heartbeats VALUES ('b1', 1, 1.0, 99.0, 'p', 'h')")
+    con.commit()
+    con.close()
+
+    server._broadcast_watched_changes(now=10.0)
+    assert ("sessions.changed", {}) not in events
+
+
+def test_new_session_broadcasts_sessions_changed(watcher_home, monkeypatch):
+    """A genuine new session row must still broadcast — the gate exists to
+    filter bookkeeping, not to hide real changes (#58671 unchanged)."""
+    home, events = watcher_home
+    _seed_state_db(home)
+    _reset_sessions_sig_state(monkeypatch)
+    server._broadcast_watched_changes(now=0.0)
+
+    import sqlite3
+
+    time.sleep(0.02)
+    con = sqlite3.connect(home / "state.db")
+    con.execute(
+        "INSERT INTO sessions (id, source, started_at, message_count)"
+        " VALUES ('s2', 'discord', 2.0, 1)"
+    )
+    con.execute("INSERT INTO messages (session_id, role, content) VALUES ('s2', 'user', 'yo')")
+    con.commit()
+    con.close()
+
+    server._broadcast_watched_changes(now=10.0)
+    assert ("sessions.changed", {}) in events
+
+
+def test_message_append_broadcasts_sessions_changed(watcher_home, monkeypatch):
+    """Message volume/identity is part of the fingerprint: an appended turn in
+    an existing session moves COUNT/MAX(id) even when the session row's own
+    aggregates lag behind."""
+    home, events = watcher_home
+    _seed_state_db(home)
+    _reset_sessions_sig_state(monkeypatch)
+    server._broadcast_watched_changes(now=0.0)
+
+    import sqlite3
+
+    time.sleep(0.02)
+    con = sqlite3.connect(home / "state.db")
+    con.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'assistant', 'ho')")
+    con.commit()
+    con.close()
+
+    server._broadcast_watched_changes(now=10.0)
     assert ("sessions.changed", {}) in events

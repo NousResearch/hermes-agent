@@ -115,18 +115,73 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-def _sessions_sig():
-    """Newest mtime across state.db + WAL: the one thing messaging-gateway turns and cron runs
-    all move. Served sibling profile homes are probed too, else a routed Bot Chat never refreshes.
+_sessions_content_probe_cache: dict[str, tuple[int, tuple]] = {}
 
-    signal. Messaging-gateway turns and cron runs are written by OTHER processes that never touch this
-    gateway's transports; the shared SQLite file is the one thing they all move (#58671). A backend serving
-    several profiles owns one store per profile, so every served sibling home is
-    """
-    return _newest_mtime_ns(
-        root / name
-        for root in (_watcher_home(), *_served_profile_homes)
-        for name in ("state.db", "state.db-wal"))
+
+def _sessions_content_sig(home: Path) -> tuple | None:
+    """Read-only content fingerprint of session-visible state: a stable hash
+    over the session-list-visible columns of every session row, plus message
+    volume/identity. Pure bookkeeping writes — the 60s gateway-heartbeat
+    refresh (#94895), routing tables, usage stats live in OTHER tables — move
+    the WAL mtime but not this fingerprint, so they no longer masquerade as
+    session changes. Returns None when the store cannot be probed (missing
+    table/column in an older schema, locked db) so the caller can fall back."""
+    import hashlib
+    import sqlite3
+
+    db_path = home / "state.db"
+    if not db_path.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        try:
+            rows = con.execute(
+                "SELECT id, source, user_id, title, display_name, archived,"
+                " hidden, pinned, message_count, tool_call_count, started_at,"
+                " ended_at, end_reason, last_read_at, last_activity_at, cwd,"
+                " session_key, chat_id, thread_id, profile_name"
+                " FROM sessions"
+            ).fetchall()
+            msg = con.execute(
+                "SELECT COUNT(*), COALESCE(MAX(id),0) FROM messages"
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    h = hashlib.sha256()
+    for row in rows:
+        h.update(repr(row).encode("utf-8", "backslashreplace"))
+    return h.hexdigest(), len(rows), tuple(msg)
+
+
+def _sessions_sig():
+    """Content signature of session-visible state, gated by the cheap mtime
+    probe. The mtime of state.db/WAL stays the trigger (#58671 — messaging
+    turns and cron runs are written by OTHER processes that never touch this
+    gateway's transports), but a moved mtime must now survive a content
+    check: the 60s gateway-heartbeat refresh (#94895) writes
+    gateway_heartbeats through the same WAL and used to fire a spurious
+    sessions.changed per gateway per minute — with N gateways serving one
+    Desktop, an N-per-minute refresh storm (visible flicker)."""
+    sigs = []
+    for home in (_watcher_home(), *_served_profile_homes):
+        mtime = _newest_mtime_ns([home / "state.db", home / "state.db-wal"])
+        if mtime is None:
+            continue
+        cached = _sessions_content_probe_cache.get(str(home))
+        if cached and cached[0] == mtime:
+            sigs.append(cached[1])
+            continue
+        content = _sessions_content_sig(home)
+        if content is None:
+            # Unreadable store (older schema, locked db): keep the legacy
+            # mtime-only behavior so a probe failure can never go silent.
+            sigs.append(mtime)
+            continue
+        _sessions_content_probe_cache[str(home)] = (mtime, content)
+        sigs.append(content)
+    return tuple(sigs) if sigs else None
 
 
 def _pairing_sig():

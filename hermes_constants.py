@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import re
 import shutil
 import stat
 import sys
@@ -267,6 +268,10 @@ def get_default_hermes_root() -> Path:
 # erase the fact that the profile was deleted.
 _DELETED_PROFILES_DIR = ".deleted"
 
+# Keep in sync with hermes_cli.profiles._PROFILE_ID_RE. Duplicated here so
+# live_profile_names() can stay import-safe for HostedRoomService.
+_NAMED_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
 # Files whose presence marks a directory as a real Hermes home. A fresh home
 # always gains at least one of these on first use (config save, env backfill,
 # session DB), while arbitrary directories that merely contain a ``profiles``
@@ -335,6 +340,39 @@ def profile_tombstone_path(profile_home: Path) -> Path:
 
 def named_profile_is_deleted(profile_home: str | Path) -> bool:
     return profile_tombstone_path(Path(profile_home)).exists()
+
+
+def live_profile_names(hermes_root: str | Path) -> list[str]:
+    """Cheap name-only listing of live profiles under *hermes_root*.
+
+    Always includes the synthetic ``default`` profile. Named directories
+    under ``<hermes_root>/profiles`` must match the profile-id regex and
+    must not be tombstoned. Reserved directories such as ``.deleted`` are
+    never advertised.
+
+    *hermes_root* is the Hermes home to scan. Callers that serve a
+    specific home (for example HostedRoomService) must pass that home so
+    the scan is not bound to the process-global Hermes root.
+    """
+    names = ["default"]
+    profiles_root = Path(hermes_root) / "profiles"
+    try:
+        if not profiles_root.is_dir():
+            return names
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default" or name.startswith("."):
+                continue
+            if not _NAMED_PROFILE_ID_RE.match(name):
+                continue
+            if named_profile_is_deleted(entry):
+                continue
+            names.append(name)
+    except OSError:
+        pass
+    return names
 
 
 def mark_named_profile_deleted(profile_home: str | Path) -> None:

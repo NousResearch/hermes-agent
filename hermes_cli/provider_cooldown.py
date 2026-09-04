@@ -59,6 +59,7 @@ def resolve_fallback_entry_runtime(
     the *primary's* model, which can pick the wrong wire protocol for the
     fallback's endpoint.
     """
+    from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.fallback_config import resolve_entry_api_key
 
@@ -69,13 +70,20 @@ def resolve_fallback_entry_runtime(
             explicit_base_url=entry.get("base_url"),
             explicit_api_key=resolve_entry_api_key(entry),
         )
-    except Exception as exc:
-        # A chain entry that is simply unconfigured is an ordinary outcome, so
-        # this stays at debug -- but the catch is broad enough to swallow a
-        # genuine resolver fault, and losing that traceback is how "the
-        # fallback just never fires" becomes unexplainable.
+    except AuthError as exc:
+        # A chain entry whose provider simply is not configured is an ordinary
+        # outcome -- most chains carry one -- so this stays at debug.
         logger.debug(
-            "Fallback entry %s failed: %s", entry.get("provider"), exc,
+            "Fallback entry %s has no usable credentials: %s",
+            entry.get("provider"), exc,
+        )
+        return None
+    except Exception:
+        # Anything else is a resolver fault, and losing it is how "the fallback
+        # just never fires" becomes unexplainable. Still fail open, but say so
+        # where an operator will see it.
+        logger.warning(
+            "Fallback entry %s failed to resolve", entry.get("provider"),
             exc_info=True,
         )
         return None
@@ -89,16 +97,20 @@ def resolve_non_cooling_fallback_runtime(
         Callable[[dict[str, Any]], Optional[dict[str, Any]]]
     ] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """First entry in *chain* that resolves AND is not itself rate-limited.
+    """First entry in *chain* that resolves and is not itself rate-limited.
 
     Used when the primary's pooled credentials are all benched by a 429.
     Picking a fallback whose own pool is cooling down would just move the
     doomed request one hop down the chain, so those entries are passed over
     in favour of a later, healthy one.
 
-    Returns ``(runtime, model)`` for the chosen entry, or ``(None, None)``
-    when nothing in the chain is usable — the caller then keeps the primary,
-    because a cooldown demotes a provider rather than disqualifying it.
+    Returns ``(runtime, model)`` for the chosen entry. When EVERY entry that
+    resolves is also cooling, the first of those is returned rather than
+    nothing: a different quota bucket still has a chance the primary provably
+    does not, so the name's "non-cooling" is a preference, not a guarantee.
+    ``(None, None)`` means nothing in the chain resolved at all — the caller
+    then keeps the primary, because a cooldown demotes a provider rather than
+    disqualifying it.
 
     ``is_rate_limited`` / ``resolve_entry`` exist so a caller that already
     owns these decisions (the gateway) keeps its own module-level names as
@@ -175,6 +187,28 @@ class Demotion:
     switched: bool = False
 
 
+def _draws_on_the_same_pool(
+    primary: dict[str, Any], candidate: dict[str, Any]
+) -> bool:
+    """Whether *candidate* would spend the same credentials as *primary*.
+
+    Compared by pool identity rather than provider name: a custom endpoint
+    resolves as provider ``custom`` whatever its name, so the names can differ
+    while the credentials are one bucket -- and can match while the pools do
+    not. Unresolvable either side answers False, leaving the caller's existing
+    behaviour untouched.
+    """
+    from hermes_cli.runtime_provider import pool_for_runtime
+
+    try:
+        a = pool_for_runtime(primary)
+        b = pool_for_runtime(candidate)
+    except Exception:
+        return False
+    if a is None or b is None:
+        return False
+    return getattr(a, "provider", None) == getattr(b, "provider", object())
+
 
 def demote_if_rate_limited(
     runtime: dict[str, Any],
@@ -236,6 +270,16 @@ def demote_if_rate_limited(
     fb_runtime, fb_model = resolve_non_cooling_fallback_runtime(
         entries, is_rate_limited=is_rate_limited, resolve_entry=resolve_entry
     )
+    if fb_runtime is not None and _draws_on_the_same_pool(runtime, fb_runtime):
+        # The only entry left standing is the primary's own quota bucket, which
+        # the walk returns as a last resort when every entry is cooling. Taking
+        # it would swap the model, keep the benched credentials, send the same
+        # doomed request, and log a handover that did not happen.
+        logger.debug(
+            "The only usable fallback draws on %s's own pool — staying put",
+            runtime.get("provider") or "?",
+        )
+        fb_runtime, fb_model = None, None
     if fb_runtime is None:
         logger.warning(
             "%s: no usable fallback while %s cools down — spending the "

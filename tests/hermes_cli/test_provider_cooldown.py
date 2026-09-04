@@ -1,9 +1,9 @@
 """The shared chain walk: which fallback entry takes over a benched primary.
 
-Four callers (gateway, interactive CLI, cron, one-shot) route around a
-rate-limited credential pool. The walk lives here so they cannot drift apart
-on the same decision, which makes this module worth exercising directly
-rather than only through whichever caller happens to be under test.
+Three callers (gateway, cron, one-shot) route around a rate-limited
+credential pool. The walk lives here so they cannot drift apart on the same
+decision, which makes this module worth exercising directly rather than only
+through whichever caller happens to be under test.
 """
 
 from __future__ import annotations

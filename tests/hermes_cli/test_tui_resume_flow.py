@@ -205,6 +205,10 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             # spends the run's only request. None = nothing benched, leaving
             # this test's concern (SessionDB wiring) undisturbed.
             runtime_credentials_cooling_down_until=lambda _runtime: None,
+            # _run_agent reads the pool for the runtime it ends up with, so a
+            # chain entry pinning its own base_url still has accounts to
+            # rotate. None = no pool, which is this test's situation.
+            pool_for_runtime=lambda _runtime: None,
         ),
     )
     monkeypatch.setitem(

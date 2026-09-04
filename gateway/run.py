@@ -3333,6 +3333,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.provider_cooldown import demote_if_rate_limited
+    from hermes_cli.runtime_provider import pool_for_runtime as _pool_for_runtime
 
     try:
         runtime = resolve_runtime_provider()
@@ -3411,7 +3412,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
+        # Not `runtime.get("credential_pool")`: a chain entry that pins its own
+        # base_url/api_key resolves through `_resolve_explicit_runtime`, whose
+        # runtime carries no pool at all, so a demoted turn would have nothing
+        # to rotate through on the fallback's own accounts.
+        "credential_pool": _pool_for_runtime(runtime),
         "max_tokens": max_tokens,
         # Per-provider request_overrides (e.g. a custom_providers ``extra_body``
         # carrying ``chat_template_kwargs``) resolved by resolve_runtime_provider().
@@ -3487,6 +3492,14 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
+        # A handover swaps provider AND model together -- `model` is only set
+        # here when one happened. Taking the provider while keeping the
+        # configured model would size the window for the fallback's endpoint
+        # using the primary's model id, and hand `should_clear_context_pin`
+        # below a half-changed route to compare.
+        _handover_model = runtime.get("model")
+        if _handover_model:
+            resolved_model = _handover_model
     except Exception:
         pass
 

@@ -368,7 +368,10 @@ def _run_agent(
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import (
+        pool_for_runtime as _pool_for_runtime,
+        resolve_runtime_provider,
+    )
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -515,7 +518,10 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
-            credential_pool=runtime.get("credential_pool"),
+            # See the gateway's note: a chain entry pinning its own
+            # base_url/api_key resolves with no pool attached, so read the
+            # pool for the runtime we actually ended up with.
+            credential_pool=_pool_for_runtime(runtime),
             fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
             # Interactive callbacks are intentionally NOT wired beyond this

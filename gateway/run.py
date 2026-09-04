@@ -3133,6 +3133,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+    read_model_default_snapshot,
 )
 from gateway.delivery import (
     DeliveryRouter,
@@ -29495,6 +29496,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _rehydrate_state is not None
             and _rehydrate_state.conversation.model_override is not None
         ):
+            # Live in-memory override: still subject to the stale-pin drop
+            # below, so long-lived sessions follow default-model changes
+            # without waiting for a gateway restart (#102658).
+            self._drop_stale_session_model_override(session_key)
             return
         store = getattr(self, "session_store", None)
         if store is None:
@@ -29543,6 +29548,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",
         )
+        # A just-rehydrated pin may already be stale (default migrated while
+        # the gateway was down) — same drop as the live path above (#102658).
+        self._drop_stale_session_model_override(session_key)
+
+    def _drop_stale_session_model_override(self, session_key: str) -> bool:
+        """Drop a session override that went stale after a default-model change.
+
+        ``SessionStore.set_model_override`` snapshots the config
+        ``(model.default, model.provider)`` each pin was taken against.  A pin
+        that merely *echoed* that default is redundant: once the operator
+        migrates the fleet default, the stale pin is cleared (in-memory +
+        persisted) so the session follows the new default on its next turn —
+        live sessions included, with no restart or per-session ``/new``
+        required.  An explicit *divergent* pin (override != pin-time default)
+        still wins, as do legacy pins that predate the snapshot (no snapshot
+        → keep).
+
+        Never raises: staleness hygiene must not break turn resolution.
+        """
+        try:
+            state = self._peek_session_state(session_key)
+            override = state.conversation.model_override if state else None
+            if not override:
+                return False
+            store = getattr(self, "session_store", None)
+            if store is None:
+                return False
+            pinned = store.get_model_override_pinned_default(session_key)
+            if not pinned:
+                return False
+            current = read_model_default_snapshot()
+            if not current:
+                return False
+            if (
+                str(override.get("model") or "")
+                != str(pinned.get("model") or "")
+                or str(override.get("provider") or "")
+                != str(pinned.get("provider") or "")
+            ):
+                return False
+            if (
+                str(pinned.get("model") or "")
+                == str(current.get("model") or "")
+                and str(pinned.get("provider") or "")
+                == str(current.get("provider") or "")
+            ):
+                return False
+            state.conversation.model_override = None
+            try:
+                store.set_model_override(session_key, None)
+            except Exception:
+                logger.debug(
+                    "Failed to clear stale session model override",
+                    exc_info=True,
+                )
+            try:
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug(
+                    "Failed to evict agent after stale-override drop",
+                    exc_info=True,
+                )
+            logger.info(
+                "Dropped stale /model override for session=%s: "
+                "pinned=%s/%s now follows default=%s/%s (#102658)",
+                session_key,
+                pinned.get("model"), pinned.get("provider"),
+                current.get("model"), current.get("provider"),
+            )
+            return True
+        except Exception:
+            logger.debug(
+                "Stale session-model-override check failed", exc_info=True
+            )
+            return False
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict

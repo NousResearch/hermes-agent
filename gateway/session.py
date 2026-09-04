@@ -781,6 +781,40 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     return cleaned or None
 
 
+# Metadata key recording the config ``model.default``/``model.provider`` seen
+# when a session-scoped /model override was pinned (#102658).  A pin that
+# merely echoed the default goes stale when the operator migrates the fleet
+# default — the runner then drops it so live sessions follow the change.  An
+# explicit divergent pin (override != pinned default) always keeps winning.
+PINNED_MODEL_DEFAULT_METADATA_KEY = "_model_override_pinned_default"
+
+
+def read_model_default_snapshot() -> Optional[Dict[str, str]]:
+    """Return the current config ``(model, provider)`` default, if readable.
+
+    Defensive: config may be absent/unreadable (tests, fresh installs) — then
+    ``None`` and every staleness check conservatively keeps the override.
+    ``model`` may be a flat string instead of a dict (see
+    ``resolve_persist_behavior``); a non-empty string IS the default model.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model")
+    except Exception:
+        return None
+    if isinstance(model_cfg, dict):
+        model = str(model_cfg.get("default") or "").strip()
+        provider = str(model_cfg.get("provider") or "").strip()
+    elif isinstance(model_cfg, str):
+        model, provider = model_cfg.strip(), ""
+    else:
+        return None
+    if not (model or provider):
+        return None
+    return {"model": model, "provider": provider}
+
+
 @dataclass
 class SessionEntry:
     """
@@ -2599,6 +2633,7 @@ class SessionStore:
                 # persisted /model override too so a later message doesn't
                 # rehydrate it after the in-memory override was popped.
                 entry.model_override = None
+                entry.metadata.pop(PINNED_MODEL_DEFAULT_METADATA_KEY, None)
             self._save()
         # The expiry watcher calls this from a background task that never
         # entered ``_profile_runtime_scope``, so resolve the store from the
@@ -3341,6 +3376,11 @@ class SessionStore:
         are re-resolved at rehydration time via the normal runtime provider
         resolution.  Pass ``None`` (or a dict with no persistable values)
         to clear the persisted override, e.g. on /new.
+
+        On persist the current config default is snapshotted alongside
+        (see ``PINNED_MODEL_DEFAULT_METADATA_KEY``) so a pin that merely
+        echoed the default can go stale when the operator migrates the
+        fleet default (#102658); clearing drops the snapshot too.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -3351,7 +3391,37 @@ class SessionStore:
             if entry.model_override == cleaned:
                 return
             entry.model_override = cleaned
+            if cleaned is None:
+                entry.metadata.pop(PINNED_MODEL_DEFAULT_METADATA_KEY, None)
+            else:
+                snapshot = read_model_default_snapshot()
+                if snapshot is not None:
+                    entry.metadata[PINNED_MODEL_DEFAULT_METADATA_KEY] = snapshot
+                else:
+                    entry.metadata.pop(PINNED_MODEL_DEFAULT_METADATA_KEY, None)
             self._save()
+
+    def get_model_override_pinned_default(
+        self, session_key: str
+    ) -> Optional[Dict[str, str]]:
+        """Return the pin-time config default recorded for *session_key*.
+
+        ``None`` when no override was pinned through :meth:`set_model_override`
+        since this tracking landed (legacy pins conservatively keep winning).
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            pinned = entry.metadata.get(PINNED_MODEL_DEFAULT_METADATA_KEY)
+            if not isinstance(pinned, dict):
+                return None
+            return {
+                k: str(v)
+                for k, v in pinned.items()
+                if k in ("model", "provider")
+            } or None
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""

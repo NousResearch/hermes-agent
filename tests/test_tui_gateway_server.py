@@ -10880,6 +10880,145 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_slash_exec_context_routes_to_live_session_without_worker(monkeypatch):
+    """Non-compute-host sessions get /context from the live session state.
+
+    /context moved from _ISOLATED_SESSION_READ_COMMANDS to
+    _LIVE_SESSION_DIRECT_COMMANDS; before that, a normal session's /context
+    fell through to an isolated _SlashWorker, reporting a fresh worker's
+    context instead of the live conversation's. The exploding worker asserts
+    the worker path is never taken; the mirrored usage snapshot asserts the
+    output comes from the live session.
+    """
+
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for live /context")
+
+    server._sessions["sid"] = {
+        # agent=None is a real session state (lazy sessions keep the agent
+        # slot empty until first turn) — _session() would substitute a dummy
+        # SimpleNamespace, which changes the usage-snapshot branch.
+        "agent": None,
+        "session_key": "session-key",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "_metadata_mirror": {
+            "model": "live-model",
+            "provider": "live-provider",
+            "usage": {
+                "model": "live-model",
+                "context_used": 432,
+                "context_max": 1000,
+                "context_percent": 43,
+            },
+        },
+    }
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "/context", "session_id": "sid"},
+            }
+        )
+        assert "result" in resp, resp
+        assert "432" in resp["result"]["output"]
+        assert "live-model" in resp["result"]["output"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slash_exec_context_without_metadata_mirror(monkeypatch):
+    """/context on a session with NO _metadata_mirror (lazy/older session).
+
+    _metadata_mirror() is a safe accessor ({} when absent) and
+    _session_usage_snapshot falls back to the agent's own counters, so the
+    output must degrade to a real answer, not raise or render blank
+    (review point on PR #86434: the mirror-present case was the only one
+    pinned)."""
+    import threading as _threading
+
+    class _Agent:
+        model = "mirrorless-model"
+        provider = "mirrorless-provider"
+        session_input_tokens = 111
+        session_output_tokens = 22
+        session_total_tokens = 133
+        session_api_calls = 2
+
+    server._sessions["sid"] = {
+        "agent": _Agent(),
+        "session_key": "",
+        "history": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "there"},
+        ],
+        "history_lock": _threading.Lock(),
+        "history_version": 1,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        # deliberately NO _metadata_mirror key
+    }
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "/context", "session_id": "sid"},
+            }
+        )
+        assert resp is not None, "handle_request returned None"
+        assert "result" in resp, resp
+        out = resp["result"]["output"]
+        assert "Conversation: 2 messages" in out
+        assert "mirrorless-model" in out
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slash_exec_context_unknown_session_clear_error(monkeypatch):
+    """Unknown/never-loaded session id: slash.exec fails at _sess_nowait
+    (4001 session not found) BEFORE the live/isolated dispatch — the
+    command has no live branch there, and the contract is a clear error,
+    never an unhandled branch (review point on PR #86434)."""
+    assert "no-such-session" not in server._sessions
+
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("worker must not run for unknown session")
+
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "slash.exec",
+            "params": {"command": "/context", "session_id": "no-such-session"},
+        }
+    )
+    assert resp is not None, "handle_request returned None"
+    assert "error" in resp, resp
+    assert resp["error"]["code"] == 4001
+    assert "not found" in resp["error"]["message"]
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 
@@ -18805,7 +18944,7 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
             {
                 "id": str(n),
                 "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
+                "params": {"command": "/tools", "session_id": "race-spawn"},
             }
         )
         results.append(resp)

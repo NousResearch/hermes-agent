@@ -855,6 +855,11 @@ export interface Translations {
     assigneeLabelHint?: string;
     skillsLabel?: string;
     skillsLabelHint?: string;
+    // Skills dropdown (assignee-scoped): first option ("none") and the
+    // empty-roster / failed-fetch hints under the select.
+    noSkill?: string;
+    noSkillsForProfile?: string;
+    skillsLoadFailed?: string;
     parentLabel?: string;
     parentLabelHint?: string;
     create?: string;

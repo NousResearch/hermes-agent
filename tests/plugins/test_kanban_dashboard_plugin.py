@@ -1228,6 +1228,95 @@ def test_specify_happy_path(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /profiles/{name}/skills — assignee-scoped skills dropdown source
+# ---------------------------------------------------------------------------
+
+
+def _make_skills(home: Path, *paths: str) -> None:
+    """Write SKILL.md files under ``<home>/skills/<path>/``."""
+    for rel in paths:
+        skill_dir = home / "skills" / rel
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {rel.split('/')[-1]}\ndescription: test skill\n---\nbody\n",
+            encoding="utf-8",
+        )
+
+
+def test_profile_skills_lists_default_home_skills(kanban_home, client):
+    # The 'default' profile resolves to HERMES_HOME itself, so skills land
+    # directly under <home>/skills/.
+    _make_skills(kanban_home, "translation", "devops/labfinder-ci-pipelines",
+                "devops/labfinder-eks-investigation")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["profile"] == "default"
+    # Each name is the full skill-dir path relative to skills/ — the exact
+    # identifier skill_view() resolves, so a picked value round-trips
+    # through the worker's --skills preload.
+    assert data["skills"] == [
+        "devops/labfinder-ci-pipelines",
+        "devops/labfinder-eks-investigation",
+        "translation",
+    ]
+
+
+def test_profile_skills_keeps_deep_category_paths(kanban_home, client):
+    # 3-level skills must keep their full path — a 2-part flattening
+    # (``mlops/models/audiocraft`` → ``mlops/audiocraft``) would produce
+    # an identifier that resolves to nothing.
+    _make_skills(kanban_home, "mlops/models/audiocraft")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    assert r.json()["skills"] == ["mlops/models/audiocraft"]
+
+
+def test_profile_skills_empty_when_none_installed(kanban_home, client):
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    assert r.json()["skills"] == []
+
+
+def test_profile_skills_support_dirs_excluded(kanban_home, client):
+    # references/ inside an actual skill dir must not surface as a skill
+    # (progressive-disclosure support path), and neither should an _org
+    # mirror entry without the token-gating .active_org marker.
+    _make_skills(kanban_home, "devops/labfinder-ci-pipelines")
+    skill = kanban_home / "skills" / "devops" / "labfinder-ci-pipelines"
+    (skill / "references").mkdir(parents=True)
+    (skill / "references" / "SKILL.md").write_text("not a skill\n", encoding="utf-8")
+    (kanban_home / "skills" / "_org" / "acme" / "shared").mkdir(parents=True)
+    (kanban_home / "skills" / "_org" / "acme" / "shared" / "SKILL.md").write_text(
+        "mirror\n", encoding="utf-8"
+    )
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    assert r.json()["skills"] == ["devops/labfinder-ci-pipelines"]
+
+
+def test_profile_skills_lists_active_org_mirror(kanban_home, client):
+    # With the sync-client-written .active_org marker, the active org's mirror
+    # resolves — same gating and same in-mirror naming as the runtime loader
+    # (agent.prompt_builder strips the `_org/<org_id>/` prefix).
+    (kanban_home / "skills" / "_org" / "acme").mkdir(parents=True)
+    (kanban_home / "skills" / "_org" / ".active_org").write_text("acme", encoding="utf-8")
+    _make_skills(kanban_home, "_org/acme/shared-translation",
+                "_org/acme/research/org-research")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    # Mirror skills list under their in-mirror path (org prefix stripped,
+    # matching the runtime loader).
+    assert r.json()["skills"] == ["research/org-research", "shared-translation"]
+
+
+def test_profile_skills_404_unknown_profile(kanban_home, client):
+    r = client.get("/api/plugins/kanban/profiles/does-not-exist/skills")
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
 

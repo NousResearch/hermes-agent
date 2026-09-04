@@ -845,7 +845,7 @@ export const en: Translations = {
     assigneePlaceholder: "assignee",
     priority: "Priority",
     skillsPlaceholder:
-      "skills (optional, comma-separated): translation, github-code-review",
+      "Pick a skill installed for the assignee…",
     noParent: "— no parent —",
     workspacePathDir: "workspace path (required, e.g. ~/projects/my-app)",
     workspacePathOptional:
@@ -857,7 +857,11 @@ export const en: Translations = {
     assigneeLabel: "Assignee",
     assigneeLabelHint: "(blank = dispatcher picks)",
     skillsLabel: "Skills",
-    skillsLabelHint: "(optional, comma-separated)",
+    skillsLabelHint: "(from the assignee's profile)",
+    // Skills dropdown hints — shown under the select in the create dialog.
+    noSkill: "— none —",
+    noSkillsForProfile: "No skills installed for this profile.",
+    skillsLoadFailed: "Could not load this profile's skills.",
     parentLabel: "Parent task",
     parentLabelHint: "(child stays blocked until the parent is done)",
     create: "Create",

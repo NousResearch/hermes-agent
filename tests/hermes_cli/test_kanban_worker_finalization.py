@@ -115,11 +115,32 @@ def test_duplicate_finalization_is_idempotent(kanban_home):
         assert [e.id for e in kb.list_events(conn, task_id)] == event_ids
 
 
-def test_product_signoff_is_not_auto_blocked(kanban_home):
+def test_product_signoff_task_is_never_auto_blocked_across_violation_limit(
+    kanban_home,
+):
     with kb.connect() as conn:
-        task_id, run_id = _claimed(conn, body="PRODUCT_SIGNOFF required from owner")
+        task_id = kb.create_task(
+            conn,
+            title="ship release",
+            body="PRODUCT_SIGNOFF required from owner",
+            assignee="coder",
+        )
+        for _ in range(kb._PROTOCOL_VIOLATION_FAILURE_LIMIT + 1):
+            task = kb.claim_task(conn, task_id)
+            assert task is not None and task.current_run_id is not None
 
-        assert kb.finalize_clean_worker_exit(conn, task_id, run_id) == "protocol_violation"
+            assert (
+                kb.finalize_clean_worker_exit(conn, task_id, task.current_run_id)
+                == "protocol_violation"
+            )
+
+            task = kb.get_task(conn, task_id)
+            assert task is not None and task.status == "ready"
+            assert not any(
+                e.kind == "gave_up" for e in kb.list_events(conn, task_id)
+            )
+
+        assert kb.recompute_ready(conn) == 0
         assert kb.get_task(conn, task_id).status == "ready"
 
 

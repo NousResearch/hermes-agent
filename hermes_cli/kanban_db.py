@@ -8897,6 +8897,33 @@ def _error_fingerprint(error_text: str) -> str:
 # precedence ``_record_task_failure`` documents for every other failure kind.
 _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
 
+# Durable marker identifying a task that requires explicit product/human
+# sign-off (``PRODUCT_SIGNOFF`` in the title or body). Such tasks are exempt
+# from the clean-exit violation breaker below: the task body defines the
+# worker's job as reporting back for sign-off rather than driving to a
+# terminal transition, so repeated clean exits without one are a property of
+# the workflow, not a runaway worker — the breaker must never auto-block
+# them. The classification is durable (read from the task row at accounting
+# time, not from run metadata), so it survives retries, reclaims, and
+# dispatcher restarts.
+_PRODUCT_SIGNOFF_MARKER = "PRODUCT_SIGNOFF"
+
+
+def _is_product_signoff_task(
+    conn: sqlite3.Connection, task_id: str
+) -> bool:
+    """True when the task durably requires product sign-off."""
+    row = conn.execute(
+        "SELECT title, body FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    for column in ("title", "body"):
+        text = row[column]
+        if text and _PRODUCT_SIGNOFF_MARKER in text:
+            return True
+    return False
+
 # How far back to walk a task's closed runs when counting the violation
 # streak. The streak trips at a handful of violations, so anything beyond a
 # few dozen rows (violations interleaved with neutral rate-limited requeues)
@@ -8961,7 +8988,15 @@ def _account_protocol_violation(
     *,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
-    """Apply the bounded clean-exit violation breaker exactly once."""
+    """Apply the bounded clean-exit violation breaker exactly once.
+
+    Tasks that durably require product sign-off (``PRODUCT_SIGNOFF`` marker in
+    title/body, see ``_is_product_signoff_task``) are exempt: the violation is
+    still recorded and the task retried, but the breaker never auto-blocks
+    them regardless of how many times the limit is reached.
+    """
+    if _is_product_signoff_task(conn, task_id):
+        return False
     streak = _protocol_violation_streak(conn, task_id)
     row = conn.execute(
         "SELECT max_retries FROM tasks WHERE id = ?", (task_id,),

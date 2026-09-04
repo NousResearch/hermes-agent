@@ -673,11 +673,31 @@ class A2AAdapter(BasePlatformAdapter):
             names = tool_registry.get_registered_toolset_names()
             configured = (agent or {}).get("advertised_toolsets") if agent else self._advertised_toolsets
             allowed = set(configured or []) or None
-            mapping = {
-                n: tool_registry.get_tool_names_for_toolset(n)
-                for n in names
-                if allowed is None or n in allowed
-            }
+            if allowed is None:
+                mapping = {
+                    n: tool_registry.get_tool_names_for_toolset(n)
+                    for n in names
+                }
+            else:
+                # Built-in toolsets are not guaranteed to be imported into the
+                # live registry before the Agent Card is requested.  Resolve
+                # explicitly advertised built-ins from the static toolset
+                # catalog so a gateway-only process does not silently omit
+                # capabilities that are enabled and available to A2A turns.
+                from toolsets import get_toolset, resolve_toolset
+
+                registered = set(names)
+                mapping = {}
+                for name in sorted(allowed):
+                    if name in registered:
+                        mapping[name] = tool_registry.get_tool_names_for_toolset(name)
+                    elif get_toolset(name) is not None:
+                        mapping[name] = resolve_toolset(name)
+                    else:
+                        # Served-agent capability names may be semantic labels
+                        # rather than Hermes toolset keys. Preserve those
+                        # operator-declared skills without inventing tool tags.
+                        mapping[name] = []
             if mapping:
                 return protocol.skills_from_toolsets(mapping)
         except Exception:

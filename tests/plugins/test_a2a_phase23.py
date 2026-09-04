@@ -17,10 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -529,6 +533,7 @@ class TestTaskStore:
 class TestDynamicAgentCards:
     def test_skills_reflect_live_tool_registry(self, monkeypatch):
         """The Agent Card is built from the real tool registry at serve time."""
+        monkeypatch.delenv("A2A_ADVERTISED_TOOLSETS", raising=False)
         from tools.registry import registry
         from gateway.config import PlatformConfig
         from plugins.platforms.a2a.adapter import A2AAdapter
@@ -557,6 +562,80 @@ class TestDynamicAgentCards:
         adapter = A2AAdapter(PlatformConfig(enabled=True))
         card = adapter._build_card()
         assert [s["name"] for s in card["skills"]] == ["webz"]
+
+    def test_advertised_builtin_missing_from_registry_is_not_omitted(self, monkeypatch):
+        """Gateway-only startup can leave built-ins absent from the live registry."""
+        from tools.registry import registry
+        from gateway.config import PlatformConfig
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        monkeypatch.setattr(registry, "get_registered_toolset_names",
+                            lambda: ["terminal", "skills", "todo"])
+        monkeypatch.setattr(registry, "get_tool_names_for_toolset",
+                            lambda ts: [f"{ts}_tool"])
+        monkeypatch.setenv(
+            "A2A_ADVERTISED_TOOLSETS",
+            "terminal,file,code_execution,vision,skills,todo,clarify",
+        )
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        card = adapter._build_card()
+        by_name = {skill["name"]: skill for skill in card["skills"]}
+
+        assert set(by_name) == {
+            "terminal", "file", "code_execution", "vision",
+            "skills", "todo", "clarify",
+        }
+        assert "terminal_tool" in by_name["terminal"]["tags"]
+        assert "read_file" in by_name["file"]["tags"]
+
+    def test_cold_gateway_process_advertises_configured_builtins(self):
+        """Exercise real gateway-like import order in an isolated interpreter."""
+        repo_root = Path(__file__).resolve().parents[2]
+        advertised = "terminal,file,code_execution,vision,skills,todo,clarify"
+        code = """
+import json
+from gateway.config import PlatformConfig
+from plugins.platforms.a2a.adapter import A2AAdapter
+from tools.registry import registry
+
+adapter = A2AAdapter(PlatformConfig(enabled=True))
+print(json.dumps({
+    "registry": registry.get_registered_toolset_names(),
+    "skills": [skill["name"] for skill in adapter._build_card()["skills"]],
+}))
+"""
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith("A2A_")}
+        env["A2A_ADVERTISED_TOOLSETS"] = advertised
+        env["PYTHONPATH"] = str(repo_root)
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=repo_root,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+        expected = set(advertised.split(","))
+
+        assert expected - set(payload["registry"])
+        assert set(payload["skills"]) == expected
+
+    def test_unknown_semantic_capability_is_preserved_without_tool_tags(self, monkeypatch):
+        from tools.registry import registry
+        from gateway.config import PlatformConfig
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        monkeypatch.setattr(registry, "get_registered_toolset_names", lambda: [])
+        monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "report_packet_generate")
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        skill = adapter._build_card()["skills"][0]
+
+        assert skill["name"] == "report_packet_generate"
+        assert skill["tags"] == ["report_packet_generate"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════

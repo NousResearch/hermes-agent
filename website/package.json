@@ -45,7 +45,9 @@
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",
     "tar": "7.5.22",
-    "browserslist": "4.28.8"
+    "browserslist": "4.28.8",
+    "fast-uri": "3.1.7",
+    "qs": "6.16.0"
   },
   "browserslist": {
     "production": [

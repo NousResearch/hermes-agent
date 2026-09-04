@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { useI18n } from '@/i18n'
@@ -15,6 +15,17 @@ import { StarMap } from './star-map'
 // the map itself lives in ./star-map. The chrome is owned by the map itself
 // (timeline scrubber + legend float over the canvas), so there's no panel
 // header here.
+export function StarmapContextMenuBoundary({ children }: { children: ReactNode }) {
+  // The Star Map owns plain right-clicks so its canvas-level handler can open
+  // NodeContextMenu. The app-wide capture handler still handles owned targets
+  // (links, images, editables, selections) inside this boundary.
+  return (
+    <div className="contents" data-context-menu-skip="">
+      {children}
+    </div>
+  )
+}
+
 export function StarmapView({ onClose }: { onClose: () => void }) {
   const { t } = useI18n()
   const graph = useStore($starmapGraph)
@@ -46,12 +57,14 @@ export function StarmapView({ onClose }: { onClose: () => void }) {
       ) : shown && shown.nodes.length === 0 && !imported ? (
         <PanelEmpty description={t.starmap.emptyDesc} icon="lightbulb" title={t.starmap.emptyTitle} />
       ) : shown ? (
-        <StarMap
-          graph={shown}
-          imported={imported !== null}
-          onImport={setImported}
-          onResetMap={() => setImported(null)}
-        />
+        <StarmapContextMenuBoundary>
+          <StarMap
+            graph={shown}
+            imported={imported !== null}
+            onImport={setImported}
+            onResetMap={() => setImported(null)}
+          />
+        </StarmapContextMenuBoundary>
       ) : null}
     </Panel>
   )

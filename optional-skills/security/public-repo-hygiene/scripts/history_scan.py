@@ -16,7 +16,7 @@ Personal patterns: one regex per line (blank lines and # comments ignored)
 from --personal FILE, or ~/.hermes/personal-patterns.txt if it exists.
 The current user's username and home directory path are always checked.
 """
-import subprocess, re, sys, os, collections
+import subprocess, re, sys, os, collections, threading
 
 SECRET_PATTERNS = [
     ("stripe-style sk_", rb"sk_[A-Za-z0-9]{16,}"),
@@ -37,8 +37,10 @@ SECRET_PATTERNS = [
     ("jwt", rb"eyJ[A-Za-z0-9_\-]{15,}\.eyJ[A-Za-z0-9_\-]{15,}"),
     ("bearer-literal", rb"[Bb]earer\s+[A-Za-z0-9_\-\.=]{20,}"),
     ("generic-assignment", rb"(?i)(api[_\-]?key|apikey|api_secret|client_secret|access_token|auth_token|passwd|password)[\"']?\s*[:=]\s*[\"'][^\"'\s]{8,}[\"']"),
-    # bare .env-style lines: API_KEY=value with no quotes
-    ("env-assignment", rb"(?m)^(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*[ \t]*=[ \t]*[^\s\"'#$][^\s\"']{7,}"),
+    # bare .env-style lines, any case: API_KEY=value, db_password=value, TOKEN=value.
+    # The key word must stand alone or be joined by underscores (so keyUsage and
+    # MAX_TOKENS don't match); the value must not look like a call.
+    ("env-assignment", rb"(?im)^(?:export[ \t]+)?(?:[A-Z0-9_]*_)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_[A-Z0-9_]*)?[ \t]*=[ \t]*[^\s\"'#$(][^\s\"'()]{7,}(?=[\s\"']|$)"),
     ("solana-keypair-json", rb"\[(?:\s*\d{1,3}\s*,){63}\s*\d{1,3}\s*\]"),
 ]
 EMAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -101,15 +103,54 @@ def git(repo, *args, binary=False):
     r = subprocess.run(["git", "-C", repo] + list(args), capture_output=True)
     return r.stdout if binary else r.stdout.decode(errors="replace")
 
+def cat_blobs(repo, shas):
+    """Yield (sha, data) for each blob from one `cat-file --batch` process."""
+    p = subprocess.Popen(["git", "-C", repo, "cat-file", "--batch"],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    def feed():
+        for sha in shas:
+            p.stdin.write(sha.encode() + b"\n")
+        p.stdin.close()
+    threading.Thread(target=feed, daemon=True).start()
+    while True:
+        header = p.stdout.readline()
+        if not header:
+            break
+        parts = header.split()
+        if len(parts) < 3:  # "<sha> missing"
+            continue
+        data = p.stdout.read(int(parts[2]))
+        p.stdout.read(1)  # newline after the object body
+        yield parts[0].decode(), data
+    p.wait()
+
+def blob_paths(repo, shas):
+    """{sha: every path that ever held it} for the given blobs, from one pass
+    over the history's raw diffs (rev-list --objects names each blob once)."""
+    out = git(repo, "log", "--all", "--raw", "--no-renames", "--no-abbrev",
+              "--format=", "-z", binary=True)
+    paths = collections.defaultdict(set)
+    fields = out.split(b"\x00")  # ":<mode> <mode> <old> <new> <status>", "<path>", ...
+    for meta, path in zip(fields[::2], fields[1::2]):
+        parts = meta.split()
+        if len(parts) == 5 and parts[4] != b"D":
+            sha = parts[3].decode()
+            if sha in shas:
+                paths[sha].add(path.decode(errors="replace"))
+    return paths
+
 def main():
     personal, argv = load_personal_patterns(sys.argv[1:])
     all_patterns = SECRET_PATTERNS + [(n, p.pattern) for n, p in personal]
 
     def scan_bytes(data, hits, where):
+        found = False
         for name, pat in all_patterns:
             for m in re.finditer(pat, data):
                 frag = m.group(0)[:70]
                 hits[(name, where)].add(frag.decode(errors="replace"))
+                found = True
+        return found
 
     exit_hits = 0
     for repo in resolve_repos(argv):
@@ -148,30 +189,48 @@ def main():
             if len(parts) >= 3 and parts[1] == "blob":
                 types[parts[0]] = int(parts[2])
 
-        nbin = 0
+        wanted = []
         for sha, path in blobs.items():
             if sha not in types:
                 continue
             if types[sha] > 20_000_000:
                 print(f"   !! skipped huge blob {path} ({types[sha]}b)")
                 continue
-            data = git(repo, "cat-file", "blob", sha, binary=True)
+            wanted.append(sha)
+
+        nbin = 0
+        hit_blobs = collections.defaultdict(set)
+        for sha, data in cat_blobs(repo, wanted):
+            path = blobs[sha]
             is_bin = b"\x00" in data[:8192]
             if is_bin:
                 nbin += 1
-            scan_bytes(data, hits, path)
+            if scan_bytes(data, hits, path):
+                hit_blobs[path].add(sha)
             if not is_bin:
                 for m in EMAIL.finditer(data):
                     e = m.group(0)
                     if not EMAIL_NOISE.search(e):
                         email_hits[e.decode(errors="replace")].add(path)
 
+        # The same content may live at other paths too; resolve those for hits only.
+        also = {}
+        if hit_blobs:
+            found = blob_paths(repo, set().union(*hit_blobs.values()))
+            for path, shas in hit_blobs.items():
+                more = set().union(*(found.get(sha, set()) for sha in shas)) - {path}
+                if more:
+                    also[path] = sorted(more)
+
         print(f"-- scanned {len(types)} blobs ({nbin} binary) + commit/tag messages")
         if hits:
             print("-- pattern hits:")
             for (name, where), frags in sorted(hits.items()):
+                loc = where
+                if where in also:
+                    loc += f" (also at {', '.join(also[where][:4])})"
                 for f in sorted(frags)[:6]:
-                    print(f"   [{name}] {where}: {f}")
+                    print(f"   [{name}] {loc}: {f}")
         else:
             print("-- pattern hits: none")
         if email_hits:

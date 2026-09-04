@@ -5873,6 +5873,7 @@ def _project_provider_profile(
     reasoning_extra: Dict[str, Any] = {}
     top_level: Dict[str, Any] = {}
     handles_reasoning = False
+    profile = None
     try:
         from providers import get_provider_profile
         from providers.base import ProviderProfile

@@ -2370,6 +2370,17 @@ class AIAgent:
                         elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                             _txt.append("[screenshot]")
                     content = "\n".join(_txt) if _txt else None
+                # Final durable tool-result boundary. Tool handlers normally
+                # redact their own output, but persistence must not trust every
+                # current/future tool implementation (or a code-file classifier)
+                # to do so. Force the common data-text redactor before any row
+                # reaches session.db, including strict URL/query masking.
+                if role == "tool":
+                    from agent.redact import redact_tool_result_content
+
+                    content = redact_tool_result_content(content)
+                    if isinstance(_row_api_content, str):
+                        _row_api_content = redact_tool_result_content(_row_api_content)
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [

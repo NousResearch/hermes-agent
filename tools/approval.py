@@ -2510,6 +2510,79 @@ _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = (
     "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 )
 
+_ENVIRONMENT_DUMP_DESCRIPTION = "broad environment-variable dump may expose credentials"
+_SAFE_LAUNCHCTL_STATUS_PATTERN = "^[[:space:]]*(state|pid|last exit code) ="
+
+
+def _is_safe_launchctl_metadata_filter(command: str) -> bool:
+    """Recognize the narrow launchd status path that cannot emit env values."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if len(tokens) != 7 or tokens[3] != "|":
+        return False
+    return (
+        os.path.basename(tokens[0]).lower() == "launchctl"
+        and tokens[1].lower() == "print"
+        and bool(tokens[2])
+        and not tokens[2].startswith("-")
+        and os.path.basename(tokens[4]).lower() == "grep"
+        and tokens[5] == "-E"
+        and tokens[6] == _SAFE_LAUNCHCTL_STATUS_PATTERN
+    )
+
+
+def _is_broad_environment_dump(command: str) -> bool:
+    """Return whether an executable command emits an unfiltered env dump."""
+    if _is_safe_launchctl_metadata_filter(command):
+        return False
+
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            name = os.path.basename(
+                _deobfuscate_shell_word_for_detection(word)
+            ).lower()
+            if name not in {
+                "env", "printenv", "set", "export", "declare", "typeset", "launchctl",
+            }:
+                continue
+            tokens = _shell_segment_tokens(segment, start)
+            if not tokens:
+                continue
+            args = tokens[1:]
+
+            if name == "launchctl":
+                if args and args[0].lower() == "print":
+                    return True
+                continue
+
+            if name == "env":
+                # Options and NAME=value prefixes configure ``env``. A later
+                # operand is a command, while no operand means stdout is the
+                # complete environment.
+                operands = [arg for arg in args if not arg.startswith("-")]
+                if not any(_ENV_ASSIGNMENT_RE.fullmatch(arg) is None for arg in operands):
+                    return True
+                continue
+
+            if name == "printenv":
+                if not any(not arg.startswith("-") for arg in args):
+                    return True
+                continue
+
+            if name == "set":
+                if not args:
+                    return True
+                continue
+
+            # ``export``/``declare``/``typeset`` with no named operand print
+            # shell variables. ``-p`` and ``-x`` are their common dump forms.
+            named = [arg for arg in args if not arg.startswith("-")]
+            if not named and (not args or any("p" in arg or "x" in arg for arg in args)):
+                return True
+    return False
+
 
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     """Catch gateway-lifecycle verbs spelled with quote/backslash splicing.
@@ -2555,6 +2628,17 @@ def detect_dangerous_command(command: str) -> tuple:
             if pattern_re.search(command_lower):
                 pattern_key = description
                 return (True, pattern_key, description)
+    # Environment reads are sensitive but non-destructive. Check them after
+    # the ordinary dangerous patterns so a compound command that also writes
+    # .env, changes lifecycle state, etc. retains the more specific/higher-risk
+    # approval reason.
+    for command_variant in _command_detection_variants(command):
+        if _is_broad_environment_dump(command_variant):
+            return (
+                True,
+                _ENVIRONMENT_DUMP_DESCRIPTION,
+                _ENVIRONMENT_DUMP_DESCRIPTION,
+            )
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

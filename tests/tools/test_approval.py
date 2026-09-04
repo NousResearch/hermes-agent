@@ -414,7 +414,7 @@ class TestSensitiveRedirectPattern:
             # must NOT treat `#` as a word boundary.
             "echo x > .env#backup",
             "echo x > config.yaml#backup",
-            "printenv | tee .env#backup",
+            "printf 'safe output' | tee .env#backup",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is False, command
@@ -1000,10 +1000,10 @@ class TestLaunchctlGatewayLifecycle:
             assert dangerous is True, cmd
 
     def test_unrelated_labels_not_flagged(self):
-        """Read-only inspection, and lifecycle ops on non-Hermes labels, are
+        """Metadata-only inspection and lifecycle ops on non-Hermes labels are
         out of scope for the gateway-lifecycle guard."""
         for cmd in (
-            "launchctl print system/com.apple.WindowServer",
+            "launchctl print-disabled system",
             "launchctl stop com.example.unrelated",
         ):
             dangerous, _, _ = detect_dangerous_command(cmd)

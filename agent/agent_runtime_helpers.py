@@ -4052,6 +4052,19 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     is present — so orphans from session loading or manual message
     manipulation are always caught.
     """
+    # Final provider boundary for tool results. Keep this independent of tool
+    # implementation and command/source-code classification: every replayable
+    # role=tool message is copied and force-redacted before provider adapters
+    # can serialize it. The persistence boundary applies the same helper.
+    from agent.redact import redact_tool_result_content
+
+    redacted_messages = []
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            msg = {**msg, "content": redact_tool_result_content(msg.get("content"))}
+        redacted_messages.append(msg)
+    messages = redacted_messages
+
     # --- Role allowlist: drop messages with roles the API won't accept ---
     filtered = []
     for msg in messages:

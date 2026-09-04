@@ -167,6 +167,17 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# launchctl prints inherited environment entries as ``NAME => value``.  This
+# syntax can appear in otherwise structural service output, so match one
+# assignment per line and validate the exact key with the same word-boundary
+# rules as the existing KEY=value redactor.  Unlike the source-code-oriented
+# assignment pass below, this remains active in ``code_file`` mode: terminal
+# and persistence boundaries cannot safely infer that arrow output is code.
+_ENV_ARROW_RE = re.compile(
+    r"(^[ \t]*)([A-Za-z_][A-Za-z0-9_]{0,100})([ \t]*=>[ \t]*)(['\"]?)(\S+)\4",
+    re.MULTILINE,
+)
+
 # Lowercase / dotted / hyphenated config keys from config files
 # (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
 # ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
@@ -841,6 +852,20 @@ def redact_sensitive_text(
     if file_read:
         code_file = True
 
+    # launchctl-style environment assignments are unambiguous enough to mask
+    # at every boundary, including source-code mode.  Structural launchd lines
+    # (``state = running``, ``pid = 42``) do not use the arrow syntax.
+    if "=>" in text:
+        def _redact_env_arrow(m):
+            if not _key_has_secret_keyword(m.group(2)):
+                return m.group(0)
+            return (
+                f"{m.group(1)}{m.group(2)}{m.group(3)}"
+                f"{m.group(4)}{_mask_token(m.group(5))}{m.group(4)}"
+            )
+
+        text = _ENV_ARROW_RE.sub(_redact_env_arrow, text)
+
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
@@ -1139,6 +1164,53 @@ def redact_terminal_output(
     cmd = command or ""
     code_file = not (is_env_dump_command(cmd) or _command_reads_env_file(cmd))
     return redact_sensitive_text(output, force=force, code_file=code_file)
+
+
+def redact_tool_result_content(content):
+    """Redact text at the persistence/provider tool-result boundary.
+
+    This boundary is deliberately force-enabled, uses the ordinary data-text
+    assignment rules rather than a source-code classifier, and enables strict
+    URL credential masking. A tool result is replayable history, not an
+    actionable navigation URL, so preserving opaque query credentials here
+    would expose them to both the session store and the next provider request.
+    """
+    if isinstance(content, str):
+        return redact_sensitive_text(
+            content,
+            force=True,
+            code_file=False,
+            redact_url_credentials=True,
+        )
+    if isinstance(content, list):
+        return [redact_tool_result_content(item) for item in content]
+    if isinstance(content, tuple):
+        return tuple(redact_tool_result_content(item) for item in content)
+    if isinstance(content, dict):
+        # Native image/audio payloads are opaque bytes or data URLs, not text.
+        # Scanning them is both wasteful and liable to corrupt encoded media.
+        # Remote media URLs are still egress text and must have credential
+        # query parameters masked before provider replay.
+        if content.get("type") in {
+            "image", "image_url", "input_image", "audio", "input_audio",
+        }:
+            media = {**content}
+            for key in ("url", "image_url"):
+                value = media.get(key)
+                if isinstance(value, str) and not value.startswith("data:"):
+                    media[key] = redact_tool_result_content(value)
+                elif isinstance(value, dict):
+                    nested = {**value}
+                    url = nested.get("url")
+                    if isinstance(url, str) and not url.startswith("data:"):
+                        nested["url"] = redact_tool_result_content(url)
+                    media[key] = nested
+            return media
+        return {
+            key: redact_tool_result_content(value)
+            for key, value in content.items()
+        }
+    return content
 
 
 # Substrings used to gate ``_PREFIX_RE`` execution. If none of these appear in

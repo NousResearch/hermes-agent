@@ -4,7 +4,13 @@ import logging
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    RedactingFormatter,
+    mask_secret,
+    redact_cdp_url,
+    redact_sensitive_text,
+    redact_tool_result_content,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1108,3 +1114,49 @@ class TestLaunchctlArrowAssignments:
         text = "    TOKENIZER => cl100k_base"
 
         assert redact_sensitive_text(text, force=True, code_file=True) == text
+
+
+def test_tool_result_boundary_redacts_assignments_and_url_credentials():
+    secret = "syntheticOpaqueCredentialValue123456"
+    content = (
+        f"THIRD_PARTY_TOKEN={secret}\n"
+        f"callback=https://example.test/status?access_token={secret}&view=summary"
+    )
+
+    result = redact_tool_result_content(content)
+
+    assert secret not in result
+    assert "THIRD_PARTY_TOKEN=" in result
+    assert "access_token=" in result
+    assert "view=summary" in result
+
+
+def test_tool_result_boundary_redacts_multimodal_text_without_touching_image_data():
+    secret = "syntheticOpaqueCredentialValue123456"
+    image_url = "data:image/png;base64,AAAA_TOKENIZER_BBBB"
+    content = [
+        {"type": "text", "text": f"THIRD_PARTY_TOKEN => {secret}"},
+        {"type": "image_url", "image_url": {"url": image_url}},
+    ]
+
+    result = redact_tool_result_content(content)
+
+    assert secret not in result[0]["text"]
+    assert result[1]["image_url"]["url"] == image_url
+    assert content[0]["text"].endswith(secret)
+
+
+def test_tool_result_boundary_redacts_credentials_in_remote_image_url():
+    secret = "syntheticOpaqueCredentialValue123456"
+    content = [
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": f"https://example.test/image.png?access_token={secret}"
+            },
+        }
+    ]
+
+    result = redact_tool_result_content(content)
+
+    assert secret not in result[0]["image_url"]["url"]

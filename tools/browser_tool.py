@@ -2687,14 +2687,21 @@ def _reap_orphaned_browser_sessions():
         # replace.  Even an integer-looking snapshot can therefore be an
         # incomplete prefix.  Never parse or delete from a fresh PID file.
         try:
-            pid_file_age = time.time() - os.path.getmtime(pid_file)
-        except OSError:
-            continue
-        if pid_file_age < BROWSER_PID_FILE_SETTLE_SECONDS:
-            continue
-
-        try:
-            daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+            pid_stat_before = os.stat(pid_file)
+            if time.time() - pid_stat_before.st_mtime < BROWSER_PID_FILE_SETTLE_SECONDS:
+                continue
+            pid_text = Path(pid_file).read_text(encoding="utf-8").strip()
+            pid_stat_after = os.stat(pid_file)
+            if (
+                pid_stat_after.st_mtime_ns != pid_stat_before.st_mtime_ns
+                or pid_stat_after.st_size != pid_stat_before.st_size
+                or pid_stat_after.st_ino != pid_stat_before.st_ino
+            ):
+                # Replaced or rewritten between the settle check and read.
+                continue
+            daemon_pid = int(pid_text)
+            if daemon_pid <= 0:
+                continue
         except (ValueError, OSError):
             # Ambiguous: the daemon may be in a truncate-then-write startup
             # window, or the file may be temporarily unreadable. Keep the PID

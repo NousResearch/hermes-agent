@@ -308,6 +308,12 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
     except Exception:
         # Revocation is durable; bounded expiry backs up failed spool cleanup.
         pass
+    try:
+        from gateway.hosted_room_artifacts import RoomArtifactOutbox
+        RoomArtifactOutbox(db_path).discard_claims(claims)
+    except Exception:
+        # Access is already revoked; source retention backs up output cleanup.
+        pass
     _revoke_peer_room_control(str(claims["room_id"]), str(claims["member_id"]))
     return _ok(rid, {"revoked": True})
 

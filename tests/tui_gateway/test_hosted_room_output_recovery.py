@@ -348,6 +348,11 @@ def test_finite_retirement_horizon_keeps_canonical_bytes_but_not_infinite_cleanu
     task = _queued(service)
     _, _, result = _output(service, task)
     _tick(service)
+    message = _assert_publication(service, task, result)
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_artifact_completions"
+        ).fetchone()[0] == 1
     before = service._events("files")
     future = time.time() + 61 * 86400
     monkeypatch.setattr(time, "time", lambda: future)
@@ -357,8 +362,18 @@ def test_finite_retirement_horizon_keeps_canonical_bytes_but_not_infinite_cleanu
     _tick(cold)
     _tick(cold)
     assert cold._events("files") == before
-    _assert_publication(cold, task, result)
+    for entry in message["payload"]["attachments"]:
+        assert cold.read_attachment(
+            room_id="files",
+            event_id=message["event_id"],
+            attachment_id=entry["attachment_id"],
+            recipient_member_id="planner",
+        ).data == FILES[entry["name"]]
+    assert driver.list_tasks(service.db_path, room_id="files") == []
     with sqlite3.connect(service.db_path) as conn:
         assert conn.execute(
-            "SELECT attempts, blocked FROM hosted_room_artifact_retries"
-        ).fetchall() == [(1, 1)]
+            "SELECT COUNT(*) FROM hosted_room_artifact_retries"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_artifact_completions"
+        ).fetchone()[0] == 0

@@ -295,40 +295,33 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             except Exception as exc:
                 if getattr(exc, "status_code", None) == 413 and not getattr(exc, "retryable", False):
                     # A definitive byte rejection precedes model admission: settle once.
-                    self._discard_terminal_attachments()
                     receipt = {
                         "status": "failed",
                         "settlement_id": f"attachment-rejected:{dispatch.task_id}:{dispatch.execution_generation}",
                         "error": "A Group Chat file exceeded the peer gateway's upload limit."}
                     on_terminal(receipt)
                     return receipt
-                # A lost idempotent upload response cannot mean a model run was admitted.
-                self._discard_terminal_attachments()
+                # This invocation did not dispatch; the driver fence decides whether
+                # the task can still be treated as not admitted.
                 try:
                     exc.not_admitted = True
                     exc.ambiguous = False
                 except Exception:
                     pass
                 raise
-        try:
-            result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)
-        except Exception as exc:
-            if getattr(exc, "not_admitted", False):
-                self._discard_terminal_attachments()
-            raise
-        if result.get("status") in {"settled", "failed", "cancelled"}:
-            on_terminal(result)
-            self._discard_terminal_attachments()
+        result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)
+        if result.get("status") in {"settled", "failed", "cancelled", "interrupted"}:
+            terminal = dict(result)
+            terminal.setdefault("task_id", dispatch.task_id)
+            terminal.setdefault("execution_generation", dispatch.execution_generation)
+            if terminal.get("status") in {"cancelled", "interrupted"}:
+                terminal["target_interrupted"] = True
+            on_terminal(terminal)
         return result
 
     def history(self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]:
         self._validate_coordinates(profile=profile, source=source)
-        history = self.client.history(**self._scoped(profile=profile, session_id=session_id))
-        if any(str(item.get("task_id") or "") == str(self.task_id or "")
-               and item.get("status") in {"cancelled", "failed", "settled"}
-               for item in history if isinstance(item, Mapping)):
-            self._discard_terminal_attachments()
-        return history
+        return self.client.history(**self._scoped(profile=profile, session_id=session_id))
 
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
         self._validate_coordinates(profile=profile, source=source)
@@ -342,10 +335,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         if dispatch is not None:
             if dispatch.task_id != expected_task_id:
                 return None
-            result = self.client.stop(dispatch=dispatch.as_mapping(), grant=self.route.grant)
-            if isinstance(result, Mapping) and result.get("status") in {"cancelled", "failed", "settled"}:
-                self._discard_terminal_attachments()
-            return result
+            return self.client.stop(dispatch=dispatch.as_mapping(), grant=self.route.grant)
         if (self.task_id != expected_task_id or not self.execution_generation
                 or not hasattr(self.client, "stop_receipt")):
             return None
@@ -370,25 +360,6 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             source=source,
             execution_generation=execution_generation,
         )
-
-
-    def _discard_terminal_attachments(self) -> None:
-        dispatch = self._dispatch
-        if dispatch is None or dispatch.attachment_manifest_digest is None:
-            return
-        discard = getattr(self.client, "discard_attachments", None)
-        if not callable(discard):
-            return
-        try:
-            discard(
-                task_id=dispatch.task_id,
-                execution_generation=dispatch.execution_generation,
-                grant=self.route.grant,
-            )
-        except Exception:
-            # Terminal observation retries this cleanup; target TTL and quotas
-            # remain the crash backstop.
-            return
 
 
     def commit_attachment_staging(

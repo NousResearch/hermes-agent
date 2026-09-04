@@ -192,6 +192,40 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
     assert len([call for call in client.calls if call[0] == "stop"]) == 1
 
 
+@pytest.mark.parametrize("status", ["cancelled", "interrupted"])
+def test_peer_transport_tags_exact_target_interruption(status):
+    class TerminalPeer(FakePeerClient):
+        def dispatch(self, **kwargs):
+            self.calls.append(("dispatch", kwargs))
+            return {"status": status}
+
+    transport = _transport(TerminalPeer())
+    transport.create(
+        profile="reviewer", title="Group: room-1", source=ROOM_SESSION_SOURCE
+    )
+    task = TaskIdentity("room-1", "task-terminal", "thread-1", "turn-1")
+    terminal = []
+
+    transport.submit(
+        profile="reviewer",
+        session_id="group-session",
+        prompt="Review this change.",
+        source=ROOM_SESSION_SOURCE,
+        task=task,
+        execution_generation=3,
+        on_terminal=terminal.append,
+    )
+
+    assert terminal == [
+        {
+            "status": status,
+            "task_id": task.task_id,
+            "execution_generation": 3,
+            "target_interrupted": True,
+        }
+    ]
+
+
 def test_peer_transport_carries_each_turns_real_source_event_sequence():
     observed = []
     for index, source_event_seq in enumerate((7, 42), start=1):
@@ -381,7 +415,7 @@ def test_roomlink_can_fail_over_ambiguous_attachment_staging_before_admission():
     ("failed_method", "not_admitted"),
     [("stage_attachments", False), ("dispatch", True)],
 )
-def test_attachment_failure_before_run_admission_discards_exact_remote_attempt(
+def test_attachment_failure_leaves_remote_attempt_to_bounded_target_expiry(
     failed_method,
     not_admitted,
 ):
@@ -435,15 +469,8 @@ def test_attachment_failure_before_run_admission_discards_exact_remote_attempt(
             on_terminal=lambda _receipt: None,
         )
 
-    discarded = [
+    assert not [
         params for method, params in client.calls if method == "discard_attachments"
-    ]
-    assert discarded == [
-        {
-            "task_id": "task-files",
-            "execution_generation": 3,
-            "grant": "signed-room-grant",
-        }
     ]
 
 
@@ -511,7 +538,7 @@ def test_nonretryable_attachment_413_terminalizes_without_dispatch_or_requeue():
     )
     methods = [method for method, _params in client.calls]
     assert "dispatch" not in methods
-    assert methods.count("discard_attachments") == 1
+    assert "discard_attachments" not in methods
 
 
 def test_peer_transport_pushes_digest_bound_bytes_before_run_admission():
@@ -588,11 +615,4 @@ def test_peer_transport_pushes_digest_bound_bytes_before_run_admission():
         session_id="group-session",
         source=ROOM_SESSION_SOURCE,
     )
-    discarded = next(
-        params for method, params in client.calls if method == "discard_attachments"
-    )
-    assert discarded == {
-        "task_id": task.task_id,
-        "execution_generation": 3,
-        "grant": "signed-room-grant",
-    }
+    assert not [method for method, _params in client.calls if method == "discard_attachments"]

@@ -36,15 +36,21 @@ class HostedRoomArtifactMixin:
                     "DELETE FROM hosted_room_artifact_retries WHERE room_id=?",
                     (room_id,),
                 )
+                conn.execute(
+                    "DELETE FROM hosted_room_artifact_completions WHERE room_id=?",
+                    (room_id,),
+                )
 
 
     def _publish_terminal_tasks(
         self,
         room: Mapping[str, Any],
     ) -> bool:
+        self._prune_artifact_metadata()
         changed = False
         local_profiles = self.local_profiles()
         retry_keys = self._artifact_retry_keys(str(room["room_id"]))
+        completion_keys = self._artifact_completion_keys(str(room["room_id"]))
         for status in ("deferred", "settled", "failed", "cancelled"):
             for task in driver.list_tasks(
                 self.db_path,
@@ -65,8 +71,10 @@ class HostedRoomArtifactMixin:
                 )
                 if (
                     publication_exists
-                    and retry_key not in retry_keys
-                    and not has_artifact_ack
+                    and (
+                        retry_key in completion_keys
+                        or (retry_key not in retry_keys and not has_artifact_ack)
+                    )
                 ):
                     continue
                 publication_cursor = int(
@@ -88,6 +96,8 @@ class HostedRoomArtifactMixin:
                     )
                 if not self._artifact_retry_due(task):
                     continue
+                if has_artifact_ack:
+                    self._ensure_artifact_retry(task)
                 publication_status = status
                 if publication_exists and has_artifact_ack:
                     plan = self._published_artifact_plan(
@@ -232,7 +242,9 @@ class HostedRoomArtifactMixin:
                                 ),
                             )
                             continue
-                    self._clear_artifact_retry(task)
+                        self._complete_artifact_ack(task)
+                    else:
+                        self._clear_artifact_retry(task)
                     continue
                 publication_cursor = int(
                     hosted_rooms.room_state(
@@ -284,7 +296,9 @@ class HostedRoomArtifactMixin:
                             continue
                         self._defer_artifact_retry(task, exc, permanent=True)
                         continue
-                self._clear_artifact_retry(task)
+                    self._complete_artifact_ack(task)
+                else:
+                    self._clear_artifact_retry(task)
                 changed = True
         return changed
 
@@ -395,7 +409,17 @@ class HostedRoomArtifactMixin:
                     attempts INTEGER NOT NULL,
                     next_attempt_at REAL NOT NULL,
                     blocked INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
+                    PRIMARY KEY(room_id, task_id, execution_generation)
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS hosted_room_artifact_completions (
+                    room_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    execution_generation INTEGER NOT NULL,
+                    completed_at REAL NOT NULL,
                     PRIMARY KEY(room_id, task_id, execution_generation)
                 )"""
             )
@@ -409,6 +433,15 @@ class HostedRoomArtifactMixin:
                 conn.execute(
                     """ALTER TABLE hosted_room_artifact_retries
                        ADD COLUMN member_id TEXT NOT NULL DEFAULT ''"""
+                )
+            if "created_at" not in columns:
+                conn.execute(
+                    """ALTER TABLE hosted_room_artifact_retries
+                       ADD COLUMN created_at REAL NOT NULL DEFAULT 0"""
+                )
+                conn.execute(
+                    """UPDATE hosted_room_artifact_retries
+                          SET created_at=updated_at WHERE created_at=0"""
                 )
             empty = conn.execute(
                 """SELECT room_id, task_id, execution_generation
@@ -449,6 +482,34 @@ class HostedRoomArtifactMixin:
                         ),
                     )
 
+    def _prune_artifact_metadata(self) -> None:
+        """Bound markers after their exact driver task has been retired."""
+
+        with self._artifact_retry_connection() as conn:
+            has_driver_tasks = conn.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='hosted_room_driver_tasks'"""
+            ).fetchone()
+            if has_driver_tasks is None:
+                return
+            for table in (
+                "hosted_room_artifact_retries",
+                "hosted_room_artifact_completions",
+            ):
+                conn.execute(
+                    f"""DELETE FROM {table} WHERE rowid IN (
+                        SELECT metadata.rowid FROM {table} AS metadata
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM hosted_room_driver_tasks AS task
+                            WHERE task.room_id=metadata.room_id
+                              AND task.task_id=metadata.task_id
+                              AND task.execution_generation=
+                                  metadata.execution_generation
+                        )
+                        ORDER BY metadata.rowid LIMIT 256
+                    )"""
+                )
+
     @staticmethod
     def _artifact_retry_key(task: Mapping[str, Any]) -> tuple[str, str, int]:
         identity = task["identity"]
@@ -470,6 +531,20 @@ class HostedRoomArtifactMixin:
             for row in rows
         }
 
+    def _artifact_completion_keys(
+        self, room_id: str
+    ) -> set[tuple[str, str, int]]:
+        with self._artifact_retry_connection() as conn:
+            rows = conn.execute(
+                """SELECT room_id, task_id, execution_generation
+                   FROM hosted_room_artifact_completions WHERE room_id=?""",
+                (room_id,),
+            ).fetchall()
+        return {
+            (str(row["room_id"]), str(row["task_id"]), int(row["execution_generation"]))
+            for row in rows
+        }
+
     def _artifact_retry_due(self, task: Mapping[str, Any]) -> bool:
         key = self._artifact_retry_key(task)
         with self._artifact_retry_connection() as conn:
@@ -483,6 +558,27 @@ class HostedRoomArtifactMixin:
             and self._artifact_clock() >= float(row["next_attempt_at"])
         )
 
+    def _ensure_artifact_retry(self, task: Mapping[str, Any]) -> None:
+        key = self._artifact_retry_key(task)
+        now = float(self._artifact_clock())
+        with self._artifact_retry_connection() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO hosted_room_artifact_retries
+                   (room_id, task_id, execution_generation, member_id, attempts,
+                    next_attempt_at, blocked, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 0, 0, 0, ?, ?)""",
+                (
+                    *key,
+                    str(
+                        task.get("payload", {}).get("target_member_id")
+                        or task.get("payload", {}).get("target_profile")
+                        or "unknown"
+                    ),
+                    now,
+                    now,
+                ),
+            )
+
     def _defer_artifact_retry(
         self,
         task: Mapping[str, Any],
@@ -494,11 +590,12 @@ class HostedRoomArtifactMixin:
         now = float(self._artifact_clock())
         with self._artifact_retry_connection() as conn:
             row = conn.execute(
-                """SELECT attempts FROM hosted_room_artifact_retries
+                """SELECT attempts, created_at FROM hosted_room_artifact_retries
                    WHERE room_id=? AND task_id=? AND execution_generation=?""",
                 key,
             ).fetchone()
             attempts = 1 if row is None else int(row["attempts"]) + 1
+            created_at = now if row is None else float(row["created_at"])
             delay = min(
                 self._artifact_retry_max_seconds,
                 self._artifact_retry_min_seconds * (2 ** min(attempts - 1, 16)),
@@ -506,8 +603,8 @@ class HostedRoomArtifactMixin:
             conn.execute(
                 """INSERT INTO hosted_room_artifact_retries
                    (room_id, task_id, execution_generation, member_id, attempts,
-                    next_attempt_at, blocked, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    next_attempt_at, blocked, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(room_id, task_id, execution_generation) DO UPDATE SET
                     attempts=excluded.attempts,
                     next_attempt_at=excluded.next_attempt_at,
@@ -523,8 +620,30 @@ class HostedRoomArtifactMixin:
                     attempts,
                     now + delay,
                     int(permanent),
+                    created_at,
                     now,
                 ),
+            )
+
+    def _complete_artifact_ack(self, task: Mapping[str, Any]) -> None:
+        key = self._artifact_retry_key(task)
+        now = float(self._artifact_clock())
+        with self._artifact_retry_connection() as conn:
+            conn.execute(
+                """INSERT INTO hosted_room_artifact_completions
+                   (room_id, task_id, execution_generation, completed_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(room_id, task_id, execution_generation) DO UPDATE SET
+                    completed_at=MAX(
+                        hosted_room_artifact_completions.completed_at,
+                        excluded.completed_at
+                    )""",
+                (*key, now),
+            )
+            conn.execute(
+                """DELETE FROM hosted_room_artifact_retries
+                   WHERE room_id=? AND task_id=? AND execution_generation=?""",
+                key,
             )
 
     def _clear_artifact_retry(self, task: Mapping[str, Any]) -> None:

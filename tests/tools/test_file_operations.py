@@ -261,6 +261,17 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     env = MagicMock()
     env.cwd = cwd
 
+    # Production terminal backends run commands under bash, and several
+    # generated command strings legitimately rely on bashisms (most notably
+    # the `set -o pipefail;` prefix on search pipelines). `shell=True` alone
+    # resolves to /bin/sh — dash on Ubuntu — which rejects `set -o pipefail`
+    # with exit code 2 and empty stdout, so every real-execution search test
+    # failed on CI with a swallowed "Search error" (#93846). Pin bash when
+    # it exists so the harness mirrors production; fall back to the platform
+    # default elsewhere (Windows has no /bin/bash and these tests skip there
+    # anyway).
+    bash = "/bin/bash" if os.path.exists("/bin/bash") else None
+
     def execute(command, **kwargs):
         stdin_data = kwargs.get("stdin_data")
         is_windows = os.name == "nt"
@@ -271,6 +282,7 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
         completed = subprocess.run(
             command,
             shell=not is_windows,
+            executable=None if is_windows else bash,
             text=not is_windows,
             capture_output=True,
             input=(stdin_data.encode("utf-8", "surrogateescape")
@@ -292,6 +304,22 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
 
     env.execute = execute
     return env
+
+
+@pytest.mark.skipif(not os.path.exists("/bin/bash"), reason="bash not available")
+def test_make_real_subprocess_env_supports_pipefail(tmp_path):
+    """The harness must mirror production bash semantics.
+
+    Search pipelines start with ``set -o pipefail;`` — a bashism that
+    /bin/sh (dash on Ubuntu) rejects with exit code 2 and empty stdout.
+    If this test fails, make_real_subprocess_env stopped pinning bash and
+    every real-execution search test will fail on CI with a swallowed
+    "Search error" (#93846).
+    """
+    env = make_real_subprocess_env(str(tmp_path))
+    result = env.execute("set -o pipefail; echo ok")
+    assert result["returncode"] == 0
+    assert result["output"].strip() == "ok"
 
 
 class TestShellFileOpsHelpers:

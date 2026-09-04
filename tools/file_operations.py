@@ -4106,7 +4106,11 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
+        # Add pattern and path. `--` ends flag parsing so a pattern that
+        # itself starts with `-` (negative number, a CLI-flag literal like
+        # `--pdf-engine`, `->`) is matched literally instead of being parsed
+        # as an rg option (#93750).
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         # rg is a native Windows binary when installed via winget/cargo/choco:
         # it needs the C:/... path form, not the MSYS /c/... form (which
@@ -4267,6 +4271,9 @@ class ShellFileOperations(FileOperations):
         # ``.*`` to exclude the entire search. Anchor relative paths at the
         # shell's live cwd; quoting $PWD separately keeps user paths escaped
         # while working across local, container, and remote backends.
+        # `--` ends flag parsing so a pattern starting with `-` is matched
+        # literally instead of parsed as an option (#93750).
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         is_absolute = path.startswith(("/", "\\\\")) or bool(
             re.match(r"^[A-Za-z]:[\\/]", path)

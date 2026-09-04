@@ -101,3 +101,49 @@ class TestWeixinAdapterConstructionScope:
             secret_scope.reset_secret_scope(token)
         assert adapter._account_id == "env-account"
         assert adapter._token == "env-token"
+
+
+class TestWeixinAdapterAuthzScope:
+    """Authorization reads (dm_policy/allowlists) must follow the same
+    scoped-secret rules as the credential reads above (#93522): a secondary
+    profile's own scope is authoritative, and the default profile's
+    process-env values must not leak into it."""
+
+    def test_scoped_construction_reads_authz_from_scope_not_environ(
+        self, multiplex_on, monkeypatch
+    ):
+        monkeypatch.setenv("WEIXIN_DM_POLICY", "pairing")
+        monkeypatch.setenv("WEIXIN_ALLOWED_USERS", "default-user")
+        monkeypatch.setenv("WEIXIN_GROUP_ALLOWED_USERS", "default-group-user")
+        token = secret_scope.set_secret_scope(
+            {
+                "WEIXIN_DM_POLICY": "allowlist",
+                "WEIXIN_ALLOWED_USERS": "scoped-user",
+                "WEIXIN_GROUP_ALLOWED_USERS": "scoped-group-user",
+            }
+        )
+        try:
+            adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._dm_policy == "allowlist"
+        assert adapter._allow_from == ["scoped-user"]
+        assert adapter._group_allow_from == ["scoped-group-user"]
+        assert adapter._is_dm_allowed("scoped-user") is True
+        assert adapter._is_dm_allowed("default-user") is False
+
+    def test_scoped_miss_does_not_admit_default_profiles_allow_all(
+        self, multiplex_on, monkeypatch
+    ):
+        """A secondary profile with no allowlist of its own must fail closed,
+        not inherit the default profile's env-only allowlist/opt-in."""
+        monkeypatch.setenv("WEIXIN_DM_POLICY", "allowlist")
+        monkeypatch.setenv("WEIXIN_ALLOWED_USERS", "default-user")
+        token = secret_scope.set_secret_scope({"SOMETHING_ELSE": "x"})
+        try:
+            adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._dm_policy == "pairing"
+        assert adapter._allow_from == []
+        assert adapter._is_dm_allowed("default-user") is False

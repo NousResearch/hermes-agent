@@ -1,6 +1,7 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 import { type BillingBlock } from '@hermes/shared'
 
+import type { ErrorSurface } from '@/lib/error-surface'
 import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
@@ -21,6 +22,10 @@ export type ChatMessage = {
   completedAt?: number
   pending?: boolean
   error?: string
+  /** Structured layer descriptor for a failed turn (parsed error_surface).
+   *  Drives the error card's layer label + actions; absent on older
+   *  backends, where the card falls back to generic copy. */
+  errorSurface?: ErrorSurface
   branchGroupId?: string
   hidden?: boolean
   /** Sealed mid-turn commentary (`message.interim`) — rendered without the
@@ -59,9 +64,14 @@ export type GatewayEventPayload = {
   result?: unknown
   summary?: string
   error?: string | boolean
+  // message.complete with status "error" — structured {layer, code, retryable}
+  // descriptor naming which stack layer failed (agent/error_surface.py).
+  // Absent on older gateways; consumers must fall back to string heuristics.
+  error_surface?: unknown
   inline_diff?: string
   duration_s?: number
   todos?: unknown
+  revision?: number
   model?: string
   provider?: string
   reasoning_effort?: string
@@ -84,6 +94,8 @@ export type GatewayEventPayload = {
   // clarify.request
   request_id?: string
   question?: string
+  // btw.complete / background.complete — id of the side/background task
+  task_id?: string
   choices?: string[] | null
   multi_select?: boolean
   // clarify.request batch form: questions replaces question/choices, and
@@ -115,7 +127,10 @@ export type GatewayEventPayload = {
   preset?: string
   // tour.request (tour tool — agent-guided driver.js walkthrough). `action`
   // and `steps` name the tour verb and step list; `surface` picks the app's
-  // own DOM vs the preview pane's guest page.
+  // own DOM vs the preview pane's guest page. tip.show (tip tool — one accent
+  // bubble with an arrow, no overlay) adds no fields of its own: it reuses
+  // `selector`/`side` here plus `text`/`title`, and carries no request_id
+  // because a tip is fire-and-forget.
   surface?: string
   selector?: string
   side?: string

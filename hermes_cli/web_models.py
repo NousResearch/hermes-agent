@@ -60,6 +60,10 @@ class CustomEndpointUpdate(BaseModel):
     discover_models: bool = True
     make_default: bool = False
     models: Optional[List[str]] = None
+    # Optional wire-protocol hint. Desktop does not expose a field today;
+    # CLI / hand-written providers set ``anthropic_messages`` so catalog
+    # probes use x-api-key + anthropic-version instead of Bearer.
+    api_mode: Optional[str] = None
 
 
 class MessagingPlatformUpdate(BaseModel):

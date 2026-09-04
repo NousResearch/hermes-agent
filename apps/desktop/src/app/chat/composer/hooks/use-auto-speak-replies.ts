@@ -46,6 +46,9 @@ export function useAutoSpeakReplies({
   const { $messages } = useComposerScope()
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
+  // Track which reply is currently being spoken to prevent the $messages + $voicePlayback
+  // race where both listeners call speakLatest concurrently for the same reply.id.
+  const speakingRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!enabled) {
@@ -69,6 +72,13 @@ export function useAutoSpeakReplies({
         return
       }
 
+      // Prevent concurrent invocations for the same reply.id (race between
+      // $messages.subscribe and $voicePlayback.listen).
+      if (speakingRef.current === reply.id) {
+        return
+      }
+      speakingRef.current = reply.id
+
       markSpoken()
       // Only one window voices a given reply when the same chat is open in
       // several (reply.id is the shared backend message id). markSpoken already
@@ -78,6 +88,11 @@ export function useAutoSpeakReplies({
           void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
             notifyError(error, failureLabel)
           )
+        }
+      }).finally(() => {
+        // Clear the speaking ref so the next reply can be spoken.
+        if (speakingRef.current === reply.id) {
+          speakingRef.current = null
         }
       })
     }

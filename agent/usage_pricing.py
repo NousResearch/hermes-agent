@@ -155,9 +155,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
     # (aliased below); "Sol Fast mode" is a separate tier, not covered.
-    ("openai", "https://openai.com/index/previewing-gpt-5-6-sol/", "openai-gpt-5.6-2026-07", {
-        "gpt-5.6-sol": ("5.00", "30.00", "0.50", "6.25"), "gpt-5.6-terra": ("2.50", "15.00", "0.25", "3.125"),
-        "gpt-5.6-luna": ("1.00", "6.00", "0.10", "1.25"),
+    ("openai", "https://developers.openai.com/api/docs/pricing", "openai-gpt-5.6-2026-09-04", {
+        "gpt-5.6-sol": ("4.00", "20.00", "0.40", "5.00"), "gpt-5.6-terra": ("2.00", "12.00", "0.20", "2.50"),
+        "gpt-5.6-luna": ("0.20", "1.20", "0.02", "0.25"),
     }),
     # Claude 4.5/4.6/4.7/4.8 Opus share $5/$25 (new tokenizer, up to 35% more tokens).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-05", {

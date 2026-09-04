@@ -1,7 +1,7 @@
 # Context Compression and Caching
 
-Hermes Agent uses a dual compression system and Anthropic prompt caching to
-manage context window usage efficiently across long conversations.
+Hermes Agent uses a dual compression system and provider-specific prompt
+caching to manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
 `agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
@@ -465,12 +465,43 @@ text for this purpose.
 ```
 
 
-## Prompt Caching (Anthropic)
+## Prompt Caching
+
+Prompt caching reuses the provider's computed prefix state; it does not reuse
+a previous answer. Exact prefix stability still matters: system instructions,
+tool definitions, their ordering, and prior messages must remain stable.
+Hermes therefore freezes its system prompt and tool set for a conversation and
+appends new turns instead of rebuilding earlier context.
+
+### OpenAI Responses (GPT-5.6+)
+
+The `codex_responses` transport sends a deterministic, content-addressed
+`prompt_cache_key` derived from the stable instructions and tool schemas.
+Conversation history remains append-only, allowing OpenAI's implicit latest
+user/tool breakpoint to reuse earlier turns. The key is a routing hint, not a
+correctness boundary and not a cache-hit guarantee.
+
+GPT-5.6+ requires at least 1,024 visible input tokens for a cacheable prefix.
+Its cache lifetime is at least 30 minutes after the latest write or reuse.
+Cache reads cost 0.1x the uncached input rate and writes cost 1.25x. Hermes
+tracks ordinary input, cache reads, and cache writes separately from
+`usage.input_tokens_details`; raw SSE dicts and SDK usage objects normalize to
+the same counters.
+
+Hermes intentionally keeps implicit breakpoints for its append-only agent
+loop. Explicit-only breakpoints are valuable for batch systems with one large
+stable rubric and a changing suffix, but adding a synthetic boundary to the
+generic agent loop would change the rendered prompt and can break
+OpenAI-compatible relays. Such batch callers should implement the boundary in
+their own provider adapter and verify the exact runtime.
+
+Reference: [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+### Anthropic
 
 Source: `agent/prompt_caching.py`
 
-Reduces input token costs by ~75% on multi-turn conversations by caching the
-conversation prefix. Uses Anthropic's `cache_control` breakpoints.
+Uses Anthropic's `cache_control` breakpoints to cache the conversation prefix.
 
 ### Strategy: system_and_3
 
@@ -517,6 +548,8 @@ The marker is applied differently based on content type:
 3. **Compression cache interaction**: After compression, the cache is invalidated
    for the compressed region but the system prompt cache survives. The rolling
    3-message window re-establishes caching within 1-2 turns.
+   Fewer total input tokens can still cost less even when the first
+   post-compression request has a lower cache-hit rate.
 
 4. **TTL selection**: Default is `5m` (5 minutes). Use `1h` for long-running
    sessions where the user takes breaks between turns.

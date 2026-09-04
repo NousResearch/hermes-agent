@@ -668,7 +668,9 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
     agent._interrupt_thread_signal_pending = False
 
 
-def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> str:
+def _memory_turn_start_and_prefetch(
+    agent: Any, original_user_message: Any, history: List[Dict[str, Any]],
+) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
     Returns the prefetch text (``""`` when nothing was injected)."""
@@ -680,7 +682,11 @@ def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> s
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(
+                _query,
+                session_id=agent.session_id or "",
+                history=history,
+            ) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.
     if ext_prefetch_cache:
@@ -865,7 +871,9 @@ def build_turn_context(
     )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message)
+    ext_prefetch_cache = _memory_turn_start_and_prefetch(
+        agent, original_user_message, messages[:current_turn_user_idx]
+    )
 
     # Sidecar skipped for codex_app_server/MoA.
     if (

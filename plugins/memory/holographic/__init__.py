@@ -108,6 +108,9 @@ class HolographicMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "holographic"
 
+    def supports_current_query_recall_planning(self) -> bool:
+        return True
+
     def is_available(self) -> bool:
         return True  # SQLite is always available, numpy is optional
 

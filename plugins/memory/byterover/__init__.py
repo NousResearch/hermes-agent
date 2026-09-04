@@ -133,6 +133,9 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "byterover"
 
+    def supports_current_query_recall_planning(self) -> bool:
+        return True
+
     def is_available(self) -> bool:
         """Check if brv CLI is installed. No network calls."""
         return _resolve_brv_path() is not None

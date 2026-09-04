@@ -2873,6 +2873,15 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     return normalized
 
 
+def get_runtime_main() -> Dict[str, Any]:
+    """Return a copy of the current context's active main-model route.
+
+    Privacy-sensitive side calls can pin themselves to this exact destination
+    instead of resolving through the general auxiliary-provider chain.
+    """
+    return dict(_normalize_main_runtime(None))
+
+
 def _get_provider_chain() -> List[tuple]:
     """Ordered provider detection chain, built at call time so ``_try_*`` patches are picked up.
 
@@ -6943,6 +6952,7 @@ def call_llm(
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
     latency_info: Optional[Dict[str, int]] = None,
+    allow_cross_provider_fallback: bool = True,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -6971,6 +6981,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
+                allow_cross_provider_fallback=allow_cross_provider_fallback,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -7076,6 +7087,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    allow_cross_provider_fallback: bool = True,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7150,6 +7162,8 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        if not allow_cross_provider_fallback:
+            raise
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":

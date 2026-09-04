@@ -44,6 +44,8 @@ class HonchoSession:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Held by _flush_session across select, send and the _synced flip; lives with the message list it guards.
+    _flush_lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the local cache."""
@@ -310,7 +312,13 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             excess -= 1
 
     def _flush_session(self, session: HonchoSession) -> bool:
-        """Write unsynced messages to Honcho synchronously."""
+        """Write unsynced messages to Honcho synchronously. The session's lock serializes flushers of
+        one message list: the async writer and an exit-time flush_all() both pick up the same batch
+        otherwise, and the second one enters here only after the first marked it synced."""
+        with session._flush_lock:
+            return self._flush_session_locked(session)
+
+    def _flush_session_locked(self, session: HonchoSession) -> bool:
         new_messages = [m for m in session.messages if not m.get("_synced")]
         if not new_messages:
             return True

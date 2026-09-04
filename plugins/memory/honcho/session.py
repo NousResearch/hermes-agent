@@ -111,6 +111,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._async_queue: queue.Queue | None = queue.Queue() if self._write_frequency == "async" else None
         self._async_thread: threading.Thread | None = None
         self._async_thread_lock = threading.Lock()
+        # Set by shutdown/stop_async_writer: no new threads after the join, late saves flush inline.
+        self._shutting_down = False
 
     @property
     def honcho(self) -> Honcho:
@@ -430,7 +432,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         flushes now; "session" defers until flush_all(); int N flushes every N turns."""
         self._turn_counter += 1
         wf = self._write_frequency
-        if wf == "async":
+        if self._shutting_down:
+            self._flush_session(session)
+        elif wf == "async":
             if self._async_queue is not None:
                 self._ensure_async_writer()
                 self._async_queue.put(session)
@@ -462,17 +466,19 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             return
         with self._async_thread_lock:
             if self._async_thread is None or not self._async_thread.is_alive():
-                self._async_thread = spawn_context_thread(self._async_writer_loop, name="honcho-async-writer")
+                self._async_thread = spawn_context_thread(self._async_writer_loop, name="honcho-async-writer", owner=self)
                 self._async_thread.start()
 
     def stop_async_writer(self) -> None:
         """Join the async writer WITHOUT flushing (saveMessages: false must still exit cleanly)."""
+        self._shutting_down = True
         if self._async_queue is not None and self._async_thread is not None and self._async_thread.is_alive():
             self._async_queue.put(_ASYNC_SHUTDOWN)
             self._async_thread.join(timeout=10)
 
     def shutdown(self) -> None:
         """Flush everything, then stop the async writer thread."""
+        self._shutting_down = True
         if self._async_queue is not None:
             self.flush_all()
             self.stop_async_writer()
@@ -480,13 +486,17 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
     # ----- Prefetch cache -----
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
-        """Fire get_prefetch_context in a background thread; consumed next turn via pop_context_result()."""
+        """Fire get_prefetch_context in a background thread; consumed next turn via pop_context_result().
+        No-op once shutdown began, so nothing is left running after the join."""
+        if self._shutting_down:
+            return
+
         def _run():
             result = self.get_prefetch_context(session_key, user_message)
             if result:
                 self.set_context_result(session_key, result)
 
-        spawn_context_thread(_run, name="honcho-context-prefetch").start()
+        spawn_context_thread(_run, name="honcho-context-prefetch", owner=self).start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
         """Store a prefetched context result in a thread-safe way."""

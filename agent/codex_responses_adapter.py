@@ -557,6 +557,16 @@ def _chat_messages_to_responses_input(
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
+    # A stored tool call_id (e.g. a short-lived id like "terminal:0") can
+    # recur on a LATER, unrelated turn of the same session. Replayed
+    # verbatim, the second occurrence puts the same call_id on the wire
+    # twice; the Responses API rejects the whole request with 400
+    # "Duplicate function_call_output" and the session is permanently
+    # bricked (#102629). Every occurrence past the first gets a unique
+    # wire id; the queue lets the matching "tool" message below reuse the
+    # exact id its function_call was given, in call order.
+    call_id_occurrences: Dict[str, int] = {}
+    call_id_wire_queue: Dict[str, List[str]] = {}
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -751,9 +761,18 @@ def _chat_messages_to_responses_input(
                             arguments = str(arguments)
                         arguments = arguments.strip() or "{}"
 
+                        base_wire_id = _clamp_responses_call_id(call_id)
+                        occurrence = call_id_occurrences.get(base_wire_id, 0)
+                        call_id_occurrences[base_wire_id] = occurrence + 1
+                        wire_call_id = (
+                            base_wire_id if occurrence == 0
+                            else _clamp_responses_call_id(f"{base_wire_id}_dup{occurrence}")
+                        )
+                        call_id_wire_queue.setdefault(base_wire_id, []).append(wire_call_id)
+
                         items.append({
                             "type": "function_call",
-                            "call_id": _clamp_responses_call_id(call_id),
+                            "call_id": wire_call_id,
                             "name": _sanitize_replayed_fn_name(fn_name),
                             "arguments": arguments,
                         })
@@ -800,9 +819,19 @@ def _chat_messages_to_responses_input(
             else:
                 output_value = str(tool_content or "")
 
+            # Pair with the wire id its matching function_call was given
+            # above — if that call_id recurred on an earlier turn, the
+            # queue holds the de-duplicated id for THIS occurrence, in
+            # call order (#102629). No queued entry (malformed/partial
+            # history) falls back to the plain clamped id, unchanged
+            # from prior behavior.
+            base_wire_id = _clamp_responses_call_id(call_id)
+            queue = call_id_wire_queue.get(base_wire_id)
+            wire_call_id = queue.pop(0) if queue else base_wire_id
+
             items.append({
                 "type": "function_call_output",
-                "call_id": _clamp_responses_call_id(call_id),
+                "call_id": wire_call_id,
                 "output": output_value,
             })
             item_sources.append(msg)

@@ -681,7 +681,7 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
     old = now - bot_mode_dm._DM_STALE_SECONDS - 1
     os.utime(legacy_stale, (old, old))
     os.utime(stale, (old, old))
-    bot_mode_dm._sweep_stale_dm_files(now=now)
+    bot_mode_dm.cleanup_bot_dm_cache(now=now)
 
     assert not legacy_stale.exists()
     assert not stale.exists()

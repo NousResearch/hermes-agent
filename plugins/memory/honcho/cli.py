@@ -76,8 +76,8 @@ class ConfigWriteRefused(Exception):
 
 
 def _refuse_unparseable(path: Path) -> None:
-    """Raise ``ConfigWriteRefused`` when ``path`` exists but cannot be read or parsed. ``_read_config``
-    returns ``{}`` for such a file, and writing that back would drop every other host and root key."""
+    """Raise ConfigWriteRefused when ``path`` exists but cannot be parsed: writing back the ``{}`` a
+    tolerant read returns would drop every other host."""
     from plugins.memory.honcho.oauth import _read_config_strict
     try:
         _read_config_strict(path)
@@ -129,10 +129,8 @@ def _default_block_and_key(cfg: dict) -> tuple[dict, bool]:
 
 
 def _resolve_api_key(cfg: dict, block: dict | None = None) -> str:
-    """API key for ``block`` (default: the active host's block) with host -> root -> env fallback.
-    A self-hosted ``baseUrl`` without a key yields ``"local"`` so credential guards accept it: the
-    URL must be http/https (so ``baseUrl: true`` can't pass) or a schemeless host:port (legacy
-    ``localhost:8000``; the SDK rejects those itself)."""
+    """API key for ``block`` (default: the active host's block), host -> root -> env. A self-hosted
+    http(s) or host:port ``baseUrl`` without a key yields "local" so credential guards accept it."""
     block = _host_block(cfg, _host_key()) if block is None else block
     key = block.get("apiKey") or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if key:
@@ -235,8 +233,7 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     # AI peer is profile-specific (bare profile name: Honcho peer IDs allow no dots);
     # workspace is shared so all profiles see the same context.
     new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST)
-    # The default host's apiKey is not inherited (#66125): without a credential of its own the block
-    # stays unenabled until 'hermes honcho setup --target-profile' signs the profile in.
+    # The default host's apiKey is not inherited; the block stays unenabled until this profile signs in.
     if _resolve_api_key(cfg, new_block):
         new_block["enabled"] = default_block.get("enabled", True)
     cfg.setdefault("hosts", {})[new_host] = new_block
@@ -296,8 +293,7 @@ def _no_credential_hint(host: str) -> str:
 
 
 def cmd_enable(args) -> None:
-    """Enable Honcho for the active profile. Refuses to write ``enabled: true`` for a block that
-    cannot authenticate, so an enabled block always has a credential behind it."""
+    """Enable Honcho for the active profile; refuses a block that cannot authenticate."""
     cfg = _read_config()
     host = _host_key()
     label = _label(host)
@@ -654,7 +650,7 @@ def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
         return _setup_device_login(hermes_host, write_path, open_browser=can_browse and not is_remote)
     if method in {"oauth", "o"}:
         return _setup_browser_login(hermes_host, write_path)
-    # A grant left on the host block shadows the key (#97990): its access token is not "current".
+    # A leftover grant on the host block would shadow the pasted key.
     stale_grant = existing_oauth is not None or is_oauth_access_token(hermes_host.get("apiKey"))
     current = ("" if stale_grant else hermes_host.get("apiKey", "")) or cfg.get("apiKey", "")
     print(f"\n  Current API key: {_mask(current)}")

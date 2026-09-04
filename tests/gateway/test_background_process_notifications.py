@@ -368,6 +368,58 @@ async def test_inject_watch_notification_ignores_foreground_event_source(monkeyp
     assert synth_event.source.user_id == "proc_owner"
 
 
+@pytest.mark.asyncio
+async def test_inject_routes_secondary_profile_to_its_own_adapter(monkeypatch, tmp_path):
+    """#102635: under multiplex, a background completion for a secondary
+    profile's session must route to THAT profile's bot — a Telegram DM's
+    chat_id is the shared user id, so keying on chat_id alone delivers
+    profile-B's output into profile-A's bot."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    default_adapter = runner.adapters[Platform.TELEGRAM]
+    secondary_adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner._profile_adapters = {"profile-b": {Platform.TELEGRAM: secondary_adapter}}
+
+    evt = {
+        "session_id": "proc_profile_b",
+        "session_key": "agent:profile-b:telegram:dm:555",
+        "platform": "telegram",
+        "chat_id": "555",
+        "chat_type": "dm",
+    }
+
+    await runner._inject_watch_notification("[SYSTEM: Background process finished]", evt)
+
+    secondary_adapter.handle_message.assert_awaited_once()
+    default_adapter.handle_message.assert_not_awaited()
+    synth_event = secondary_adapter.handle_message.await_args.args[0]
+    assert synth_event.source.platform == Platform.TELEGRAM
+    assert synth_event.source.chat_id == "555"
+
+
+@pytest.mark.asyncio
+async def test_inject_drops_when_owning_profile_has_no_live_adapters(monkeypatch, tmp_path):
+    """No live adapters for the owning profile → drop rather than misroute
+    through the default profile's bot."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    default_adapter = runner.adapters[Platform.TELEGRAM]
+    runner._profile_adapters = {}  # secondary disconnected
+
+    evt = {
+        "session_id": "proc_profile_b",
+        "session_key": "agent:profile-b:telegram:dm:555",
+        "platform": "telegram",
+        "chat_id": "555",
+        "chat_type": "dm",
+    }
+
+    result = await runner._inject_watch_notification(
+        "[SYSTEM: Background process finished]", evt
+    )
+
+    assert result is None
+    default_adapter.handle_message.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # concise mode — pretty one-liner instead of the raw output dump
 # ---------------------------------------------------------------------------

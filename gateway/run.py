@@ -4396,6 +4396,21 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _profile_from_session_key(session_key: str) -> "str | None":
+    """Return the multiplexed profile embedded in a namespaced session key.
+
+    Keys look like ``agent:main:{platform}:...`` for the default profile and
+    ``agent:<profile>:{platform}:...`` for a multiplexed secondary. Returns
+    ``None`` for the default profile and for keys that don't parse.
+    """
+    parts = (session_key or "").split(":")
+    if len(parts) >= 5 and parts[0] == "agent":
+        profile = parts[1]
+        if profile and profile != "main":
+            return profile
+    return None
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
@@ -28292,14 +28307,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # the shared transport resolver — native adapter wins; relay is
         # eligible only when it advertises fronting the logical platform.
         adapter = None
+        # Multiplex: a secondary profile's background output must route to
+        # THAT profile's adapters (its own bot), not the default profile's.
+        # self.adapters only ever holds the default profile's map; secondaries
+        # live in self._profile_adapters[name] (same disposition as the
+        # cron-handoff delivery path). A session_key like
+        # ``agent:<profile>:telegram:dm:<uid>`` carries the ownership — and
+        # because a Telegram DM's chat_id is the shared user id, ignoring it
+        # routes profile-B's output into profile-A's bot (#102635).
+        profile_name = _profile_from_session_key(str(evt.get("session_key") or ""))
+        profile_adapters: Optional[dict] = None
+        if profile_name:
+            profile_adapters = (getattr(self, "_profile_adapters", None) or {}).get(profile_name)
+            if not profile_adapters:
+                # No live adapters for the owning profile (disconnected or
+                # stopped): drop rather than misroute through the default
+                # profile's bot.
+                logger.warning(
+                    "Background-process event for session %s routes to profile "
+                    "'%s', which has no live adapters in this gateway — "
+                    "dropping instead of delivering through the default "
+                    "profile's bot (#102635).",
+                    evt.get("session_key"), profile_name,
+                )
+                return None
         try:
             _platform_enum = Platform(platform_name)
         except (ValueError, KeyError):
             _platform_enum = None
+        adapter_map = profile_adapters if profile_adapters is not None else self.adapters
         if _platform_enum is not None:
             try:
                 _transport = resolve_delivery_transport(
-                    _platform_enum, self.config, self.adapters,
+                    _platform_enum, self.config, adapter_map,
                 )
             except Exception:
                 _transport = None
@@ -28309,7 +28349,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Legacy literal scan — still correct for native adapters, and
             # keeps minimal runner stubs (tests) and exotic platform strings
             # working when the resolver can't run.
-            for p, a in self.adapters.items():
+            for p, a in adapter_map.items():
                 if p.value == platform_name:
                     adapter = a
                     break

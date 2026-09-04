@@ -220,6 +220,72 @@ def _memory_cards() -> list[dict[str, Any]]:
     return cards
 
 
+def _load_active_provider() -> tuple[str, Any] | None:
+    """The configured external memory provider, loaded the way the dashboard loads it.
+
+    No ``initialize()`` â€” the graph must stay cheap and side-effect free â€” and any
+    failure degrades to "no provider cards".
+    """
+    try:
+        from hermes_cli.config import load_config
+        from plugins.memory import load_memory_provider
+
+        name = str(((load_config() or {}).get("memory") or {}).get("provider") or "").strip()
+        if not name:
+            return None
+        provider = load_memory_provider(name)
+        if provider is None or not hasattr(provider, "journey_cards"):
+            return None
+        return name, provider
+    except Exception:
+        return None
+
+
+def _card_timestamp(value: Any) -> Optional[int]:
+    """Unix seconds from an int/float, an ISO-8601 string or a datetime; None otherwise."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+    return None
+
+
+def _provider_cards(limit: int = 10000) -> list[dict[str, Any]]:
+    """Cards from the active external memory provider (``MemoryProvider.journey_cards``)."""
+    loaded = _load_active_provider()
+    if loaded is None:
+        return []
+    name, provider = loaded
+    try:
+        cards = provider.journey_cards(limit=limit)
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        body = str(card.get("body") or "").strip()
+        if not body:
+            continue
+        title = str(card.get("title") or "").strip() or body.splitlines()[0].strip()
+        entry = dict(card)
+        entry["source"] = name
+        entry["title"] = (title[:80] + "…") if len(title) > 80 else title
+        entry["body"] = body[:1200]
+        entry["timestamp"] = _card_timestamp(card.get("timestamp"))
+        if card.get("session_id"):
+            entry["session_id"] = str(card["session_id"])
+        out.append(entry)
+    return out
+
+
 def _tokenize(text: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", text.lower()) if len(t) >= 3}
 
@@ -266,7 +332,9 @@ def build_learning_graph() -> dict[str, Any]:
         if node.source != "base" and (node.created_by == "agent" or node.use_count > 0)
     }
     skill_edges = build_edges(learned_skills)
-    memory_cards = _memory_cards()
+    # File cards first (learning_mutations indexes them by position), then
+    # whatever the active memory provider has learned.
+    memory_cards = _memory_cards() + _provider_cards()
     memory_edges = _memory_skill_edges(memory_cards, list(learned_skills.values()))
 
     edges = skill_edges + memory_edges

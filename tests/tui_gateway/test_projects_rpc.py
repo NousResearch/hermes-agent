@@ -271,6 +271,11 @@ def test_update_and_archive(tmp_path):
 
     updated = _call("projects.update", {"id": pid, "name": "Renamed"})
     assert updated["project"]["name"] == "Renamed"
+    assert updated["project"]["auto_pull"] is False
+
+    pulled = _call("projects.update", {"id": pid, "auto_pull": True})
+    assert pulled["project"]["auto_pull"] is True
+    assert pulled["project"]["name"] == "Renamed"
 
     payload = _call("projects.archive", {"id": pid})
     assert all(p["id"] != pid or p["archived"] for p in payload["projects"])

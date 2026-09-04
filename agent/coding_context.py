@@ -493,6 +493,10 @@ class RuntimeMode:
     # Standing operator instructions (``agent.coding_instructions``), appended
     # as an extra stable system block. Empty unless the user configures it.
     instructions: str = ""
+    # Opt-in fast-forward of a clean default branch before the workspace
+    # snapshot is baked. Resolved once with the posture so a later prompt
+    # rebuild in the same session does not re-read config.
+    auto_pull: bool = False
 
     @property
     def kind(self) -> str:
@@ -558,7 +562,15 @@ class RuntimeMode:
             if edit_line:
                 brief = f"{brief}\n{edit_line}"
             prefix.append(brief)
+        if self.auto_pull:
+            from agent.auto_pull import maybe_auto_pull
+
+            pulled = maybe_auto_pull(self.cwd, enabled=True).snapshot_line()
+        else:
+            pulled = ""
         workspace = build_coding_workspace_block(self.cwd)
+        if pulled and workspace:
+            workspace = f"{workspace}\n{pulled}"
         if workspace:
             workspace_parts.append(workspace)
         # Operator instructions ride their own block so the brief (block 0) stays
@@ -620,6 +632,14 @@ def resolve_runtime_mode(
     name = _detect_profile_name(
         mode, (platform or "").strip().lower(), str(resolved_cwd)
     )
+    auto_pull = False
+    if name == CODING_PROFILE.name:
+        try:
+            from agent.auto_pull import auto_pull_is_enabled
+
+            auto_pull = auto_pull_is_enabled(resolved_cwd, config)
+        except Exception:
+            auto_pull = False
     return RuntimeMode(
         profile=get_profile(name),
         surface=platform or "",
@@ -627,6 +647,7 @@ def resolve_runtime_mode(
         config_mode=mode,
         model=model,
         instructions=_coding_instructions(config),
+        auto_pull=auto_pull,
     )
 
 

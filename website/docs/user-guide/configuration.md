@@ -1126,7 +1126,10 @@ agent:
   verify_guidance: true        # Append creative-UI / clean-diff guidance to the missing-evidence nudge
   max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify hooks)
   coding_instructions: ""      # Standing project-wide coding rules appended to the coding brief
+  auto_pull: false             # Fast-forward a clean default branch at session start
 ```
+
+`agent.auto_pull` is opt-in. When it's on (or the session's first-class Project has auto-pull enabled), Hermes fast-forwards the default branch before baking the coding workspace snapshot, but only if the checkout has an upstream, no local changes, and no local commits. Feature branches, dirty trees, and the live Hermes checkout are left alone. Failures don't block the session.
 
 `verify_on_stop` accepts `true` (on everywhere), `false` (off — the default), or `"auto"` (legacy surface-aware behavior: on for interactive coding surfaces — CLI, TUI, desktop — and programmatic callers; off for messaging surfaces like Telegram/Discord where the verification narrative reads as chat noise). Off is the default everywhere: fresh installs ship `false` and the config migration turned it off on existing installs, so enabling it is an explicit opt-in. The `HERMES_VERIFY_ON_STOP` env var overrides the config value when set.
 

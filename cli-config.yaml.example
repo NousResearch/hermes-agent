@@ -1176,6 +1176,13 @@ agent:
   #   - "For UI work, don't run tsc/lint until I approve the look."
   #   - "Clean the diff before you commit and push."
 
+  # Fast-forward the workspace default branch at session start when the
+  # checkout is clean (no local changes or commits). Off by default. First-
+  # class Projects can also enable this from the project menu or
+  # `hermes project auto-pull <name> on`. Never stashes, rebases, or runs on
+  # a feature branch. Skipped for the live Hermes checkout.
+  # auto_pull: false
+
   # When verify-on-stop finds edited code without fresh verification evidence,
   # append guidance for creative UI work (avoid broad tsc/lint/test before visual
   # approval) and clean-diff expectations. Set false to keep that nudge terse.

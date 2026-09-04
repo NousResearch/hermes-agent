@@ -15464,6 +15464,9 @@ def _(rid, params, pdb, conn) -> dict:
 @_projects_method("projects.update")
 def _(rid, params, pdb, conn) -> dict:
     proj = _require_project(pdb, conn, params)
+    from utils import is_truthy_value
+
+    auto_pull = params.get("auto_pull")
     pdb.update_project(
         conn,
         proj.id,
@@ -15472,6 +15475,7 @@ def _(rid, params, pdb, conn) -> dict:
         icon=params.get("icon"),
         color=params.get("color"),
         board_slug=params.get("board_slug"),
+        auto_pull=None if auto_pull is None else is_truthy_value(auto_pull),
     )
     return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
 

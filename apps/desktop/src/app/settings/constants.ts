@@ -393,7 +393,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     imageInputMode: 'Image Attachments',
     apiMaxRetries: 'API Retries',
     serviceTier: 'Service Tier',
-    toolUseEnforcement: 'Tool-Use Enforcement'
+    toolUseEnforcement: 'Tool-Use Enforcement',
+    autoPull: 'Automatically Pull'
   },
   terminal: {
     cwd: 'Working Directory',
@@ -562,7 +563,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
-    maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
+    maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.',
+    autoPull:
+      'Fast-forward the default branch at session start when the checkout has no local changes or commits. First-class projects can also enable this from the project menu.'
   },
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',

@@ -52,6 +52,8 @@ export interface SidebarProjectTree {
   // A git repo root promoted automatically (not a user-created projects.db row).
   // Deletable = dismissable.
   isAuto?: boolean
+  // Fast-forward a clean default branch at session start. Explicit projects only.
+  auto_pull?: boolean
   // The synthetic bucket (labeled "Home") holding every session no project
   // claimed. It has no folder, so no repo/worktree structure — its one lane
   // exists only to carry the rows.

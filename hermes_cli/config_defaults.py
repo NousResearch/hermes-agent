@@ -244,6 +244,12 @@ DEFAULT_CONFIG = {
         # approve. Clean the diff before you commit and push." Cache-safe:
         # takes effect next session. Empty by default.
         "coding_instructions": "",
+        # Fast-forward the workspace's default branch at session start when
+        # the checkout is clean (no local changes or commits). Opt-in; first-
+        # class Projects can also enable this per project. Never stashes,
+        # rebases, or runs on a feature branch. Skipped for the live Hermes
+        # checkout (that's `hermes update`).
+        "auto_pull": False,
         # When verify-on-stop finds edited code without fresh verification
         # evidence, append guidance for creative UI work (avoid broad
         # tsc/lint/test before visual approval) and clean-diff expectations.

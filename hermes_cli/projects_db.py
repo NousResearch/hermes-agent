@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS projects (
     board_slug    TEXT,
     primary_path  TEXT,
     created_at    INTEGER NOT NULL,
-    archived      INTEGER NOT NULL DEFAULT 0
+    archived      INTEGER NOT NULL DEFAULT 0,
+    auto_pull     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS project_folders (
@@ -209,6 +210,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     for col in _OPTIONAL_PROJECT_COLUMNS:
         if col not in cols:
             _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+    if "auto_pull" not in cols:
+        _add_column_if_missing(
+            conn, "projects", "auto_pull", "auto_pull INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +249,7 @@ class Project:
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
     archived: bool = False
+    auto_pull: bool = False
     folders: List[ProjectFolder] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -257,6 +263,7 @@ class Project:
             "board_slug": self.board_slug,
             "primary_path": self.primary_path,
             "archived": bool(self.archived),
+            "auto_pull": bool(self.auto_pull),
             "created_at": self.created_at,
             "folders": [f.to_dict() for f in self.folders],
         }
@@ -275,6 +282,7 @@ def _project_from_row(row: sqlite3.Row) -> Project:
         board_slug=row["board_slug"] if "board_slug" in keys else None,
         primary_path=row["primary_path"] if "primary_path" in keys else None,
         archived=bool(row["archived"]) if "archived" in keys else False,
+        auto_pull=bool(row["auto_pull"]) if "auto_pull" in keys else False,
     )
 
 
@@ -463,12 +471,14 @@ def update_project(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     board_slug: Optional[str] = None,
+    auto_pull: Optional[bool] = None,
 ) -> bool:
     """Patch top-level project fields. Only provided fields change.
 
     ``icon``, ``color``, and ``board_slug`` accept an empty string to clear
     (store NULL) — passing ``None`` leaves the field untouched, so callers that
-    want to clear must send ``""``.
+    want to clear must send ``""``. ``auto_pull`` is a real bool: ``None``
+    leaves it, ``True``/``False`` writes 1/0.
     """
     sets: List[str] = []
     params: List[object] = []
@@ -490,6 +500,9 @@ def update_project(
     if board_slug is not None:
         sets.append("board_slug = ?")
         params.append(normalize_slug(board_slug) if board_slug.strip() else None)
+    if auto_pull is not None:
+        sets.append("auto_pull = ?")
+        params.append(1 if auto_pull else 0)
     if not sets:
         return False
     params.append(project_id)

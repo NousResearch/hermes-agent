@@ -550,6 +550,7 @@ def _project_node(
     icon: Any = None,
     is_auto: bool = False,
     is_no_project: bool = False,
+    auto_pull: bool = False,
 ) -> dict:
     return {
         "id": pid,
@@ -557,6 +558,7 @@ def _project_node(
         "path": path,
         "color": color,
         "icon": icon,
+        "auto_pull": bool(auto_pull),
         "isAuto": is_auto,
         "isNoProject": is_no_project,
         "sessionCount": session_count,
@@ -645,6 +647,7 @@ def build_tree(
                 path=project.get("primary_path"),
                 color=project.get("color"),
                 icon=project.get("icon"),
+                auto_pull=bool(project.get("auto_pull")),
                 repos=repos,
                 session_count=len(psessions),
                 last_active=_last_active(psessions),

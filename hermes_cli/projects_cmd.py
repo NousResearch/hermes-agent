@@ -101,6 +101,17 @@ def build_parser(
         "board", nargs="?", default="", help="Board slug (omit to unbind)"
     )
 
+    p_pull = sub.add_parser(
+        "auto-pull",
+        help="Fast-forward a clean default branch at session start",
+    )
+    p_pull.add_argument("project", help="Project id or slug")
+    p_pull.add_argument(
+        "state",
+        choices=("on", "off"),
+        help="on = pull when the checkout is clean and behind",
+    )
+
     parser.set_defaults(_project_parser=parser)
     return parser
 
@@ -133,6 +144,7 @@ def projects_command(args: argparse.Namespace) -> int:
         "archive": _cmd_archive,
         "restore": _cmd_restore,
         "bind-board": _cmd_bind_board,
+        "auto-pull": _cmd_auto_pull,
     }
     handler = handlers.get(action)
     if handler is None:
@@ -180,6 +192,7 @@ def _print_project(proj) -> None:
         print(f"  board:   {proj.board_slug}")
     if proj.primary_path:
         print(f"  primary: {proj.primary_path}")
+    print(f"  auto-pull: {'on' if proj.auto_pull else 'off'}")
     if proj.folders:
         print("  folders:")
         for f in proj.folders:
@@ -300,6 +313,14 @@ def _cmd_archive(args, conn, proj) -> int:
 def _cmd_restore(args, conn, proj) -> int:
     pdb.restore_project(conn, proj.id)
     print(f"Restored {proj.slug}")
+    return 0
+
+
+@_with_project
+def _cmd_auto_pull(args, conn, proj) -> int:
+    on = args.state == "on"
+    pdb.update_project(conn, proj.id, auto_pull=on)
+    print(f"auto-pull {'on' if on else 'off'} for {proj.slug}")
     return 0
 
 

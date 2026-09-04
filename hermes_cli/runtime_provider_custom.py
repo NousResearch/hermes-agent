@@ -200,19 +200,56 @@ def has_named_custom_provider(requested_provider: str) -> bool:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
+def _effective_custom_entry_api_mode(entry: Dict[str, Any]) -> str:
+    """Effective wire mode of a ``providers:`` / ``custom_providers:`` entry.
+
+    Mirrors the mode named-custom resolution would route this entry through:
+    explicit ``api_mode`` (or new-style ``transport``) first, then
+    hostname-based detection, then the ``chat_completions`` default. Used to
+    disambiguate entries that share a URL/model (issue #102725).
+    """
+    rp = _rp()
+    mode = rp._parse_api_mode(entry.get("api_mode") or entry.get("transport"))
+    if mode:
+        return mode
+    return rp._detect_api_mode_for_url(_entry_url(entry)) or "chat_completions"
+
+
+def _pick_custom_identity(candidates, api_mode=None) -> Optional[str]:
+    """Pick one ``(slug, entry)`` candidate, preferring an ``api_mode`` match.
+
+    Without a usable ``api_mode`` (or when nothing matches it) the first
+    candidate wins — the historical behavior every existing caller relies on.
+    """
+    if not candidates:
+        return None
+    wanted = _rp()._parse_api_mode(api_mode)
+    if wanted:
+        for slug, entry in candidates:
+            try:
+                if _effective_custom_entry_api_mode(entry) == wanted:
+                    return slug
+            except Exception:
+                continue
+    return candidates[0][0]
+
+
+def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool],
+                           api_mode: Optional[str] = None) -> Optional[str]:
     """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+    holds, as its canonical ``custom:<name>`` slug. When several entries match and ``api_mode``
+    names one of their wire modes, that entry wins (issue #102725); otherwise the first wins."""
     rp = _rp()
     try:
         config = rp.load_config()
     except Exception:
         return None
+    candidates: list = []
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
             if isinstance(entry, dict) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+                candidates.append((custom_provider_slug(str(ep_name), str(ep_name)), entry))
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -220,28 +257,34 @@ def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
-    return None
+            candidates.append(
+                (custom_provider_slug(name, str(entry.get("provider_key", "") or "")), entry))
+    return _pick_custom_identity(candidates, api_mode)
 
 
-def find_custom_provider_identity(base_url: str) -> Optional[str]:
+def find_custom_provider_identity(base_url: str, api_mode: Optional[str] = None) -> Optional[str]:
     """Map an endpoint URL back to its canonical ``custom:<name>`` menu key. Session persistence
     stores the agent's *resolved* provider, which for every named custom endpoint is the literal
-    string ``"custom"`` — the entry name is lost, and the api_key is deliberately never persisted."""
+    string ``"custom"`` — the entry name is lost, and the api_key is deliberately never persisted.
+    When several entries share the URL, the one whose wire mode matches ``api_mode`` wins
+    (issue #102725); otherwise the first wins."""
     target = _normalize_base_url_for_match(base_url)
     if not target:
         return None
-    return _find_custom_identity(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
+    return _find_custom_identity(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target,
+                                 api_mode=api_mode)
 
 
 def _model_id_matches(value: Any, target: str) -> bool:
     return isinstance(value, str) and value.strip().lower() == target
 
 
-def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
+def find_custom_provider_identity_by_model(model: str, api_mode: Optional[str] = None) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it — companion to
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
-    round-trip (the session row always stores the model name)."""
+    round-trip (the session row always stores the model name). When several entries serve the
+    model, the one whose wire mode matches ``api_mode`` wins (issue #102725); otherwise the
+    first wins."""
     target = str(model or "").strip().lower()
     if not target:
         return None
@@ -257,21 +300,24 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
                        for item in models)
         return False
 
-    return _find_custom_identity(_entry_serves_model)
+    return _find_custom_identity(_entry_serves_model, api_mode=api_mode)
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
-                              model: Optional[str] = None) -> Optional[str]:
+                              model: Optional[str] = None,
+                              api_mode: Optional[str] = None) -> Optional[str]:
     """Recover a routable ``custom:<name>`` identity for a bare custom provider. Every path that
     persists or restores a session's provider override must run the resolved provider through this
     so a bare ``"custom"`` is upgraded back to its durable menu key. Sources in priority order:
     (1) ``base_url`` reverse lookup — the one fact that always survives the round-trip when a URL
     was recorded; (2) ``model`` reverse lookup (``model``/``default_model``/``models`` catalog);
     (3) the configured provider (arg, ``model.provider``, ``HERMES_INFERENCE_PROVIDER``) when it
-    names a real entry."""
+    names a real entry. The optional ``api_mode`` hint (persisted in ``gateway_runtime`` alongside
+    the URL) disambiguates entries sharing a URL/model but serving different wire protocols
+    (issue #102725); without it recovery keeps first-match behavior."""
     rp = _rp()
-    identity = (find_custom_provider_identity(base_url) if base_url else None) or (
-        find_custom_provider_identity_by_model(model) if model else None)
+    identity = (find_custom_provider_identity(base_url, api_mode=api_mode) if base_url else None) or (
+        find_custom_provider_identity_by_model(model, api_mode=api_mode) if model else None)
     if identity:
         return identity
     candidate = str(config_provider or "").strip()
@@ -297,7 +343,7 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     if entry is None:
         return None
     try:
-        identity = find_custom_provider_identity(str(entry.get("base_url") or ""))
+        identity = find_custom_provider_identity(str(entry.get("base_url") or ""), api_mode=api_mode)
     except Exception:
         return None
     return identity or custom_provider_slug(candidate_norm)

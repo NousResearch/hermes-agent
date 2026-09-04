@@ -28,10 +28,11 @@ def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
 
 
-def _heal_bare_custom_provider(provider, *, base_url, model):
+def _heal_bare_custom_provider(provider, *, base_url, model, api_mode=None):
     """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
     later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
-    ``custom:<name>`` menu key from the endpoint, else drop the provider (None)."""
+    ``custom:<name>`` menu key from the endpoint, else drop the provider (None). The optional
+    ``api_mode`` hint disambiguates entries sharing a URL/model (issue #102725)."""
     if str(provider or "").strip().lower() != "custom":
         return provider
     try:
@@ -39,7 +40,8 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a
         # base_url exists — the CLI's resolve path would hard-fail on it, #14676.)
         from hermes_cli.runtime_provider import canonical_custom_identity
-        return canonical_custom_identity(base_url=base_url or None, model=model or None) or None
+        return canonical_custom_identity(
+            base_url=base_url or None, model=model or None, api_mode=api_mode or None) or None
     except Exception:
         return None
 
@@ -324,6 +326,7 @@ class CLIModelSwitchMixin:
         route = {
             "provider": _heal_bare_custom_provider(
                 result.target_provider, base_url=result.base_url, model=result.new_model,
+                api_mode=getattr(result, "api_mode", None),
             ) or None,
             # Both shapes use the same or-None discipline so stale keys from a previous switch are deleted
             # (not merely omitted) in BOTH the nested gateway_runtime dict (CLI reader) and the top-level
@@ -359,7 +362,8 @@ class CLIModelSwitchMixin:
         # Stricter than the TUI gateway's recovery (which keeps bare "custom" when a
         # base_url exists) — the CLI's resolve path would hard-fail on it.
         stored_provider = _heal_bare_custom_provider(
-            _stored_runtime.get("provider") or None, base_url=stored_base_url, model=stored_model)
+            _stored_runtime.get("provider") or None, base_url=stored_base_url, model=stored_model,
+            api_mode=stored_api_mode)
         model_changed = stored_model != self.model
         provider_changed = bool(stored_provider) and stored_provider != self.provider
         if not model_changed and not provider_changed:

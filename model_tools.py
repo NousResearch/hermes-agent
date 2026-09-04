@@ -1484,6 +1484,38 @@ def handle_function_call(
                 )
                 return result
 
+        # --------------------------------------------------------------------------------------
+        # Workspace Mutation Fence (issue #95874)
+        # --------------------------------------------------------------------------------------
+        # Deny known built-in mutating tools for a delegated child whose
+        # workspace domain is quarantined because a prior timed-out / cancelled
+        # child is still live there. Reads, unknown plugin/MCP tools, other
+        # domains, and non-delegated callers are never fenced here.
+        try:
+            from agent.workspace_mutation_fence import deny_delegated_mutation
+
+            _fence_deny = deny_delegated_mutation(function_name, function_args)
+        except Exception as _fence_err:
+            logger.debug("workspace mutation fence error: %s", _fence_err)
+            _fence_deny = None
+        if _fence_deny:
+            result = tool_error(_fence_deny)
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="workspace_quarantine",
+                error_message=_fence_deny,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            return result
+
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
         # are unaffected when it is unset.

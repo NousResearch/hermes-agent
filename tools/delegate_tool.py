@@ -2963,6 +2963,38 @@ def _run_single_child(
 
                 goal = goal + build_worktree_context_note(_worktree_info)
 
+        # --------------------------------------------------------------------------------------
+        # Workspace Mutation Fence (issue #95874)
+        # --------------------------------------------------------------------------------------
+        # Bind this delegated child as an owner of its trusted local workspace
+        # domain so that, if it times out or is cancelled but stays live after
+        # the existing grace window, later known built-in mutations in the same
+        # domain are denied until this child actually exits.
+        from agent.workspace_mutation_fence import (
+            bind_owner as _fence_bind_owner,
+            mark_timeout_or_cancel as _fence_mark_stale,
+            release_owner as _fence_release_owner,
+            resolve_workspace_domain as _fence_resolve_domain,
+            set_owner_liveness as _fence_set_liveness,
+        )
+
+        _fence_owner_id = (
+            _subagent_id
+            or str(getattr(child, "session_id", "") or "")
+            or child_task_id
+        )
+        _fence_domain_raw = None
+        try:
+            from tools.terminal_tool import get_session_cwd as _fence_gsc
+
+            _fence_domain_raw = _fence_gsc(child_task_id) or _fence_gsc(parent_task_id)
+        except Exception:
+            _fence_domain_raw = None
+        if not _fence_domain_raw:
+            _fence_domain_raw = _resolve_workspace_hint(parent_agent)
+        _fence_domain = _fence_resolve_domain(_fence_domain_raw, child=child)
+        _fence_bind_owner(_fence_owner_id, _fence_domain)
+
         wall_start = time.time()
         parent_reads_snapshot = (
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
@@ -3003,19 +3035,24 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
+            from agent.workspace_mutation_fence import owning_delegated_child
 
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=goal,
-                    task_id=child_task_id,
-                    stream_callback=_relay_child_text,
-                )
+            session_id = str(getattr(child, "session_id", "") or "")
+            with delegated_child_context(session_id):
+                with owning_delegated_child(_fence_owner_id):
+                    return child.run_conversation(
+                        user_message=goal,
+                        task_id=child_task_id,
+                        stream_callback=_relay_child_text,
+                    )
 
         _child_context = contextvars.copy_context()
         _child_future = _timeout_executor.submit(
             _child_context.run,
             _run_with_thread_capture,
         )
+        _fence_set_liveness(_fence_owner_id, lambda: not _child_future.done())
+        _child_future.add_done_callback(lambda _f: _fence_release_owner(_fence_owner_id))
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -3034,6 +3071,8 @@ def _run_single_child(
                 pass
 
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
+            if is_timeout:
+                _fence_mark_stale(_fence_owner_id)
             duration = round(time.monotonic() - child_start, 2)
             logger.warning(
                 "Subagent %d %s after %.1fs",
@@ -4326,6 +4365,20 @@ def delegate_task(
                                         ),
                                     }
                             else:
+                                _abandoned = _child_by_index.get(idx)
+                                try:
+                                    from agent.workspace_mutation_fence import (
+                                        mark_timeout_or_cancel as _fence_cancel,
+                                    )
+
+                                    _abandon_id = (
+                                        getattr(_abandoned, "_subagent_id", None)
+                                        or getattr(_abandoned, "session_id", None)
+                                    )
+                                    if _abandon_id:
+                                        _fence_cancel(str(_abandon_id))
+                                except Exception:
+                                    pass
                                 entry = {
                                     "task_index": idx,
                                     "status": "interrupted",
@@ -4334,7 +4387,7 @@ def delegate_task(
                                     "api_calls": 0,
                                     "duration_seconds": 0,
                                     "_child_role": getattr(
-                                        _child_by_index.get(idx), "_delegate_role", None
+                                        _abandoned, "_delegate_role", None
                                     ),
                                 }
                             results.append(entry)

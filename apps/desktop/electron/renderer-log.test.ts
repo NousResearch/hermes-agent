@@ -3,37 +3,38 @@ import { describe, expect, it, vi } from 'vitest'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport, formatRendererConsoleLine } from './renderer-log'
 
 describe('formatRendererConsoleLine', () => {
-  it('formats the canonical Electron 36+ details shape at error level', () => {
+  it('formats an error-level Electron console-message event', () => {
     const line = formatRendererConsoleLine('hud', {
-      level: 3,
+      level: 'error',
       message: 'Minified React error #310',
-      sourceUrl: 'file:///app/index.js',
+      sourceId: 'file:///app/index.js',
       lineNumber: 13
     })
 
     expect(line).toBe('[renderer console:hud] Minified React error #310 (file:///app/index.js:13)')
   })
 
-  it('formats the deprecated positional shape at error level', () => {
-    const line = formatRendererConsoleLine('main', 3, 'boom', 7, 'file:///app/vendor.js')
-
-    expect(line).toBe('[renderer console:main] boom (file:///app/vendor.js:7)')
-  })
-
-  it('drops non-error levels in both shapes', () => {
-    expect(formatRendererConsoleLine('main', { level: 1, message: 'x', sourceUrl: 's', lineNumber: 1 })).toBeNull()
-    expect(formatRendererConsoleLine('main', 2, 'warn', 1, 's')).toBeNull()
+  it('drops non-error levels', () => {
+    expect(
+      formatRendererConsoleLine('main', { level: 'debug', message: 'x', sourceId: 's', lineNumber: 1 })
+    ).toBeNull()
+    expect(
+      formatRendererConsoleLine('main', { level: 'info', message: 'x', sourceId: 's', lineNumber: 1 })
+    ).toBeNull()
+    expect(
+      formatRendererConsoleLine('main', { level: 'warning', message: 'warn', sourceId: 's', lineNumber: 1 })
+    ).toBeNull()
   })
 })
 
 describe('attachRendererConsoleCapture', () => {
   it('logs error-level messages and skips the rest', () => {
     const log = vi.fn()
-    let handler: ((...args: unknown[]) => void) | undefined
+    let handler: ((...args: any[]) => void) | undefined
 
     const win = {
       webContents: {
-        on: (_event: string, listener: (...args: unknown[]) => void) => {
+        on: (_event: string, listener: (...args: any[]) => void) => {
           handler = listener
         }
       }
@@ -41,8 +42,8 @@ describe('attachRendererConsoleCapture', () => {
 
     attachRendererConsoleCapture(win, 'quick-entry', log)
 
-    handler?.({}, { level: 3, message: 'crash', sourceUrl: 'src', lineNumber: 2 })
-    handler?.({}, { level: 0, message: 'debug', sourceUrl: 'src', lineNumber: 3 })
+    handler?.({ level: 'error', message: 'crash', sourceId: 'src', lineNumber: 2 })
+    handler?.({ level: 'debug', message: 'debug message', sourceId: 'src', lineNumber: 3 })
 
     expect(log).toHaveBeenCalledTimes(1)
     expect(log).toHaveBeenCalledWith('[renderer console:quick-entry] crash (src:2)')

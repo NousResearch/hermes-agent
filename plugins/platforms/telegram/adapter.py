@@ -5930,6 +5930,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=content,
+                    **self._link_preview_kwargs(),
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
@@ -5942,6 +5943,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
+                    **self._link_preview_kwargs(),
                 )
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
@@ -5959,6 +5961,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=_plain,
+                    **self._link_preview_kwargs(),
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -5987,6 +5990,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
+                    **self._link_preview_kwargs(),
                 )
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
@@ -6008,6 +6012,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=normalize_telegram_chat_id(chat_id),
                         message_id=int(message_id),
                         text=content,
+                        **self._link_preview_kwargs(),
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
@@ -6115,6 +6120,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=formatted,
                         parse_mode=ParseMode.MARKDOWN_V2,
+                        **self._link_preview_kwargs(),
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
@@ -6127,12 +6133,14 @@ class TelegramAdapter(BasePlatformAdapter):
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_id=int(message_id),
                             text=_strip_mdv2(first_chunk),
+                            **self._link_preview_kwargs(),
                         )
             else:
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=first_chunk,
+                    **self._link_preview_kwargs(),
                 )
         except Exception as e:
             err_str = str(e).lower()

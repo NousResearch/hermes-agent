@@ -10570,8 +10570,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         },
                     )
                     self.agent._session_db_created = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Transient failure (e.g. SQLite lock). _session_db_created
+                    # stays False so the next flush retries via
+                    # _ensure_db_session(); log so a persistently missing row is
+                    # diagnosable instead of silent.
+                    logger.warning(
+                        "Session DB row creation failed on /new "
+                        "(will retry next turn): %s", e
+                    )
                 if title and self._session_db:
                     from hermes_state import SessionDB
                     try:

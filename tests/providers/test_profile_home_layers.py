@@ -27,6 +27,8 @@ _PLUGIN = textwrap.dedent(
 
 
 def _install(home: Path, name: str) -> None:
+    """``hermes plugins install`` answered "Enable now? y": the clone plus its ``plugins.enabled`` entry."""
+    (home / "config.yaml").write_text(f"plugins:\n  enabled: [{name}]\n", encoding="utf-8")
     plugin = home / "plugins" / name
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text(f"name: {name}\nkind: model-provider\n", encoding="utf-8")

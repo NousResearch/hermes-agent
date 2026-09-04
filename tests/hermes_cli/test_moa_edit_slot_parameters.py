@@ -127,6 +127,27 @@ def test_replacing_with_changed_model_does_not_carry_effort_when_selection_is_sk
     assert slot == {"provider": "openai-codex", "model": "gpt-5.6-sol"}
 
 
+def test_replacing_with_non_reasoning_model_reports_dropped_override(capsys):
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[1, 0, 1]
+    ), patch("hermes_cli.main._prompt_reasoning_effort_selection") as prompt:
+        slot = _pick_slot(CURRENT)
+
+    assert slot == {"provider": "openrouter", "model": "openai/gpt-4.1"}
+    prompt.assert_not_called()
+    assert "does not support reasoning" in capsys.readouterr().out
+
+
+def test_replacing_non_reasoning_model_without_override_prints_no_notice(capsys):
+    current = {key: value for key, value in CURRENT.items() if key != "reasoning_effort"}
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[1, 0, 1]
+    ):
+        _pick_slot(current)
+
+    assert capsys.readouterr().out == ""
+
+
 def test_custom_max_tokens_reprompts_until_positive_integer(capsys):
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
         "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2, 0]
@@ -176,6 +197,42 @@ def test_unknown_reasoning_capability_preserves_existing_override():
 
     assert slot == CURRENT
     prompt.assert_not_called()
+
+
+@pytest.mark.parametrize("can_disable", [True, None])
+def test_reasoning_prompt_allows_disable_when_not_explicitly_forbidden(can_disable):
+    capability = {"reasoning": True}
+    if can_disable is not None:
+        capability["can_disable_reasoning"] = can_disable
+    provider = {**PROVIDER, "capabilities": {CURRENT["model"]: capability}}
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[provider]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0, 0]
+    ), patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value=None
+    ) as prompt:
+        _pick_slot(CURRENT)
+
+    assert prompt.call_args.kwargs["allow_disable"] is True
+
+
+def test_mandatory_reasoning_model_hides_disable_and_drops_stale_disabled_override(capsys):
+    provider = {
+        **PROVIDER,
+        "capabilities": {
+            CURRENT["model"]: {"reasoning": True, "can_disable_reasoning": False}
+        },
+    }
+    current = {**CURRENT, "reasoning_effort": "none"}
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[provider]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0, 0]
+    ), patch(
+        "hermes_cli.main._prompt_reasoning_effort_selection", return_value=None
+    ) as prompt:
+        slot = _pick_slot(current)
+
+    assert "reasoning_effort" not in slot
+    assert prompt.call_args.kwargs == {"current_effort": "", "allow_disable": False}
+    assert "requires reasoning" in capsys.readouterr().out
 
 
 def test_existing_slot_parameter_editor_can_unset_reasoning_effort():

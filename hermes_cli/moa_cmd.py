@@ -83,6 +83,14 @@ def _model_supports_reasoning(provider: dict[str, Any], model: str) -> bool | No
     return bool(model_capabilities["reasoning"])
 
 
+def _model_can_disable_reasoning(provider: dict[str, Any], model: str) -> bool | None:
+    capabilities = provider.get("capabilities")
+    model_capabilities = capabilities.get(model) if isinstance(capabilities, dict) else None
+    if not isinstance(model_capabilities, dict) or "can_disable_reasoning" not in model_capabilities:
+        return None
+    return bool(model_capabilities["can_disable_reasoning"])
+
+
 def _slot_reasoning_effort(
     provider: dict[str, Any], model: str, current_effort: str = ""
 ) -> str | None:
@@ -91,8 +99,13 @@ def _slot_reasoning_effort(
 
     from hermes_cli.main import _prompt_reasoning_effort_selection
 
+    allow_disable = _model_can_disable_reasoning(provider, model) is not False
+    if not allow_disable and current_effort == "none":
+        current_effort = ""
     selected = _prompt_reasoning_effort_selection(
-        list(VALID_REASONING_EFFORTS), current_effort=current_effort
+        list(VALID_REASONING_EFFORTS),
+        current_effort=current_effort,
+        allow_disable=allow_disable,
     )
     return selected or (current_effort or None)
 
@@ -136,6 +149,15 @@ def _edit_slot_parameters(
                 )
             slot.pop("reasoning_effort", None)
         elif reasoning_support is True:
+            if (
+                _model_can_disable_reasoning(provider, model) is False
+                and current_effort == "none"
+            ):
+                print(
+                    f"Note: {slot.get('provider')}:{model} requires reasoning; "
+                    "dropping the existing disabled-reasoning override."
+                )
+                slot.pop("reasoning_effort", None)
             effort_action = _prompt_choice(
                 "Reasoning effort",
                 [
@@ -197,6 +219,12 @@ def _pick_slot(
         if same_model
         else ""
     )
+    reasoning_support = _model_supports_reasoning(provider, str(model))
+    if current and "reasoning_effort" in current and reasoning_support is False:
+        print(
+            f"Note: {slot['provider']}:{slot['model']} does not support reasoning; "
+            "dropping the existing reasoning_effort override."
+        )
     effort = _slot_reasoning_effort(provider, str(model), current_effort)
     if effort:
         slot["reasoning_effort"] = effort

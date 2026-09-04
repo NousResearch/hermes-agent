@@ -5333,7 +5333,7 @@ def _set_reasoning_effort(config, effort: str) -> None:
     agent_cfg["reasoning_effort"] = effort
 
 
-def _prompt_reasoning_effort_selection(efforts, current_effort=""):
+def _prompt_reasoning_effort_selection(efforts, current_effort="", *, allow_disable=True):
     """Prompt for a reasoning effort. Returns effort, 'none', or None to keep current."""
     deduped = list(
         dict.fromkeys(
@@ -5354,7 +5354,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
     disable_label = "Disable reasoning"
     skip_label = "Skip (keep current)"
 
-    if current_effort == "none":
+    if current_effort == "none" and allow_disable:
         default_idx = len(ordered)
     elif current_effort in ordered:
         default_idx = ordered.index(current_effort)
@@ -5367,7 +5367,8 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         from hermes_cli.curses_ui import curses_radiolist
 
         choices = [_label(effort) for effort in ordered]
-        choices.append(disable_label)
+        if allow_disable:
+            choices.append(disable_label)
         choices.append(skip_label)
         idx = curses_radiolist(
             "Select reasoning effort:",
@@ -5380,7 +5381,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         print()
         if idx < len(ordered):
             return ordered[idx]
-        if idx == len(ordered):
+        if allow_disable and idx == len(ordered):
             return "none"
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
@@ -5390,23 +5391,25 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
     for i, effort in enumerate(ordered, 1):
         print(f"  {i}. {_label(effort)}")
     n = len(ordered)
-    print(f"  {n + 1}. {disable_label}")
-    print(f"  {n + 2}. {skip_label}")
+    if allow_disable:
+        print(f"  {n + 1}. {disable_label}")
+    skip_idx = n + 2 if allow_disable else n + 1
+    print(f"  {skip_idx}. {skip_label}")
     print()
 
     while True:
         try:
-            choice = input(f"Choice [1-{n + 2}] (default: keep current): ").strip()
+            choice = input(f"Choice [1-{skip_idx}] (default: keep current): ").strip()
             if not choice:
                 return None
             idx = int(choice)
             if 1 <= idx <= n:
                 return ordered[idx - 1]
-            if idx == n + 1:
+            if allow_disable and idx == n + 1:
                 return "none"
-            if idx == n + 2:
+            if idx == skip_idx:
                 return None
-            print(f"Please enter 1-{n + 2}")
+            print(f"Please enter 1-{skip_idx}")
         except ValueError:
             print("Please enter a number")
         except (KeyboardInterrupt, EOFError):

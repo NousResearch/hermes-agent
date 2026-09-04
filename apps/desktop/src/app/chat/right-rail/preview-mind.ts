@@ -7,13 +7,14 @@
  * read. A page that stops responding the moment the agent is thinking hardest
  * reads as the agent having wandered off.
  *
- * This is deliberately NOT part of the act pipeline: a turn boundary only has
- * to poke the overlay the last action left behind. See preview-nudge.ts.
+ * This is deliberately NOT part of the act pipeline: starting a turn only has
+ * to poke the active overlay, while ending one hushes every mounted overlay so
+ * a tab switch cannot strand the old page's pulse. See preview-nudge.ts.
  */
 
 import { $busy } from '@/store/session'
 
-import { nudgeOverlay } from './preview-nudge'
+import { nudgeOverlay, restOverlays } from './preview-nudge'
 
 // Module-level, matching how review.ts and coding-status.ts watch this edge. It
 // is inert without a live pane, so there is nothing to mount or tear down.
@@ -25,5 +26,10 @@ $busy.subscribe(busy => {
   }
 
   running = busy
-  nudgeOverlay(busy ? 'think' : 'rest')
+
+  if (busy) {
+    nudgeOverlay('think')
+  } else {
+    restOverlays()
+  }
 })

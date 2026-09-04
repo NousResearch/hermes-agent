@@ -635,6 +635,25 @@ def _format_richlink_content(content: Dict[str, Any]) -> str:
     return "\n".join(parts) if parts else "[Photon rich link received with no URL]"
 
 
+def _format_location_content(content: Dict[str, Any]) -> str:
+    """Render a Photon/Find My location as explicit model-readable context."""
+    try:
+        latitude = float(content.get("latitude"))
+        longitude = float(content.get("longitude"))
+    except (TypeError, ValueError):
+        return "[Photon location received with invalid coordinates]"
+    labels = [
+        str(content.get(key) or "").strip()
+        for key in ("name", "shortAddress", "address", "longAddress")
+    ]
+    label = next((value for value in labels if value), "Shared location")
+    accuracy = content.get("accuracy")
+    suffix = ""
+    if isinstance(accuracy, (int, float)) and accuracy >= 0:
+        suffix = f"; accuracy ~{accuracy:g} m"
+    return f"[Location shared] {label} ({latitude:.6f}, {longitude:.6f}{suffix})"
+
+
 def _richlink_url_from_content(content: Dict[str, Any]) -> Optional[str]:
     ctype = content.get("type")
     if ctype == "text":
@@ -1421,6 +1440,9 @@ class PhotonAdapter(BasePlatformAdapter):
         elif ctype == "richlink":
             text = _format_richlink_content(content)
             mtype = MessageType.TEXT
+        elif ctype == "location":
+            text = _format_location_content(content)
+            mtype = MessageType.LOCATION
         elif ctype == "group":
             text_parts: List[str] = []
             mtype = MessageType.TEXT
@@ -2102,8 +2124,11 @@ class PhotonAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
+        # The iMessage provider normalizes voice payload bytes to M4A/AAC
+        # before upload. Keep the source MIME for transcoding, but name the
+        # uploaded artifact .m4a; M4A bytes under .ogg render as 00:00 on iOS.
         return await self._sidecar_send_attachment(
-            chat_id, audio_path, caption=caption, kind="voice",
+            chat_id, audio_path, name="voice.m4a", caption=caption, kind="voice",
         )
 
     async def send_video(
@@ -2895,6 +2920,11 @@ async def _standalone_send(
                 }
                 if guessed:
                     att_body["mimeType"] = guessed
+                if is_voice:
+                    # Spectrum's iMessage provider normalizes voice bytes to
+                    # M4A/AAC before upload. Name that normalized artifact by
+                    # its actual container so iOS does not render a 00:00 .ogg.
+                    att_body["name"] = "voice.m4a"
                 resp = await client.post(
                     f"{base}/send-attachment", json=att_body, headers=headers,
                 )

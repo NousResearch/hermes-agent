@@ -178,6 +178,42 @@ def test_live_buzz_media_only_send_reaches_adapter(tmp_path) -> None:
     assert media_calls[0][1] == str(document)
 
 
+
+def test_live_photon_media_only_voice_reaches_adapter(tmp_path) -> None:
+    from gateway.platforms.base import SendResult
+
+    platform = Platform("photon")
+    audio = tmp_path / "reply.ogg"
+    audio.write_bytes(b"OggS fake-opus")
+    calls = []
+
+    class Adapter:
+        async def send(self, **kwargs):
+            raise AssertionError("media-only Photon voice must not emit empty text")
+
+        async def send_voice(self, chat_id, audio_path, **kwargs):
+            calls.append((chat_id, audio_path, kwargs))
+            return SendResult(success=True, message_id="evt-voice")
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(
+            _send_to_platform(
+                platform,
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "any;-;+15551234567",
+                "",
+                media_files=[(str(audio), True)],
+            )
+        )
+
+    assert result == {
+        "success": True,
+        "message_id": "evt-voice",
+        "media_delivered": True,
+    }
+    assert calls == [("any;-;+15551234567", str(audio), {"caption": None, "reply_to": None, "metadata": None})]
+
 def test_live_buzz_media_exception_reports_partial_delivery(tmp_path) -> None:
     from gateway.platforms.base import SendResult
 

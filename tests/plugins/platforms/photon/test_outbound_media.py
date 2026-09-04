@@ -79,6 +79,28 @@ async def test_send_image_file_hits_attachment_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_send_voice_names_transcoded_imessage_payload_m4a(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Spectrum transcodes Ogg voice payloads to M4A for iMessage upload."""
+    _patch_safe_path(monkeypatch)
+    audio = tmp_path / "reply.ogg"
+    audio.write_bytes(b"OggS fake-opus")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_voice("any;-;+15551234567", str(audio))
+
+    assert result.success is True
+    path, body = calls[0]
+    assert path == "/send-attachment"
+    assert body["kind"] == "voice"
+    assert body["path"] == str(audio)
+    assert body["mimeType"] == "audio/ogg"
+    assert body["name"] == "voice.m4a"
+
+
+@pytest.mark.asyncio
 async def test_standalone_send_text_then_attachments(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -128,3 +150,52 @@ async def test_standalone_send_text_then_attachments(
     assert posted[1][1]["path"] == str(img)
     assert posted[1][1]["kind"] == "attachment"
     assert posted[1][1]["mimeType"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_standalone_voice_names_transcoded_imessage_payload_m4a(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _patch_safe_path(monkeypatch)
+    audio = tmp_path / "reply.ogg"
+    audio.write_bytes(b"OggS fake-opus")
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+
+    posted: List[Tuple[str, Dict[str, Any]]] = []
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {"ok": True, "messageId": "m-voice"}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url: str, json: Dict[str, Any], headers=None):
+            posted.append((url, json))
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    cfg = PlatformConfig(enabled=True, token="", extra={})
+    result = await photon_adapter._standalone_send(
+        cfg,
+        "any;-;+1",
+        "",
+        media_files=[(str(audio), True)],
+    )
+
+    assert result.get("success") is True
+    assert posted[0][0].endswith("/send-attachment")
+    assert posted[0][1]["kind"] == "voice"
+    assert posted[0][1]["mimeType"] == "audio/ogg"
+    assert posted[0][1]["name"] == "voice.m4a"

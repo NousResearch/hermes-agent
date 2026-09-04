@@ -67,6 +67,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { resolveFindMyLocation } from "./findmy-location.mjs";
 import {
   classifyProbeRejection,
   shouldProbe,
@@ -306,6 +307,8 @@ let Spectrum,
   spectrumRichlink,
   spectrumTyping,
   spectrumPoll,
+  spectrumCloud,
+  createAdvancedIMessageGrpcClient,
   imessageEffect;
 try {
   ({
@@ -317,8 +320,10 @@ try {
     markdown: spectrumMarkdown,
     richlink: spectrumRichlink,
     typing: spectrumTyping,
+    cloud: spectrumCloud,
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
+  ({ createGrpcClient: createAdvancedIMessageGrpcClient } = await import("@photon-ai/advanced-imessage/grpc"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -515,9 +520,33 @@ function reactionTargetText(target) {
     : text;
 }
 
-async function normalizeContent(content) {
+async function normalizeFindMyContent(message) {
+  try {
+    return await resolveFindMyLocation({
+      message,
+      projectId,
+      projectSecret,
+      issueTokens: spectrumCloud.issueImessageTokens,
+      createClient: createAdvancedIMessageGrpcClient,
+    });
+  } catch (e) {
+    console.error(
+      "photon-sidecar: failed to resolve Find My location: " +
+        (e?.message || String(e))
+    );
+    return null;
+  }
+}
+
+async function normalizeContent(content, messageContext = null) {
   if (!content || typeof content !== "object") {
     return { type: "unknown" };
+  }
+  if (content.type === "custom") {
+    const location = messageContext ? await normalizeFindMyContent(messageContext) : null;
+    if (location) return location;
+    const raw = content.raw && typeof content.raw === "object" ? content.raw : null;
+    return { type: "custom", raw };
   }
   if (content.type === "text") {
     return { type: "text", text: content.text || "" };
@@ -634,7 +663,7 @@ async function normalizeEvent(space, message) {
         phone: space.phone ?? msgSpace.phone ?? null,
       },
       sender: { id: message.sender ? message.sender.id : null },
-      content: await normalizeContent(message.content),
+      content: await normalizeContent(message.content, message),
       timestamp:
         ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
     };

@@ -25,6 +25,12 @@ from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
 
+@pytest.fixture(autouse=True)
+def _canonical_notification_token(monkeypatch):
+    """Keep legacy scheduler tests on the now-required dedicated lane."""
+    monkeypatch.setenv("SOLO_HERMES_BOT_TOKEN", "test-notification-token")
+
+
 class TestSummarizeCronFailureForDelivery:
     def test_embedded_429_in_source_identifier_is_not_a_rate_limit(self):
         summary = _summarize_cron_failure_for_delivery(
@@ -354,9 +360,11 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
+    def test_delivery_wraps_content_with_header_and_footer(self, monkeypatch):
         """Delivered content should include task name header and agent-invisible note."""
         from gateway.config import Platform
+
+        monkeypatch.setenv("SOLO_HERMES_BOT_TOKEN", "notification-token")
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -369,7 +377,7 @@ class TestDeliverResultWrapping:
                 "id": "test-job",
                 "name": "daily-report",
                 "deliver": "origin",
-                "origin": {"platform": "telegram", "chat_id": "123"},
+                "origin": {"platform": "telegram", "chat_id": "8148316720"},
             }
             _deliver_result(job, "Here is today's summary.")
 
@@ -533,7 +541,7 @@ class TestDeliverResultErrorReturns:
             job = {
                 "id": "disabled",
                 "deliver": "origin",
-                "origin": {"platform": "telegram", "chat_id": "123"},
+                "origin": {"platform": "telegram", "chat_id": "8148316720"},
             }
             result = _deliver_result(job, "Output.")
         assert result is not None
@@ -1441,7 +1449,7 @@ class TestSilentDelivery:
             "id": "monitor-job",
             "name": "monitor",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "telegram", "chat_id": "8148316720"},
         }
 
     def test_silent_response_suppresses_delivery(self, caplog):
@@ -1575,7 +1583,7 @@ class TestOneShotDispatchClaim:
             "id": "monitor-job",
             "name": "monitor",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "telegram", "chat_id": "8148316720"},
             "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
             "repeat": {"times": 1, "completed": 0},
         }
@@ -1951,13 +1959,15 @@ class TestDeliverResultTimeoutCancelsFuture:
     the message is silently dropped.  Regression for #38922.
     """
 
-    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
+    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self, monkeypatch):
         """End-to-end: live adapter confirmation times out past the 60s budget.
         The fix (#38922) treats the send as already-dispatched/delivered and
         does NOT run the standalone fallback — otherwise the message is sent
         twice."""
         from gateway.config import Platform
         from concurrent.futures import Future
+
+        monkeypatch.setenv("SOLO_HERMES_BOT_TOKEN", "notification-token")
 
         # Live adapter whose send() coroutine never resolves within the budget
         adapter = AsyncMock()
@@ -1966,7 +1976,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         loop = MagicMock()
         loop.is_running.return_value = True
@@ -1993,7 +2003,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         job = {
             "id": "timeout-job",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "discord", "chat_id": "test-channel"},
         }
 
         standalone_send = AsyncMock(return_value={"success": True})
@@ -2005,7 +2015,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             result = _deliver_result(
                 job,
                 "Hello world",
-                adapters={Platform.TELEGRAM: adapter},
+                adapters={Platform.DISCORD: adapter},
                 loop=loop,
             )
 
@@ -2031,9 +2041,11 @@ class TestDeliverResultLiveAdapterUnconfirmed:
     success.
     """
 
-    def _run(self, send_value):
+    def _run(self, send_value, monkeypatch):
         from gateway.config import Platform
         from concurrent.futures import Future
+
+        monkeypatch.setenv("SOLO_HERMES_BOT_TOKEN", "notification-token")
 
         adapter = AsyncMock()
         adapter.send.return_value = send_value
@@ -2041,7 +2053,7 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         loop = MagicMock()
         loop.is_running.return_value = True
@@ -2056,7 +2068,7 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         job = {
             "id": "unconfirmed-job",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "discord", "chat_id": "test-channel"},
         }
 
         standalone_send = AsyncMock(return_value={"success": True})
@@ -2068,15 +2080,15 @@ class TestDeliverResultLiveAdapterUnconfirmed:
             result = _deliver_result(
                 job,
                 "Hello world",
-                adapters={Platform.TELEGRAM: adapter},
+                adapters={Platform.DISCORD: adapter},
                 loop=loop,
             )
         return result, standalone_send
 
-    def test_none_result_falls_through_to_standalone(self):
+    def test_none_result_falls_through_to_standalone(self, monkeypatch):
         """send() returning None must trigger the standalone fallback, not a
         silent "delivered" log."""
-        result, standalone_send = self._run(None)
+        result, standalone_send = self._run(None, monkeypatch)
         assert result is None, f"standalone should have delivered, got: {result!r}"
         standalone_send.assert_awaited_once()
 
@@ -2256,15 +2268,17 @@ class TestCronDeliveryMirror:
         assert "Market movers today" in args[2]
 
 
-    def test_delivery_mirrors_clean_content_not_wrapped(self):
+    def test_delivery_mirrors_clean_content_not_wrapped(self, monkeypatch):
         """When enabled, the mirror receives the CLEAN agent output, not the
         cron header/footer-wrapped delivery text."""
         from gateway.config import Platform
 
+        monkeypatch.setenv("SOLO_HERMES_BOT_TOKEN", "notification-token")
+
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
@@ -2273,7 +2287,7 @@ class TestCronDeliveryMirror:
                 "id": "test-job",
                 "name": "daily-report",
                 "deliver": "origin",
-                "origin": {"platform": "telegram", "chat_id": "123"},
+                "origin": {"platform": "discord", "chat_id": "test-channel"},
                 "attach_to_session": True,
             }
             _deliver_result(job, "Here is today's summary.")

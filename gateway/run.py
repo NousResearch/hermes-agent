@@ -11904,7 +11904,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata = self._thread_metadata_for_target(
                         platform, chat_id, thread_id, adapter=adapter
                     )
-                    result = await adapter.send(chat_id, msg, metadata=metadata)
+                    result = await adapter.send(
+                        chat_id, msg, metadata=metadata
+                    )
                     if result is not None and getattr(result, "success", True) is False:
                         logger.debug(
                             "Cron interrupt notice to %s:%s failed: %s",
@@ -12017,7 +12019,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                result = await adapter.send(
+                    chat_id, msg, metadata=metadata
+                )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -12098,7 +12102,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter.send(
+                        str(home.chat_id), msg, metadata=metadata
+                    )
                 else:
                     result = await adapter.send(str(home.chat_id), msg)
                 if result is not None and getattr(result, "success", True) is False:
@@ -27437,7 +27443,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=send_metadata,
                     )
                 else:
-                    result = await transport.adapter.send(str(home.chat_id), message)
+                    result = await transport.adapter.send(
+                        str(home.chat_id), message
+                    )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",

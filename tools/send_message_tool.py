@@ -1109,7 +1109,18 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    args=None,
+    operational=False,
+    notification_metadata=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1194,6 +1205,17 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # limit (issue #28557). Pass the whole message in one call; media attaches
     # after all text chunks.
     if platform == Platform.TELEGRAM:
+        if operational:
+            return await _registry_standalone_send(
+                "telegram",
+                pconfig,
+                chat_id,
+                message,
+                None if operational else thread_id,
+                media_files=media_files,
+                force_document=force_document,
+                notification_metadata=notification_metadata,
+            )
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
         return await _send_telegram(
             pconfig.token,
@@ -1556,7 +1578,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, include_sender_proof=False, notification_metadata=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1610,6 +1632,20 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
+        sender_proof = None
+        if include_sender_proof:
+            me = await bot.get_me()
+            username = getattr(me, "username", None)
+            if not username or str(username).lstrip("@").lower() != "solo_hermes_bot":
+                return {"error": "Telegram notification sender is not @solo_hermes_bot"}
+            notification_metadata = notification_metadata or {}
+            sender_proof = {
+                "sender_username": f"@{username}",
+                "target_chat_id": str(chat_id),
+                "job_id": notification_metadata.get("job_id") or os.getenv("HERMES_CRON_JOB_ID") or None,
+                "profile": notification_metadata.get("profile") or os.getenv("HERMES_PROFILE") or None,
+                "thread_id": None,
+            }
         from plugins.platforms.telegram.telegram_ids import (
             normalize_telegram_chat_id,
         )
@@ -1869,6 +1905,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         }
         if warnings:
             result["warnings"] = warnings
+        if sender_proof:
+            result["notification_proof"] = sender_proof
         return result
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
@@ -1880,7 +1918,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 # (plugins/platforms/slack/adapter.py), wired via standalone_sender_fn. #41112.
 
 
-async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
+async def _registry_standalone_send(
+    platform_name,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    notification_metadata=None,
+):
     """Dispatch a one-shot send through a migrated platform plugin's
     standalone_sender_fn (registry hook).  Used for platforms whose adapter
     moved out of gateway/platforms/ into plugins/platforms/<name>/ (#41112):
@@ -1893,7 +1940,14 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:
         return {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
-    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id)
+    kwargs = {"thread_id": thread_id}
+    if notification_metadata is not None:
+        kwargs["notification_metadata"] = notification_metadata
+    if media_files is not None:
+        kwargs["media_files"] = media_files
+    if force_document:
+        kwargs["force_document"] = True
+    return await entry.standalone_sender_fn(pconfig, chat_id, message, **kwargs)
 
 
 # _send_whatsapp moved to plugins/platforms/whatsapp/adapter.py::_standalone_send,

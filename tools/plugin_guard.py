@@ -59,9 +59,14 @@ from tools.skills_guard import (
 PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
 
 # Directories that are never scanned (VCS internals, caches, vendored envs).
+# "tests" is excluded because test fixtures deliberately contain destructive
+# strings (rm -rf /, secret decoys, /etc/passwd) to prove the code under test
+# REJECTS them — scoring them as production threats yields DANGEROUS verdicts
+# for self-authored plugin repos (see hermes-agent#93927).
 EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    "tests",
 }
 
 # Code file extensions where "reads an env secret" / "HTTP call with a key

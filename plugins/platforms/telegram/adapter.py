@@ -769,6 +769,11 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Inbound update_id dedup (#68502): a bounded in-memory dict keyed on
+        # update_id suppresses redelivered updates before any handler work.
+        self._seen_update_ids: Dict[int, float] = {}
+        self._seen_update_ids_lock = threading.Lock()
+        self._seen_update_ids_max = 4096
         self._drop_delayed_deliveries = False
         # Inbound events held across disconnect. PTB advances the polling offset
         # before our enqueue/flush drop-guard runs, so Telegram will not
@@ -9976,6 +9981,42 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
+    def _is_duplicate_update(self, update: Update) -> bool:
+        """Return True if this update was already processed (#68502).
+
+        Telegram can redeliver the same update_id via retry-delivery,
+        webhook/polling overlap, or a graceful-shutdown ACK race. A bounded
+        in-memory dict keyed on ``update.update_id`` suppresses duplicates
+        before any handler work begins.
+
+        Fail-open: if the dedup state was never initialized (e.g. a test
+        adapter built via ``object.__new__``), treat every update as new —
+        dedup is best-effort and must never break a handler.
+        """
+        uid = getattr(update, "update_id", None)
+        if uid is None:
+            return False
+        lock = getattr(self, "_seen_update_ids_lock", None)
+        seen = getattr(self, "_seen_update_ids", None)
+        if lock is None or seen is None:
+            return False
+        with lock:
+            if uid in seen:
+                logger.debug("[Telegram] Suppressing duplicate update_id=%s", uid)
+                return True
+            seen[uid] = time.time()
+            # Evict oldest entries when the cap is hit. Keep at least the
+            # entry we just inserted so a misconfigured max<=0 cannot wipe
+            # the current update_id and disable dedup for the next hop.
+            _cap = getattr(self, "_seen_update_ids_max", 4096)
+            _cap = _cap if _cap > 0 else 1
+            if len(seen) > _cap:
+                _sorted = sorted(seen.items(), key=lambda kv: kv[1])
+                _evict = len(seen) - _cap
+                for k, _ in _sorted[:_evict]:
+                    del seen[k]
+        return False
+
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
 
@@ -9993,6 +10034,8 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        if self._is_duplicate_update(update):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -10021,6 +10064,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        if self._is_duplicate_update(update):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -10055,6 +10100,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
+        if self._is_duplicate_update(update):
+            return
         msg = self._effective_update_message(update)
         if not msg:
             return
@@ -10276,6 +10323,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        if self._is_duplicate_update(update):
+            return
         if not update.message:
             return
         if not self._is_user_authorized_from_message(update.message):

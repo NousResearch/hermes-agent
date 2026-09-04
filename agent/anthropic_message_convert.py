@@ -591,11 +591,15 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
 
 def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
     """Keep only the 3 most recent computer-use screenshots (~1,465 tokens each); older images
-    become a placeholder text block. Mutates ``result`` in place."""
+    become a placeholder text block. Mutates ``result`` in place.
+
+    Both loops walk newest -> oldest: parallel tool calls land as sibling ``tool_result`` blocks
+    inside ONE user message (_convert_tool_message_to_result merges them), so a forward inner walk
+    would count a batch oldest-first and evict the newest screenshot of the batch instead."""
     image_count = 0
     for msg in reversed(result):
         content = msg.get("content")
-        for block in content if isinstance(content, list) else []:
+        for block in reversed(content) if isinstance(content, list) else []:
             inner = block.get("content") if _block_type(block) == "tool_result" else None
             if not isinstance(inner, list) or not _has_block_type(inner, {"image"}):
                 continue

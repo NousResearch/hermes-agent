@@ -2084,6 +2084,13 @@ def init_agent(
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
 
+    # Requirement-to-evidence gate (#99316). Default True. Separate from
+    # task_completion_guidance: that block is advisory prompt text; this
+    # flag also enables the turn-end qualifier that retracts completion
+    # claims that lack a complete delivery receipt.
+    agent._scope_fidelity = bool(_agent_section.get("scope_fidelity", True))
+    agent._scope_fidelity_contract = None
+
     # Universal parallel-tool-call guidance toggle.  Default True.  Separate
     # flag from task_completion_guidance because a user may want one but not
     # the other.  Steers the model to batch independent tool calls into a

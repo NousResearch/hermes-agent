@@ -15,6 +15,7 @@ def _make_agent(**overrides):
         skip_context_files=False,
         valid_tool_names=[],
         _task_completion_guidance=False,
+        _scope_fidelity=False,
         _tool_use_enforcement=False,
         _environment_probe=False,
         _kanban_worker_guidance="",
@@ -762,4 +763,38 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+class TestScopeFidelityPrompt:
+    def test_injected_when_enabled(self):
+        agent = _make_agent(
+            valid_tool_names=["terminal"],
+            _scope_fidelity=True,
+            _task_completion_guidance=False,
+            _parallel_tool_call_guidance=False,
+            _execution_guidance=False,
+        )
+        stable = _stable_prompt(agent)
+        assert "Scope fidelity" in stable
+        assert "<delivery_receipt>" in stable
+
+    def test_suppressed_when_disabled(self):
+        agent = _make_agent(
+            valid_tool_names=["terminal"],
+            _scope_fidelity=False,
+            _task_completion_guidance=False,
+            _parallel_tool_call_guidance=False,
+            _execution_guidance=False,
+        )
+        assert "Scope fidelity" not in _stable_prompt(agent)
+
+    def test_contract_in_volatile(self):
+        agent = _make_agent(
+            valid_tool_names=["terminal"],
+            _scope_fidelity=True,
+            _scope_fidelity_contract=["Live data", "Order path"],
+        )
+        parts = _prompt_parts(agent)
+        assert "Active requirement contract" in parts["volatile"]
+        assert "1. Live data" in parts["volatile"]
 

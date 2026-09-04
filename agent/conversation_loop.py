@@ -9120,6 +9120,21 @@ def run_conversation(
                     final_response = None
                     continue
 
+                if getattr(agent, "_scope_fidelity", True) and final_response:
+                    try:
+                        from agent.scope_fidelity import apply_scope_fidelity
+
+                        _qualified = apply_scope_fidelity(
+                            final_response, messages, agent=agent
+                        )
+                    except Exception:
+                        logger.debug("scope-fidelity qualifier failed", exc_info=True)
+                        _qualified = final_response
+                    if _qualified != final_response:
+                        final_response = _qualified
+                        if isinstance(final_msg.get("content"), str):
+                            final_msg["content"] = final_response
+
                 append_message(messages, final_msg)
                 # Make the completed answer durable before leaving the loop —
                 # a session torn down before finalize_turn's _persist_session

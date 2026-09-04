@@ -52,6 +52,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
+from agent.scope_fidelity import SCOPE_FIDELITY_GUIDANCE
 from agent.runtime_cwd import resolve_context_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from pathlib import Path
@@ -506,6 +507,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
 
+    # Requirement-to-evidence / no-silent-narrowing. Always-on for tool
+    # sessions (including Telegram): prompt-only completion guidance is not
+    # enough to stop over-broad "finished" claims. Gated by
+    # ``agent.scope_fidelity`` (default True).
+    if getattr(agent, "_scope_fidelity", True) and agent.valid_tool_names:
+        stable_parts.append(SCOPE_FIDELITY_GUIDANCE)
+
     # Universal parallel-tool-call guidance.  Tells the model to batch
     # independent tool calls into one assistant turn rather than emitting one
     # call per turn — the runtime already runs independent calls concurrently
@@ -959,6 +967,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts.extend(
         _plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory")
     )
+
+    _scope_contract = getattr(agent, "_scope_fidelity_contract", None)
+    if _scope_contract and getattr(agent, "_scope_fidelity", True):
+        from agent.scope_fidelity import render_contract_prompt
+
+        _contract_block = render_contract_prompt(list(_scope_contract))
+        if _contract_block:
+            volatile_parts.append(_contract_block)
 
     from hermes_time import get_timezone as _hermes_tz, now as _hermes_now
     now = _hermes_now()

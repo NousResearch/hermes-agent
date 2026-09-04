@@ -1446,7 +1446,13 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     PYTHONPATH hygiene for external interpreters.
     """
     from hermes_constants import apply_subprocess_home_env
-    child_env = _scrub_child_env(os.environ)
+    from tools.environments.local import _inject_session_context_env
+
+    # Make this request's ContextVars authoritative over the process-global
+    # compatibility mirror before applying the existing scrub policy.
+    source_env = dict(os.environ)
+    _inject_session_context_env(source_env)
+    child_env = _scrub_child_env(source_env)
     child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
     child_env["HERMES_RPC_TOKEN"] = rpc_token
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -1757,7 +1763,6 @@ def execute_code(
         # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
-
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).
         #   - project: user's venv python + session's working directory, so

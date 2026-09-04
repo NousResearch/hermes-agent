@@ -78,6 +78,7 @@ def _run_native_windows_gateway_start_diag(
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
         gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
         gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
+        gateway_cli._guard_fragile_foreground_gateway = lambda replace=False, force=False: None
         gateway_cli.supports_systemd_services = lambda: False
         gateway_cli.run_gateway(quiet=True)
 
@@ -193,6 +194,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
         gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
         gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
+        gateway_cli._guard_fragile_foreground_gateway = lambda replace=False, force=False: None
         gateway_cli.supports_systemd_services = lambda: False
         gateway_cli.run_gateway()
         """

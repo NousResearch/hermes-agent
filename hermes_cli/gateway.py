@@ -5158,6 +5158,55 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     sys.exit(1)
 
 
+def _guard_fragile_foreground_gateway(replace: bool = False, force: bool = False) -> None:
+    """Refuse an interactive Windows-console-attached foreground ``gateway run``.
+
+    On a Windows desktop the persistent gateway is launched *detached*
+    (``hermes gateway start`` -> a hidden VBS that exports
+    ``HERMES_GATEWAY_DETACHED=1`` and breaks away from the parent job object).
+    A bare interactive ``hermes gateway run`` from a terminal instead produces a
+    gateway that stays bound to that console window and is killed by
+    ``CTRL_CLOSE_EVENT`` the instant the terminal closes. A fleet of sessions
+    that each "start" the gateway that way churns it -- repeated
+    ``previous_unclean_exit`` entries in ``gateway-exit-diag.log`` with a stale
+    ``last_heartbeat_at`` and ``console_window_attached: true``.
+
+    Foreground ``run`` stays the right call under WSL/Docker/Termux and for
+    interactive debugging, so this only fires for the interactive Windows
+    console-attached case and is escapable with ``--force`` (or the
+    ``HERMES_GATEWAY_DETACHED`` marker every service launcher already sets).
+    """
+    if replace or force or _running_under_gateway_supervisor():
+        return
+    if not is_windows():
+        return
+    if _truthy_env(os.getenv("HERMES_GATEWAY_DETACHED")):
+        return
+    try:
+        stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
+    except (ValueError, OSError):
+        stdin_is_tty = False
+    if not (stdin_is_tty and _windows_console_window_attached()):
+        return
+
+    print_error(
+        "This starts a gateway bound to the current terminal window."
+    )
+    print(
+        "  On Windows it is killed when this terminal closes (CTRL_CLOSE), so it\n"
+        "  is not a persistent gateway. For one that survives a closed terminal\n"
+        "  and restarts on login:"
+    )
+    print()
+    print("    hermes gateway start")
+    print()
+    print(
+        "  Pass --force to run a foreground gateway in this terminal anyway\n"
+        "  (fine for debugging or a session you keep open)."
+    )
+    sys.exit(1)
+
+
 def _guard_official_docker_root_gateway() -> None:
     """Refuse gateway startup when the official Docker privilege drop was bypassed."""
     if not hasattr(os, "geteuid") or os.geteuid() != 0 or _truthy_env(os.getenv("HERMES_ALLOW_ROOT_GATEWAY")):
@@ -5179,11 +5228,30 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
-def _apply_startup_watchdog_config() -> None:
-    """Idempotent backstop arming of the startup-liveness watchdog. Must run AFTER the conflict guards (a
-    --replace loser must not arm one). config.yaml gateway.startup_watchdog* is the user surface; env
-    vars bridge it because the argv fast-path arms before config loads, and explicit env wins. arm() is
-    idempotent, so a config timeout needs disarm+re-arm. GatewayRunner disarms once the loop is live."""
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
+    """Run the gateway in foreground.
+
+    Args:
+        verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
+        quiet: Suppress all stderr log output.
+        replace: If True, kill any existing gateway instance before starting.
+                 This prevents systemd restart loops when the old process
+                 hasn't fully exited yet.
+        force: Skip the supervised-gateway conflict guard and start even when a
+               systemd/launchd service is already supervising this profile.
+    """
+    _guard_official_docker_root_gateway()
+    _guard_named_profile_under_multiplexer(force=force)
+    _guard_supervised_gateway_conflict(force=force)
+    _guard_fragile_foreground_gateway(replace=replace, force=force)
+    _guard_existing_gateway_process_conflict(replace=replace)
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+    # Detached Windows gateway runs must ignore console-control broadcasts
+    # from sibling CLI processes, but foreground `hermes gateway run` still
+    # needs to obey the banner's "Press Ctrl+C to stop" contract.
+    # Service-style launchers set HERMES_GATEWAY_DETACHED=1; older wrappers
+    # without the marker are handled by the non-TTY fallback.
     try:
         from hermes_startup_watchdog import (
             ENV_STARTUP_WATCHDOG, ENV_STARTUP_WATCHDOG_TIMEOUT_S, arm_startup_watchdog,

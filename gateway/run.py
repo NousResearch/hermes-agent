@@ -26,7 +26,54 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Callable
+
+# --- Pre-loop signal buffering -----------------------------------------
+# Closes the startup race where SIGTERM / SIGINT / SIGUSR1 arriving
+# between process start and ``loop.add_signal_handler()`` running
+# would let Python's default action (terminate / terminate / terminate)
+# silently kill the gateway. systemd's ``Restart=always`` would then
+# bounce the service with no log line attributing the kill — the
+# "ghost restart" pattern in gateway-exit-diag (e.g. 2026-09-04
+# 13:48:51 — exit_nonzero, no "Received SIGTERM" log).
+#
+# The buffer captures signals in the pre-loop window and replays
+# them to the loop-aware handlers once those are installed.
+_PRE_LOOP_SIGNAL_BUFFER: List[int] = []
+_PRE_LOOP_SIGNAL_BUFFER_LOCK = threading.Lock()
+_PRE_LOOP_SIGNAL_HANDLERS_INSTALLED = False
+
+
+def _pre_loop_signal_buffer(sig: int, _frame) -> None:
+    """Python-level signal handler that records signals received before
+    the asyncio loop handlers are installed. Side-effect only — never
+    raises. The asyncio handlers installed later in start_gateway() will
+    drain this buffer once they're ready.
+    """
+    with _PRE_LOOP_SIGNAL_BUFFER_LOCK:
+        _PRE_LOOP_SIGNAL_BUFFER.append(sig)
+
+
+def _drain_pre_loop_signal_buffer(
+    loop: asyncio.AbstractEventLoop,
+    on_shutdown: Callable[[], None],
+    on_restart: Callable[[], None],
+) -> None:
+    """Replay signals buffered before loop handlers were installed.
+
+    Idempotent and thread-safe. Called once, right after the loop
+    handlers are installed, from the main thread.
+    """
+    global _PRE_LOOP_SIGNAL_HANDLERS_INSTALLED
+    with _PRE_LOOP_SIGNAL_BUFFER_LOCK:
+        buffered = list(_PRE_LOOP_SIGNAL_BUFFER)
+        _PRE_LOOP_SIGNAL_BUFFER.clear()
+        _PRE_LOOP_SIGNAL_HANDLERS_INSTALLED = True
+    for sig in buffered:
+        if sig == signal.SIGUSR1:
+            loop.call_soon(on_restart)
+        else:  # SIGTERM, SIGINT
+            loop.call_soon(on_shutdown)
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -9385,17 +9432,32 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
-    
+
     This is the main entry point for running the gateway.
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
-    
+
     Args:
         config: Optional gateway configuration override.
         replace: If True, kill any existing gateway instance before starting.
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # Install pre-loop signal handlers IMMEDIATELY so SIGTERM/SIGINT/SIGUSR1
+    # arriving during the startup race window (process start to
+    # ``loop.add_signal_handler()`` running) are buffered rather than
+    # letting Python's default action terminate the process silently.
+    # systemd's ``Restart=always`` would otherwise bounce the gateway
+    # with no log line attributing the kill.
+    if threading.current_thread() is threading.main_thread() and not _PRE_LOOP_SIGNAL_HANDLERS_INSTALLED:
+        for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1):
+            try:
+                signal.signal(_sig, _pre_loop_signal_buffer)
+            except (ValueError, OSError):
+                # SIGUSR1 may not exist on Windows; SIGTERM/SIGINT may
+                # not be settable from a non-main thread.
+                pass
+
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile
@@ -9548,6 +9610,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)
             except NotImplementedError:
                 pass
+
+        # Drain any signals buffered during the startup race window.
+        # Without this, a SIGTERM that landed while we were importing
+        # modules / loading config / wiring adapters would be lost and
+        # the gateway would carry on as if nothing happened — except
+        # the buffered signal never reached the loop-aware handler, so
+        # the operator's intent (clean shutdown / restart) gets silently
+        # dropped. systemd would then bounce the gateway with no log
+        # line explaining why.
+        if not _PRE_LOOP_SIGNAL_HANDLERS_INSTALLED:
+            try:
+                _drain_pre_loop_signal_buffer(
+                    loop,
+                    on_shutdown=shutdown_signal_handler,
+                    on_restart=restart_signal_handler,
+                )
+            except Exception as _drain_exc:
+                logger.debug("Pre-loop signal drain failed: %s", _drain_exc)
     else:
         logger.info("Skipping signal handlers (not running in main thread).")
     

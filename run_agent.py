@@ -2618,6 +2618,49 @@ class AIAgent:
         import re as _re
         raw = str(error)
 
+        # Walk the exception chain looking for a network-layer failure
+        # (ENETUNREACH, EAI_AGAIN, ECONNREFUSED, etc.). The SDK typically
+        # wraps these in a generic "Connection error" — operators looking
+        # at cron failure notifications on a headless host can't tell from
+        # "connection error" whether the problem is the provider, the
+        # device's network, DNS, or wifi flap. Surfacing the actual errno
+        # tells them where to look. See incident 2026-09-04 Slot 4 cron
+        # failure on the bune profile (Pi wlan0 wifi flap → kernel
+        # ENETUNREACH to api.minimax.io).
+        network_resolution_markers = (
+            "temporary failure in name resolution",
+            "name or service not known",
+            "nodename nor servname provided, or not known",
+            "getaddrinfo failed",
+            "no address associated with hostname",
+            "network is unreachable",
+            "no route to host",
+            "connection refused",
+            "connection reset",
+            "timed out",
+            "timeout",
+        )
+        deepest_match: Optional[str] = None
+        current: Optional[BaseException] = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            cur_str = str(current).lower()
+            if any(marker in cur_str for marker in network_resolution_markers):
+                candidate = str(current).strip()
+                if deepest_match is None or "errno" in candidate.lower():
+                    deepest_match = candidate
+            current = current.__cause__ or current.__context__
+
+        if deepest_match is not None:
+            one_line = deepest_match.splitlines()[-1].strip()
+            if len(one_line) > 120:
+                one_line = one_line[:117] + "..."
+            return (
+                f"Network unreachable to provider ({one_line}). "
+                "Check the host's network/DNS, not the provider."
+            )
+
         # Cloudflare / proxy HTML pages: grab the <title> for a clean summary
         if "<!DOCTYPE" in raw or "<html" in raw:
             m = _re.search(r"<title[^>]*>([^<]+)</title>", raw, _re.IGNORECASE)

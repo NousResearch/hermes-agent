@@ -365,6 +365,21 @@ class HonchoMemoryProvider(MemoryProvider):
         from plugins.memory.honcho.cli import cmd_setup
         cmd_setup(types.SimpleNamespace())
 
+    def initialize_for_inspection(self, session_id: str, **kwargs) -> None:
+        """Load static Honcho config without creating a network session.
+
+        ``prompt-size`` needs the configured recall mode so its prompt block
+        and five tool schemas match a real session, but diagnostics must stay
+        offline.  Do not resolve/create Honcho peers, sessions, or workers here.
+        """
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig.from_global_config()
+        if not cfg.enabled or not (cfg.api_key or cfg.base_url):
+            return
+        self._config = cfg
+        self._recall_mode = cfg.recall_mode
+
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Honcho session manager.
 

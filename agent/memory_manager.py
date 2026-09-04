@@ -1416,6 +1416,26 @@ class MemoryManager:
             active_tasks,
         )
 
+    def initialize_all_for_inspection(self, session_id: str, **kwargs) -> None:
+        """Prepare providers for a static/offline diagnostic snapshot.
+
+        Unlike :meth:`initialize_all`, this calls
+        ``initialize_for_inspection``. Providers that implement that optional
+        hook can avoid remote sessions/background workers; providers that have
+        not adopted it retain their historical ``initialize`` behavior.
+        """
+        if "hermes_home" not in kwargs:
+            from hermes_constants import get_hermes_home
+            kwargs["hermes_home"] = str(get_hermes_home())
+        for provider in self._providers:
+            try:
+                provider.initialize_for_inspection(session_id=session_id, **kwargs)
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' inspection init failed: %s",
+                    provider.name, e,
+                )
+
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers.
 

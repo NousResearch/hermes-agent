@@ -600,6 +600,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    inspection_mode: bool = False,
     skip_background_review: bool = False,
     session_db=None,
     parent_session_id: str = None,
@@ -701,6 +702,7 @@ def init_agent(
     # skip_memory=True already disables the memory-review trigger; this
     # flag is the explicit single-switch off for both review paths.
     agent.skip_background_review = bool(skip_background_review)
+    agent.inspection_mode = bool(inspection_mode)
     agent.pass_session_id = pass_session_id
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -2016,8 +2018,15 @@ def init_agent(
                     # indicator) is wired above, CLI-only — gateway status is
                     # delivered on a different path (see the platform=="cli"
                     # block), and the indicator no-ops when it's absent.
-                    agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    if inspection_mode:
+                        agent._memory_manager.initialize_all_for_inspection(**_init_kwargs)
+                        _ra().logger.debug(
+                            "Memory provider '%s' prepared for offline inspection",
+                            _mem_provider_name,
+                        )
+                    else:
+                        agent._memory_manager.initialize_all(**_init_kwargs)
+                        _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None

@@ -155,6 +155,17 @@ class MemoryProvider(ABC):
           - user_id_alt (str): Optional alternate stable platform user identifier.
         """
 
+    def initialize_for_inspection(self, session_id: str, **kwargs) -> None:
+        """Prepare provider metadata for an inspection-only agent.
+
+        Providers that can load the static state needed by
+        ``system_prompt_block()`` / ``get_tool_schemas()`` without network or
+        background workers should override this method.  The compatibility
+        default delegates to :meth:`initialize`, preserving diagnostics for
+        providers that have not adopted the inspection lifecycle yet.
+        """
+        self.initialize(session_id=session_id, **kwargs)
+
     def unavailable_reason(self) -> str:
         """Actionable reason this provider reports unavailable, for the caller.
 

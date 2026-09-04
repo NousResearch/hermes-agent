@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -43,6 +44,43 @@ def isolated_home(tmp_path, monkeypatch):
     return hermes_home
 
 
+
+
+def test_build_inspection_agent_enables_inspection_mode(isolated_home, monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda cfg, platform: {"kanban"})
+
+    _build_inspection_agent("cli")
+
+    assert captured["inspection_mode"] is True
+    assert captured["platform"] == "cli"
+    assert captured["enabled_toolsets"] == ["kanban"]
+
+
+def test_compute_prompt_breakdown_closes_inspection_agent(monkeypatch):
+    agent = SimpleNamespace(
+        model="test-model",
+        tools=[],
+        _memory_store=None,
+        close=MagicMock(),
+    )
+    monkeypatch.setattr("hermes_cli.prompt_size._build_inspection_agent", lambda platform: agent)
+    monkeypatch.setattr(
+        "agent.system_prompt.build_system_prompt_parts",
+        lambda _agent: {"stable": "stable", "context": "", "volatile": ""},
+    )
+    monkeypatch.setattr("agent.system_prompt.build_system_prompt", lambda _agent: "stable")
+
+    data = compute_prompt_breakdown("cli")
+
+    assert data["system_prompt"]["bytes"] == len(b"stable")
+    agent.close.assert_called_once_with()
 
 
 def test_runs_offline_without_credentials(isolated_home, monkeypatch):

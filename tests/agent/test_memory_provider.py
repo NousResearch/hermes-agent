@@ -136,6 +136,7 @@ class TestMemoryProviderABC:
         p.on_memory_write("add", "memory", "test")
         p.queue_prefetch("query")
         p.sync_turn("user", "assistant")
+        p.initialize_for_inspection("inspect")
         p.shutdown()
 
 
@@ -159,6 +160,26 @@ class TestMemoryManager:
         mgr.add_provider(p)
         assert len(mgr.providers) == 1
         assert [p.name for p in mgr.providers] == ["test1"]
+
+    def test_inspection_init_uses_side_effect_free_provider_hook(self, tmp_path):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider.initialize = MagicMock()
+        provider.initialize_for_inspection = MagicMock()
+        mgr.add_provider(provider)
+
+        mgr.initialize_all_for_inspection(
+            "inspect-session",
+            platform="cli",
+            hermes_home=str(tmp_path),
+        )
+
+        provider.initialize_for_inspection.assert_called_once_with(
+            session_id="inspect-session",
+            platform="cli",
+            hermes_home=str(tmp_path),
+        )
+        provider.initialize.assert_not_called()
 
     def test_get_provider_by_name(self):
         mgr = MemoryManager()

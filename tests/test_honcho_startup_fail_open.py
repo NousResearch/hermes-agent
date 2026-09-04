@@ -47,6 +47,30 @@ def _configured_tools_config(*, init_on_session_start: bool = False) -> _FakeHon
 
 
 
+def test_honcho_inspection_init_is_static_and_thread_free(monkeypatch):
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+
+    def must_not_start(*args, **kwargs):
+        raise AssertionError("inspection must not start Honcho session init")
+
+    monkeypatch.setattr(provider, "_start_session_init_background", must_not_start)
+
+    provider.initialize_for_inspection("inspect-session", platform="cli")
+
+    assert provider._config is cfg
+    assert provider._recall_mode == "hybrid"
+    assert provider._init_thread is None
+    assert "Honcho Memory" in provider.system_prompt_block()
+    assert "hybrid mode" in provider.system_prompt_block()
+    assert len(provider.get_tool_schemas()) == 5
+
+
 def test_stalled_init_only_delays_first_turn_prefetch(monkeypatch):
     """A stalled session init may bound-wait on turn 1 only; every later
     prefetch must keep the fail-open contract and return immediately."""

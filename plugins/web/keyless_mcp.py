@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -61,6 +62,23 @@ def _is_rate_limitish(message: str) -> bool:
     """Heuristic: does an error message look like free-tier throttling?"""
     lowered = (message or "").lower()
     return any(marker in lowered for marker in _RATE_LIMIT_MARKERS)
+
+
+_AUTH_STATUS_RE = re.compile(
+    r"\b(?:http(?:\s+status)?|status(?:\s+code)?|client\s+error|error(?:\s+code)?)"
+    r"\s*[:=']*\s*(?:401|403)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_search_failover_eligible(message: str) -> bool:
+    """Return whether another anonymous vendor may serve the search.
+
+    Rate limits and structured HTTP 401/403 provider rejections are local to
+    one free search endpoint. Free-text markers are deliberately ignored:
+    vendors may echo the query in an otherwise terminal error.
+    """
+    return _is_rate_limitish(message) or bool(_AUTH_STATUS_RE.search(message or ""))
 
 
 def keyless_enabled() -> bool:
@@ -695,8 +713,9 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any
     """Keyless search across the vendor ring with next-in-line failover.
 
     Starts at *name* when the user pinned it, otherwise at the round-robin
-    cursor. Rate-limit-shaped errors advance to the next ring vendor;
-    non-throttle errors stop the walk (a malformed query fails everywhere).
+    cursor. Rate limits and anonymous-endpoint auth/policy rejections advance
+    to the next ring vendor; request errors stop the walk (a malformed query
+    fails everywhere).
     The result notes the serving vendor via ``data.served_by`` whenever it
     differs from *name*.
     """
@@ -714,15 +733,15 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any
                 result.setdefault("data", {})["served_by"] = vendor
             return result
         last = result
-        if not _is_rate_limitish(result.get("error", "")):
+        if not _is_search_failover_eligible(result.get("error", "")):
             return result
         nxt = order[i + 1] if i + 1 < len(order) else None
         if nxt:
             logger.info(
-                "keyless %s search throttled; failing over to %s", vendor, nxt
+                "keyless %s search unavailable; failing over to %s", vendor, nxt
             )
     last["error"] = (
-        f"{last.get('error', '')} (all keyless vendors throttled: "
+        f"{last.get('error', '')} (all keyless vendors unavailable: "
         f"{', '.join(order)})"
     )
     return last
@@ -732,8 +751,8 @@ def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
     """Keyless extract across the vendor ring, failing over per-batch.
 
     Advances to the next ring vendor only when EVERY url in a batch comes
-    back with a rate-limit-shaped error — partial failures are page
-    problems, not throttling, and return as-is.
+    back with a rate-limit-shaped error — partial failures and HTTP 403s can
+    be page problems, not provider throttling, and return as-is.
     """
     order = _ring_order(name)
     if not order:

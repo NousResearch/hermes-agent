@@ -2560,6 +2560,23 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
     return max(0.0, time.time() - latest)
 
 
+def _pid_file_still_matches(
+    pid_file: str, expected_text: str, expected_stat: os.stat_result
+) -> bool:
+    """Return whether a PID record is still the exact settled file we parsed."""
+    try:
+        current_stat = os.stat(pid_file)
+        if (
+            current_stat.st_mtime_ns != expected_stat.st_mtime_ns
+            or current_stat.st_size != expected_stat.st_size
+            or current_stat.st_ino != expected_stat.st_ino
+        ):
+            return False
+        return Path(pid_file).read_text(encoding="utf-8").strip() == expected_text
+    except OSError:
+        return False
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -2713,7 +2730,8 @@ def _reap_orphaned_browser_sessions():
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            if _pid_file_still_matches(pid_file, pid_text, pid_stat_after):
+                shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
         # The PID is live — but the .pid file lives in a world-writable,
@@ -2766,7 +2784,9 @@ def _reap_orphaned_browser_sessions():
                 daemon_pid, session_name,
             )
 
-        if terminated:
+        if terminated and _pid_file_still_matches(
+            pid_file, pid_text, pid_stat_after
+        ):
             shutil.rmtree(socket_dir, ignore_errors=True)
 
     if reaped:

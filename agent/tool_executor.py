@@ -879,6 +879,7 @@ def _run_sequential_tool_execution_middleware(
     except Exception as exc:
         if not is_thread_start_exhaustion(exc):
             raise
+        executor.shutdown(wait=False)
         logger.warning(
             "sequential tool worker unavailable; running %s inline: %s",
             function_name,

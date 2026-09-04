@@ -86,6 +86,25 @@ class TestClassifyThreadExhaustion:
         result = classify_api_error(RuntimeError("boom"))
         assert result.reason is FailoverReason.unknown
 
+    def test_uses_shared_predicate_not_local_message_heuristic(self):
+        """Regression: classification must defer to is_thread_start_exhaustion().
+
+        A local message-only heuristic (checking for "resource temporarily
+        unavailable" against error_type in {OSError, RuntimeError} without
+        the errno check the shared predicate applies) would misclassify any
+        OSError whose strerror-style text happens to read "resource
+        temporarily unavailable" as thread_exhaustion, regardless of errno.
+        The shared predicate requires errno to be EAGAIN/EWOULDBLOCK, so an
+        EMFILE/ENFILE-style fd exhaustion must fall through to a different
+        classification instead.
+        """
+        import errno as errno_module
+
+        unrelated = OSError("Resource temporarily unavailable")
+        unrelated.errno = errno_module.ENFILE
+        result = classify_api_error(unrelated)
+        assert result.reason is not FailoverReason.thread_exhaustion
+
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────
 

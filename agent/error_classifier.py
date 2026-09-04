@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from tools.thread_exhaustion import is_thread_start_exhaustion
+
 logger = logging.getLogger(__name__)
 
 # Synthetic error code used when the OpenAI SDK rejects a provider's SSE
@@ -1230,10 +1232,10 @@ def classify_api_error(
         )
 
     # ── 8. Local thread exhaustion ───────────────────────────────────
-    if "can't start new thread" in error_msg or (
-        "resource temporarily unavailable" in error_msg
-        and error_type in {"OSError", "RuntimeError"}
-    ):
+    # Delegate to the shared spawn-boundary predicate (also used by the
+    # fail-open paths in tool_executor.py / chat_completion_helpers.py) so
+    # classification can't drift from detection and stays errno-aware.
+    if is_thread_start_exhaustion(error):
         return _result(FailoverReason.thread_exhaustion, retryable=False)
 
     # ── 9. Transport / timeout heuristics ───────────────────────────

@@ -1,6 +1,9 @@
 import asyncio
 import shutil
 import subprocess
+import sys
+import threading
+import types
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -57,6 +60,143 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_drain_preserves_queued_followup_for_shutdown(
+    tmp_path, monkeypatch
+):
+    """A drain-time follow-up must reach replacement recovery intact (#82381)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "1")
+    monkeypatch.setattr(
+        "gateway.restart.is_container_restart_context", lambda: False
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    turn_started = threading.Event()
+    release_turn = threading.Event()
+    agent_calls: list[str] = []
+
+    class BlockingAgent:
+        def __init__(self, **_kwargs):
+            self.tools = []
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            agent_calls.append(message)
+            turn_started.set()
+            assert release_turn.wait(timeout=5), "blocked test turn was not released"
+            return {
+                "final_response": "first turn complete",
+                "messages": conversation_history or [],
+                "api_calls": 1,
+            }
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = BlockingAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    runner, adapter = make_restart_runner()
+    adapter.gateway_runner = runner
+    runner._busy_input_mode = "queue"
+    runner._restart_after_turn_timeout = 5.0
+    runner._prefill_messages = []
+    runner._ephemeral_system_prompt = ""
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._session_db = None
+    runner._session_run_generation = {}
+    runner.hooks.loaded_hooks = False
+
+    flush_calls: list[tuple[dict, str]] = []
+
+    def capture_shutdown_pending(pending, *, reason="shutdown"):
+        flush_calls.append((dict(pending), reason))
+        return len(pending)
+
+    monkeypatch.setattr(
+        "gateway.shutdown_flush.flush_pending_to_file", capture_shutdown_pending
+    )
+
+    stop_calls = []
+
+    async def replacement_stop(**kwargs):
+        stop_calls.append(kwargs)
+        await adapter.cancel_background_tasks()
+        runner._shutdown_event.set()
+
+    runner.stop = AsyncMock(side_effect=replacement_stop)
+
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    first_event = MessageEvent(
+        text="first turn",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="first",
+    )
+
+    async def dispatch(event):
+        if event is first_event:
+            result = await runner._run_agent(
+                message=event.text,
+                context_prompt="",
+                history=[],
+                source=event.source,
+                session_id="session-82381",
+                session_key=session_key,
+            )
+            return result["final_response"]
+        return await runner._handle_message(event)
+
+    adapter.set_message_handler(dispatch)
+
+    await adapter.handle_message(first_event)
+    assert await asyncio.to_thread(turn_started.wait, 5)
+    for _ in range(100):
+        if session_key in runner._running_agents:
+            break
+        await asyncio.sleep(0.01)
+    assert session_key in runner._running_agents
+
+    restart_event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="restart",
+    )
+    await adapter.handle_message(restart_event)
+    assert runner._draining is True
+    assert any("Draining 1 active agent" in message for message in adapter.sent)
+
+    followup = MessageEvent(
+        text="follow up",
+        message_type=MessageType.PHOTO,
+        source=source,
+        message_id="followup",
+        media_urls=["/tmp/followup.png"],
+        metadata={"opaque": "preserve-me"},
+    )
+    await adapter.handle_message(followup)
+
+    assert adapter._pending_messages[session_key] is followup
+    assert any("queued for the next turn after it comes back" in message for message in adapter.sent)
+
+    release_turn.set()
+    await asyncio.wait_for(runner._restart_task, timeout=5)
+
+    assert agent_calls == ["first turn"]
+    assert flush_calls == [({session_key: followup}, "adapter_shutdown")]
+    assert stop_calls == [
+        {
+            "restart": True,
+            "detached_restart": False,
+            "service_restart": True,
+        }
+    ]
 
 
 def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):

@@ -190,6 +190,31 @@ class TestSSHPreflight:
         assert env.host == "example.com"
         assert env.user == "alice"
 
+    def test_ssh_environment_can_skip_agent_file_sync(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(
+            ssh_env.SSHEnvironment,
+            "_ensure_remote_dirs",
+            lambda self: pytest.fail("workspace browsing must not mutate the SSH target"),
+        )
+        monkeypatch.setattr(
+            ssh_env,
+            "FileSyncManager",
+            lambda **_kw: pytest.fail("workspace browsing must not start agent file sync"),
+        )
+
+        env = ssh_env.SSHEnvironment(
+            host="example.com",
+            user="alice",
+            sync_files=False,
+        )
+
+        assert env._sync_manager is None
+        env._before_execute()
+
 
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")

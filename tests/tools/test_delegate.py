@@ -179,6 +179,215 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("depth limit", result["error"].lower())
 
+    def test_no_goal_or_tasks(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(parent_agent=parent))
+        self.assertIn("error", result)
+
+    def test_empty_goal(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="  ", parent_agent=parent))
+        self.assertIn("error", result)
+
+    def test_task_missing_goal(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
+        self.assertIn("error", result)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_single_task_mode(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done!", "api_calls": 3, "duration_seconds": 5.0
+        }
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Fix tests", context="error log...", parent_agent=parent))
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertEqual(result["results"][0]["summary"], "Done!")
+        mock_run.assert_called_once()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode(self, mock_run):
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},
+            {"task_index": 1, "status": "completed", "summary": "Result B", "api_calls": 4, "duration_seconds": 6.0},
+        ]
+        parent = _make_mock_parent()
+        tasks = [
+            {"goal": "Research topic A"},
+            {"goal": "Research topic B"},
+        ]
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["summary"], "Result A")
+        self.assertEqual(result["results"][1]["summary"], "Result B")
+        self.assertIn("total_duration_seconds", result)
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._get_max_concurrent_children", return_value=40)
+    def test_results_output_respects_cap(self, mock_max, mock_run):
+        """delegate_task results array must honor tool_output.max_bytes.
+
+        A large fan-out with full worker summaries serializes to ~64K chars,
+        refilling the parent's context. The aggregate results payload must be
+        bounded to the centralized cap while keeping the results list shape.
+        """
+        from tools.tool_output_limits import get_max_bytes
+
+        n = 40
+        mock_run.side_effect = [
+            {
+                "task_index": i,
+                "status": "completed",
+                "summary": f"Worker {i} summary " + "y" * 2000,
+                "api_calls": 3,
+                "duration_seconds": 1.0,
+            }
+            for i in range(n)
+        ]
+        parent = _make_mock_parent()
+        tasks = [{"goal": f"Audit module {i} for unused imports and report the findings"} for i in range(n)]
+        raw = delegate_task(tasks=tasks, parent_agent=parent)
+        assert len(raw) <= get_max_bytes() + 500, len(raw)
+        result = json.loads(raw)
+        self.assertIn("results", result)
+        self.assertIsInstance(result["results"], list)
+        self.assertTrue(result["truncated"])
+        self.assertGreater(result["truncated_count"], 0)
+        # Prefix order preserved: first worker still present.
+        self.assertEqual(result["results"][0]["task_index"], 0)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_accepts_json_string_tasks(self, mock_run):
+        mock_run.side_effect = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Result A",
+                "api_calls": 2,
+                "duration_seconds": 3.0,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": "Result B",
+                "api_calls": 4,
+                "duration_seconds": 6.0,
+            },
+        ]
+        parent = _make_mock_parent()
+        tasks = json.dumps(
+            [
+                {"goal": "Research topic A"},
+                {"goal": "Research topic B"},
+            ]
+        )
+
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["summary"], "Result A")
+        self.assertEqual(result["results"][1]["summary"], "Result B")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_rejects_non_object_tasks(self, mock_run):
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(tasks=["not a task object"], parent_agent=parent)
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("Task 0 must be an object", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_rejects_malformed_json_string_tasks(self, mock_run):
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(tasks='[{"goal": "bad}', parent_agent=parent)
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("could not be parsed as JSON", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_capped_at_3(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        limit = _get_max_concurrent_children()
+        tasks = [{"goal": f"Audit module {i} for unused imports and report the findings"} for i in range(limit + 2)]
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+        # Should return an error instead of silently truncating
+        self.assertIn("error", result)
+        self.assertIn("Too many tasks", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_ignores_toplevel_goal(self, mock_run):
+        """When tasks array is provided, top-level goal/context/toolsets are ignored."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(
+            goal="This should be ignored",
+            tasks=[{"goal": "Actual task"}],
+            parent_agent=parent,
+        ))
+        # The mock was called with the tasks array item, not the top-level goal
+        call_args = mock_run.call_args
+        self.assertEqual(call_args.kwargs.get("goal") or call_args[1].get("goal", call_args[0][1] if len(call_args[0]) > 1 else None), "Actual task")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_failed_child_included_in_results(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0, "status": "error",
+            "summary": None, "error": "Something broke",
+            "api_calls": 0, "duration_seconds": 0.5
+        }
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Break things", parent_agent=parent))
+        self.assertEqual(result["results"][0]["status"], "error")
+        self.assertIn("Something broke", result["results"][0]["error"])
+
+    def test_depth_increments(self):
+        """Verify child gets parent's depth + 1."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test depth", parent_agent=parent)
+            self.assertEqual(mock_child._delegate_depth, 1)
+
+    def test_active_children_tracking(self):
+        """Verify children are registered/unregistered for interrupt propagation."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test tracking", parent_agent=parent)
+            self.assertEqual(len(parent._active_children), 0)
 
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)

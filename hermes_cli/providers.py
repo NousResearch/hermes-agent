@@ -293,6 +293,10 @@ ALIASES: Dict[str, str] = {
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
 
+    # openai-codex / chatgpt
+    "chatgpt": "openai-codex",
+    "chatgpt-codex": "openai-codex",
+
     # zai
     "glm": "zai",
     "z-ai": "zai",

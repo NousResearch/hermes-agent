@@ -218,6 +218,10 @@ class TestResolveProvider:
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
 
+    def test_alias_chatgpt(self):
+        assert resolve_provider("chatgpt") == "openai-codex"
+        assert resolve_provider("chatgpt-codex") == "openai-codex"
+
     def test_alias_github_copilot(self):
         assert resolve_provider("github-copilot") == "copilot"
 

@@ -169,7 +169,19 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
         apply_wal_with_fallback(conn, db_label="projects.db")
         conn.execute("PRAGMA foreign_keys=ON")
-        if resolved not in _INITIALIZED_PATHS:
+        needs_init = resolved not in _INITIALIZED_PATHS
+        if not needs_init:
+            try:
+                cur = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'"
+                )
+                if cur.fetchone() is None:
+                    _INITIALIZED_PATHS.discard(resolved)
+                    needs_init = True
+            except Exception:
+                _INITIALIZED_PATHS.discard(resolved)
+                needs_init = True
+        if needs_init:
             conn.executescript(SCHEMA_SQL)
             _migrate_add_optional_columns(conn)
             _INITIALIZED_PATHS.add(resolved)

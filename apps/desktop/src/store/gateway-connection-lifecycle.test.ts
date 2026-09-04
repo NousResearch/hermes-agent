@@ -13,7 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 //     the entry instead of retrying forever.
 
 const gatewayMocks = vi.hoisted(() => {
-  const instances: { close: ReturnType<typeof vi.fn>; connectionState: string }[] = []
+  const instances: {
+    close: ReturnType<typeof vi.fn>
+    connectionState: string
+    replayGapHandler?: (sessionId: string) => Promise<boolean> | boolean
+  }[] = []
 
   return {
     connect: vi.fn(async (_wsUrl: string): Promise<void> => undefined),
@@ -38,7 +42,13 @@ vi.mock('@/hermes', () => ({
       this.connectionState = 'open'
     }
     onEvent = vi.fn(() => () => {})
+    onReplayGap = vi.fn((handler: (sessionId: string) => Promise<boolean> | boolean) => {
+      this.replayGapHandler = handler
+
+      return () => void (this.replayGapHandler = undefined)
+    })
     onState = vi.fn(() => () => {})
+    replayGapHandler?: (sessionId: string) => Promise<boolean> | boolean
     constructor() {
       gatewayMocks.instances.push(this as never)
     }
@@ -98,6 +108,27 @@ afterEach(() => {
 })
 
 describe('disposeSecondariesForConnection', () => {
+  it('preserves the exact secondary source when reporting a replay gap', async () => {
+    const onReplayGap = vi.fn(async () => true)
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    configureGatewayRegistry({ onEvent: vi.fn(), onReplayGap } as never)
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('background-b', 'default')
+
+    const recovered = await gatewayMocks.instances[0].replayGapHandler?.('runtime-b')
+
+    expect(recovered).toBe(true)
+    expect(onReplayGap).toHaveBeenCalledWith('runtime-b', {
+      connectionId: 'background-b',
+      profile: 'default'
+    })
+  })
+
   it('keeps the previous source socket alive when another source becomes foreground', async () => {
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
       descriptorFor(connectionId, profile)

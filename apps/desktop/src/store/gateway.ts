@@ -30,6 +30,7 @@ interface RegistryConfig {
    * the connection store. */
   activeConnectionId?: () => null | string
   onEvent: (event: GatewayEvent) => void
+  onReplayGap?: (sessionId: string, source: ReplayGapSource) => Promise<boolean> | boolean
   onActiveConnectionInvalidated?: (fallbackProfile: string, activationEpoch: number) => void
   onActiveConnectionChanged?: (connection: HermesConnection) => void
   /**
@@ -54,6 +55,11 @@ interface RegistryConfig {
    * follows the tile set, so closing the tile releases the socket.
    */
   foregroundScopes?: () => ReadonlySet<string>
+}
+
+export interface ReplayGapSource {
+  connectionId: null | string
+  profile: string
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -394,6 +400,14 @@ export function activeGatewayConnectionId(): null | string {
   return g.secondaries.get(g.activeKey)?.connectionId ?? null
 }
 
+/** Exact registry source served by the window-owned primary socket. */
+export function primaryGatewaySource(): ReplayGapSource {
+  return {
+    connectionId: g.primaryConnectionId,
+    profile: g.primaryProfile
+  }
+}
+
 /**
  * Registry connections currently served by a live (open-socket) secondary.
  * Used by the reconnect path when the restarted primary's own registry
@@ -720,6 +734,13 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     g.config?.onEvent({ ...event, profile, ...(connectionId ? { connectionId } : {}) })
     releaseTerminalTurnLease(entry.scope, event)
   })
+  gateway.onReplayGap?.(
+    sessionId =>
+      g.config?.onReplayGap?.(sessionId, {
+        connectionId,
+        profile
+      }) ?? false
+  )
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)
 

@@ -56,6 +56,7 @@ export {
   type JsonRpcFrame,
   JsonRpcGatewayClient,
   JsonRpcGatewayError,
+  type ReplayGapHandler,
   type WebSocketLike
 } from './json-rpc-gateway'
 export { skillInvocationText } from './skill-scaffold'

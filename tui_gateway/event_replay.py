@@ -21,6 +21,7 @@ from __future__ import annotations
 import threading
 import uuid
 from collections import OrderedDict, deque
+from typing import NamedTuple
 
 # Process identity for the replay contract. Seq counters live in-process, so
 # a gateway restart silently resets them to 1 while clients still hold high
@@ -42,6 +43,16 @@ _replay_lock = threading.Lock()
 # the client's dispatch path consumes.
 _replay_buffers: "OrderedDict[str, deque]" = OrderedDict()
 _replay_next_seq: dict[str, int] = {}
+_replay_generations: dict[str, str] = {}
+
+
+class ReplaySnapshot(NamedTuple):
+    """One lock-consistent view of a session's replay state."""
+
+    events: list[dict]
+    latest_seq: int
+    generation: str | None
+    truncated: bool
 
 
 def replay_epoch() -> str:
@@ -69,9 +80,12 @@ def _stamp_event(obj: dict) -> None:
         if buf is None:
             buf = deque(maxlen=_REPLAY_BUFFER_MAX)
             _replay_buffers[sid] = buf
+            _replay_generations[sid] = uuid.uuid4().hex
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
                 _oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
                 _replay_next_seq.pop(_oldest_sid, None)
+                _replay_generations.pop(_oldest_sid, None)
+        params["replay_generation"] = _replay_generations[sid]
         buf.append((seq, params))
 
 
@@ -91,6 +105,20 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
         return [event for seq, event in buf if seq > last_seen]
 
 
+def replay_snapshot(sid: str, last_seen: int) -> ReplaySnapshot:
+    """Return one atomic, detached replay response snapshot for *sid*."""
+    key = sid or ""
+    with _replay_lock:
+        buf = _replay_buffers.get(key)
+        events = [event.copy() for seq, event in buf or () if seq > last_seen]
+        return ReplaySnapshot(
+            events=events,
+            latest_seq=_replay_next_seq.get(key, 0),
+            generation=_replay_generations.get(key),
+            truncated=bool(buf and last_seen + 1 < buf[0][0]),
+        )
+
+
 def is_truncated(sid: str, last_seen: int) -> bool:
     """True when events between *last_seen* and the ring's oldest retained
     seq were evicted — the client must refetch history instead of trusting
@@ -108,11 +136,18 @@ def latest_seq(sid: str) -> int:
         return _replay_next_seq.get(sid or "", 0)
 
 
+def replay_generation(sid: str) -> str | None:
+    """Current generation for *sid* (changes whenever its ring is recreated)."""
+    with _replay_lock:
+        return _replay_generations.get(sid or "")
+
+
 def reset_replay_state() -> None:
     """Test hook."""
     with _replay_lock:
         _replay_buffers.clear()
         _replay_next_seq.clear()
+        _replay_generations.clear()
 
 
 def replay_stats() -> dict:

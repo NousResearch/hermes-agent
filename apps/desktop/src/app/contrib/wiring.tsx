@@ -45,6 +45,7 @@ import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
+import type { ReplayGapSource } from '@/store/gateway'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
@@ -155,6 +156,7 @@ import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
+import { resolveReplayHydrationTarget } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
@@ -378,17 +380,30 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // Post-turn rehydrate from stored history (same behavior as DesktopController,
   // including finished-todos restoration).
-  const hydrateFromStoredSession = useCallback(
+  const tryHydrateFromStoredSession = useCallback(
     async (
       attempts = 1,
       storedSessionId = selectedStoredSessionIdRef.current,
-      runtimeSessionId = activeSessionIdRef.current
+      runtimeSessionId = activeSessionIdRef.current,
+      replaySource?: ReplayGapSource
     ) => {
       if (!storedSessionId || !runtimeSessionId) {
-        return
+        return false
       }
 
-      const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
+      const candidates = $sessions.get().filter(session => sessionMatchesStoredId(session, storedSessionId))
+      const replayTarget = replaySource ? resolveReplayHydrationTarget(candidates, replaySource) : undefined
+      const storedSession = replaySource ? replayTarget?.row : candidates[0]
+
+      if (!storedSession) {
+        // A replay gap must never hydrate an identically named session from a
+        // different backend. Leave the gap unresolved so the socket retries.
+        return false
+      }
+
+      const storedProfile = replaySource
+        ? replayTarget?.scope
+        : storedSession.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
@@ -416,7 +431,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             clearSessionTodos(runtimeSessionId)
           }
 
-          return
+          return true
         } catch {
           // Best-effort fallback when live stream payloads are empty.
         }
@@ -425,8 +440,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           await new Promise(resolve => window.setTimeout(resolve, 250))
         }
       }
+
+      return false
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
+  )
+
+  const hydrateFromStoredSession = useCallback(
+    async (attempts?: number, storedSessionId?: string | null, runtimeSessionId?: string | null) => {
+      await tryHydrateFromStoredSession(attempts, storedSessionId, runtimeSessionId)
+    },
+    [tryHydrateFromStoredSession]
   )
 
   // Refresh any active transcript changed by another process. Signature-gated
@@ -794,6 +818,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       closeAllTerminals()
     },
     handleGatewayEvent: handleGatewayEventWithPlugins,
+    resyncReplaySession: (runtimeSessionId, source) => {
+      const state = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)
+
+      return tryHydrateFromStoredSession(3, state?.storedSessionId, runtimeSessionId, source)
+    },
     onConnectionReady: c => {
       connectionRef.current = c
     },

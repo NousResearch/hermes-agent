@@ -1,6 +1,39 @@
 import { describe, expect, it } from 'vitest'
 
-import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
+import {
+  findStoredIdForRuntimeId,
+  resolveReplayHydrationTarget,
+  resolveRoutingSessionId,
+  resolveSessionRpcOwner
+} from './wiring-routing'
+
+describe('resolveReplayHydrationTarget', () => {
+  const rows = [
+    { id: 'same-id', profile: 'default' },
+    { connection_id: 'background-b', id: 'same-id', profile: 'default' }
+  ]
+
+  it('pins a background replay to its exact connection instead of the ambient source', () => {
+    expect(
+      resolveReplayHydrationTarget(rows, {
+        connectionId: 'background-b',
+        profile: 'default'
+      })
+    ).toEqual({
+      row: rows[1],
+      scope: { connectionId: 'background-b', profile: 'default' }
+    })
+  })
+
+  it('fails closed when the known row owner disagrees with the replay source', () => {
+    expect(
+      resolveReplayHydrationTarget([{ connection_id: 'active-a', id: 'same-id', profile: 'default' }], {
+        connectionId: 'background-b',
+        profile: 'default'
+      })
+    ).toBeUndefined()
+  })
+})
 
 describe('findStoredIdForRuntimeId', () => {
   it('reverse-resolves a runtime id to its stored id', () => {

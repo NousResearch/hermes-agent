@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { JsonRpcGatewayClient } from './json-rpc-gateway'
@@ -286,6 +288,407 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
       expect(seen).toEqual([2, 3, 4, 5, 6])
     })
     expect(client.getSeqWatermarks().s1).toBe(6)
+    client.close()
+  })
+
+  it('resyncs authoritative history instead of dispatching a truncated tail', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    let finishResync!: () => void
+
+    const resync = new Promise<void>(resolve => {
+      finishResync = resolve
+    })
+
+    const gaps: string[] = []
+
+    client.on('message.delta', e => seen.push((e as unknown as { seq: number }).seq))
+    client.onReplayGap(async sid => {
+      gaps.push(sid)
+      await resync
+
+      return true
+    })
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 2, replay_generation: 'gen-A' }
+    })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 6, replay_generation: 'gen-A' }
+    })
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: {
+        events: [
+          { type: 'message.delta', session_id: 's1', seq: 4, replay_generation: 'gen-A' },
+          { type: 'message.delta', session_id: 's1', seq: 5, replay_generation: 'gen-A' }
+        ],
+        latest_seq: 5,
+        truncated: true,
+        generation: 'gen-A'
+      }
+    })
+
+    await vi.waitFor(() => expect(gaps).toEqual(['s1']))
+    expect(seen).toEqual([2])
+    finishResync()
+    await vi.waitFor(() => expect(seen).toEqual([2, 6]))
+    expect(client.getSeqWatermarks().s1).toBe(6)
+    client.close()
+  })
+
+  it('accepts reset seqs after a session replay generation changes', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', e => seen.push((e as unknown as { seq: number }).seq))
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 10, replay_generation: 'gen-A' }
+    })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 1, replay_generation: 'gen-B' }
+    })
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: {
+        events: [{ type: 'message.delta', session_id: 's1', seq: 1, replay_generation: 'gen-B' }],
+        latest_seq: 1,
+        truncated: false,
+        generation: 'gen-B'
+      }
+    })
+
+    await vi.waitFor(() => expect(sock.lastRequest().params.last_seen).toBe(0))
+    const freshRequest = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: freshRequest.id,
+      result: {
+        events: [{ type: 'message.delta', session_id: 's1', seq: 1, replay_generation: 'gen-B' }],
+        latest_seq: 1,
+        truncated: false,
+        generation: 'gen-B'
+      }
+    })
+
+    await vi.waitFor(() => expect(seen).toEqual([10, 1]))
+    expect(client.getSeqWatermarks().s1).toBe(1)
+    client.close()
+  })
+
+  it('refetches a changed generation from zero before releasing later live frames', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', event => seen.push((event as unknown as { seq: number }).seq))
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 10, replay_generation: 'gen-A' }
+    })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().params).toMatchObject({ session_id: 's1', last_seen: 10 }))
+
+    const staleRequest = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: staleRequest.id,
+      result: { events: [], latest_seq: 2, truncated: false, generation: 'gen-B' }
+    })
+
+    await vi.waitFor(() => expect(sock.lastRequest().params).toMatchObject({ session_id: 's1', last_seen: 0 }))
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 3, replay_generation: 'gen-B' }
+    })
+
+    const freshRequest = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: freshRequest.id,
+      result: {
+        events: [
+          { type: 'message.delta', session_id: 's1', seq: 1, replay_generation: 'gen-B' },
+          { type: 'message.delta', session_id: 's1', seq: 2, replay_generation: 'gen-B' }
+        ],
+        latest_seq: 2,
+        truncated: false,
+        generation: 'gen-B'
+      }
+    })
+
+    await vi.waitFor(() => expect(seen).toEqual([10, 1, 2, 3]))
+    expect(client.getSeqWatermarks().s1).toBe(3)
+    client.close()
+  })
+
+  it('preserves the old generation checkpoint when zero-based recovery fails', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 10, replay_generation: 'gen-A' }
+    })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().params.last_seen).toBe(10))
+
+    const staleRequest = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: staleRequest.id,
+      result: { events: [], latest_seq: 2, truncated: true, generation: 'gen-B' }
+    })
+    await vi.waitFor(() => expect(sock.lastRequest().params.last_seen).toBe(0))
+
+    const freshRequest = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: freshRequest.id,
+      error: { code: -32000, message: 'replay unavailable' }
+    })
+
+    await vi.waitFor(() => expect(sock.readyState).toBe(3))
+    expect(client.getSeqWatermarks().s1).toBe(10)
+
+    const third = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await third
+    await vi.waitFor(() => expect(sock.lastRequest().params).toMatchObject({ session_id: 's1', last_seen: 10 }))
+    client.close()
+  })
+
+  it('retries without releasing parked frames when truncated history recovery fails', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', e => seen.push((e as unknown as { seq: number }).seq))
+    client.onReplayGap(async () => false)
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 2 } })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 6 } })
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { events: [], latest_seq: 5, truncated: true }
+    })
+
+    await vi.waitFor(() => expect(sock.readyState).toBe(3))
+    expect(seen).toEqual([2])
+    expect(client.getSeqWatermarks().s1).toBe(2)
+    client.close()
+  })
+
+  it('keeps the old watermark when truncated replay has no history handler', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 2 } })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { events: [], latest_seq: 5, truncated: true }
+    })
+
+    await vi.waitFor(() => expect(sock.readyState).toBe(3))
+    expect(client.getSeqWatermarks().s1).toBe(2)
+    client.close()
+  })
+
+  it('keeps the old watermark when truncated history recovery rejects', async () => {
+    const client = makeClient()
+    client.onReplayGap(async () => {
+      throw new Error('history unavailable')
+    })
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 2 } })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { events: [], latest_seq: 5, truncated: true }
+    })
+
+    await vi.waitFor(() => expect(sock.readyState).toBe(3))
+    expect(client.getSeqWatermarks().s1).toBe(2)
+    client.close()
+  })
+
+  it('retries without releasing parked frames when the replay request rejects', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', e => seen.push((e as unknown as { seq: number }).seq))
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 2 } })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 6 } })
+    const req = sock.lastRequest()
+    sock.serverFrame({ jsonrpc: '2.0', id: req.id, error: { code: -32000, message: 'replay unavailable' } })
+
+    await vi.waitFor(() => expect(sock.readyState).toBe(3))
+    expect(seen).toEqual([2])
+    expect(client.getSeqWatermarks().s1).toBe(2)
+    client.close()
+  })
+
+  it('retries without releasing parked frames when a history handler throws synchronously', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', e => seen.push((e as unknown as { seq: number }).seq))
+    client.onReplayGap(() => {
+      throw new Error('history unavailable')
+    })
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 2 } })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 6 } })
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { events: [], latest_seq: 5, truncated: true }
+    })
+
+    await vi.waitFor(() => expect(sock.readyState).toBe(3))
+    expect(seen).toEqual([2])
+    expect(client.getSeqWatermarks().s1).toBe(2)
+    client.close()
+  })
+
+  it('accepts reset seqs from a generation-less older backend', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', e => seen.push((e as unknown as { seq: number }).seq))
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 10 } })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { events: [], latest_seq: 1, truncated: false }
+    })
+
+    await vi.waitFor(() => expect(seen).toEqual([10, 1]))
+    expect(client.getSeqWatermarks().s1).toBe(1)
     client.close()
   })
 

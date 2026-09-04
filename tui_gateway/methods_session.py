@@ -3852,12 +3852,13 @@ def _(rid, params: dict) -> dict:
         return _err(rid, -32602, "invalid params: last_seen must be an integer")
     from tui_gateway import event_replay
 
-    frames = event_replay.events_since(sid, last_seen)
+    snapshot = event_replay.replay_snapshot(sid, last_seen)
     return _ok(rid, {
-        "events": frames,
-        "latest_seq": event_replay.latest_seq(sid),
-        "truncated": event_replay.is_truncated(sid, last_seen),
-        "count": len(frames),
+        "events": snapshot.events,
+        "latest_seq": snapshot.latest_seq,
+        "generation": snapshot.generation,
+        "truncated": snapshot.truncated,
+        "count": len(snapshot.events),
         # Restart detection: seq counters are in-process, so after a gateway
         # restart a client's old high watermark would silently match nothing.
         # Clients compare this against the epoch they learned at gateway.ready

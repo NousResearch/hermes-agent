@@ -32,8 +32,12 @@ export interface GatewayEvent<P = unknown> {
    * absent for the local/legacy primary path). */
   connectionId?: string
   session_id?: string
+  /** Changes if this session's bounded replay ring is evicted and recreated. */
+  replay_generation?: string
   type: GatewayEventName
 }
+
+export type ReplayGapHandler = (sessionId: string) => Promise<boolean> | boolean
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
 export type GatewayRequestId = number | string
@@ -128,6 +132,10 @@ export class JsonRpcGatewayClient {
    * silently believe nothing was missed.
    */
   private replayEpoch: string | null = null
+  /** Generation paired with each session watermark. */
+  private lastSeenGeneration = new Map<string, string>()
+  /** Authoritative-history refresh hooks run before parked live frames resume. */
+  private readonly replayGapHandlers = new Set<ReplayGapHandler>()
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
@@ -341,6 +349,13 @@ export class JsonRpcGatewayClient {
     return () => this.stateHandlers.delete(handler)
   }
 
+  /** Register an authoritative session-history refresh for truncated replay. */
+  onReplayGap(handler: ReplayGapHandler): () => void {
+    this.replayGapHandlers.add(handler)
+
+    return () => this.replayGapHandlers.delete(handler)
+  }
+
   request<T>(
     method: string,
     params: Record<string, unknown> = {},
@@ -507,6 +522,8 @@ export class JsonRpcGatewayClient {
       return
     }
 
+    this.adoptReplayGeneration(sid, event.replay_generation)
+
     const prev = this.lastSeenSeq.get(sid) ?? 0
 
     if (seq > prev) {
@@ -536,6 +553,7 @@ export class JsonRpcGatewayClient {
     // racing the replay response can't dispatch ahead of (or duplicate) the
     // gap events. Sessions without watermarks are unaffected.
     const hold = new Map<string, GatewayEvent[]>()
+    let replayRecoveryFailed = false
 
     for (const sid of this.lastSeenSeq.keys()) {
       hold.set(sid, [])
@@ -549,7 +567,19 @@ export class JsonRpcGatewayClient {
       // One RPC per known session keeps params flat; sessions are few (<20).
       const results = await Promise.allSettled(
         entries.map(([sid, lastSeen]) =>
-          this.request<{ events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }> }>(
+          this.request<{
+            events?: Array<{
+              type: string
+              session_id?: string
+              seq?: number
+              replay_generation?: string
+              payload?: unknown
+            }>
+            epoch?: string
+            generation?: string | null
+            latest_seq?: number
+            truncated?: boolean
+          }>(
             'session.events.since',
             { session_id: sid, last_seen: lastSeen },
             REPLAY_REQUEST_TIMEOUT_MS
@@ -557,8 +587,23 @@ export class JsonRpcGatewayClient {
         )
       )
 
-      for (const result of results) {
+      for (const [index, result] of results.entries()) {
+        const sid = entries[index]?.[0]
+
+        if (!sid) {
+          hold.clear()
+          replayRecoveryFailed = true
+
+          continue
+        }
+
         if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
+          // A rejected, timed-out, or malformed replay response leaves the
+          // requested gap unresolved. Discard raced frames for this session
+          // and preserve its watermark so the reconnect owner can retry it.
+          hold.delete(sid)
+          replayRecoveryFailed = true
+
           continue
         }
 
@@ -577,19 +622,124 @@ export class JsonRpcGatewayClient {
           this.replayEpoch = epoch
         }
 
-        for (const event of result.value.events) {
+        const previousGeneration = this.lastSeenGeneration.get(sid)
+        let replay = result.value
+        let generation = replay.generation
+
+        if (
+          previousGeneration &&
+          typeof generation === 'string' &&
+          generation &&
+          generation !== previousGeneration
+        ) {
+          // The first response was filtered with a watermark from a different
+          // generation. It cannot establish continuity for the recreated ring,
+          // so keep the old checkpoint intact until a zero-based snapshot has
+          // been fetched and (when truncated) authoritatively hydrated.
+          try {
+            const fresh = await this.request<typeof replay>(
+              'session.events.since',
+              { session_id: sid, last_seen: 0 },
+              REPLAY_REQUEST_TIMEOUT_MS
+            )
+
+            if (!Array.isArray(fresh?.events) || fresh.generation !== generation) {
+              throw new Error('Replay generation changed during recovery')
+            }
+
+            replay = fresh
+            generation = fresh.generation
+          } catch {
+            hold.delete(sid)
+            replayRecoveryFailed = true
+
+            continue
+          }
+        }
+
+        const latest = replay.latest_seq
+
+        if (
+          (typeof generation !== 'string' || !generation) &&
+          typeof latest === 'number' &&
+          Number.isFinite(latest) &&
+          latest < (this.lastSeenSeq.get(sid) ?? 0)
+        ) {
+          // Older backends have no per-session generation. A regressed server
+          // watermark is the only reset signal they can provide.
+          this.lastSeenSeq.delete(sid)
+        }
+
+        const generationChanged = Boolean(previousGeneration && generation !== previousGeneration)
+
+        if (replay.truncated === true) {
+          // A retained tail is not a valid transcript. Rebuild from the
+          // authoritative history before releasing live frames that raced the
+          // request, then advance to the server snapshot that history covers.
+          const recoveries = await Promise.allSettled(
+            [...this.replayGapHandlers].map(handler => Promise.resolve().then(() => handler(sid)))
+          )
+
+          const recovered =
+            recoveries.length > 0 &&
+            recoveries.every(recovery => recovery.status === 'fulfilled' && recovery.value === true)
+
+          if (!recovered) {
+            // Do not let raced live frames advance across an unresolved gap.
+            // The reconnect owner will retry from the unchanged watermark.
+            hold.delete(sid)
+            replayRecoveryFailed = true
+
+            continue
+          }
+
+          if (typeof generation === 'string' && generation) {
+            this.lastSeenGeneration.set(sid, generation)
+          }
+
+          if (typeof latest === 'number' && Number.isFinite(latest)) {
+            this.lastSeenSeq.set(sid, latest)
+          }
+
+          continue
+        }
+
+        if (generationChanged && typeof generation === 'string') {
+          // Commit the new namespace only after its zero-based snapshot is in
+          // hand. This lets its seqs start at one without destroying the old
+          // checkpoint on any request or recovery failure above.
+          this.lastSeenGeneration.set(sid, generation)
+          this.lastSeenSeq.set(sid, 0)
+        } else {
+          this.adoptReplayGeneration(sid, generation)
+        }
+
+        for (const event of replay.events ?? []) {
           if (!event?.type) {
             continue
           }
 
           this.dispatchIfNewer(event as GatewayEvent)
         }
+
+        if (generationChanged && typeof latest === 'number' && Number.isFinite(latest)) {
+          this.lastSeenSeq.set(sid, Math.max(this.lastSeenSeq.get(sid) ?? 0, latest))
+        }
       }
     } catch {
-      // Replay is an optimization over lossy-reconnect; never surface errors.
+      // A synchronous recovery failure must not release frames parked above
+      // an unresolved gap. Invalidate the socket so reconnect can retry.
+
+      hold.clear()
+
+      replayRecoveryFailed = true
     } finally {
       this.flushReplayHold()
       this.replayInFlight = false
+
+      if (replayRecoveryFailed) {
+        this.invalidate('Replay history recovery failed')
+      }
     }
   }
 
@@ -602,6 +752,7 @@ export class JsonRpcGatewayClient {
     const seq = (event as { seq?: unknown }).seq
 
     if (sid && typeof seq === 'number' && Number.isFinite(seq)) {
+      this.adoptReplayGeneration(sid, event.replay_generation)
       const prev = this.lastSeenSeq.get(sid) ?? 0
 
       if (seq <= prev) {
@@ -626,9 +777,25 @@ export class JsonRpcGatewayClient {
 
     if (this.replayEpoch !== null) {
       this.lastSeenSeq.clear()
+      this.lastSeenGeneration.clear()
     }
 
     this.replayEpoch = epoch
+  }
+
+  /** Reset one session's watermark when its bounded replay ring is recreated. */
+  private adoptReplayGeneration(sid: string, generation: unknown): void {
+    if (typeof generation !== 'string' || !generation) {
+      return
+    }
+
+    const previous = this.lastSeenGeneration.get(sid)
+
+    if (previous && previous !== generation) {
+      this.lastSeenSeq.delete(sid)
+    }
+
+    this.lastSeenGeneration.set(sid, generation)
   }
 
   /** Release frames parked during a replay fetch, seq-gated against dupes. */

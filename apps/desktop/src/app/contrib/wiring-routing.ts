@@ -5,7 +5,37 @@
  * React/Electron controller module.
  */
 
+import type { ReplayGapSource } from '@/store/gateway'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
+
+export function resolveReplayHydrationTarget<
+  T extends { connection_id?: null | string; profile?: null | string }
+>(candidates: T[], source: ReplayGapSource): { row: T; scope: { connectionId: null | string; profile: string } } | undefined {
+  const sourceProfile = (source.profile ?? '').trim() || 'default'
+
+  const profileCandidates = candidates.filter(candidate => {
+    const ownerProfile = (candidate.profile ?? '').trim() || 'default'
+
+    return ownerProfile === sourceProfile
+  })
+
+  const row =
+    profileCandidates.find(candidate => (candidate.connection_id ?? '').trim() === source.connectionId) ??
+    profileCandidates.find(candidate => {
+      const ownerConnectionId = (candidate.connection_id ?? '').trim()
+
+      return !ownerConnectionId
+    })
+
+  if (!row) {
+    return undefined
+  }
+
+  return {
+    row,
+    scope: { connectionId: source.connectionId, profile: sourceProfile }
+  }
+}
 
 /**
  * Resolve a runtime session id back to its stored id by reverse-scanning the

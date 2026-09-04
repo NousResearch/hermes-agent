@@ -47,6 +47,7 @@ const {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
+  primaryGatewaySource,
   pruneSecondaryGateways,
   setPrimaryGateway,
   setPrimaryGatewayConnectionId
@@ -125,6 +126,23 @@ describe('primary gateway registry scope', () => {
 
     expect(activeGatewayConnectionId()).toBe('primary-vps')
     expect(setApiRequestConnection).toHaveBeenLastCalledWith('primary-vps')
+  })
+
+  it('reports the adopted non-default profile as the primary socket source', () => {
+    setPrimaryGateway({ connectionState: 'open' } as never, 'writer')
+    setPrimaryGatewayConnectionId('primary-vps')
+
+    expect(primaryGatewaySource()).toEqual({ connectionId: 'primary-vps', profile: 'writer' })
+  })
+
+  it('keeps reporting the primary socket source while a secondary is active', async () => {
+    setPrimaryGateway({ connectionState: 'open' } as never, 'writer')
+    setPrimaryGatewayConnectionId('primary-vps')
+
+    await expect(ensureGatewayForAgent('homelab', 'default')).resolves.toBe(true)
+
+    expect(activeGatewayConnectionId()).toBe('homelab')
+    expect(primaryGatewaySource()).toEqual({ connectionId: 'primary-vps', profile: 'writer' })
   })
 })
 

@@ -578,6 +578,7 @@ class GatewayAuthorizationMixin:
         if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+                Platform.WHATSAPP: "WHATSAPP_GROUP_ALLOWED_USERS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
@@ -593,15 +594,20 @@ class GatewayAuthorizationMixin:
 
             # Fallback: also check adapter-level config (config.yaml)
             # for platforms.<platform>.extra.group_allowed_chats.
-            # The Telegram observe-unmentioned mode strips user_id from
-            # triggered group messages (_apply_telegram_group_observe_attribution),
-            # so the env-var-only check above misses config.yaml-configured
-            # allowlists.  Read the live adapter's config.extra as a fallback.
+            # Telegram and WhatsApp observe-unmentioned modes strip user_id
+            # from triggered group messages to share one group transcript, so
+            # the env-var-only check above can miss config.yaml allowlists.
+            # Read the live adapter's config.extra as a fallback.
             try:
                 adapter = self._adapter_for_source(source)
                 if adapter is not None:
                     extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
                     adapter_group_allowed = extra.get("group_allowed_chats")
+                    if (
+                        not adapter_group_allowed
+                        and source.platform == Platform.WHATSAPP
+                    ):
+                        adapter_group_allowed = extra.get("group_allow_from")
                     if adapter_group_allowed:
                         allowed = _coerce_allow_set(adapter_group_allowed)
                         if "*" in allowed or source.chat_id in allowed:
@@ -654,6 +660,7 @@ class GatewayAuthorizationMixin:
         }
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+            Platform.WHATSAPP: "WHATSAPP_GROUP_ALLOWED_USERS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {

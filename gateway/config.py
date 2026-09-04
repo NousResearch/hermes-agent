@@ -1733,8 +1733,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
-                if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
+                if "observe_unmentioned_group_messages" in platform_cfg:
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
+                if "observe_allowed_chats" in platform_cfg:
+                    bridged["observe_allowed_chats"] = platform_cfg["observe_allowed_chats"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:

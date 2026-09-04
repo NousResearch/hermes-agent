@@ -101,6 +101,7 @@ class TurnContext:
     # "internal_notification" for async-delegation/background notifications
     # (#82888). DB-only presentation metadata; never sent to the provider.
     persist_user_display_kind: Optional[str] = None
+    persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None

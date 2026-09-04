@@ -142,6 +142,51 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ---
 
+## Mention-gated group history
+
+For a group bot that should answer only when addressed, Hermes can retain the
+ambient conversation without running the agent for every message. Both history
+features are opt-in:
+
+```yaml
+whatsapp:
+  group_policy: allowlist
+  group_allow_from:
+    - 120363001234567890@g.us
+  require_mention: true
+
+  # Persist unmentioned messages in Hermes' existing session store without
+  # dispatching the agent. This requires an explicit observation allowlist.
+  observe_unmentioned_group_messages: true
+  observe_allowed_chats:
+    - 120363001234567890@g.us
+
+  # Also attach a short, in-memory window to the next addressed turn so an
+  # immediate follow-up is not detached from the conversation around it.
+  history_backfill: true
+  history_backfill_limit: 50
+```
+
+Observed messages are written one row per WhatsApp message and survive a
+gateway restart. They are treated as background context, not as requests to the
+agent. The backfill window is separate: it is bounded and in memory, so it helps
+the next reply but is not a durable archive.
+
+Observation never inherits an unrestricted `group_policy: open`.
+`observe_allowed_chats` must resolve to an explicit, non-empty set of approved
+group JIDs and may narrow `group_allow_from` further. Messages from other groups
+are neither retained nor added to the context window.
+
+:::note Native bridge only
+Both features are wired into the local Baileys bridge adapter, which is the
+connection `hermes whatsapp` sets up. The WhatsApp Cloud API adapter shares the
+gating and formatting behavior but is not wired to either path, so
+`history_backfill` and `observe_unmentioned_group_messages` have no effect on a
+Cloud API connection.
+:::
+
+---
+
 ## Session Persistence
 
 The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:

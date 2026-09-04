@@ -382,6 +382,10 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WHATSAPP_HOME_CHANNEL` | Default chat ID for cron / notification delivery. |
 | `WHATSAPP_HOME_CHANNEL_NAME` | Display name for the WhatsApp home channel. |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
+| `WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES` | Persist ambient messages from explicitly approved, mention-gated groups without dispatching the agent (`true`/`false`, default `false`). Native bridge only — no effect on a Cloud API connection |
+| `WHATSAPP_OBSERVE_ALLOWED_CHATS` | Comma-separated group JIDs explicitly approved for ambient-message retention |
+| `WHATSAPP_HISTORY_BACKFILL` | Attach a bounded in-memory ambient-message window to the next addressed group turn (`true`/`false`, default `false`). Native bridge only — no effect on a Cloud API connection |
+| `WHATSAPP_HISTORY_BACKFILL_LIMIT` | Maximum messages kept per group for immediate backfill context (default `50`) |
 | `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | Meta Phone Number ID from the WhatsApp Business Cloud API (15–17 digits; **not** the phone number itself) |
 | `WHATSAPP_CLOUD_ACCESS_TOKEN` | Meta access token (starts with `EAA`); temporary tokens expire after 24h, System User tokens are permanent |
 | `WHATSAPP_CLOUD_APP_SECRET` | 32-char hex app secret used to verify inbound webhook signatures |

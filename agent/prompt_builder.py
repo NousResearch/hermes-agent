@@ -1182,8 +1182,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 
 
 # Cache the backend probe result per process so we only pay the probe cost
-# on the first prompt build of a session. Keyed by (env_type, cwd_hint) so
-# a mid-process backend switch rebuilds the string. Kept in-module (not on
+# for one profile/backend fingerprint. Kept in-module (not on
 # disk) because the probe captures live backend state that may change
 # across Hermes restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
@@ -1259,24 +1258,29 @@ def _probe_remote_backend(env_type: str) -> str | None:
     per process. Used only for non-local backends where the agent's tools
     operate on a different machine than the host Hermes runs on.
     """
-    cwd_hint = _tenv_read("TERMINAL_CWD", "")
-    cache_key = (env_type, cwd_hint)
+    try:
+        # Import locally: tools/ imports are heavy and only relevant when a
+        # non-local backend is actually configured.
+        from tools.terminal_tool import (  # type: ignore
+            _create_environment,
+            _get_env_config,
+            _terminal_backend_fingerprint,
+        )
+        config = _get_env_config()
+        cache_key = (
+            env_type,
+            _terminal_backend_fingerprint(resolved_config=config),
+        )
+    except Exception as e:
+        logger.debug("Backend probe unavailable (import failed): %s", e)
+        return None
+
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
         return cached or None
 
-    try:
-        # Import locally: tools/ imports are heavy and only relevant when a
-        # non-local backend is actually configured.
-        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
-    except Exception as e:
-        logger.debug("Backend probe unavailable (import failed): %s", e)
-        _BACKEND_PROBE_CACHE[cache_key] = ""
-        return None
-
     env = None
     try:
-        config = _get_env_config()
         # Build the environment the same way tools/terminal_tool.py does for a
         # live command: select the backend image, then assemble ssh/container
         # config from the env-derived dict. (There is no `get_environment`
@@ -1299,7 +1303,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "user": config.get("ssh_user", ""),
                 "port": config.get("ssh_port", 22),
                 "key": config.get("ssh_key", ""),
-                "persistent": config.get("ssh_persistent", False),
+                # Prompt probes are ephemeral and must never retain a shell.
+                "persistent": False,
             }
 
         container_config = None
@@ -1310,7 +1315,9 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
+                # A cache miss must not leave a sandbox behind or attach to a
+                # cross-process persistent Docker environment.
+                "container_persistent": False,
                 "modal_mode": config.get("modal_mode", "auto"),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
@@ -1319,8 +1326,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_extra_args": config.get("docker_extra_args", []),
                 "docker_shm_size": config.get("docker_shm_size", "1g"),
-                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                "docker_shared_container_key": config.get("docker_shared_container_key", ""),
+                "docker_persist_across_processes": False,
+                "docker_shared_container_key": "",
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
             }
 
@@ -1356,13 +1363,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
     finally:
-        # The probe only needs a one-shot `uname`; without teardown the
-        # backend leaves a second idle sandbox (task_id="prompt-backend-probe")
-        # running for the whole process lifetime next to the agent's own one.
-        # ssh is left alone: it has no task-scoped sandbox and its cleanup()
-        # closes a ControlMaster socket (keyed by user@host:port) shared with
-        # the agent's real environment; ControlPersist expires it anyway.
-        if env is not None and env_type != "ssh":
+        if env is not None:
             try:
                 from tools.terminal_tool import _cleanup_env
 

@@ -799,6 +799,7 @@ class TestEnvironmentHints:
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         _pb._clear_backend_probe_cache()
+        cleaned = []
 
         class _FakeEnv:
             def execute(self, cmd, timeout=None):
@@ -810,10 +811,14 @@ class TestEnvironmentHints:
                     ),
                 }
 
+            def cleanup(self):
+                cleaned.append(True)
+
         created = {}
 
         def _fake_create_environment(*, env_type, **kwargs):
             created["env_type"] = env_type
+            created.update(kwargs)
             return _FakeEnv()
 
         # Patch the REAL factory in tools.terminal_tool — the probe imports it
@@ -826,6 +831,9 @@ class TestEnvironmentHints:
         assert line is not None
         assert "Linux 6.8.0" in line
         assert "root" in line
+        assert cleaned == [True]
+        assert created["container_config"]["container_persistent"] is False
+        assert created["container_config"]["docker_persist_across_processes"] is False
 
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.
@@ -917,18 +925,17 @@ class TestEnvironmentHints:
         assert _pb._probe_remote_backend("singularity") is not None
         assert calls == ["bare"]
 
-    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
-        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
-        socket shared with the agent's real environment, so the probe must
-        leave it alone (nothing leaks — ControlPersist expires the master)."""
+    def test_probe_remote_backend_tears_down_ephemeral_ssh(self, monkeypatch):
+        """The probe disables persistent SSH before closing its own connection."""
         import agent.prompt_builder as _pb
 
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         _pb._clear_backend_probe_cache()
 
         calls = []
+        created = {}
 
-        class _SharedSshEnv:
+        class _EphemeralSshEnv:
             def execute(self, cmd, timeout=None):
                 return {
                     "returncode": 0,
@@ -941,11 +948,85 @@ class TestEnvironmentHints:
             def cleanup(self):
                 calls.append("cleanup")
 
+        def create_environment(**kwargs):
+            created.update(kwargs)
+            return _EphemeralSshEnv()
+
         import tools.terminal_tool as _tt
-        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
+        monkeypatch.setattr(_tt, "_create_environment", create_environment)
 
         assert _pb._probe_remote_backend("ssh") is not None
-        assert calls == []
+        assert calls == ["cleanup"]
+        assert created["ssh_config"]["persistent"] is False
+
+    def test_remote_probe_cache_is_scoped_by_profile_and_ssh_settings(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+        from agent import secret_scope
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        homes = []
+        for name, host in (("first", "first.example"), ("second", "second.example")):
+            home = tmp_path / name
+            home.mkdir()
+            (home / "config.yaml").write_text(
+                "terminal:\n"
+                "  backend: ssh\n"
+                f"  ssh_host: {host}\n"
+                "  ssh_user: probe-user\n",
+                encoding="utf-8",
+            )
+            homes.append(home)
+
+        calls = []
+
+        class FakeEnvironment:
+            def __init__(self, host):
+                self.host = host
+
+            def execute(self, _cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8\nhome=/home/probe\n"
+                        f"cwd=/srv/{self.host}\nuser={self.host}\n"
+                    ),
+                }
+
+        def fake_create_environment(*, ssh_config, **_kwargs):
+            calls.append(ssh_config["host"])
+            return FakeEnvironment(ssh_config["host"])
+
+        monkeypatch.setattr(_tt, "_create_environment", fake_create_environment)
+        _pb._clear_backend_probe_cache()
+        secret_scope.set_multiplex_active(True)
+        results = []
+        try:
+            for home in homes:
+                token = set_hermes_home_override(home)
+                try:
+                    from tools.terminal_scope import (
+                        install_and_reset_profile_terminal_scope,
+                    )
+
+                    with install_and_reset_profile_terminal_scope(home):
+                        results.append(_pb._probe_remote_backend("ssh"))
+                finally:
+                    reset_hermes_home_override(token)
+        finally:
+            secret_scope.set_multiplex_active(False)
+            _pb._clear_backend_probe_cache()
+
+        assert calls == ["first.example", "second.example"]
+        assert "first.example" in results[0]
+        assert "second.example" in results[1]
 
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):

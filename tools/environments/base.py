@@ -1013,6 +1013,7 @@ class BaseEnvironment(ABC):
         *,
         bounded_capture: bool = False,
         watch_interrupt_tid: int | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
@@ -1231,6 +1232,14 @@ class BaseEnvironment(ABC):
             _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
+                if cancel_event is not None and cancel_event.is_set():
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    return self._finalize_wait_result(
+                        output,
+                        output.render(suffix="\n[Command cancelled]").lstrip(),
+                        130,
+                    )
                 if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
                     if _DEBUG_INTERRUPT:
                         logger.info(
@@ -1451,6 +1460,7 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        cancel_event: threading.Event | None = None,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
 
@@ -1517,6 +1527,7 @@ class BaseEnvironment(ABC):
                 timeout=effective_timeout,
                 bounded_capture=bounded_capture,
                 watch_interrupt_tid=parent_tid,
+                cancel_event=cancel_event,
             )
 
         def _on_timeout() -> None:

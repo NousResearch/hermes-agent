@@ -105,6 +105,7 @@ class TestAgentCloseMethod:
             agent.session_id = "test-close-cleanup"
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
+            agent._terminal_profile_home = "/profiles/test-close-cleanup"
             agent.client = None
 
             with patch("tools.process_registry.process_registry") as mock_registry, \
@@ -116,7 +117,10 @@ class TestAgentCloseMethod:
                 mock_registry.kill_all.assert_called_once_with(
                     task_id="test-close-cleanup"
                 )
-                mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
+                mock_cleanup_vm.assert_called_once_with(
+                    "test-close-cleanup",
+                    profile_home="/profiles/test-close-cleanup",
+                )
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_cua.assert_called_once_with("test-close-cleanup")
 

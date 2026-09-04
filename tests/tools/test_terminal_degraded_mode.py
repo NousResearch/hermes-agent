@@ -165,6 +165,98 @@ class TestDegradedToolResult:
         assert r2["exit_code"] == 0
         assert "back" in r2["output"]
 
+    def test_cached_terminal_connection_failure_is_degraded_and_evicted(
+        self, isolated_env, monkeypatch
+    ):
+        from tools import file_tools
+
+        task_id = "cached-dead-terminal"
+
+        class DeadEnvironment:
+            def execute(self, *_args, **_kwargs):
+                raise EnvironmentConnectionError("cached terminal connection lost")
+
+            def cleanup(self):
+                return None
+
+        monkeypatch.setattr(
+            isolated_env,
+            "_get_env_config",
+            lambda *_args, **_kwargs: {
+                "env_type": "ssh",
+                "cwd": "/home/user",
+                "timeout": 60,
+                "degraded_mode": "warn",
+            },
+        )
+        monkeypatch.setattr(
+            isolated_env, "_resolve_container_task_id", lambda _task_id: task_id
+        )
+        with isolated_env._env_lock:
+            isolated_env._active_environments[task_id] = DeadEnvironment()
+        with isolated_env._creation_locks_lock:
+            isolated_env._creation_locks[task_id] = isolated_env.threading.Lock()
+        with file_tools._file_ops_lock:
+            file_tools._file_ops_cache[task_id] = object()
+
+        result = json.loads(
+            isolated_env.terminal_tool("echo hi", task_id=task_id)
+        )
+
+        assert result["status"] == "degraded"
+        with isolated_env._env_lock:
+            assert task_id not in isolated_env._active_environments
+        with isolated_env._creation_locks_lock:
+            assert task_id not in isolated_env._creation_locks
+        with file_tools._file_ops_lock:
+            assert task_id not in file_tools._file_ops_cache
+
+    def test_cached_file_connection_failure_is_degraded_and_evicted(
+        self, isolated_env, monkeypatch
+    ):
+        from tools import file_tools
+        from tools.file_operations import ShellFileOperations
+
+        task_id = "cached-dead-file"
+
+        class DeadEnvironment:
+            cwd = "/home/user"
+
+            def execute(self, *_args, **_kwargs):
+                raise EnvironmentConnectionError("cached file connection lost")
+
+            def cleanup(self):
+                return None
+
+        env = DeadEnvironment()
+        config = {
+            "env_type": "ssh",
+            "cwd": "/home/user",
+            "timeout": 60,
+            "degraded_mode": "warn",
+        }
+        monkeypatch.setattr(
+            isolated_env, "_get_env_config", lambda *_args, **_kwargs: config
+        )
+        monkeypatch.setattr(
+            isolated_env, "_resolve_container_task_id", lambda _task_id: task_id
+        )
+        isolated_env._register_active_environment(task_id, env, config, task_id)
+        with isolated_env._creation_locks_lock:
+            isolated_env._creation_locks[task_id] = isolated_env.threading.Lock()
+        with file_tools._file_ops_lock:
+            file_tools._file_ops_cache[task_id] = ShellFileOperations(env)
+
+        result = json.loads(file_tools.read_file_tool("/tmp/example", task_id=task_id))
+
+        assert result["status"] == "degraded"
+        with isolated_env._env_lock:
+            assert task_id not in isolated_env._active_environments
+        with isolated_env._creation_locks_lock:
+            assert task_id not in isolated_env._creation_locks
+        with file_tools._file_ops_lock:
+            assert task_id not in file_tools._file_ops_cache
+
 
 class TestNonInfrastructureFailuresUntouched:
     def test_nonzero_exit_is_not_degraded(self, isolated_env, monkeypatch):

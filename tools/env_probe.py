@@ -29,6 +29,7 @@ Toggle via ``agent.environment_probe`` in config.yaml (default True).
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import shutil
@@ -88,6 +89,7 @@ def _plugin_backend_is_remote(backend: str) -> bool:
         return bool(provider_flag(backend, "is_remote", False))
     except Exception:
         return False
+
 
 
 def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
@@ -215,6 +217,7 @@ def _build_probe_line() -> str:
     Emit only when SOMETHING is off — the goal is to save the model from
     hitting an avoidable wall, not to narrate a healthy environment.
     """
+
     py3_ver = _python_version_of("python3")
     py_ver = _python_version_of("python")  # for systems with a `python` alias
     py3_has_pip = _has_pip_module("python3") if py3_ver else False
@@ -302,6 +305,7 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     ``force_refresh`` is for tests; real callers should never need it.
     """
     global _CACHED_LINE, _PROBE_THREAD, _PROBE_GEN, _WAIT_ALREADY_TIMED_OUT
+
     if force_refresh:
         with _CACHE_LOCK:
             _CACHED_LINE = None
@@ -362,9 +366,10 @@ def _ensure_probe_started() -> None:
             return
         if _PROBE_THREAD is not None and _PROBE_THREAD.is_alive():
             return
+        probe_context = contextvars.copy_context()
         _PROBE_THREAD = threading.Thread(
-            target=_probe_worker,
-            args=(_PROBE_GEN,),
+            target=probe_context.run,
+            args=(_probe_worker, _PROBE_GEN),
             name="env-probe",
             daemon=True,
         )
@@ -382,7 +387,9 @@ def warm_environment_probe_async() -> None:
     completion event instead of recomputing.  Called from agent init
     (all platforms); safe to call from anywhere.
     """
-    _ensure_probe_started()
+    backend = _resolve_terminal_backend()
+    if backend not in _REMOTE_BACKENDS and not _plugin_backend_is_remote(backend):
+        _ensure_probe_started()
 
 
 def _reset_cache_for_tests() -> None:

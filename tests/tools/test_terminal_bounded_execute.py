@@ -57,7 +57,14 @@ def test_execute_parent_interrupt_still_kills_wait_on_deadline_worker(monkeypatc
 
     seen = {"parent": False}
 
-    def _wait(_proc, timeout=120, *, bounded_capture=False, watch_interrupt_tid=None):
+    def _wait(
+        _proc,
+        timeout=120,
+        *,
+        bounded_capture=False,
+        watch_interrupt_tid=None,
+        cancel_event=None,
+    ):
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             from tools.interrupt import is_thread_interrupted

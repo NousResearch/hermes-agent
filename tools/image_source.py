@@ -212,10 +212,12 @@ async def _download_to_bytes(url: str) -> bytes:
 def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host.
 
-    Mirrors ``tools.browser_tool._is_local_backend`` and terminal_tool's own
-    dispatch, which key off ``TERMINAL_ENV``.
+    Uses terminal_tool's profile-scoped runtime snapshot so multiplexed turns
+    cannot inherit another profile's backend.
     """
-    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+    from tools.terminal_tool import _terminal_backend_identity
+
+    return _terminal_backend_identity()[1] == "local"
 
 
 def _media_cache_roots() -> list:
@@ -355,7 +357,21 @@ async def _resolve_container_fallback(
 
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
-        last_res = await asyncio.to_thread(env.execute, cmd)
+        try:
+            last_res = await asyncio.to_thread(env.execute, cmd)
+        except Exception as exc:
+            from tools.environments.base import EnvironmentConnectionError
+
+            if not isinstance(exc, EnvironmentConnectionError):
+                raise
+            from tools.terminal_tool import _evict_environment_for_task
+
+            _evict_environment_for_task(ctx.task_id)
+            raise SourceNotFound(
+                f"sandbox connection lost while reading '{p}': {exc.reason}",
+                src=src,
+                origin="container",
+            ) from exc
         if last_res.get("returncode", 1) == 0:
             break
         if attempt == 0:

@@ -1,7 +1,7 @@
 """Session-persistent Python kernels for execute_code.
 
 With ``code_execution.kernel_mode: session``, execute_code keeps one Python
-child process alive per (task, mode, interpreter, cwd, tool-set) and feeds it
+child process alive per (profile, task, mode, interpreter, cwd, tool-set) and feeds it
 one code cell per call, so variables, imports, and loaded data survive across
 calls::
 
@@ -273,10 +273,19 @@ class CellAuthority:
     a stale approval/session/turn identity.
     """
 
-    def __init__(self, task_id: str):
+    def __init__(
+        self,
+        task_id: str,
+        session_id: str = "",
+        enabled_toolsets: Optional[List[str]] = None,
+        disabled_toolsets: Optional[List[str]] = None,
+    ):
         import contextvars
 
         self.task_id = task_id
+        self.session_id = session_id
+        self.enabled_toolsets = enabled_toolsets
+        self.disabled_toolsets = disabled_toolsets
         self.ctx = contextvars.copy_context()
         self.active = True
         self._approval_cb = None
@@ -310,6 +319,7 @@ class CellAuthority:
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
+        from tools.code_execution_tool import _sandbox_dispatch_kwargs
 
         previous = None
         if self._callback_setters is not None:
@@ -323,7 +333,17 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            return handle_function_call(
+                tool_name,
+                tool_args,
+                **_sandbox_dispatch_kwargs(
+                    tool_name,
+                    self.task_id,
+                    self.session_id,
+                    self.enabled_toolsets,
+                    self.disabled_toolsets,
+                ),
+            )
         finally:
             if previous is not None and self._callback_setters is not None:
                 set_approval, set_sudo = self._callback_setters
@@ -450,9 +470,23 @@ def _resolve_owner(task_id: str) -> str:
     return owner
 
 
+def _profile_scope() -> str:
+    """Return the canonical profile identity that owns a session kernel."""
+    from hermes_constants import get_hermes_home
+
+    return str(get_hermes_home().expanduser().resolve())
+
+
 def _kernel_key(owner: str, mode: str, child_python: str, child_cwd: str,
                 sandbox_tools: frozenset) -> Tuple:
-    return (owner or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    return (
+        owner or "",
+        _profile_scope(),
+        mode,
+        child_python,
+        child_cwd,
+        tuple(sorted(sandbox_tools)),
+    )
 
 
 def shutdown_all_kernels() -> None:
@@ -473,8 +507,13 @@ def shutdown_kernels_for_owner(owner: str) -> None:
     """
     if not owner:
         return
+    profile_scope = _profile_scope()
     with _KERNELS_LOCK:
-        doomed = [key for key in _KERNELS if key[0] == owner]
+        doomed = [
+            key
+            for key in _KERNELS
+            if key[0] == owner and key[1] == profile_scope
+        ]
         kernels = [_KERNELS.pop(key) for key in doomed]
     for kernel in kernels:
         _teardown(kernel)
@@ -802,6 +841,9 @@ def execute_in_session_kernel(
     code: str,
     *,
     task_id: str,
+    session_id: str = "",
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
     mode: str,
     child_python: str,
     child_cwd: str,
@@ -854,6 +896,9 @@ def execute_in_session_kernel(
             child_cwd=child_cwd, sandbox_tools=sandbox_tools, timeout=timeout,
             max_tool_calls=max_tool_calls, is_interrupted=is_interrupted,
             exec_start=exec_start, state_reset=state_reset,
+            session_id=session_id,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
         )
     finally:
         with _KERNELS_LOCK:
@@ -880,6 +925,9 @@ def _run_cell(
     is_interrupted,
     exec_start: float,
     state_reset: bool,
+    session_id: str,
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
 ) -> str:
     from tools.code_execution_tool import (
         _sandbox_failure_hint,
@@ -894,7 +942,12 @@ def _run_cell(
     # snapshot a per-call RPC thread would have received — and installed
     # atomically on the kernel so the serving thread dispatches this cell's
     # tool calls under this cell's approval/session/turn identity.
-    authority = CellAuthority(task_id)
+    authority = CellAuthority(
+        task_id,
+        session_id=session_id,
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+    )
 
     with kernel.lock:
         try:

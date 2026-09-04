@@ -47,7 +47,11 @@ from tools.code_execution_tool import (
     build_execute_code_schema,
     execute_code,
 )
-from tools.code_kernel import _KERNELS, shutdown_all_kernels
+from tools.code_kernel import (
+    _KERNELS,
+    shutdown_all_kernels,
+    shutdown_kernels_for_owner,
+)
 
 
 @contextmanager
@@ -266,6 +270,78 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertEqual(other["status"], "error", other)
         self.assertIn("NameError", other.get("error", ""))
 
+    def test_profiles_with_same_session_key_are_isolated(self):
+        """Profile-local sessions may reuse the same raw conversation key."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        def run_in_profile(profile_home, code):
+            token = set_hermes_home_override(profile_home)
+            try:
+                return self._run_as(
+                    "shared-conv",
+                    code,
+                    task_id="shared-turn",
+                )
+            finally:
+                reset_hermes_home_override(token)
+
+        with _kernel_config():
+            first = run_in_profile("/tmp/kernel-profile-a", "profile_secret = 'a'")
+            other = run_in_profile(
+                "/tmp/kernel-profile-b",
+                "print(globals().get('profile_secret', 'ISOLATED'))",
+            )
+
+        self.assertEqual(first["status"], "success", first)
+        self.assertIn("ISOLATED", other.get("output", ""), other)
+        self.assertEqual(other["kernel"]["reused"], False)
+
+    def test_profile_cleanup_preserves_same_owner_kernel_in_other_profile(self):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        def in_profile(profile_home, callback):
+            token = set_hermes_home_override(profile_home)
+            try:
+                return callback()
+            finally:
+                reset_hermes_home_override(token)
+
+        profile_a = "/tmp/kernel-cleanup-profile-a"
+        profile_b = "/tmp/kernel-cleanup-profile-b"
+        with _kernel_config():
+            in_profile(
+                profile_a,
+                lambda: self._run_as(
+                    "shared-conv", "profile_value = 'a'", task_id="turn-a"
+                ),
+            )
+            in_profile(
+                profile_b,
+                lambda: self._run_as(
+                    "shared-conv", "profile_value = 'b'", task_id="turn-b"
+                ),
+            )
+            in_profile(
+                profile_a,
+                lambda: shutdown_kernels_for_owner("shared-conv"),
+            )
+            remaining = in_profile(
+                profile_b,
+                lambda: self._run_as(
+                    "shared-conv", "print(profile_value)", task_id="turn-c"
+                ),
+            )
+
+        self.assertEqual(remaining["status"], "success", remaining)
+        self.assertIn("b", remaining.get("output", ""), remaining)
+        self.assertEqual(remaining["kernel"]["reused"], True)
+
     def test_delegated_children_get_their_own_kernels(self):
         """A delegated child runs in a COPY of the parent's context and
         inherits the parent's approval session key — the naive owner
@@ -388,7 +464,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
     """Interpreter state persists across cells; RPC authority must not."""
 
     def _recorder(self, seen):
-        def _handle(tool_name, tool_args, task_id=None):
+        def _handle(tool_name, tool_args, task_id=None, **kwargs):
             from tools.thread_context import _callback_api
 
             get_approval, _get_sudo, _set_a, _set_s = _callback_api()
@@ -396,6 +472,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
                 {
                     "tool": tool_name,
                     "task_id": task_id,
+                    "session_id": kwargs.get("session_id"),
                     "approval_cb": get_approval(),
                 }
             )

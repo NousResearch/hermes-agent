@@ -468,6 +468,23 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    def test_omniroute_wrapped_context_limit_without_status_triggers_compression(self):
+        e = Exception(
+            "HTTP 400: Request requires approximately 278690 tokens, but the "
+            "largest known context limit in this combo is 272000 tokens. "
+            "Reduce or compact the request context."
+        )
+        result = classify_api_error(
+            e,
+            provider="custom",
+            model="subscriptions-quality",
+            approx_tokens=191_765,
+            context_length=272_000,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
     def test_message_only_overloaded_without_status_is_overloaded(self):
         """Some Anthropic-compatible proxies surface 'overloaded' in the
         message with no 503/529 status_code. It must classify as overloaded

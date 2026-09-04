@@ -399,6 +399,9 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # allowed input length of 131040 tokens."  No other pattern in this list
     # matches that wording.  (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # OmniRoute combo admission errors can be re-wrapped without a usable
+    # status_code. Route the message-only form into compact-and-retry.
+    "largest known context limit",
 ]
 
 # Model not found patterns

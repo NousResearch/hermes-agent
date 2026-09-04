@@ -37,16 +37,17 @@ def test_routing_is_capability_driven_but_endpoint_denials_are_hard(monkeypatch)
     assert audio_routing.decide_audio_input_mode("openrouter", "vendor/muse-spark", "native") == "stt"
 
 
-def test_openai_incompatible_container_is_rejected_when_conversion_fails(monkeypatch, tmp_path):
+def test_direct_openai_aliases_reject_incompatible_container_when_conversion_fails(monkeypatch, tmp_path):
     import agent.audio_routing as audio_routing
 
     voice = tmp_path / "voice.ogg"
     voice.write_bytes(b"OggSvoice-bytes")
     monkeypatch.setattr(audio_routing, "transcode_audio_to_supported_format", lambda *_args: None)
 
-    parts, skipped = audio_routing.build_native_audio_content_parts(
-        "listen", [{"path": str(voice), "mime_type": "audio/ogg"}], target_provider="openai",
-    )
+    for provider in ("openai", "openai-api", "azure-foundry"):
+        parts, skipped = audio_routing.build_native_audio_content_parts(
+            "listen", [{"path": str(voice), "mime_type": "audio/ogg"}], target_provider=provider,
+        )
 
-    assert parts == [{"type": "text", "text": "listen"}]
-    assert skipped == [str(voice)]
+        assert parts == [{"type": "text", "text": "listen"}]
+        assert skipped == [str(voice)]

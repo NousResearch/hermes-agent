@@ -36,6 +36,7 @@ AUDIO_FORMAT_TO_MIME: Dict[str, str] = {
 
 _OPENAI_AUDIO_FORMAT_PROVIDERS = {
     "openai",
+    "openai-api",
     "azure",
     "azure-foundry",
     "azure-openai",

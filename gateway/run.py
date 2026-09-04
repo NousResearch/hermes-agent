@@ -2197,6 +2197,7 @@ from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_plugin_rewire import GatewayPluginRewireMixin
+from gateway.run_executor_lanes import GatewayExecutorLanesMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
@@ -3387,7 +3388,8 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin, GatewayProfileReconcileMixin, GatewayPluginRewireMixin):
+    GatewayAgentCacheMixin, GatewayProfileReconcileMixin, GatewayExecutorLanesMixin,
+    GatewayPluginRewireMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
@@ -3584,6 +3586,8 @@ class GatewayRunner(
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Best-effort session housekeeping runs on its OWN pool; see _run_housekeeping_in_executor.
         self._housekeeping_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        # Reserved lane for human-driven platforms when gateway.interactive_executor_workers > 0.
+        self._interactive_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect the pool.
         self._executor_closing = False
         # ALL per-session state lives here (gateway/session_state.py); use _session_state / _peek_session_state.
@@ -4298,11 +4302,15 @@ class GatewayRunner(
         finally:
             self._clear_session_env(tokens)
 
-    async def _run_in_executor_with_context(self, func, *args):
-        """Run blocking work in the thread pool while preserving session contextvars."""
+    async def _run_in_executor_with_context(self, func, *args, _interactive=False):
+        """Run blocking work in the thread pool while preserving session contextvars.
+
+        ``_interactive=True`` uses the reserved lane when ``gateway.interactive_executor_workers``
+        is set (gateway/run_executor_lanes.py); otherwise it is the shared pool."""
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(self._get_executor(), ctx.run, func, *args)
+        executor = self._get_interactive_executor() if _interactive else self._get_executor()
+        return await loop.run_in_executor(executor, ctx.run, func, *args)
 
     async def _run_housekeeping_in_executor(self, func, *args):
         """Run best-effort session housekeeping off the TURN pool.
@@ -4355,25 +4363,29 @@ class GatewayRunner(
         return list(getattr(executor, "_threads", None) or ())
 
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
-        """Stop the gateway-owned pools; returns the number of worker threads still running.
-        ``drain_timeout=0`` is fire-and-forget; shutdown passes a bounded budget so blocking DB work
-        cannot outlive ``SessionDB.close()``. ``cancel_futures`` only drops unstarted work and cancelling
-        a ``run_in_executor`` awaitable does not stop its thread, so running workers are joined — on
-        the turn pool AND the housekeeping pool, both of which write to SessionDB."""
+        """Stop the gateway-owned pools (turn + interactive lane + housekeeping); returns the number
+        of worker threads still running. ``drain_timeout=0`` is fire-and-forget; shutdown passes a
+        bounded budget so blocking DB work cannot outlive ``SessionDB.close()``. ``cancel_futures``
+        only drops unstarted work and cancelling a ``run_in_executor`` awaitable does not stop its
+        thread, so running workers are joined — on the turn pool AND the housekeeping pool, both of
+        which write to SessionDB."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
             return 0
         with lock:
             self._executor_closing = True
             executor = getattr(self, "_executor", None)
-            self._executor = None
+            interactive = getattr(self, "_interactive_executor", None)
             housekeeping = getattr(self, "_housekeeping_executor", None)
+            self._executor = None
+            self._interactive_executor = None
             self._housekeeping_executor = None
         # Housekeeping workers run SessionDB writes too (session finalize, agent cleanup), so a wedged
-        # one is exactly the mid-write worker the #101093 skip-close heuristic exists for. Both pools
-        # are therefore joined under the SAME drain deadline and both contribute to the live count.
+        # one is exactly the mid-write worker the #101093 skip-close heuristic exists for. All pools
+        # are therefore joined under the SAME drain deadline and all contribute to the live count.
         # Class-qualified: run_shutdown and tests invoke these unbound on a duck-typed `self`.
-        workers = GatewayRunner._stop_pool(executor) + GatewayRunner._stop_pool(housekeeping)
+        workers = (GatewayRunner._stop_pool(executor) + GatewayRunner._stop_pool(interactive)
+                   + GatewayRunner._stop_pool(housekeeping))
         deadline = time.monotonic() + max(float(drain_timeout or 0.0), 0.0)
         for worker in workers:
             remaining = deadline - time.monotonic()

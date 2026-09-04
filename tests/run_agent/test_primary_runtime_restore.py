@@ -35,6 +35,7 @@ def _make_agent(
     provider="custom",
     base_url="https://my-llm.example.com/v1",
     request_overrides=None,
+    reasoning_config=None,
 ):
     """Create a minimal AIAgent with optional fallback config."""
     with (
@@ -61,6 +62,7 @@ def _make_agent(
             skip_memory=True,
             fallback_model=fallback_model,
             request_overrides=dict(request_overrides or {}),
+            reasoning_config=reasoning_config,
         )
         agent.client = MagicMock()
         return agent
@@ -105,6 +107,14 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["compressor_provider"] == cc.provider
         assert rt["compressor_context_length"] == cc.context_length
         assert rt["compressor_threshold_tokens"] == cc.threshold_tokens
+
+    def test_snapshot_includes_reasoning_config(self):
+        agent = _make_agent(reasoning_config={"enabled": True, "effort": "medium"})
+
+        assert agent._primary_runtime["reasoning_config"] == {
+            "enabled": True,
+            "effort": "medium",
+        }
 
     def test_snapshot_includes_anthropic_state_when_applicable(self):
         """Anthropic-mode agents should snapshot Anthropic-specific state."""
@@ -177,6 +187,7 @@ class TestRestorePrimaryRuntime:
         agent._primary_runtime["model"] = "primary-model"
         original_model = agent.model
         original_provider = agent.provider
+
         mock_client = _mock_resolve()
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
@@ -193,6 +204,29 @@ class TestRestorePrimaryRuntime:
             f"✅ Primary model restored: {original_model} via {original_provider}; "
             "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
         ]
+
+    def test_restores_primary_reasoning_config(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+                "reasoning_effort": "high",
+            },
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        mock_client = _mock_resolve()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
 
     def test_does_not_label_temporary_model_restore_as_fallback_recovery(self):
         """`/model --once` reuses restore with no provider fallback lifecycle."""
@@ -711,7 +745,10 @@ class TestRestoreInRunConversation:
 
         # Turn 1: activate fallback
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
             assert agent._try_activate_fallback() is True
 
         assert agent._fallback_activated is True

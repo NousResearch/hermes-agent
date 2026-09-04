@@ -14,7 +14,7 @@ from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
-def _make_agent(fallback_model=None):
+def _make_agent(fallback_model=None, reasoning_config=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -28,6 +28,7 @@ def _make_agent(fallback_model=None):
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            reasoning_config=reasoning_config,
         )
         agent.client = MagicMock()
         return agent
@@ -105,8 +106,10 @@ class TestFallbackChainAdvancement:
             {"provider": "zai", "model": "glm-4.7"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                    return_value=(_mock_client(), "gpt-4o")):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
             assert agent._try_activate_fallback() is True
             assert agent._fallback_index == 1
             assert agent.model == "gpt-4o"
@@ -130,6 +133,16 @@ class TestFallbackChainAdvancement:
         )
         assert agent._pending_fallback_notice == [expected]
         assert agent._retry_status_buffer[-1] == ("status", expected)
+
+    def test_all_exhausted_returns_false(self):
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback() is False
 
     def test_records_sequential_switches_in_order(self):
         agent = _make_agent(
@@ -299,6 +312,119 @@ class TestFallbackChainAdvancement:
 
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
+
+    def test_fallback_entry_reasoning_effort_overrides_current_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": "high",
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+
+    def test_fallback_entry_reasoning_mapping_overrides_current_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning": {"enabled": False},
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "reasoning_config") == {"enabled": False}
+
+    def test_empty_fallback_reasoning_mapping_keeps_primary_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning": {},
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "medium"}
+
+    def test_fallback_entry_reasoning_effort_false_disables_reasoning(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": False,
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "reasoning_config") == {"enabled": False}
+
+    def test_bare_fallback_after_override_restores_primary_reasoning_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": "high",
+            },
+            {
+                "provider": "zai",
+                "model": "glm-4.7",
+            },
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "resolved"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "high"}
+
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "model") == "glm-4.7"
+        assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "medium"}
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

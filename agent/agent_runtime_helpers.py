@@ -1776,6 +1776,12 @@ def restore_primary_runtime(agent) -> bool:
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
         agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._client_kwargs = dict(rt["client_kwargs"])
+        _rt_reasoning_config = rt.get("reasoning_config")
+        agent.reasoning_config = (
+            dict(_rt_reasoning_config)
+            if isinstance(_rt_reasoning_config, dict)
+            else _rt_reasoning_config
+        )
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
         # native-vs-proxy split (older sessions saved before this PR).

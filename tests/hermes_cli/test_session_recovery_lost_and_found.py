@@ -569,3 +569,272 @@ def test_fingerprint_error_enumerates_parent_cli_session(
     assert "CLI session" in message
     assert "fresh shell" in message
     assert "snapshot" in message
+
+# ── header-damaged source: 'file is not a database' ─────────────────────────
+#
+# A SIGKILL mid-write can damage page 1 itself, which makes SQLite refuse the
+# file outright ('file is not a database') and takes the CLI .recover path
+# down with it — .recover opens the file like any other database. The data
+# pages below page 1 are usually intact, so a valid 100-byte header spliced
+# onto a copy of the file is enough to make page-level salvage work again
+# (validated on a real 335 MB incident file that gave back 136k rows).
+
+
+def _corrupt_header(path: Path, *, keep_page_size_bytes: bool) -> dict[str, int]:
+    """Scramble the first 100 bytes of a closed database file.
+
+    Deterministic damage (rotated bytes, destroyed magic string). With
+    ``keep_page_size_bytes=False`` the page-size field is also replaced with
+    3250 — not a power of two — mirroring the real incident file.
+    """
+    data = bytearray(path.read_bytes())
+    original_page_size_bytes = bytes(data[16:18])
+    garbage = bytearray(((byte + 91) % 256) for byte in data[:100])
+    garbage[0:16] = b"\x00" * 16          # 'SQLite format 3\x00' is gone
+    garbage[16:18] = b"\x0c\xb2"          # 3250: valid-looking, not a page size
+    if keep_page_size_bytes:
+        garbage[16:18] = original_page_size_bytes
+    data[:100] = garbage
+    path.write_bytes(bytes(data))
+    return {"page_size_bytes": original_page_size_bytes}
+
+
+def _make_header_damaged_source(
+    path: Path,
+    *,
+    keep_page_size_bytes: bool,
+) -> dict[str, int]:
+    """A fully header-damaged Hermes session DB with readable data pages."""
+    db = SessionDB(db_path=path)
+    try:
+        for session_number in range(3):
+            session_id = f"20260812_1353{session_number:02d}_abc{session_number:03x}"
+            db.create_session(session_id, "cli", cwd=f"/tmp/hdr-{session_number}")
+            db.set_session_title(session_id, f"Header {session_number}")
+            for message_number in range(9):
+                db.append_message(
+                    session_id,
+                    "user" if message_number % 2 == 0 else "assistant",
+                    f"header salvage payload {session_number} {message_number}",
+                )
+    finally:
+        db.close()
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    _corrupt_header(path, keep_page_size_bytes=keep_page_size_bytes)
+    return {"sessions": 3, "messages": 27}
+
+
+def _salvage_helper(symbol: str):
+    """Import one header-salvage helper lazily so RED runs fail per-test."""
+    import hermes_cli.session_lost_and_found as laf
+
+    helper = getattr(laf, symbol, None)
+    if helper is None:
+        pytest.fail(f"session_lost_and_found is missing header helper {symbol!r}")
+    return helper
+
+
+def test_header_damage_makes_sqlite_refuse_the_file(tmp_path: Path) -> None:
+    """Premise guard: the fixture must reproduce the incident symptom."""
+    source = tmp_path / "clean.db"
+    SessionDB(db_path=source).close()
+    _corrupt_header(source, keep_page_size_bytes=False)
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+            conn.execute("PRAGMA journal_mode").fetchone()
+    finally:
+        conn.close()
+
+
+def test_open_error_probe_distinguishes_refused_from_malformed(
+    tmp_path: Path,
+) -> None:
+    """'file is not a database' must be detected; malformed files must not."""
+    probe = _salvage_helper("detect_database_open_error")
+
+    refused = tmp_path / "refused.db"
+    SessionDB(db_path=refused).close()
+    _corrupt_header(refused, keep_page_size_bytes=True)
+    assert probe(refused) is not None
+
+    # Malformed but openable (schema page damaged): the plain lane must run.
+    malformed = tmp_path / "malformed.db"
+    _make_schema_unreadable_source(malformed)
+    assert probe(malformed) is None
+
+    healthy = tmp_path / "healthy.db"
+    SessionDB(db_path=healthy).close()
+    assert probe(healthy) is None
+
+
+def test_donor_header_is_a_valid_sqlite_header(tmp_path: Path) -> None:
+    """Header candidates: correct magic, page size, and sanitized ver bytes."""
+    make_header = _salvage_helper("build_sqlite_header")
+
+    header = make_header(8192, version_bytes=(1, 1))
+    assert header[:16] == b"SQLite format 3\x00"
+    assert int.from_bytes(header[16:18], "big") == 8192
+    assert tuple(header[18:20]) == (1, 1)
+    # A spliced header must be openable as a database again.
+    fresh = tmp_path / "fresh.db"
+    conn = sqlite3.connect(str(fresh))
+    conn.execute("CREATE TABLE seed (x)")
+    conn.commit()
+    conn.close()
+    data = bytearray(fresh.read_bytes())
+    data[:100] = header
+    repaired = tmp_path / "repaired.db"
+    repaired.write_bytes(bytes(data))
+    conn = sqlite3.connect(str(repaired), isolation_level=None)
+    try:
+        assert conn.execute("PRAGMA page_size").fetchone()[0] == 8192
+    finally:
+        conn.close()
+
+    # 65536 is encoded as 0x0001 per the SQLite file format.
+    header_big = make_header(65536, version_bytes=(2, 2))
+    assert int.from_bytes(header_big[16:18], "big") == 1
+    assert tuple(header_big[18:20]) == (2, 2)
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+@pytest.mark.parametrize("keep_page_size_bytes", [True, False])
+def test_header_salvage_lane_recovers_file_not_a_database_source(
+    tmp_path: Path,
+    keep_page_size_bytes: bool,
+) -> None:
+    """End to end: header-damaged source still yields a live session DB."""
+    source = tmp_path / "header-damaged.db"
+    output = tmp_path / "header-recovered.db"
+    expected = _make_header_damaged_source(
+        source, keep_page_size_bytes=keep_page_size_bytes
+    )
+
+    # Premise: the lane's usual CLI entry cannot even open the source.
+    probe = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+            probe.execute("PRAGMA journal_mode").fetchone()
+    finally:
+        probe.close()
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        allow_partial=True,
+    )
+
+    assert report["mode"] == "lost_and_found_salvage"
+    assert report["best_effort"] is True
+    salvage = report["sqlite3_cli"].get("header_salvage")
+    assert salvage, (
+        "the lost_and_found lane must record header salvage when the source "
+        f"cannot be opened; report={report['sqlite3_cli']}"
+    )
+    assert salvage["triggered"] is True
+    assert "not a database" in salvage["open_error"]
+    assert any(
+        "header" in warning.lower()
+        for warning in report["verification"]["warnings"]
+    )
+
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        message_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        payloads = conn.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'salvage'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert session_count == expected["sessions"]
+    assert message_count == expected["messages"]
+    assert payloads == expected["messages"]
+
+    recovered_db = SessionDB(db_path=output)
+    try:
+        assert len(recovered_db.list_sessions_rich(limit=10)) == expected["sessions"]
+    finally:
+        recovered_db.close()
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_header_salvage_is_skipped_for_openable_malformed_source(
+    tmp_path: Path,
+) -> None:
+    """Malformed-but-openable sources keep using the untouched plain lane."""
+    source = tmp_path / "schemaless.db"
+    output = tmp_path / "schemaless-recovered.db"
+    _make_schema_unreadable_source(source)
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        allow_partial=True,
+    )
+    assert report["mode"] == "lost_and_found_salvage"
+    assert report["sqlite3_cli"].get("header_salvage") is None
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_run_cli_recover_reports_header_salvage_result(tmp_path: Path) -> None:
+    """Unit level: run_cli_lost_and_found_recover repairs and labels itself."""
+    from hermes_cli.session_lost_and_found import (
+        LostAndFoundError,
+        run_cli_lost_and_found_recover,
+    )
+
+    source = tmp_path / "damaged.db"
+    _make_header_damaged_source(source, keep_page_size_bytes=False)
+    lf_path = tmp_path / "lost_and_found.db"
+
+    cli_report = run_cli_lost_and_found_recover(
+        source, lf_path, find_sqlite3_cli()
+    )
+    assert cli_report["header_salvage"]["triggered"] is True
+    salvage_source = Path(cli_report["header_salvage"]["repaired_source"])
+    assert salvage_source != source
+    # The repaired copy differs from the source only in the first 100 bytes.
+    original = source.read_bytes()
+    repaired = salvage_source.read_bytes()
+    assert len(repaired) == len(original)
+    assert repaired[100:] == original[100:]
+
+    conn = sqlite3.connect(str(lf_path))
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master")
+        }
+    finally:
+        conn.close()
+    assert "lost_and_found" in tables or {"sessions", "messages"} <= tables
+
+    # A source damaged beyond any header must still raise, not hang or lie.
+    hopeless = tmp_path / "hopeless.db"
+    hopeless.write_bytes(b"not a database at all, not even close" * 4)
+    with pytest.raises(LostAndFoundError):
+        run_cli_lost_and_found_recover(
+            hopeless, tmp_path / "hopeless_lf.db", find_sqlite3_cli()
+        )

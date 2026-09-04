@@ -1481,6 +1481,14 @@ def _recover_via_lost_and_found(
         "unreadable, so rows were rebuilt from raw pages and mapped "
         "heuristically. Review every count before trusting this output."
     )
+    salvage_report = cli_report.get("header_salvage")
+    if salvage_report and salvage_report.get("triggered"):
+        verification["warnings"].append(
+            "header salvage: SQLite refused to open the source "
+            f"({salvage_report.get('open_error')}), so a valid header was "
+            "spliced onto a private copy and pages were recovered from that "
+            "copy; the source file itself was not modified."
+        )
     verification["complete"] = False
 
     source_unchanged = (

@@ -19,6 +19,15 @@ Everything produced through this lane is explicitly **best effort**: column
 mapping is heuristic (field counts plus sentinel values), fabricated parent
 sessions are stubbed for orphaned child rows rather than deleting salvaged
 data, and derived FTS indexes are rebuilt from scratch.
+
+One corruption shape defeats the CLI lane before it starts: when page 1
+itself is damaged (SIGKILL mid-write after an OOM), SQLite refuses the file
+outright — ``file is not a database`` — and ``.recover`` opens files like any
+other client, so it fails too. The pages *after* page 1 usually survive
+intact. This module therefore first splices a valid 100-byte SQLite header
+onto a private copy of such a file (page size discovered from the damaged
+bytes when plausible, else a candidate sweep), then runs the normal
+``.recover`` flow against the repaired copy. The source is never modified.
 """
 
 from __future__ import annotations
@@ -115,18 +124,256 @@ def _cli_supports_recover(binary: str) -> bool:
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
-def run_cli_lost_and_found_recover(
+# ── header salvage (SQLite refuses a page-1-damaged file outright) ─────────
+
+
+SQLITE_HEADER_LENGTH = 100
+
+# The version-number bytes of a SQLite header are file-format revisions (1 =
+# rollback journal, 2 = WAL), not user data. A damaged pair makes SQLite
+# reject the file with 'unsupported file format', so a spliced header always
+# sanitizes them; WAL content without its -wal sidecar is lost anyway and the
+# rollback-mode bytes let SQLite read the main file directly.
+_SQLITE_VERSION_ROLLBACK = (1, 1)
+
+# Page sizes to try when the damaged bytes 16-17 are not a legal page size.
+# 4096 is the SQLite default and what Hermes state.db files use in practice.
+_HEADER_PAGE_SIZE_CANDIDATES = (4096, 8192, 16384, 65536, 2048, 1024, 512)
+
+
+_HEADER_REJECTION_HINTS = ("not a database", "unsupported file format")
+# SQLITE_NOTADB — raised when the 16-byte magic (or the version bytes) in
+# page 1 are damaged, i.e. the file is not recognized as a database at all.
+_SQLITE_NOTADB = 26
+
+
+def header_version_bytes(path: Path) -> tuple[int, int]:
+    """The write/read format version pair from the file's own header.
+
+    1 = rollback journal, 2 = WAL. Returns the pair only when the damaged
+    file still shows a consistent, legal value; the rollback default is the
+    safe choice for anything else (unmatched pairs make SQLite refuse the
+    file with 'unsupported file format', and a WAL header without its -wal
+    sidecar buys nothing).
+    """
+
+    try:
+        with path.open("rb") as handle:
+            pair = handle.read(20)[18:20]
+    except OSError:
+        pair = b""
+    if len(pair) == 2 and pair[0] == pair[1] and pair[0] in (1, 2):
+        return (pair[0], pair[1])
+    return _SQLITE_VERSION_ROLLBACK
+
+
+def detect_database_open_error(path: Path) -> Optional[str]:
+    """Return the header-rejection error when SQLite refuses ``path``, else None.
+
+    ``PRAGMA journal_mode`` is the first statement that parses the database
+    header (matching ``hermes_state._db_opens_cleanly``). Only rejections
+    that indict the header itself — ``file is not a database`` /
+    ``unsupported file format`` — are reported here; ``database disk image
+    is malformed`` means the file opens and the schema is damaged, which is
+    the existing page-level lane's normal input, not a header salvage case.
+    Operational errors (busy/locked) are reported as None so the plain
+    flow's own retries stay in charge.
+    """
+
+    code: Optional[int] = None
+    try:
+        conn = sqlite3.connect(str(path), isolation_level=None, timeout=1.0)
+    except sqlite3.DatabaseError as exc:
+        text = str(exc)
+        code = getattr(exc, "sqlite_errorcode", None)
+    else:
+        try:
+            conn.execute("PRAGMA journal_mode").fetchone()
+            return None
+        except sqlite3.DatabaseError as exc:
+            text = str(exc)
+            code = getattr(exc, "sqlite_errorcode", None)
+        except sqlite3.Error:
+            return None
+        finally:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+    lowered = text.lower()
+    if code == _SQLITE_NOTADB or any(hint in lowered for hint in _HEADER_REJECTION_HINTS):
+        return text
+    return None
+
+
+def _donor_header(
+    scratch_dir: Path,
+    page_size: int,
+    version_bytes: tuple[int, int],
+) -> bytes:
+    """Return a fresh valid 100-byte header for ``page_size``.
+
+    Built by letting SQLite itself write a minimal database (one table) at
+    the requested page size; only the version bytes are overridden.
+    """
+
+    donor = scratch_dir / f"header-donor-{page_size}.db"
+    if donor.exists():
+        donor.unlink()
+    conn = sqlite3.connect(str(donor), isolation_level=None)
+    try:
+        conn.execute(f"PRAGMA page_size={page_size}")
+        conn.execute("CREATE TABLE hermes_header_donor (x)")
+        conn.execute("INSERT INTO hermes_header_donor VALUES (1)")
+    finally:
+        conn.close()
+    header = bytearray(donor.read_bytes()[:SQLITE_HEADER_LENGTH])
+    if len(header) != SQLITE_HEADER_LENGTH:
+        raise LostAndFoundError(
+            f"header donor at page size {page_size} produced a short file"
+        )
+    header[18] = version_bytes[0]
+    header[19] = version_bytes[1]
+    donor.unlink(missing_ok=True)
+    return bytes(header)
+
+
+def build_sqlite_header(
+    page_size: int,
+    version_bytes: tuple[int, int] = _SQLITE_VERSION_ROLLBACK,
+) -> bytes:
+    """Public wrapper around the donor header for tests and reuse."""
+
+    with tempfile.TemporaryDirectory(prefix="hermes-header-donor-") as tmp:
+        return _donor_header(Path(tmp), page_size, version_bytes)
+
+
+def header_page_size_candidates(path: Path) -> list[int]:
+    """Plausible page sizes for a header-damaged file, best guess first.
+
+    bytes 16-17 of the file are the page size (1 means 65536); when those
+    bytes themselves are damaged the standard sizes are swept, default first.
+    """
+
+    candidates: list[int] = []
+    try:
+        with path.open("rb") as handle:
+            size_bytes = handle.read(18)[16:18]
+    except OSError:
+        size_bytes = b""
+    if len(size_bytes) == 2:
+        raw = int.from_bytes(size_bytes, "big")
+        page_size = 65536 if raw == 1 else raw
+        if 512 <= page_size <= 65536 and page_size & (page_size - 1) == 0:
+            candidates.append(page_size)
+    for standard in _HEADER_PAGE_SIZE_CANDIDATES:
+        if standard not in candidates:
+            candidates.append(standard)
+    return candidates
+
+
+def _splice_header(
+    source: Path,
+    repaired: Path,
+    header: bytes,
+) -> None:
+    """Write ``source`` with its first 100 bytes replaced by ``header``.
+
+    Streamed so a 335 MB damaged database costs one streamed copy, not two
+    in-memory loads.
+    """
+
+    with source.open("rb") as handle:
+        tail = handle.read(SQLITE_HEADER_LENGTH)
+        if len(tail) < SQLITE_HEADER_LENGTH:
+            raise LostAndFoundError(
+                "source file is shorter than a SQLite header; it is not a "
+                "page-1-damaged database"
+            )
+    with source.open("rb") as read_handle, repaired.open("wb") as write_handle:
+        read_handle.seek(SQLITE_HEADER_LENGTH)
+        write_handle.write(header[:SQLITE_HEADER_LENGTH])
+        shutil.copyfileobj(read_handle, write_handle, length=1024 * 1024)
+
+
+def salvage_header_damaged_source(
     source: Path,
     lf_path: Path,
     sqlite3_bin: str,
     *,
-    timeout: float = 3600.0,
-) -> dict[str, Any]:
-    """Run ``sqlite3 <source> .recover`` streamed into a fresh scratch DB.
+    timeout: float,
+) -> Optional[dict[str, Any]]:
+    """Splice a valid header onto a copy and retry ``.recover``.
 
-    ``--ignore-freelist`` avoids resurrecting deleted rows; older shells
-    without that option fall back to a plain ``.recover``.
+    Returns a report dict when the source cannot be opened at all and one of
+    the candidate headers makes the existing ``.recover`` flow produce a
+    usable lost_and_found database; ``None`` when the source opens fine
+    (nothing to do) or no candidate worked (the caller keeps its own error).
+    Never touches ``source``.
     """
+
+    open_error = detect_database_open_error(source)
+    if open_error is None:
+        return None
+
+    salvage_dir = Path(
+        tempfile.mkdtemp(prefix="hermes-header-salvage-", dir=str(lf_path.parent))
+    )
+    try:
+        # Keep the file's own journal-format version pair when its header
+        # bytes survived; otherwise default to rollback mode.
+        version_bytes = header_version_bytes(source)
+        # The repaired copy lives beside lost_and_found.db, inside the
+        # snapshot directory that the caller owns and removes when recovery
+        # finishes; the transient donor files are removed here.
+        repaired = lf_path.with_name(f"{source.name}.header-fixed")
+        recover_error: Optional[str] = None
+        for page_size in header_page_size_candidates(source):
+            try:
+                header = _donor_header(salvage_dir, page_size, version_bytes)
+            except (LostAndFoundError, OSError, sqlite3.Error):
+                continue
+            try:
+                _splice_header(source, repaired, header)
+            except (LostAndFoundError, OSError):
+                return None  # too short to be a damaged SQLite file
+            try:
+                report = _run_cli_recover_attempts(
+                    repaired, lf_path, sqlite3_bin, timeout=timeout
+                )
+            except LostAndFoundError as exc:
+                if "not a database" not in str(exc).lower():
+                    # The header was accepted but the surviving pages are
+                    # damaged beyond .recover — a different page size will
+                    # not change that. Keep the real error for the report.
+                    recover_error = str(exc)
+                    break
+                continue
+            report["header_salvage"] = {
+                "triggered": True,
+                "open_error": open_error,
+                "page_size": page_size,
+                "repaired_source": str(repaired),
+            }
+            return report
+        return {
+            "triggered": False,
+            "open_error": open_error,
+            "candidates_tried": header_page_size_candidates(source),
+            "recover_error": recover_error,
+        }
+    finally:
+        shutil.rmtree(salvage_dir, ignore_errors=True)
+
+
+def _run_cli_recover_attempts(
+    source: Path,
+    lf_path: Path,
+    sqlite3_bin: str,
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    """The ``.recover`` command attempts, extracted for header retry."""
 
     attempts: list[dict[str, Any]] = []
     for command in (".recover --ignore-freelist", ".recover"):
@@ -177,6 +424,47 @@ def run_cli_lost_and_found_recover(
             for a in attempts
         )
     )
+
+
+def run_cli_lost_and_found_recover(
+    source: Path,
+    lf_path: Path,
+    sqlite3_bin: str,
+    *,
+    timeout: float = 3600.0,
+) -> dict[str, Any]:
+    """Run ``sqlite3 <source> .recover`` streamed into a fresh scratch DB.
+
+    ``--ignore-freelist`` avoids resurrecting deleted rows; older shells
+    without that option fall back to a plain ``.recover``.
+
+    When SQLite refuses to open ``source`` at all (damaged page 1 reports
+    ``file is not a database``), a valid header is spliced onto a private
+    copy first — the source is never modified — and the copy is recovered.
+    """
+
+    salvage = salvage_header_damaged_source(
+        source, lf_path, sqlite3_bin, timeout=timeout
+    )
+    if salvage is not None and salvage.get("header_salvage", {}).get("triggered"):
+        return salvage
+
+    try:
+        report = _run_cli_recover_attempts(
+            source, lf_path, sqlite3_bin, timeout=timeout
+        )
+    except LostAndFoundError as exc:
+        if salvage is not None:
+            raise LostAndFoundError(
+                f"{exc}; a valid header was also spliced onto a copy of the "
+                f"source (open error: {salvage['open_error']!r}; page-size "
+                f"candidates tried: {salvage['candidates_tried']}) and the "
+                "recovered copy still produced no usable rows"
+            ) from None
+        raise
+    if salvage is not None:
+        report["header_salvage"] = salvage
+    return report
 
 
 def _lost_and_found_db_usable(lf_path: Path) -> bool:

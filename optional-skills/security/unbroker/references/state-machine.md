@@ -30,7 +30,7 @@ not_found            -> searching | found | indirect_exposure | blocked
 found                -> action_selected | submitted | human_task_queued | indirect_exposure | blocked
 indirect_exposure    -> submitted | human_task_queued | not_found | found | blocked
 action_selected      -> submitted | human_task_queued | blocked
-submitted            -> verification_pending | awaiting_processing | human_task_queued | blocked
+submitted            -> verification_pending | awaiting_processing | confirmed_removed | human_task_queued | blocked
 verification_pending -> awaiting_processing | confirmed_removed | human_task_queued | blocked
 awaiting_processing  -> confirmed_removed | human_task_queued | blocked
 confirmed_removed    -> reappeared | confirmed_removed   (recheck refreshes the date)
@@ -50,6 +50,12 @@ A transition to the same state is always allowed (idempotent field updates).
   opt-out whose matcher says "no results" after you have already submitted is recorded
   `awaiting_processing`, not `not_found`.)
 - **`blocked -> submitted` is ILLEGAL directly** - go `blocked -> action_selected -> submitted`.
+- **`submitted -> confirmed_removed` is for no-verification submissions only.** A plain web form or a
+  right-to-delete email with no email-confirmation loop is re-verified straight from `submitted` by the
+  due-recheck re-scan, and if the listing is gone that re-scan records `confirmed_removed` directly.
+  Brokers that verify by email still go `submitted -> verification_pending -> awaiting_processing ->
+  confirmed_removed`; `confirmed_removed` is still only ever recorded by a verifying re-scan, never by
+  the submission flow's own say-so.
 - **Recording an operator's manual verdict:** attach an `operator_manual_check` evidence note. A
   dead / 404 site, or an operator-confirmed "no results" search, is a valid `not_found`.
 - **`--evidence` shell gotcha:** an `--evidence` JSON string containing a literal `&` trips the shell's

@@ -319,3 +319,57 @@ def test_safe_getcwd_falls_back_to_home_when_no_terminal_cwd(monkeypatch):
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.setattr(terminal_tool.os.path, "expanduser", lambda p: "/home/me")
     assert terminal_tool._safe_getcwd() == "/home/me"
+
+
+def test_live_env_cwd_override_skipped_for_host_path_on_container_backend(monkeypatch):
+    """A host workspace registered onto a LIVE container env must not poison env.cwd.
+
+    Desktop/TUI surfaces call register_task_env_overrides with their host
+    workspace (/Users/<user>) on every turn. Written raw onto a container
+    env, every exec dies at `cd <host path>` (exit 126) and file tools
+    misreport existing files as missing.
+    """
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_container_aliases", {})
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda value: value or "default"
+    )
+    monkeypatch.setattr(terminal_tool, "record_session_cwd", lambda session_key, cwd: None)
+    monkeypatch.setattr(
+        terminal_tool, "_get_env_config",
+        lambda: _minimal_terminal_config(cwd="/workspace"),
+    )
+    # make the local env config claim a container backend
+    config = _minimal_terminal_config(cwd="/workspace")
+    config["env_type"] = "docker"
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+
+    class FakeEnv:
+        env = {}
+        cwd = "/workspace"
+
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"desktop-session": FakeEnv()})
+
+    terminal_tool.register_task_env_overrides(
+        "desktop-session", {"cwd": "/Users/kokhlo/Projects"}
+    )
+
+    live_env = terminal_tool._active_environments["desktop-session"]
+    assert live_env.cwd == "/workspace", "host path must not overwrite the live env cwd"
+
+    # in-sandbox absolute paths still propagate to the live env
+    terminal_tool.register_task_env_overrides(
+        "desktop-session", {"cwd": "/root/project"}
+    )
+    assert live_env.cwd == "/root/project"
+
+    # local backend keeps accepting host paths (no container guard)
+    local_config = _minimal_terminal_config(cwd="/home/user/proj")
+    local_config["env_type"] = "local"
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: local_config)
+    terminal_tool.register_task_env_overrides(
+        "desktop-session", {"cwd": "/home/user/proj/newroot"}
+    )
+    assert live_env.cwd == "/home/user/proj/newroot"

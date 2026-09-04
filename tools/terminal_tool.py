@@ -293,7 +293,22 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            # A live container's cwd must stay a path that exists inside the
+            # sandbox. Desktop/TUI surfaces register their HOST workspace
+            # (/Users/<user>, C:\Users\<user>) on every turn; written raw onto
+            # the env it makes every exec fail at `cd <host path>` (exit 126)
+            # while file tools misreport it as "File not found". Same guard
+            # class as the env-creation and per-command sites — skip the
+            # override instead of poisoning the live environment.
+            env_type = overrides.get("env_type") or _get_env_config().get("env_type", "local")
+            if not (_is_container_backend(env_type) and _is_unusable_container_cwd(new_cwd)):
+                env.cwd = new_cwd
+            else:
+                logger.info(
+                    "Skipping live-env cwd override %r for %s backend "
+                    "(host/relative path won't work in sandbox).",
+                    new_cwd, env_type,
+                )
 
 
 def clear_task_env_overrides(task_id: str):

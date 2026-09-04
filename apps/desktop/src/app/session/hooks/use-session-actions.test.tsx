@@ -81,8 +81,8 @@ import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
-import { useSessionStateCache } from './use-session-state-cache'
 import { upsertOptimisticSession } from './use-session-actions/utils'
+import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),

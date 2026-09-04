@@ -21,7 +21,6 @@ import {
   ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
-  setUnlistedSessionOwnerRows,
   setCronSessions,
   setCurrentBranch,
   setCurrentCwdTransient,
@@ -35,6 +34,7 @@ import {
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
+  setUnlistedSessionOwnerRows,
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'

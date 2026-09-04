@@ -367,3 +367,29 @@ def test_render_both_emitted_link_and_job_url():
     assert " · " in body
 
 
+
+
+# ─── workflow-run conclusions ─────────────────────────────────────────
+
+
+def test_a_run_that_stopped_without_passing_becomes_a_blocking_item():
+    """A run with zero jobs leaves ``needs_json`` empty; the run itself blocks."""
+    body = _mod.assemble(
+        needs_json="",
+        runs_json=json.dumps({"CI": "action_required"}),
+        run_urls={"CI": "https://example/runs/1"},
+    )
+    assert "all good!" not in body
+    assert "## ❌ Job failures" in body
+    assert "CI (workflow run)" in body
+    assert "action_required" in body
+    assert "[View run](https://example/runs/1)" in body
+
+
+def test_no_runs_json_leaves_the_banner_alone():
+    assert "all good!" in _mod.assemble(needs_json="", runs_json="")
+
+
+def test_malformed_runs_json_is_ignored_rather_than_crashing():
+    assert "all good!" in _mod.assemble(runs_json="{not json")
+    assert "all good!" in _mod.assemble(runs_json='["CI"]')

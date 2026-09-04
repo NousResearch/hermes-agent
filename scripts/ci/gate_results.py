@@ -37,7 +37,9 @@ def failing_jobs(results: dict[str, str]) -> list[str]:
     """Names of jobs whose result does not satisfy the gate, sorted.
 
     An unknown or missing result counts as failing: the gate never guesses
-    that a job it cannot read was green.
+    that a job it cannot read was green. An empty ``results`` dict is
+    handled by :func:`main`, which refuses to pass a gate that was handed
+    no job to judge.
     """
     return sorted(name for name, result in results.items() if result not in PASSING_RESULTS)
 
@@ -63,6 +65,10 @@ def main() -> int:
 
     for line in render_lines(results):
         print(line)
+
+    if not results:
+        print("::error::the gate received no job results at all")
+        return 1
 
     failed = failing_jobs(results)
     if failed:

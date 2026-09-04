@@ -96,3 +96,14 @@ def test_cli_emits_compact_needs_json_for_the_comment_assembler(monkeypatch, tmp
     assert key == "needs-json"
     assert json.loads(payload) == {"tests": "cancelled", "lint": "success"}
     assert written.strip() in capsys.readouterr().out
+
+
+def test_cli_refuses_a_gate_it_was_handed_no_results_for(monkeypatch, capsys):
+    """An empty ``needs`` context is an absence of evidence, not a pass.
+
+    Same shape as the run-level defect in ``live_comment.py``: nothing
+    reported must never settle as everything green.
+    """
+    exit_code = _run({}, monkeypatch)
+    assert exit_code == 1
+    assert "::error::the gate received no job results at all" in capsys.readouterr().out

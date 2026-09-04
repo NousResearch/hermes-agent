@@ -196,6 +196,48 @@ def collect_failed_jobs(
     return items
 
 
+def collect_failed_runs(
+    runs_json: str,
+    run_urls: dict[str, str] | None = None,
+) -> list[ReviewItem]:
+    """Build error items for workflow runs that finished without passing.
+
+    ``runs_json`` is a ``{workflow_name: conclusion}`` dict of *runs*, not
+    jobs. The two are separate settlement coordinates: a run concludes
+    ``cancelled``, ``action_required`` or ``startup_failure`` while its
+    jobs endpoint returns nothing at all, so :func:`collect_failed_jobs`
+    sees an empty ``needs`` and produces no item. Without this collector
+    the comment then renders "all good!" for a commit on which nothing
+    ran — the same false green the merge gate exists to prevent.
+
+    ``run_urls`` is an optional ``{workflow_name: html_url}`` dict linking
+    each item to the run's own page.
+    """
+    if not runs_json:
+        return []
+    try:
+        runs = json.loads(runs_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(runs, dict):
+        return []
+
+    items: list[ReviewItem] = []
+    for name, conclusion in sorted(runs.items()):
+        items.append(ReviewItem(
+            severity="error",
+            title=f"{name} (workflow run)",
+            summary=(
+                f"Workflow run **{name}** finished with conclusion "
+                f"`{conclusion}`. A run that does not conclude `success` or "
+                f"`skipped` has not passed, whether or not it produced jobs."
+            ),
+            link=str((run_urls or {}).get(name, "")),
+            link_label="View run",
+        ))
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -377,6 +419,8 @@ def assemble(
     pending_jobs: list[str] | None = None,
     commit_info: str = "",
     waiting: bool = False,
+    runs_json: str = "",
+    run_urls: dict[str, str] | None = None,
 ) -> str:
     """Assemble the full comment body from all available inputs."""
     items: list[ReviewItem] = []
@@ -388,7 +432,11 @@ def assemble(
     # 2. Synthesized error items for failed jobs not covered by statuses
     items.extend(collect_failed_jobs(needs_json, run_url, exclude_sources=sources, job_urls=job_urls))
 
-    # 3. Attach per-job log links to all items (not just synthesized errors)
+    # 3. Workflow runs that stopped without passing — a run that produced no
+    #    job at all leaves nothing for step 2 to report.
+    items.extend(collect_failed_runs(runs_json, run_urls))
+
+    # 4. Attach per-job log links to all items (not just synthesized errors)
     _attach_job_urls(items, job_urls or {}, run_url)
 
     return render_comment(items, pending_jobs, commit_info, waiting=waiting)

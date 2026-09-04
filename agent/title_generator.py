@@ -39,6 +39,29 @@ MAX_DERIVED_TITLE_CHARS = 48
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
 
+# The example titles shown to the model in the prompt, and the echo-guard
+# set: when the opening message carries little topical signal, a small model
+# sometimes takes the cheapest schema-valid answer and parrots one of these
+# back verbatim — most visibly "Fix login button on mobile" naming sessions
+# that have nothing to do with a login button. The prompt's example lines are
+# rendered from these constants so the guard set and the prompt cannot drift
+# apart. Port of QwenLM/qwen-code#9709.
+_PROMPT_GOOD_EXAMPLES = (
+    "Fix login button on mobile",
+    "Postgres connection pool exhaustion",
+    "Friendly greeting",
+)
+_PROMPT_VAGUE_EXAMPLE = "Code changes"
+
+# "Friendly greeting" is deliberately NOT in the reject set: the prompt
+# instructs the model to produce it for bare greetings, so it is a legitimate
+# output, not an echo failure. The too-vague example is rejected too — a model
+# repeating the counter-example says nothing about the session, and the
+# derived title the guard falls back to is strictly more informative.
+_EXAMPLE_ECHO_REJECT = frozenset(
+    t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
+) | {_PROMPT_VAGUE_EXAMPLE.lower()}
+
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
     "that lets them find this conversation again in a list.\n\n"
@@ -51,10 +74,8 @@ _TITLE_PROMPT_TEMPLATE = (
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
     "__LANGUAGE_RULE__\n"
-    'Good: {"title": "Fix login button on mobile"}\n'
-    'Good: {"title": "Postgres connection pool exhaustion"}\n'
-    'Good: {"title": "Friendly greeting"}\n'
-    'Too vague: {"title": "Code changes"}\n'
+    + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
+    + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
     'Too long: {"title": "Investigate and fix the issue where the login button '
     'does not respond on mobile devices"}\n\n'
     'Reply with JSON only: {"title": "..."}'
@@ -229,6 +250,18 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
     _safe_callback(title_callback, (title, source), "%s callback failed", label)
 
 
+def _is_prompt_example_echo(title: str) -> bool:
+    """Return True when *title* is one of the prompt's own example titles.
+
+    Comparison is case-insensitive after stripping any leading/trailing run of
+    non-letter/non-digit characters, so bracket/quote wrappers cannot bypass
+    the guard — while ``_clean_title`` keeps brackets for real titles like
+    "(WIP) Fix build". Unicode-aware so full-width wrappers are covered too.
+    """
+    normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
+    return normalized in _EXAMPLE_ECHO_REJECT
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -277,6 +310,17 @@ def generate_title(
         if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
             logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+            return None
+        # Example-echo guard: a title that parrots one of the prompt's own
+        # examples back verbatim says nothing about the session — reject it so
+        # the instant derived title (a slice of the user's actual words)
+        # survives instead. Exact match after wrapper-stripping, deliberately
+        # not fuzzy, so a genuinely topical title that merely resembles an
+        # example still passes. Wrappers are stripped for the comparison only
+        # ("(Fix login button on mobile)" is the same canned echo as the bare
+        # example). Port of QwenLM/qwen-code#9709.
+        if title is not None and _is_prompt_example_echo(title):
+            logger.debug("Rejecting prompt-example echo title: %r", title)
             return None
         return title
     except Exception as e:

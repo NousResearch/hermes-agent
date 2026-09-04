@@ -668,6 +668,12 @@ def _append_unconfigured_rows(
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
+    # ``model_catalog.excluded_providers`` must hide a provider on every
+    # surface. list_authenticated_providers honours it for authenticated
+    # rows; the unconfigured skeletons appended here bypassed it, so an
+    # excluded provider still surfaced in the TUI/desktop/web pickers.
+    # The current provider stays visible even if excluded (saved-model row).
+    seen |= {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p} - {cur}
     cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:

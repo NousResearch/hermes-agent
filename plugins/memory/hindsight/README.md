@@ -86,7 +86,7 @@ Config file: `~/.hermes/hindsight/config.json`
 >
 > Per [Hindsight's docs](https://hindsight.vectorize.io/developer/observations), observations are the **consolidated** knowledge layer Hindsight builds on top of raw facts: deduplicated beliefs grounded in evidence, refined as new facts arrive, with proof counts and freshness signals. Raw `world` / `experience` facts are the individual supporting evidence that feeds them. For per-turn context injection, observations are denser per token and avoid feeding the model multiple raw facts that one observation already summarizes.
 >
-> Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
+> Restore broad recall globally with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. Auto-recall uses this setting. Explicit `hindsight_recall` calls default to it but can override `types` for one evidence-oriented search without changing subsequent auto-recall.
 
 ### Retain
 
@@ -130,8 +130,17 @@ Available in `hybrid` and `tools` memory modes:
 | Tool | Description |
 |------|-------------|
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
-| `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
+| `hindsight_recall` | Multi-strategy search with source metadata; optional per-call `budget`, `max_tokens`, `types`, `tags`, `tags_match`, and `include_source_facts` |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+
+Explicit recall reports available fact IDs, types, document IDs, timestamps, tags,
+and observation source-fact IDs. Supporting source metadata is requested by default;
+set `include_source_facts: false` to omit that additional lookup. Returned timestamps
+describe recorded events/mentions and do not prove that an operational fact is still
+current. Automatic context injection keeps its existing text-only format and budget.
+Per-call `max_tokens` accepts 128..8192; the source-fact token budget uses the same
+value in addition to the result budget. An explicit `tags: []` clears the configured
+tag filter for that call only.
 
 ## Environment Variables
 

@@ -81,6 +81,16 @@ class TestNewlineFlattening:
         assert "First line" in spoken
         assert "Third paragraph" in spoken
 
+    def test_default_does_not_silently_truncate_visible_reply(self):
+        raw = "A" * 4500
+        spoken = prepare_spoken_text(raw)
+        assert len(spoken) == 4500
+
+    def test_explicit_max_chars_still_truncates_when_requested(self):
+        raw = "B" * 50
+        spoken = prepare_spoken_text(raw, max_chars=10)
+        assert spoken == "B" * 10
+
 
     def test_existing_punctuation_not_doubled(self):
         out = flatten_newlines_for_payload("Alpha.\nBeta!")

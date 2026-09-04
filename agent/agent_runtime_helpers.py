@@ -90,6 +90,19 @@ _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# Reasoning-prefix orphan-close shape (#96735): GLM models served via Ollama
+# can inline reasoning with only a closing tag — the chat template swallows
+# the opening <think>, leaving "reasoning</think>answer" in the stored
+# content. Everything from the start of the content up to the first orphan
+# close tag is reasoning. Applied at most once, GLM models only (see step 2b
+# in strip_think_blocks); other models keep the conservative tag-only orphan
+# cleanup so a literal </think> quoted at the head of a docs/teaching reply
+# never has its leading text eaten.
+_REASONING_PREFIX_ORPHAN_CLOSE_PATTERN = re.compile(
+    rf'^.*?</(?:{"|".join(_REASONING_TAG_NAMES)})>',
+    re.DOTALL | re.IGNORECASE,
+)
+
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(_REASONING_TAG_NAMES)})>\s*',
     re.IGNORECASE,
@@ -985,7 +998,7 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
-    Handles four cases:
+    Handles five cases:
       1. Closed tag pairs (`` <think>… ``) — the common path when
          the provider emits complete reasoning blocks.
       2. Unterminated open tag at a block boundary (start of text or
@@ -994,6 +1007,12 @@ def strip_think_blocks(agent, content: str) -> str:
          of string is stripped.  The block-boundary check mirrors
          ``gateway/stream_consumer.py``'s filter so models that mention
          `` <think>`` in prose aren't over-stripped.
+      2b. Reasoning-prefix orphan close for GLM models (#96735) — GLM via
+         Ollama can inline reasoning whose opening tag was swallowed by
+         the chat template, leaving ``reasoning</think>answer``; the
+         prefix up to the first orphan close tag is reasoning and is
+         stripped.  GLM model ids only, so a literal ``</think>``
+         quoted in other models' prose keeps its leading text.
       3. Stray orphan open/close tags that slip through.
       4. Tag variants: `` <think>``, ``<thinking>``, ``<reasoning>``,
          ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
@@ -1069,6 +1088,17 @@ def strip_think_blocks(agent, content: str) -> str:
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
     content = _UNTERMINATED_REASONING_BLOCK_PATTERN.sub('', content)
+    # 2b. Reasoning-prefix orphan close (#96735): GLM models via Ollama can
+    #     emit inline reasoning whose OPENING tag was swallowed by the chat
+    #     template, so any close tag still standing after steps 1–2 marks
+    #     everything before it as reasoning. Strip that prefix, at most
+    #     once, and only for GLM model ids — a literal </think> quoted at
+    #     the head of another model's reply (docs/teaching output) must
+    #     keep its leading text. A None agent (context_compressor calls)
+    #     has no model context and keeps the conservative behavior.
+    from agent.model_metadata import _model_name_suggests_glm
+    if _model_name_suggests_glm(str(getattr(agent, "model", "") or "")):
+        content = _REASONING_PREFIX_ORPHAN_CLOSE_PATTERN.sub('', content, count=1)
     # 3. Stray orphan open/close tags that slipped through.
     content = _ORPHAN_REASONING_TAG_PATTERN.sub('', content)
     # 3b. Stray tool-call closers. (We do NOT strip bare <function> or

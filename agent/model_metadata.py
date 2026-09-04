@@ -2302,6 +2302,19 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
     return "minimax-m3" in model.lower()
 
 
+def _model_name_suggests_glm(model: str) -> bool:
+    """Return True if the model name looks like a GLM-family model.
+
+    Catches ``glm-5.3``, ``z-ai-glm-5-3``, ``zhipuai/glm-5.2``, and similar
+    variants across surfaces. Used by the orphan-close reasoning-prefix strip
+    in agent_runtime_helpers.strip_think_blocks: GLM models served through
+    Ollama can inline reasoning with only a closing ``</think>`` (the chat
+    template swallows the opening tag), a shape the generic tag-only orphan
+    cleanup deliberately leaves alone for non-GLM models (#96735).
+    """
+    return "glm" in model.lower()
+
+
 # Catalog keys whose DEFAULT_CONTEXT_LENGTHS entry was added AFTER the model
 # first became reachable through a shorter catch-all (or the 256K probe
 # fallback).  Builds from that window persisted the catch-all's value, and

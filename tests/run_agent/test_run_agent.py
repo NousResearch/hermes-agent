@@ -478,6 +478,54 @@ class TestStripThinkBlocks:
     ):
         assert agent._strip_think_blocks(text) == expected
 
+    # ─── GLM orphan-close reasoning prefix (#96735) ──────────────────────
+    # GLM served via Ollama inlines reasoning whose opening <think> was
+    # swallowed by the chat template, leaving "reasoning</think>answer" in
+    # the stored content. For GLM model ids everything before the first
+    # orphan close tag is reasoning and is stripped; every other model
+    # keeps the conservative tag-only orphan cleanup so a literal
+    # </think> quoted in prose never loses its leading text.
+
+    @pytest.mark.parametrize(
+        "model_id", ["glm-5.3", "z-ai-glm-5-3", "GLM-5.2"]
+    )
+    def test_glm_orphan_close_strips_reasoning_prefix(self, agent, model_id):
+        agent.model = model_id
+        result = agent._strip_think_blocks(
+            "The user says agents show thinking.</think>NO_REPLY"
+        )
+        assert result == "NO_REPLY"
+
+    def test_glm_orphan_close_strips_only_first_prefix(self, agent):
+        agent.model = "glm-5.3"
+        result = agent._strip_think_blocks(
+            "reasoning one</think>answer mentions </think> again"
+        )
+        assert result == "answer mentions again"
+
+    def test_glm_closed_pair_behavior_unchanged(self, agent):
+        agent.model = "glm-5.3"
+        result = agent._strip_think_blocks("<think>reasoning</think>answer")
+        assert result == "answer"
+
+    def test_non_glm_orphan_close_keeps_leading_text(self, agent):
+        """A literal </think> quoted mid-prose by a non-GLM model keeps
+        the text before it — only the bare tag is removed (step 3)."""
+        agent.model = "minimax-m2.7"
+        result = agent._strip_think_blocks(
+            "To close a block use </think> in code."
+        )
+        assert result == "To close a block use in code."
+
+    def test_none_agent_keeps_conservative_cleanup(self):
+        """context_compressor calls with agent=None have no model context
+        and must keep the pre-#96735 tag-only orphan behavior."""
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        assert strip_think_blocks(None, "reasoning</think>answer") == (
+            "reasoninganswer"
+        )
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

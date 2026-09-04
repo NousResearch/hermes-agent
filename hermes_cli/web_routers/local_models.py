@@ -677,6 +677,7 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
     from hermes_cli.local_runtime.binaries import (
         default_tag,
         resolve_assets,
+        resolve_assets_ladder,
         select_backend,
     )
     from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
@@ -684,11 +685,18 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
     section = _runtime_section()
     tag = section.get("tag") or default_tag()
     backend = body.backend or section.get("backend", "auto")
-    if backend == "auto":
+    auto = backend == "auto"
+    if auto:
         backend = select_backend(_detect_gpu_vendor())
     # Resolve first so an impossible combination fails the POST, not the job.
+    # An auto-detected backend rides the cuda -> vulkan -> cpu ladder (e.g.
+    # Linux NVIDIA picks cuda but no prebuilt ships); an explicit choice
+    # keeps the resolver's honest error.
     try:
-        plan = resolve_assets(tag, backend)
+        if auto:
+            plan, backend = resolve_assets_ladder(tag, backend)
+        else:
+            plan = resolve_assets(tag, backend)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -921,6 +929,7 @@ async def local_models_quickstart(body: QuickstartBody):
         default_tag,
         installed_tags,
         resolve_assets,
+        resolve_assets_ladder,
         select_backend,
     )
     from hermes_cli.local_runtime.bootstrap import (
@@ -969,13 +978,20 @@ async def local_models_quickstart(body: QuickstartBody):
     section = _runtime_section()
     tag = section.get("tag") or default_tag()
     backend = section.get("backend", "auto")
-    if backend == "auto":
+    auto = backend == "auto"
+    if auto:
         backend = select_backend(_detect_gpu_vendor())
     need_runtime = not installed_tags()
     if need_runtime:
-        # Same preflight as /runtime/install: impossible combos fail the POST.
+        # Same preflight as /runtime/install: impossible combos fail the POST —
+        # unless the backend was auto-detected, in which case the cuda ->
+        # vulkan -> cpu ladder applies (Linux NVIDIA auto-picks cuda but no
+        # prebuilt ships; "Set up for me" must land on vulkan, not a toast).
         try:
-            resolve_assets(tag, backend)
+            if auto:
+                _, backend = resolve_assets_ladder(tag, backend)
+            else:
+                resolve_assets(tag, backend)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc))
 

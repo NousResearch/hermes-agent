@@ -21,6 +21,7 @@ from hermes_cli.local_runtime.binaries import (
     AssetPlan,
     BinaryResolutionError,
     resolve_assets,
+    resolve_assets_ladder,
     select_backend,
 )
 from hermes_cli.local_runtime.detect import DetectedServer, probe_port
@@ -205,6 +206,29 @@ def test_windows_cuda_arm64_pairs_cudart_on_its_own_version():
     assert len(versions) == 1, f"paired zips disagree on CUDA version: {plan.assets}"
     assert any(a.startswith("cudart-") for a in plan.assets)
     assert any(a.startswith("llama-") for a in plan.assets)
+
+
+def test_ladder_steps_down_when_no_prebuilt():
+    """Linux auto-detects CUDA but no prebuilt ships: the ladder must land
+    on vulkan and say which backend resolved, not raise (#102565)."""
+    plan, backend = resolve_assets_ladder("b10290", "cuda",
+                                          os_name="ubuntu", arch="x64")
+    assert backend == "vulkan"
+    assert plan.assets == ["llama-b10290-bin-ubuntu-vulkan-x64.tar.gz"]
+
+
+def test_ladder_falls_to_cpu_when_vulkan_missing():
+    plan, backend = resolve_assets_ladder("b10290", "vulkan",
+                                          os_name="win", arch="arm64")
+    assert backend == "cpu"
+    assert plan.assets == ["llama-b10290-bin-win-cpu-arm64.zip"]
+
+
+def test_ladder_keeps_honest_error_for_off_ladder_backends():
+    """A backend the ladder has no step for must raise unchanged — the
+    ladder degrades shipped-but-missing combos, it never invents one."""
+    with pytest.raises(BinaryResolutionError, match="unsupported linux backend"):
+        resolve_assets_ladder("b10290", "metal", os_name="ubuntu", arch="x64")
 
 
 def test_install_dir_is_profile_scoped(tmp_path, monkeypatch):

@@ -152,6 +152,43 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
     assert calls == ["assign"] or calls[-1] == "assign"
 
 
+def test_quickstart_auto_cuda_falls_back_to_vulkan(client, monkeypatch):
+    """Regression for #102565: Linux NVIDIA auto-detects cuda, which ships
+    no prebuilt — "Set up for me" must install the vulkan build, not die
+    at the POST preflight with the resolver's honest error."""
+    installed_backends: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries._host_os_arch", lambda: ("ubuntu", "x64"))
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap._detect_gpu_vendor",
+        lambda: "NVIDIA GeForce RTX 5090")
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        lambda tag, backend, progress=None:
+            installed_backends.append(backend))
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.local_models.download_file",
+        lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
+        lambda config, force=False: None)
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.local_models._state_endpoint",
+        lambda: {"base_url": "http://127.0.0.1:1/v1", "api_key": "k"})
+    from hermes_cli import web_deps
+
+    monkeypatch.setattr(
+        web_deps, "late", lambda name: (lambda *a, **k: None))
+
+    r = client.post("/api/local-models/quickstart", json={})
+    assert r.status_code == 200, r.text
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert installed_backends == ["vulkan"]
+
+
 @pytest.fixture
 def quickstart_ready(monkeypatch):
     """Preflight passes without hardware or network: the runtime reads as

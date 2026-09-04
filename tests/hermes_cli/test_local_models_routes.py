@@ -220,6 +220,33 @@ def test_runtime_install_rejects_impossible_combo(client, monkeypatch):
     assert "arm64" in r.json()["detail"]
 
 
+def test_runtime_install_explicit_cuda_stays_honest(client, monkeypatch):
+    """An explicitly chosen backend is a decision: keep the resolver's
+    error, don't silently swap it for a different build."""
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries._host_os_arch", lambda: ("ubuntu", "x64"))
+    r = client.post("/api/local-models/runtime/install", json={"backend": "cuda"})
+    assert r.status_code == 400
+    assert "no prebuilt linux CUDA" in r.json()["detail"]
+
+
+def test_runtime_install_auto_backend_falls_down_ladder(client, monkeypatch):
+    """Linux NVIDIA auto-detects cuda, which ships no prebuilt: the POST
+    must succeed on vulkan and report the backend that will install
+    (#102565)."""
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries._host_os_arch", lambda: ("ubuntu", "x64"))
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap._detect_gpu_vendor",
+        lambda: "NVIDIA GeForce RTX 5090")
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        lambda tag, backend, progress=None: None)
+    r = client.post("/api/local-models/runtime/install", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["backend"] == "vulkan"
+
+
 def test_job_poll_unknown_404s(client):
     assert client.get("/api/local-models/jobs/deadbeef").status_code == 404
 

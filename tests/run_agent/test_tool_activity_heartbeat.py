@@ -117,7 +117,7 @@ def test_heartbeat_touches_periodically_and_stops():
 
     thread = threading.Thread(
         target=te._run_tool_activity_heartbeat,
-        args=(_Agent(), stop, "tool running: terminal"),
+        args=(_Agent(), stop, "terminal"),
         kwargs={"interval": 0.05},
         daemon=True,
     )
@@ -268,3 +268,47 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
     agent._execute_tool_calls_concurrent(msg, messages, "task")
 
     assert len(touches) >= 3, f"expected mid-call heartbeats, got {len(touches)}"
+
+
+def test_heartbeat_stamps_awaiting_approval_while_gateway_prompt_is_queued():
+    """A pending gateway approval must not keep looking like tool progress.
+
+    #96959: the 30s tool heartbeat overwrote ``waiting for user approval``
+    with ``tool running: patch``, so Discord status stayed on a generic
+    working indicator while /approve was the only visible path.
+    """
+    import agent.tool_executor as te
+    from tools.approval import (
+        AWAITING_APPROVAL_ACTIVITY,
+        _ApprovalEntry,
+        _gateway_queues,
+        _lock,
+    )
+
+    touches: list[str] = []
+    stop = threading.Event()
+
+    class _Agent:
+        def _touch_activity(self, desc):
+            touches.append(desc)
+
+    with _lock:
+        _gateway_queues["discord:thread-1"] = [_ApprovalEntry({"command": "x"})]
+    try:
+        thread = threading.Thread(
+            target=te._run_tool_activity_heartbeat,
+            args=(_Agent(), stop, "patch"),
+            kwargs={"interval": 0.05},
+            daemon=True,
+        )
+        thread.start()
+        time.sleep(0.12)
+        stop.set()
+        thread.join(timeout=1.0)
+    finally:
+        with _lock:
+            _gateway_queues.pop("discord:thread-1", None)
+
+    assert touches, "heartbeat never stamped"
+    assert all(label == AWAITING_APPROVAL_ACTIVITY for label in touches)
+    assert "tool running: patch" not in touches

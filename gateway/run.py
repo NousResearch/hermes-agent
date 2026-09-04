@@ -1134,6 +1134,22 @@ def _approval_send_outcome(future, timeout: float) -> str:
     return "failed"
 
 
+def _approval_prompt_undeliverable(
+    button_outcome: str | None, text_outcome: str | None
+) -> bool:
+    """True when the originating surface got no usable approval prompt.
+
+    ``sent`` and ``ambiguous`` (timeout / late ack) both keep the prompt
+    armed — ``/approve`` remains a fallback. Only a definitive miss on
+    every attempted channel is undeliverable (#96959).
+    """
+    if button_outcome in ("sent", "ambiguous"):
+        return False
+    if text_outcome in ("sent", "ambiguous"):
+        return False
+    return True
+
+
 def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
     """Decide whether a clarify prompt send aborts the wait, per the boundary rule.
 
@@ -6881,6 +6897,7 @@ class TurnRunner:
                     logger.warning(
                         "Button-based approval failed, falling back to text: %s", _e
                     )
+                    _outcome = "failed"
 
             # Fallback: plain text approval prompt.  Use the adapter's
             # typed prefix so Slack/Matrix users are told the form they
@@ -6910,10 +6927,28 @@ class TurnRunner:
                     logger=logger,
                     log_message="Approval text-send scheduling error",
                 )
-                if _approval_send_fut is not None:
-                    _approval_send_fut.result(timeout=15)
+                if _approval_send_fut is None:
+                    raise RuntimeError("approval text-send: loop unavailable")
+                try:
+                    _text_result = _approval_send_fut.result(timeout=15)
+                except concurrent.futures.TimeoutError:
+                    # Same physics as the button card: timeout is possibly
+                    # delivered. Do not fail-closed and do not re-send.
+                    logger.warning(
+                        "Approval text-send timed out — treating as "
+                        "possibly-delivered (prompt stays armed)"
+                    )
+                    return
+                if getattr(_text_result, "success", True) is False:
+                    raise RuntimeError(
+                        "approval prompt undeliverable: "
+                        f"{getattr(_text_result, 'error', None) or 'text send failed'}"
+                    )
             except Exception as _e:
                 logger.error("Failed to send approval request: %s", _e)
+                raise RuntimeError(
+                    f"approval prompt undeliverable: {_e}"
+                ) from _e
 
         # Keep real user text separate from API-only recovery guidance.  If
         # an auto-continue note is prepended below, persist the original

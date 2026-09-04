@@ -60,3 +60,15 @@ def test_non_timeout_exception_is_failed():
 
 def test_missing_future_is_failed():
     assert _approval_send_outcome(None, timeout=1) == "failed"
+
+
+def test_undeliverable_only_when_every_channel_definitively_missed():
+    from gateway.run import _approval_prompt_undeliverable
+
+    assert _approval_prompt_undeliverable("sent", None) is False
+    assert _approval_prompt_undeliverable("ambiguous", None) is False
+    assert _approval_prompt_undeliverable("failed", "sent") is False
+    assert _approval_prompt_undeliverable("failed", "ambiguous") is False
+    assert _approval_prompt_undeliverable("failed", "failed") is True
+    assert _approval_prompt_undeliverable(None, "failed") is True
+    assert _approval_prompt_undeliverable(None, None) is True

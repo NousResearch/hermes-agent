@@ -48,3 +48,39 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert "script execution via -c flag" in prompt_text
 
 
+@pytest.mark.asyncio
+async def test_exec_approval_targets_originating_thread_from_metadata():
+    """A Discord thread session must post the card in that thread (#96959)."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    targeted: list[str] = []
+    sent = {}
+
+    async def fake_send(**kwargs):
+        sent.update(kwargs)
+        return SimpleNamespace(id=777)
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+
+    def get_channel(cid):
+        targeted.append(str(cid))
+        return channel
+
+    adapter._client = SimpleNamespace(
+        get_channel=get_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_exec_approval(
+        chat_id="1527380292229136536",
+        command="<write to AGENTS.md>",
+        session_key="discord:thread-96959",
+        description="Write to protected agent-instruction file(s): AGENTS.md.",
+        metadata={"thread_id": "888001122334455"},
+    )
+
+    assert result.success is True
+    assert targeted == ["888001122334455"]
+    assert "AGENTS.md" in sent["content"]
+    assert sent["view"] is not None
+
+

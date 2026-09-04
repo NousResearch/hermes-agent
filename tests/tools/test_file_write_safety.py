@@ -444,6 +444,43 @@ class TestProtectedInstructionFiles:
         assert target.read_text(encoding="utf-8") == "approved content"
         assert len(approvals["calls"]) == 1
 
+    def test_gateway_discord_thread_one_prompt_approve_fallback(self, tmp_path):
+        """Foreground Discord/gateway: one prompt, /approve still resolves.
+
+        #96959: protected AGENTS.md writes must raise exactly one gateway
+        approval (button or text) and remain resolvable via /approve.
+        """
+        from tools import approval as ap
+        from tools.terminal_tool import set_approval_callback
+
+        set_approval_callback(None)
+        session_key = "discord:thread-96959"
+        notified = []
+
+        def notify(data):
+            notified.append(data)
+            resolved = ap.resolve_gateway_approval(session_key, "once")
+            assert resolved == 1
+
+        token = ap.set_current_session_key(session_key)
+        ap.register_gateway_notify(session_key, notify)
+        try:
+            target = tmp_path / "AGENTS.md"
+            res = self._write(target, "approved via slash fallback")
+            assert not res.get("error"), res
+            assert target.read_text(encoding="utf-8") == "approved via slash fallback"
+        finally:
+            ap.unregister_gateway_notify(session_key)
+            ap.reset_current_session_key(token)
+
+        assert len(notified) == 1
+        blob = (
+            f"{notified[0].get('command', '')} {notified[0].get('description', '')}"
+        )
+        assert "AGENTS.md" in blob
+        assert notified[0].get("allow_permanent") is False
+        assert notified[0].get("allow_session") is False
+
     def test_prompts_even_under_yolo(self, tmp_path, approvals, monkeypatch):
         """The whole point: auto-approve/yolo must NOT bypass this gate."""
         import tools.approval as A

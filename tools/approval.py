@@ -2836,6 +2836,41 @@ class _ApprovalEntry:
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
+# Activity labels. The in-flight tool heartbeat (#84491) otherwise keeps
+# stamping ``tool running: <name>`` while this queue is blocked on a human,
+# so session/status UI looks like progress instead of a consent wait (#96959).
+AWAITING_APPROVAL_ACTIVITY = "awaiting approval"
+APPROVAL_PROMPT_UNDELIVERABLE_ACTIVITY = "approval prompt undeliverable"
+
+
+def any_awaiting_gateway_approval() -> bool:
+    """True when any gateway session has a queued approval wait.
+
+    Safe to call from the tool-activity heartbeat thread (the queue lock is
+    the source of truth, not the thread-local session key).
+    """
+    with _lock:
+        return any(_gateway_queues.values())
+
+
+def tool_heartbeat_activity_label(function_name: str) -> str:
+    """Label the in-flight tool heartbeat should persist right now."""
+    if any_awaiting_gateway_approval():
+        return AWAITING_APPROVAL_ACTIVITY
+    return f"tool running: {function_name}"
+
+
+def _stamp_approval_activity(label: str) -> None:
+    """Best-effort activity stamp on the agent thread's callback."""
+    try:
+        from tools.environments.base import get_activity_callback
+
+        cb = get_activity_callback()
+        if cb:
+            cb(label)
+    except Exception:
+        pass
+
 
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
@@ -4624,12 +4659,20 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         session_key=session_key,
         surface=surface,
     )
+    logger.warning(
+        "Approval prompt raised session=%s surface=%s pattern=%s",
+        session_key,
+        surface,
+        primary_key,
+    )
+    _stamp_approval_activity(AWAITING_APPROVAL_ACTIVITY)
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
         notify_cb(dict(entry.data))
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
+        _stamp_approval_activity(APPROVAL_PROMPT_UNDELIVERABLE_ACTIVITY)
         _drop_entry()
         _fire_approval_hook(
             "post_approval_response",
@@ -4705,7 +4748,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 resolved = True
                 break
             if touch_activity_if_due is not None:
-                touch_activity_if_due(_activity_state, "waiting for user approval")
+                touch_activity_if_due(_activity_state, AWAITING_APPROVAL_ACTIVITY)
 
     _drop_entry()
 

@@ -1491,6 +1491,11 @@ class TestApprovalTimeoutIsNotConsent:
 
         monkeypatch.setattr(mod, "_fire_approval_hook", _capture)
 
+        activity: list[str] = []
+        from tools.environments.base import set_activity_callback
+
+        set_activity_callback(activity.append)
+
         def _fail_notify(_data):
             raise RuntimeError("private gateway failure")
 
@@ -1516,6 +1521,8 @@ class TestApprovalTimeoutIsNotConsent:
             "post_approval_response",
         ]
         assert hook_calls[-1][1]["choice"] == "notify_failed"
+        assert activity == ["awaiting approval", "approval prompt undeliverable"]
+        set_activity_callback(None)
 
     def test_pending_approval_is_replayable_and_acknowledged(self, monkeypatch):
         from tools import approval as mod

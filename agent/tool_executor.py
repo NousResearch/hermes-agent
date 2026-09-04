@@ -572,8 +572,18 @@ def _run_tool_activity_heartbeat(
     """
 
     try:
+        from tools.approval import tool_heartbeat_activity_label
+    except Exception:
+        tool_heartbeat_activity_label = None
+
+    try:
         while not stop_event.wait(interval):
-            agent._touch_activity(label)
+            desc = (
+                tool_heartbeat_activity_label(label)
+                if tool_heartbeat_activity_label is not None
+                else f"tool running: {label}"
+            )
+            agent._touch_activity(desc)
     except Exception:
         # A heartbeat must never break the agent loop.
         pass
@@ -722,7 +732,7 @@ def _run_agent_tool_execution_middleware(
         _hb_stop = threading.Event()
         _hb_thread = threading.Thread(
             target=_run_tool_activity_heartbeat,
-            args=(agent, _hb_stop, f"tool running: {function_name}"),
+            args=(agent, _hb_stop, function_name),
             kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S},
             daemon=True,
             name=f"tool-activity-hb-{function_name[:24]}",

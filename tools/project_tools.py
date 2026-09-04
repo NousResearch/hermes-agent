@@ -22,10 +22,10 @@ from tools.registry import registry
 # ``(task_id, primary_path, project_name)`` and re-anchors that session's
 # workspace + refreshes the sidebar. ``None`` in CLI / messaging contexts — the
 # DB write still happens; there's just no live GUI session to move.
-_workspace_callback: Optional[Callable[[str, str, str], None]] = None
+_workspace_callback: Optional[Callable[[str, str, str], Optional[bool]]] = None
 
 
-def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], None]]) -> None:
+def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], Optional[bool]]]) -> None:
     global _workspace_callback
     _workspace_callback = fn
 
@@ -39,13 +39,16 @@ def _primary_path(proj) -> Optional[str]:
     return proj.folders[0].path if proj.folders else None
 
 
-def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> None:
+def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> bool:
     cb = _workspace_callback
-    if cb and task_id and path:
-        try:
-            cb(task_id, path, name)
-        except Exception:
-            pass
+    if not (cb and task_id and path):
+        return False
+    try:
+        result = cb(task_id, path, name)
+        # Legacy callbacks returned None after successfully applying the move.
+        return result is not False
+    except Exception:
+        return False
 
 
 def _resolve(conn, token: str):
@@ -119,9 +122,22 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
         return json.dumps({"success": False, "error": "project vanished after create"})
 
     primary = _primary_path(proj)
-    _apply_workspace(task_id, primary, proj.name)
-
-    return json.dumps({"success": True, "id": proj.id, "slug": proj.slug, "name": proj.name, "primary_path": primary})
+    moved = _apply_workspace(task_id, primary, proj.name)
+    result = {
+        "success": True,
+        "id": proj.id,
+        "slug": proj.slug,
+        "name": proj.name,
+        "primary_path": primary,
+        "moved": moved,
+    }
+    if not moved:
+        result["warning"] = (
+            "Project created, but this chat was not moved because the project has no folder."
+            if not primary
+            else "Project created, but the live chat workspace could not be moved."
+        )
+    return json.dumps(result)
 
 
 def project_switch(project: str, task_id: Optional[str] = None) -> str:
@@ -134,9 +150,22 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
         pdb.set_active(conn, proj.id)
 
     primary = _primary_path(proj)
-    _apply_workspace(task_id, primary, proj.name)
-
-    return json.dumps({"success": True, "id": proj.id, "slug": proj.slug, "name": proj.name, "primary_path": primary})
+    moved = _apply_workspace(task_id, primary, proj.name)
+    result = {
+        "success": True,
+        "id": proj.id,
+        "slug": proj.slug,
+        "name": proj.name,
+        "primary_path": primary,
+        "moved": moved,
+    }
+    if not moved:
+        result["warning"] = (
+            "Active project changed, but this chat was not moved because the project has no folder."
+            if not primary
+            else "Active project changed, but the live chat workspace could not be moved."
+        )
+    return json.dumps(result)
 
 
 def _handle_project(args, **kw):
@@ -150,7 +179,6 @@ def _handle_project(args, **kw):
         return project_switch(project=args.get("name", ""), task_id=tid)
     return json.dumps({"success": False, "error": "action must be one of: create, switch, list."})
 
-
 # Consolidated (#95681, maintainer-directed): project_list/create/switch each
 # re-taught "desktop Projects (named workspaces)"; one action enum says it
 # once (244 -> ~145 tok).
@@ -162,9 +190,11 @@ registry.register(
         "description": (
             "Create or switch desktop Projects (named workspaces). create: one and switch "
             "this chat into it — pass path to anchor it to a repo/folder (the "
-            "chat's workspace moves there, the sidebar follows). switch: move "
+            "chat's workspace moves there, the sidebar follows); without path, "
+            "the project is empty and the chat cannot move. switch: move "
             "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all "
+            "intentional way to move the session, not `cd`; an empty project "
+            "cannot receive the chat. list: all "
             "projects + which is active."
         ),
         "parameters": {

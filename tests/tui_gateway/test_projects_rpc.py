@@ -63,6 +63,23 @@ def test_methods_registered():
         assert m in server._methods
 
 
+def test_project_workspace_callback_reports_unknown_session_as_not_moved(tmp_path):
+    assert server._apply_project_workspace("missing-session", str(tmp_path)) is False
+
+
+def test_project_workspace_callback_skips_finalized_session_for_live_continuation(monkeypatch, tmp_path):
+    finalized = {"_finalized": True, "cwd": "/dead", "session_key": "shared-key"}
+    live = {"cwd": "/live", "session_key": "shared-key"}
+    monkeypatch.setattr(server, "_sessions", {"dead-sid": finalized, "live-sid": live})
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_session_cwd_and_schedule_git_meta", lambda _session, _cwd: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    assert server._apply_project_workspace("shared-key", str(tmp_path)) is True
+    assert finalized["cwd"] == "/dead"
+    assert live["cwd"] == str(tmp_path)
+
+
 def test_for_cwd_is_a_long_handler():
     # git-probe handler must run off the dispatch thread.
     assert "projects.for_cwd" in server._LONG_HANDLERS

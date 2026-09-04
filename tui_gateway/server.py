@@ -8586,13 +8586,17 @@ def _agent_cbs(sid: str) -> dict:
     return callbacks
 
 
-def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
+def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> bool:
     """Intentional workspace move from the project_* tools: re-anchor the live
     session's cwd to the chosen project's folder and push session.info so the
     desktop follows (refresh tree + scope into the project). This is the ONLY
-    auto-cwd path — driven by an explicit tool call, never a terminal `cd`."""
+    auto-cwd path — driven by an explicit tool call, never a terminal `cd`.
+
+    Returns whether a live session was actually found and moved, so the calling
+    tool cannot mistake an active-project pointer update for session membership.
+    """
     if not path:
-        return
+        return False
 
     # The tool's task_id is the durable session_key, but _sessions is keyed by a
     # short sid uuid (and the desktop routes events by that sid). Resolve it.
@@ -8600,20 +8604,20 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     sid = ""
     session = None
     with _sessions_lock:
-        if key in _sessions:
-            sid, session = key, _sessions[key]
+        direct = _sessions.get(key)
+        if direct is not None and not direct.get("_finalized"):
+            sid, session = key, direct
         else:
-            for cand_sid, cand in _sessions.items():
-                if cand.get("session_key") == key or getattr(cand.get("agent"), "session_id", None) == key:
-                    sid, session = cand_sid, cand
-                    break
+            found = _find_live_session_by_key(key)
+            if found is not None:
+                sid, session = found
 
     if session is None:
-        return
+        return False
 
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if not os.path.isdir(resolved):
-        return
+        return False
 
     session["cwd"] = resolved
     session["explicit_cwd"] = True
@@ -8638,6 +8642,8 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         _emit("session.info", sid, info)
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
+
+    return True
 
 
 def _wire_callbacks(sid: str):

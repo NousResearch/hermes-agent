@@ -554,6 +554,10 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
+        # Eval fast-path page bookkeeping (see _supervisor_page_matches_daemon).
+        _bt._last_navigated_urls.pop(session_key, None)
+        _bt._page_maybe_diverged.discard(session_key)
+        _bt._page_bound_frame_ids.pop(session_key, None)
     _drop_last_active_binding(task_id)
 
 

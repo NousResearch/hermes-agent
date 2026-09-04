@@ -1820,7 +1820,7 @@ def cmd_proxy(args):
         raise SystemExit(rc)
 
 
-def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = False, doc: str = ""):
+def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = True, doc: str = ""):
     """A ``hermes <cmd>`` handler that hands ``args`` to ``<module>.<attr>``.
 
     Imports at CALL time so fast paths never pay for it and

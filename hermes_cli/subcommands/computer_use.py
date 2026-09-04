@@ -55,6 +55,17 @@ def _cu_status(args) -> int:
             print("    Run: hermes computer-use install")
         return 1
     try:
+        from hermes_cli.tools_config_cua import _cua_driver_autostart_state_windows
+        _auto = _cua_driver_autostart_state_windows()
+        if _auto["supported"]:
+            if _auto["registered"]:
+                print(f"  Autostart: logon task present ({_auto['task_state']}) — disable with: "
+                      "hermes computer-use autostart disable")
+            else:
+                print("  Autostart: off (starts on demand)")
+    except Exception:
+        pass
+    try:
         st = cua_driver_update_check()
         if st and st.get("update_available"):
             latest = st.get("latest_version") or "?"
@@ -76,6 +87,29 @@ def _cu_doctor(args) -> None:
         include=list(getattr(args, "include", []) or []),
         skip=list(getattr(args, "skip", []) or []),
         json_output=bool(getattr(args, "json", False))))
+
+
+def _cu_autostart(args) -> int:
+    from hermes_cli import tools_config_cua as _tools_config_cua
+    sub = getattr(args, "computer_use_autostart_action", None) or "status"
+    if sub == "enable":
+        ok = _tools_config_cua._repair_cua_driver_autostart_windows(
+            _tools_config_cua._cua_driver_cmd(), verbose=True)
+        return 0 if ok else 1
+    if sub == "disable":
+        return 0 if _tools_config_cua._disable_cua_driver_autostart_windows() else 1
+    state = _tools_config_cua._cua_driver_autostart_state_windows()
+    if not state["supported"]:
+        print("Autostart logon task: Windows-only concept.")
+        print("  macOS: ~/Library/LaunchAgents/com.trycua.cua-driver.plist")
+        print("  Linux: systemctl --user cua-driver.service")
+        return 0
+    if not state["registered"]:
+        print("Autostart: off (cua-driver starts on demand).")
+    else:
+        print(f"Autostart: logon task registered ({state['task_state']}).")
+        print("  Disable with: hermes computer-use autostart disable")
+    return 0
 
 
 def _cu_perms_status(args) -> None:
@@ -140,6 +174,23 @@ def build_computer_use_parser(subparsers) -> None:
             "PATH. The upstream install.sh always pulls the latest release, "
             "so this performs an in-place upgrade.")
     computer_use_sub.add_parser("status", help="Print whether cua-driver is installed and on PATH")
+    computer_use_autostart = computer_use_sub.add_parser(
+        "autostart", help="Manage the Windows cua-driver logon task (opt-in autostart)",
+        description="Inspect or change whether cua-driver starts at Windows login.\n"
+            "Since #95372/#97389 Hermes defaults to on-demand (no logon task): the driver "
+            "is spawned per session over stdio, so the `cua-driver-serve` Scheduled Task is "
+            "unnecessary for normal Computer Use — and removing it also removes the brief "
+            "login console flash (trycua/cua#1645).\n\n"
+            "`status` is read-only; `enable` registers the task (UAC prompt); `disable` "
+            "disables it (reversible, deletes nothing).")
+    computer_use_autostart_sub = computer_use_autostart.add_subparsers(
+        dest="computer_use_autostart_action")
+    computer_use_autostart_sub.add_parser(
+        "status", help="Report whether the logon task is registered (read-only)")
+    computer_use_autostart_sub.add_parser(
+        "enable", help="Register the logon task (explicit opt-in, UAC prompt)")
+    computer_use_autostart_sub.add_parser(
+        "disable", help="Disable the logon task (reversible, deletes nothing)")
     computer_use_doctor = computer_use_sub.add_parser(
         "doctor", help="Run cua-driver `health_report` and surface the check matrix",
         description="Drive cua-driver's stable `health_report` MCP tool and render\n"
@@ -181,7 +232,7 @@ def build_computer_use_parser(subparsers) -> None:
         computer_use_perms.print_help()
 
     _actions = {"install": _cu_install, "status": _cu_status, "doctor": _cu_doctor,
-                "permissions": _cu_permissions}
+                "permissions": _cu_permissions, "autostart": _cu_autostart}
 
     def cmd_computer_use(args):
         handler = _actions.get(getattr(args, "computer_use_action", None))

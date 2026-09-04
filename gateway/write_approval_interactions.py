@@ -77,6 +77,14 @@ def _target_label(event: Mapping[str, Any]) -> str:
     return f"skill {name}"
 
 
+def _card_lines_for_event(event: Mapping[str, Any]) -> list:
+    """Render one staged record: a scannable header, then the preview body."""
+    operation = str(event.get("operation") or "change").strip().lower() or "change"
+    header = f"**{_target_label(event)}** · {operation} · `{event['pending_id']}`"
+    preview = str(event.get("preview") or "").strip() or "(no preview)"
+    return [header, *preview.split("\n")]
+
+
 def approval_card_for_events(events: Sequence[Mapping[str, Any]]) -> Optional[ApprovalCard]:
     """Render one deterministic card from the exact records emitted by a turn."""
     valid = []
@@ -119,15 +127,8 @@ def approval_card_for_events(events: Sequence[Mapping[str, Any]]) -> Optional[Ap
 
     lines = ["💾 **Memory proposal**" if subsystems == ["memory"] else "💾 **Write proposal**"]
     for event in valid:
-        operation = str(event.get("operation") or "change").capitalize()
-        preview = str(event.get("preview") or "(no preview)")
-        lines.extend(
-            [
-                f"{operation} in {_target_label(event)}:",
-                f"“{preview}”",
-                f"ID: `{event['pending_id']}`",
-            ]
-        )
+        lines.append("")
+        lines.extend(_card_lines_for_event(event))
     return ApprovalCard(text="\n".join(lines), surface=surface)
 
 

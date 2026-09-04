@@ -50,7 +50,7 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence
 
 from hermes_constants import get_hermes_home
 
@@ -117,42 +117,88 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+_PREVIEW_REMOVED = "−"
+_PREVIEW_ADDED = "+"
+_ANCHOR_LIMIT = 90
+
+
+def _clip(value: Any, limit: int) -> str:
+    """Collapse whitespace in one segment and cap it at ``limit`` characters."""
+    compact = " ".join(str(value or "").split())
+    if limit <= 0 or len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
+def _operation_preview_lines(
+    action: str,
+    payload: Mapping[str, Any],
+    *,
+    content_limit: int,
+    summary: str = "",
+) -> list:
+    """Render one staged operation as diff-style lines.
+
+    ``replace`` is the case that reads worst as a single blob, so the old
+    anchor and the new content go on separate lines and the anchor (a locator
+    substring, not the payload) is clipped hard.
+    """
+    op = str(action or "").strip().lower()
+    if op == "replace":
+        return [
+            f"{_PREVIEW_REMOVED} {_clip(payload.get('old_text'), _ANCHOR_LIMIT)}",
+            f"{_PREVIEW_ADDED} {_clip(payload.get('content'), content_limit)}",
+        ]
+    if op == "remove":
+        return [f"{_PREVIEW_REMOVED} {_clip(payload.get('old_text'), content_limit)}"]
+    content = payload.get("content") or summary
+    return [f"{_PREVIEW_ADDED} {_clip(content, content_limit)}"]
+
+
+def _clip_lines(lines: Sequence[str], limit: int) -> str:
+    """Keep whole lines while staying inside a total character budget."""
+    kept: list = []
+    used = 0
+    for line in lines:
+        if kept and used + len(line) + 1 > limit:
+            kept.append("…")
+            break
+        used += len(line) + 1
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _safe_preview(payload: Dict[str, Any], summary: str, *, limit: int = 700) -> str:
-    """Build a compact, redacted preview for a user approval card."""
+    """Build a compact, redacted, diff-style preview for a user approval card."""
     action = str(payload.get("action") or "").strip().lower()
     if action == "batch":
-        parts = []
-        for operation in payload.get("operations") or []:
-            if not isinstance(operation, dict):
-                continue
-            op = str(operation.get("action") or "change")
-            if op == "replace":
-                parts.append(
-                    f"replace {operation.get('old_text') or ''} → "
-                    f"{operation.get('content') or ''}"
-                )
-            elif op == "remove":
-                parts.append(f"remove {operation.get('old_text') or ''}")
-            else:
-                parts.append(f"{op} {operation.get('content') or ''}")
-        raw = "\n".join(parts)
-    elif action == "replace":
-        raw = (
-            f"{payload.get('old_text') or ''} → "
-            f"{payload.get('content') or ''}"
-        )
-    elif action == "remove":
-        raw = str(payload.get("old_text") or "")
+        operations = [
+            operation
+            for operation in (payload.get("operations") or [])
+            if isinstance(operation, dict)
+        ]
+        budget = max(120, limit // max(len(operations), 1))
+        lines: list = []
+        for index, operation in enumerate(operations, start=1):
+            op = str(operation.get("action") or "change").strip().lower()
+            lines.append(f"{index}. {op}")
+            lines.extend(
+                f"   {row}"
+                for row in _operation_preview_lines(op, operation, content_limit=budget)
+            )
     else:
-        raw = str(payload.get("content") or summary or "")
+        lines = _operation_preview_lines(
+            action, payload, content_limit=limit, summary=summary
+        )
+
+    raw = "\n".join(lines)
     try:
         from agent.redact import redact_sensitive_text
 
         raw = redact_sensitive_text(raw, force=True)
     except Exception:
         pass
-    compact = " ".join(raw.strip().split())
-    return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
+    return _clip_lines(raw.split("\n"), limit + 2 * _ANCHOR_LIMIT)
 
 
 def event_for_record(

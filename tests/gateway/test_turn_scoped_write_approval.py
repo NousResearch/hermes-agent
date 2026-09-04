@@ -92,7 +92,7 @@ def test_stage_write_emits_only_the_current_turn_record(hermes_home):
     assert seen[0]["subsystem"] == "memory"
     assert seen[0]["target"] == "memory"
     assert seen[0]["operation"] == "add"
-    assert seen[0]["preview"] == "current fact"
+    assert seen[0]["preview"] == "+ current fact"
     assert stale["id"] not in [event["pending_id"] for event in seen]
 
 
@@ -126,7 +126,7 @@ def test_stage_capture_propagates_into_background_review_thread(hermes_home):
 
     assert worker.is_alive() is False
     assert len(seen) == 1
-    assert seen[0]["preview"] == "background fact"
+    assert seen[0]["preview"] == "+ background fact"
     assert seen[0]["session_key"] == "agent:main:telegram:dm:273403055:417808"
 
 
@@ -195,6 +195,41 @@ def test_approval_card_uses_captured_id_not_global_pending_queue(hermes_home):
     assert card.surface["scope"]["session_key"] == (
         "agent:main:telegram:dm:273403055:417808"
     )
+
+
+def test_batch_replace_preview_is_diff_shaped_and_line_broken(hermes_home):
+    """The replace card must not read as one run-on blob (UX regression)."""
+    from gateway.write_approval_interactions import approval_card_for_events
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory",
+        {
+            "action": "batch",
+            "target": "memory",
+            "operations": [
+                {
+                    "action": "replace",
+                    "old_text": "old anchor text",
+                    "content": "new memory content",
+                },
+                {"action": "add", "content": "second fact"},
+            ],
+        },
+        summary="batch memory update",
+        origin="foreground",
+    )
+    event = wa.event_for_record(
+        record, session_key="s", run_generation=1, profile="default"
+    )
+    lines = approval_card_for_events([event]).text.split("\n")
+
+    assert "   − old anchor text" in lines
+    assert "   + new memory content" in lines
+    assert "   + second fact" in lines
+    assert any(line.startswith("**MEMORY.md**") and record["id"] in line for line in lines)
+    # No line may merge the removed anchor with the added content.
+    assert not any("−" in line and "+" in line for line in lines)
 
 
 @pytest.mark.asyncio

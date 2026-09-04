@@ -1270,31 +1270,35 @@ class TelegramAdapter(BasePlatformAdapter):
             return None, None
 
         rows = []
+        total_ids = sum(len(surface["items"][name]) for name in surface["subsystems"])
         for subsystem in surface["subsystems"]:
             code = "m" if subsystem == "memory" else "s"
             ids = surface["items"][subsystem]
             for pending_id in ids[:8]:
+                # With a single staged record the ID is already in the card
+                # body, so repeating it on every button is pure noise.
+                suffix = "" if total_ids == 1 else f" {pending_id}"
                 item_row = [
                     InlineKeyboardButton(
-                        f"Approve {pending_id}",
+                        f"✅ Approve{suffix}",
                         callback_data=f"wa:{code}:a:{pending_id}",
                     ),
                     InlineKeyboardButton(
-                        f"Reject {pending_id}",
+                        f"❌ Reject{suffix}",
                         callback_data=f"wa:{code}:r:{pending_id}",
                     ),
                 ]
                 if subsystem == "skills":
                     item_row.append(
                         InlineKeyboardButton(
-                            f"Diff {pending_id}",
+                            f"🔍 Diff{suffix}",
                             callback_data=f"wa:s:d:{pending_id}",
                         )
                     )
                 rows.append(item_row)
             rows.append([
                 InlineKeyboardButton(
-                    f"Show pending {subsystem}", callback_data=f"wa:{code}:p:all"
+                    f"📋 Show pending {subsystem}", callback_data=f"wa:{code}:p:all"
                 )
             ])
         return surface, InlineKeyboardMarkup(rows)

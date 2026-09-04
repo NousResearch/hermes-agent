@@ -406,15 +406,26 @@ class HostSupervisor:
             return None
 
     def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
+        # Routing AND delivery must share the caller's single critical section:
+        # releasing the lock between selecting the pending queue and
+        # ``put_nowait`` reopens the #101824 race from the delivery side — the
+        # waiter's atomic handoff could retire the route in between, and the
+        # frame would land in a detached queue nobody observes.
+        # ``put_nowait`` is non-blocking, so holding the lock across it is
+        # safe; the late-handler callback stays outside the lock (user code
+        # may be slow).
         with self._lock:
             q = self._pending_controls.get(request_id)
             late = None if q is not None else self._late_control_handlers.pop(request_id, None)
-        if q is not None:
-            try:
-                q.put_nowait(frame)
-            except queue.Full:
-                pass
-            return
+            if q is not None:
+                try:
+                    q.put_nowait(frame)
+                except queue.Full:
+                    # A terminal frame is already queued and unconsumed — the
+                    # caller is gone either way; dropping the duplicate keeps
+                    # the exactly-once contract.
+                    pass
+                return
         if late is None:
             return
         _registered_at, handler = late

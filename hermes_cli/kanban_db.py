@@ -1037,12 +1037,60 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         while target.exists():
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
-        d.rename(target)
+        _win_retry_rename(d, target)
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
         import shutil
-        shutil.rmtree(d)
+        _win_retry_rmtree(d)
         return {"slug": normed, "action": "deleted", "new_path": ""}
+
+
+def _win_retry_rename(src: Path, dst: Path, max_attempts: int = 10, base_delay: float = 0.2) -> None:
+    """Rename with retry on Windows for file-locking race conditions.
+
+    On Windows, a just-closed SQLite handle may still hold the file for a
+    brief moment, causing rename to fail with WinError 5 (Access denied).
+    Retry with exponential backoff.
+    """
+    if os.name != "nt":
+        src.rename(dst)
+        return
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            src.rename(dst)
+            return
+        except OSError as e:
+            last_exc = e
+            if e.winerror not in (5, 32):  # Access denied / Sharing violation
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+    raise last_exc
+
+
+def _win_retry_rmtree(path: Path, max_attempts: int = 10, base_delay: float = 0.2) -> None:
+    """Recursive remove with retry on Windows for file-locking race conditions.
+
+    On Windows, a just-closed SQLite handle may still hold the file for a
+    brief moment, causing rmtree to fail with WinError 32 (Sharing violation).
+    Retry with exponential backoff.
+    """
+    if os.name != "nt":
+        import shutil
+        shutil.rmtree(path)
+        return
+    import shutil
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as e:
+            last_exc = e
+            if e.winerror != 32:  # Sharing violation
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+    raise last_exc
 
 
 # ---------------------------------------------------------------------------

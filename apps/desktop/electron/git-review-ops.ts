@@ -47,16 +47,15 @@ function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
   // locations or PATH — never renderer/user input. simple-git's custom-binary
   // validation rejects paths containing spaces (the default Windows install is
-  // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
-  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
-  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
-  // could resolve a repo-local git.exe).
+  // `C:\Program Files\Git\cmd\git.exe`) and also rejects non-standard paths
+  // from MSYS/WSL shims. Always opt into the trusted-binary escape hatch —
+  // the binary path is trusted since it comes from our own resolver, not user input.
   return simpleGit({
     baseDir: cwd,
     binary: gitBin || 'git',
     maxConcurrentProcesses: 4,
     trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    unsafe: { allowUnsafeCustomBinary: true }
   })
 }
 

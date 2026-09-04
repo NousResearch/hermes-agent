@@ -6157,6 +6157,25 @@ function expandUserPath(filePath) {
   return value
 }
 
+/** Markdown hrefs must percent-encode spaces (`/my%20notes/x.md`), but the
+ *  on-disk path is the decoded form. When the raw path misses, retry decoded
+ *  so chat links to paths with spaces still open in the preview rail. */
+function decodedPathIfMissing(resolvedPath) {
+  if (!/%[0-9a-fA-F]{2}/.test(resolvedPath)) {
+    return null
+  }
+
+  let decoded
+
+  try {
+    decoded = decodeURIComponent(resolvedPath)
+  } catch {
+    return null
+  }
+
+  return decoded !== resolvedPath ? decoded : null
+}
+
 async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
   const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
@@ -6173,7 +6192,13 @@ async function previewFileTarget(rawTarget, baseDir) {
   const ext = path.extname(resolved).toLowerCase()
 
   if (!fileExists(resolved)) {
-    return null
+    const decoded = decodedPathIfMissing(resolved)
+
+    if (decoded && fileExists(decoded)) {
+      resolved = decoded
+    } else {
+      return null
+    }
   }
 
   ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))

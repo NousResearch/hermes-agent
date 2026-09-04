@@ -2720,17 +2720,33 @@ def _reap_orphaned_browser_sessions():
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
         # Use the process-tree termination helper so Chromium children
         # (renderer, GPU, etc.) are cleaned up, not just the daemon parent.
+        terminated = False
         try:
             from tools.process_registry import ProcessRegistry
             ProcessRegistry._terminate_host_pid(daemon_pid, daemon_start)
-            logger.info("Reaped orphaned browser daemon PID %d (session %s)",
-                        daemon_pid, session_name)
-            reaped += 1
+            # The termination helper is deliberately best-effort and can return
+            # after a denied/failed signal.  Re-probe before deleting the only
+            # PID/runtime evidence a later periodic sweep can use.
+            terminated = not _pid_exists(daemon_pid)
+            if terminated:
+                logger.info("Reaped orphaned browser daemon PID %d (session %s)",
+                            daemon_pid, session_name)
+                reaped += 1
+            else:
+                logger.warning(
+                    "Browser daemon PID %d (session %s) survived termination; "
+                    "retaining runtime directory for a later retry",
+                    daemon_pid, session_name,
+                )
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.warning(
+                "Could not terminate browser daemon PID %d (session %s); "
+                "retaining runtime directory for a later retry",
+                daemon_pid, session_name,
+            )
 
-        # Clean up the socket directory
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        if terminated:
+            shutil.rmtree(socket_dir, ignore_errors=True)
 
     if reaped:
         logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)

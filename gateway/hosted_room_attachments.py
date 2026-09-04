@@ -22,6 +22,7 @@ import sqlite3
 import stat
 import threading
 import time
+import unicodedata
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -34,6 +35,8 @@ MAX_ATTACHMENT_BYTES = 15_000_000
 MAX_MESSAGE_ATTACHMENT_BYTES = 25_000_000
 MAX_ROOM_ATTACHMENT_BYTES = 512 * 1024 * 1024
 MAX_GATEWAY_BLOB_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ROOM_ATTACHMENT_COUNT = 50_000
+MAX_GATEWAY_ATTACHMENT_COUNT = 200_000
 MAX_ROOM_UNCOMMITTED_BYTES = 100 * 1024 * 1024
 MAX_ROOM_UNCOMMITTED_COUNT = 64
 MAX_TASK_ATTACHMENTS = 16
@@ -41,6 +44,19 @@ MAX_TASK_ATTACHMENT_BYTES = 50_000_000
 UNCOMMITTED_TTL_SECONDS = 60 * 60
 DISBANDED_GRACE_SECONDS = 15 * 60
 CLASSIC_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60
+
+DEFAULT_ATTACHMENT_LIST_LIMIT = 8
+MAX_ATTACHMENT_LIST_LIMIT = 32
+MAX_ATTACHMENT_LIST_QUERY_CHARS = 255
+ATTACHMENT_LIST_EVENT_SCAN_LIMIT = 256
+MAX_ATTACHMENT_LIST_CURSOR_BYTES = 4 * 1024
+MAX_ATTACHMENT_LIST_RESPONSE_BYTES = 128 * 1024
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CURSOR_RESET_MESSAGE = "attachment list cursor is invalid; return to Latest"
+_CURSOR_FIELDS = frozenset({
+    "authority_epoch", "authority_gateway_id", "last_attachment_id", "last_manifest_index", "last_seq",
+    "producer_member_id", "recipient_member_id", "query_digest", "room_id", "snapshot_seq", "version",
+})
 
 MAX_ATTACHMENT_NAME_CHARS = 255
 MAX_ATTACHMENT_MIME_CHARS = 127
@@ -113,6 +129,10 @@ def _name(value: Any) -> str:
     if not isinstance(value, str):
         raise AttachmentError("attachment name must be a string")
     normalized = value.strip()
+    try:
+        normalized.encode("utf-8")
+    except UnicodeError:
+        raise AttachmentError("attachment name must contain valid Unicode") from None
     if (
         not normalized
         or len(normalized) > MAX_ATTACHMENT_NAME_CHARS
@@ -291,6 +311,8 @@ class HostedRoomAttachmentStore:
         clock: Callable[[], float] = time.time,
         room_quota_bytes: int = MAX_ROOM_ATTACHMENT_BYTES,
         gateway_quota_bytes: int = MAX_GATEWAY_BLOB_BYTES,
+        room_quota_count: int = MAX_ROOM_ATTACHMENT_COUNT,
+        gateway_quota_count: int = MAX_GATEWAY_ATTACHMENT_COUNT,
     ) -> None:
         self.db_path = Path(db_path)
         self.root = Path(root or default_attachment_root(self.db_path))
@@ -298,6 +320,8 @@ class HostedRoomAttachmentStore:
         self.clock = clock
         self.room_quota_bytes = max(1, int(room_quota_bytes))
         self.gateway_quota_bytes = max(1, int(gateway_quota_bytes))
+        self.room_quota_count = max(1, int(room_quota_count))
+        self.gateway_quota_count = max(1, int(gateway_quota_count))
         self._lock = threading.RLock()
         self._prepare_private_root()
         conn = self._connect()
@@ -355,6 +379,14 @@ class HostedRoomAttachmentStore:
                 """ALTER TABLE hosted_room_attachments
                    ADD COLUMN viewer_access INTEGER NOT NULL DEFAULT 0"""
             )
+        if "catalog_name" not in columns:
+            conn.execute("ALTER TABLE hosted_room_attachments ADD COLUMN catalog_name TEXT")
+            reader = conn.execute("SELECT attachment_id, name FROM hosted_room_attachments")
+            while rows := reader.fetchmany(512):
+                conn.executemany(
+                    "UPDATE hosted_room_attachments SET catalog_name=? WHERE attachment_id=?",
+                    ((fold_catalog_text(str(row["name"])), row["attachment_id"]) for row in rows),
+                )
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_room_state
                ON hosted_room_attachments(room_id, state, created_at)"""
@@ -362,6 +394,10 @@ class HostedRoomAttachmentStore:
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_expiry
                ON hosted_room_attachments(expires_at)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_hosted_room_attachments_event
+               ON hosted_room_attachments(room_id, event_id)"""
         )
 
     def _connect(self) -> sqlite3.Connection:
@@ -526,6 +562,11 @@ class HostedRoomAttachmentStore:
             ).fetchone()
             if int(room_totals["bytes"]) + len(data) > self.room_quota_bytes:
                 raise AttachmentQuotaError("room attachment quota exceeded")
+            if int(room_totals["count"]) >= self.room_quota_count:
+                raise AttachmentQuotaError("room attachment count quota exceeded")
+            total_count = int(conn.execute("SELECT COUNT(*) FROM hosted_room_attachments").fetchone()[0])
+            if total_count >= self.gateway_quota_count:
+                raise AttachmentQuotaError("gateway attachment count quota exceeded")
             if (
                 int(uncommitted["bytes"]) + len(data) > MAX_ROOM_UNCOMMITTED_BYTES
                 or int(uncommitted["count"]) + 1 > MAX_ROOM_UNCOMMITTED_COUNT
@@ -564,16 +605,17 @@ class HostedRoomAttachmentStore:
             attachment_id = f"att_{secrets.token_hex(16)}"
             conn.execute(
                 """INSERT INTO hosted_room_attachments
-                   (attachment_id, upload_id, room_id, event_id, kind, name, size,
+                   (attachment_id, upload_id, room_id, event_id, kind, name, catalog_name, size,
                     mime, sha256, blob_id, recipient_member_ids_json, state,
                     created_at, updated_at, expires_at)
-                   VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, '[]', 'uploaded', ?, ?, ?)""",
+                   VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, '[]', 'uploaded', ?, ?, ?)""",
                 (
                     attachment_id,
                     upload_id,
                     room_id,
                     kind,
                     name,
+                    fold_catalog_text(name),
                     len(data),
                     mime,
                     digest,
@@ -1154,7 +1196,35 @@ class HostedRoomAttachmentStore:
         return row
 
 
+    def list_published(
+        self,
+        *,
+        room_id: Any,
+        authority_gateway_id: Any,
+        authority_epoch: Any,
+        cursor: Any = None,
+        limit: Any = None,
+        query: Any = None,
+        producer_member_id: Any = None,
+        recipient_member_id: Any = None,
+    ) -> dict[str, Any]:
+        """Read the bounded catalog without duplicating the byte store."""
+        from gateway.hosted_room_attachment_catalog import list_published
+
+        return list_published(
+            self, room_id=room_id, authority_gateway_id=authority_gateway_id,
+            authority_epoch=authority_epoch, cursor=cursor, limit=limit,
+            query=query, producer_member_id=producer_member_id,
+            recipient_member_id=recipient_member_id,
+        )
+
+
 __all__ = [
+    "ATTACHMENT_LIST_EVENT_SCAN_LIMIT",
+    "AttachmentCursorError",
+    "DEFAULT_ATTACHMENT_LIST_LIMIT",
+    "MAX_ATTACHMENT_LIST_LIMIT",
+    "MAX_ATTACHMENT_LIST_RESPONSE_BYTES",
     "AttachmentConflictError",
     "AttachmentData",
     "AttachmentError",
@@ -1241,3 +1311,45 @@ def retain_message_attachments(
            WHERE attachment_id=?""",
         ((now, entry["attachment_id"]) for entry in normalized),
     )
+
+
+def _catalog_limit(value: Any) -> int:
+    if value is None:
+        return DEFAULT_ATTACHMENT_LIST_LIMIT
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AttachmentError("attachment list limit must be an integer")
+    if not 1 <= value <= MAX_ATTACHMENT_LIST_LIMIT:
+        raise AttachmentError(
+            f"attachment list limit must be between 1 and {MAX_ATTACHMENT_LIST_LIMIT}"
+        )
+    return value
+
+
+def fold_catalog_text(value: str) -> str:
+    if value.isascii():
+        return value.lower()
+    return "".join(
+        char for char in unicodedata.normalize("NFKD", value).casefold()
+        if not unicodedata.combining(char)
+    )
+
+
+def _catalog_query(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise AttachmentError("attachment query must be a string")
+    if len(value) > MAX_ATTACHMENT_LIST_QUERY_CHARS:
+        raise AttachmentError("attachment query is too long")
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        raise AttachmentError("attachment query must contain valid Unicode") from None
+    folded = fold_catalog_text(value.strip())
+    if len(folded) > MAX_ATTACHMENT_LIST_QUERY_CHARS * 32:
+        raise AttachmentError("attachment query is too long")
+    return folded
+
+
+class AttachmentCursorError(AttachmentError):
+    """The caller must explicitly restart discovery from Latest."""

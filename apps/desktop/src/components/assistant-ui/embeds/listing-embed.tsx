@@ -191,11 +191,11 @@ function ListingGallery({ address, images }: { address: string; images: string[]
             // photos every frame is equal.
             className={cn(mosaic && tile === 0 && 'col-span-2 row-span-2')}
             key={src}
+            label={t.desktop.openImage}
             more={tile === visible.length - 1 ? live.length - visible.length : 0}
             onError={() => setBroken(prev => (prev.includes(src) ? prev : [...prev, src]))}
             onOpen={() => setOpenAt(tile)}
             src={src}
-            title={t.desktop.openImage}
           />
         ))}
       </span>
@@ -220,7 +220,7 @@ function GalleryTile({
   onError,
   onOpen,
   src,
-  title
+  label
 }: {
   address: string
   className?: string
@@ -229,10 +229,10 @@ function GalleryTile({
   onError: () => void
   onOpen: () => void
   src: string
-  title: string
+  label: string
 }) {
   return (
-    <Tip label={title}>
+    <Tip label={label}>
       <button
         className={cn('relative block size-full cursor-zoom-in overflow-hidden bg-muted/55', className)}
         onClick={onOpen}

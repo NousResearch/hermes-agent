@@ -2681,6 +2681,10 @@ class CuaDriverBackend(ComputerUseBackend):
         # element. Cleared whenever a fresh capture overwrites the
         # snapshot context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # cua-driver 0.22 can expose one snapshot handle without duplicating
+        # an element_token on every indexed row. Actions addressed by index
+        # must carry this handle when the live schema accepts snapshot_id.
+        self._snapshot_id: Optional[str] = None
         # Per-instance public cua-driver session label. The MCP transport owns
         # the private lifecycle and releases it when the connection closes.
         # start_session/end_session attach this stable label to cursor,
@@ -2815,6 +2819,7 @@ class CuaDriverBackend(ComputerUseBackend):
         self._last_app = None
         self._last_target = None
         self._snapshot_tokens = {}
+        self._snapshot_id = None
 
     def _failed_capture(self, mode: str, message: str = "") -> CaptureResult:
         """Return an empty capture after disarming any prior target context."""
@@ -3203,6 +3208,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # Tokens belong to the prior window snapshot. Disarm them before any
         # capture call so an exception cannot pair old tokens with this target.
         self._snapshot_tokens = {}
+        self._snapshot_id = None
         app_name = target["app_name"]
         # Record the resolved app name so capture_after= follow-ups can re-target
         # the same app rather than falling back to the frontmost window.
@@ -3368,7 +3374,8 @@ class CuaDriverBackend(ComputerUseBackend):
             # Falls back to markdown regex parsing for cua-driver builds
             # that didn't carry the structured shape — those bounds come
             # back (0,0,0,0); the structured path preserves real frames.
-            sc_elements = (gws_out.get("structuredContent") or {}).get("elements")
+            structured = gws_out.get("structuredContent") or {}
+            sc_elements = structured.get("elements")
             if isinstance(sc_elements, list) and sc_elements:
                 elements = _parse_elements_from_structured(sc_elements)
             else:
@@ -3384,6 +3391,10 @@ class CuaDriverBackend(ComputerUseBackend):
                 for e in elements
                 if e.element_token
             }
+            snapshot_id = structured.get("snapshot_id")
+            self._snapshot_id = (
+                snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
+            )
 
             # Image may arrive as an MCP image part or inside
             # structuredContent (screenshot_png_b64) depending on the driver
@@ -3765,6 +3776,7 @@ class CuaDriverBackend(ComputerUseBackend):
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
             self._snapshot_tokens = {}
+            self._snapshot_id = None
             self._last_app = target["app_name"] or app  # retained for back-compat diagnostics
             self._last_target = {
                 "pid": self._active_pid,
@@ -4093,13 +4105,16 @@ class CuaDriverBackend(ComputerUseBackend):
         if not isinstance(idx, int):
             return
         token = self._snapshot_tokens.get(idx)
-        if not token:
-            return
-        if not self._session.supports_capability(
+        if token and self._session.supports_capability(
             "accessibility.element_tokens", tool=tool
         ):
+            args["element_token"] = token
             return
-        args["element_token"] = token
+        if (
+            self._snapshot_id
+            and self._session.supports_input_property(tool, "snapshot_id")
+        ):
+            args["snapshot_id"] = self._snapshot_id
 
     def _action(
         self,

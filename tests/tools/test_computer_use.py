@@ -2205,12 +2205,30 @@ class TestElementTokenAttachment:
             "click": {"input.pointer.click", "accessibility.element_tokens"},
         })
         backend._snapshot_tokens = {5: "s0001:5", 6: "s0001:6"}
+        backend._snapshot_id = "s00000001"
+        backend._session.supports_input_property = lambda tool, prop: True
         backend.click(element=5, button="left")
         name, args = backend._session.call_tool.call_args.args
         assert name == "click"
         assert args["element_index"] == 5
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
+        assert "snapshot_id" not in args
+
+    def test_snapshot_id_omitted_when_tool_schema_does_not_accept_it(self):
+        backend = self._backend_with_session({
+            "click": {"input.pointer.click"},
+        })
+        backend._snapshot_id = "s00000001"
+        backend._session.supports_input_property = lambda tool, prop: False
+
+        backend.click(element=5, button="left")
+
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        assert "snapshot_id" not in args
+        assert "element_token" not in args
 
 
     def test_capture_refreshes_snapshot_tokens(self):
@@ -2255,6 +2273,144 @@ class TestElementTokenAttachment:
 
         # Stale 99 token is gone; only the two new tokens remain.
         assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
+
+    def test_capture_snapshot_id_is_attached_when_element_tokens_are_absent(self):
+        """cua-driver 0.22 may return a snapshot handle without per-element tokens.
+        Numbered elements must remain actionable through snapshot_id + element_index.
+        """
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.supports_capability = lambda cap, tool=None: False
+        backend._session.supports_input_property = lambda tool, prop: prop == "snapshot_id"
+
+        windows_payload = {"windows": [{
+            "app_name": "Calculator", "pid": 9, "window_id": 1,
+            "is_on_screen": True, "title": "Calculator", "z_index": 0,
+        }]}
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                return {
+                    "data": "Calculator snapshot",
+                    "images": [], "image_mime_types": [],
+                    "structuredContent": {
+                        "snapshot_id": "sdeadbeef",
+                        "elements": [
+                            {"element_index": 5, "role": "button", "label": "7"},
+                        ],
+                    },
+                    "isError": False,
+                }
+            return {"data": "ok", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        capture = backend.capture(mode="ax")
+        assert capture.elements[0].index == 5
+
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        assert args["snapshot_id"] == "sdeadbeef"
+
+    def test_vision_capture_invalidates_prior_snapshot_id(self):
+        """A pixel-only capture must not leave an AX snapshot actionable."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session._has_tool.return_value = False
+        backend._session.capabilities_discovered = True
+        backend._snapshot_id = "sold00001"
+        backend._snapshot_tokens = {5: "sold00001:5"}
+
+        windows_payload = {"windows": [{
+            "app_name": "NewApp", "pid": 10, "window_id": 2,
+            "is_on_screen": True, "title": "New", "z_index": 0,
+        }]}
+        tiny_png = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "/x8AAusB9Wl2JVEAAAAASUVORK5CYII="
+        )
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                return {"data": "", "images": [tiny_png],
+                        "image_mime_types": ["image/png"],
+                        "structuredContent": {"elements": []}, "isError": False}
+            raise AssertionError(name)
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        backend.capture(mode="vision", app="NewApp")
+
+        assert backend._snapshot_tokens == {}
+        assert backend._snapshot_id is None
+
+    def test_focus_app_invalidates_prior_snapshot_id(self):
+        """Selecting a different target must invalidate prior AX handles."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._snapshot_id = "sold00001"
+        backend._snapshot_tokens = {5: "sold00001:5"}
+        backend._load_windows = lambda: [{
+            "app_name": "NewApp", "pid": 10, "window_id": 2,
+            "is_on_screen": True, "title": "New", "z_index": 0,
+        }]
+
+        result = backend.focus_app("NewApp")
+
+        assert result.ok is True
+        assert backend._snapshot_tokens == {}
+        assert backend._snapshot_id is None
+
+    def test_failed_capture_invalidates_prior_snapshot_id(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._snapshot_id = "s00000001"
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend._session.call_tool.return_value = {
+            "data": "", "images": [], "image_mime_types": [],
+            "structuredContent": {"windows": []}, "isError": False,
+        }
+
+        capture = backend.capture(mode="ax", app="MissingApp")
+
+        assert capture.elements == []
+        assert backend._snapshot_tokens == {}
+        assert backend._snapshot_id is None
+
+    def test_transport_reset_invalidates_prior_snapshot_id(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._active_pid = 10
+        backend._active_window_id = 2
+        backend._snapshot_id = "s00000001"
+        backend._snapshot_tokens = {5: "s00000001:5"}
+
+        backend._handle_transport_reset()
+
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._snapshot_tokens == {}
+        assert backend._snapshot_id is None
 
 
 class TestSessionLifecycle:

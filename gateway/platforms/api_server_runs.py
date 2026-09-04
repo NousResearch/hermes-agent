@@ -876,7 +876,18 @@ async def _handle_runs(
                                 except Exception:
                                     pass
                     u = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                        # cache-exclusive fresh input + the cached-read
+                        # count, so a client can tell a prompt served from
+                        # the provider cache from one billed as fresh
+                        # (#99554). session_prompt_tokens is cache-
+                        # INCLUSIVE (input + cache_read + cache_write per
+                        # CanonicalUsage); reporting it as "input_tokens"
+                        # made the two indistinguishable.
+                        "input_tokens": getattr(agent, "session_input_tokens", 0) or 0,
+                        "cached_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                        # Legacy cache-inclusive totals kept for existing
+                        # readers (sum of the two above plus cache writes).
+                        "prompt_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                     }

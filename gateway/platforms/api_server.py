@@ -7500,7 +7500,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         task_id=effective_task_id,
                     )
                     usage = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                        # #99554: input_tokens is cache-EXCLUSIVE fresh input,
+                        # cached_tokens exposes the provider-cache reads, and
+                        # prompt_tokens keeps the legacy cache-INCLUSIVE total
+                        # (input + cache_read + cache_write per
+                        # CanonicalUsage) so existing readers see no change.
+                        "input_tokens": getattr(agent, "session_input_tokens", 0) or 0,
+                        "cached_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                        "prompt_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                     }

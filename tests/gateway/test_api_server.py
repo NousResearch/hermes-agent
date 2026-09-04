@@ -360,9 +360,11 @@ class TestAgentExecution:
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
-        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_input_tokens = 1      # cache-exclusive fresh input
+        mock_agent.session_cache_read_tokens = 4  # served from provider cache
+        mock_agent.session_prompt_tokens = 6     # cache-INCLUSIVE legacy total
         mock_agent.session_completion_tokens = 2
-        mock_agent.session_total_tokens = 3
+        mock_agent.session_total_tokens = 8
 
         model_options = {"reasoning": {"enabled": False}, "fast": False}
         with patch.object(adapter, "_create_agent", return_value=mock_agent) as mock_create_agent:
@@ -381,7 +383,16 @@ class TestAgentExecution:
         # here doesn't set an explicit session_id string so the guard skips
         # the annotation — header will fall back to the provided session_id.
         assert result["final_response"] == "ok"
-        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        # #99554: input_tokens is cache-EXCLUSIVE, cached_tokens exposes the
+        # cached-read count, prompt_tokens keeps the legacy cache-inclusive
+        # total so existing readers see no regression.
+        assert usage == {
+            "input_tokens": 1,
+            "cached_tokens": 4,
+            "prompt_tokens": 6,
+            "output_tokens": 2,
+            "total_tokens": 8,
+        }
         create_kwargs = mock_create_agent.call_args.kwargs
         assert create_kwargs["requested_model"] == "MiniMax-M3"
         assert create_kwargs["requested_provider"] == "minimax"
@@ -2409,6 +2420,8 @@ class TestSessionKeyHeader:
             captured_kwargs.update(kwargs)
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok", "messages": []}
+            mock_agent.session_input_tokens = 0
+            mock_agent.session_cache_read_tokens = 0
             mock_agent.session_prompt_tokens = 0
             mock_agent.session_completion_tokens = 0
             mock_agent.session_total_tokens = 0

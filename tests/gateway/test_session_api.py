@@ -172,6 +172,8 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
     observed = {}
 
     class FakeAgent:
+        session_input_tokens = 0
+        session_cache_read_tokens = 0
         session_prompt_tokens = 0
         session_completion_tokens = 0
         session_total_tokens = 0
@@ -201,7 +203,15 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
     )
 
     assert result["session_id"] == "request-session"
-    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    # #99554: cache-exclusive input + cached_reads exposed alongside the
+    # legacy cache-inclusive prompt_tokens.
+    assert usage == {
+        "input_tokens": 0,
+        "cached_tokens": 0,
+        "prompt_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+    }
     assert observed == {"registered": True, "task_id": "request-session"}
     assert "run_steer_test" not in adapter._active_run_agents
 

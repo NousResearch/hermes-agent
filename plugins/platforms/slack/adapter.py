@@ -3001,13 +3001,21 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Guard against empty/whitespace-only messages — Slack API
             # returns ``no_text`` for chat.postMessage with blank text.
+            # However, if we have blocks (e.g. for tables, code blocks), the
+            # text fallback may be empty but the message still has content.
+            # Issue #92202: when blocks are present, ignore the text field
+            # for "thinking" detection to prevent stuck status.
+            would_have_blocks = self._maybe_blocks(content) is not None and len(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)) == 1
             if not formatted or not formatted.strip():
                 # This is still the end of a delivery attempt: if the turn
                 # produced no visible text (e.g. "(empty)" final responses
                 # are filtered upstream), the assistant thread status must
                 # not stay stuck on "is thinking..." (#24117).
-                await self._clear_thread_status_quietly(chat_id, metadata)
-                return SendResult(success=True)
+                # Unless we have blocks, in which case the message has
+                # content even if the text fallback is empty.
+                if not would_have_blocks:
+                    await self._clear_thread_status_quietly(chat_id, metadata)
+                    return SendResult(success=True)
 
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)

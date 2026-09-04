@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.config import load_config, save_config
 from hermes_cli.inventory import build_models_payload, load_picker_context
 from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
@@ -49,7 +50,152 @@ def _model_options() -> list[dict[str, Any]]:
     ]
 
 
-def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
+def _prompt_positive_int(title: str, current: int | None = None) -> int | None:
+    suffix = f" [{current}]" if current is not None else ""
+    while True:
+        try:
+            raw = input(f"{title}{suffix}: ").strip()
+        except EOFError:
+            return current
+        if not raw:
+            return current
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        print("Please enter a positive integer, or leave blank to keep the current value.")
+
+
+def _provider_for_slot(
+    providers: list[dict[str, Any]], slot: dict[str, Any]
+) -> dict[str, Any] | None:
+    provider_slug = str(slot.get("provider") or "")
+    return next((provider for provider in providers if provider.get("slug") == provider_slug), None)
+
+
+def _model_supports_reasoning(provider: dict[str, Any], model: str) -> bool | None:
+    capabilities = provider.get("capabilities")
+    model_capabilities = capabilities.get(model) if isinstance(capabilities, dict) else None
+    if not isinstance(model_capabilities, dict) or "reasoning" not in model_capabilities:
+        return None
+    return bool(model_capabilities["reasoning"])
+
+
+def _model_can_disable_reasoning(provider: dict[str, Any], model: str) -> bool | None:
+    capabilities = provider.get("capabilities")
+    model_capabilities = capabilities.get(model) if isinstance(capabilities, dict) else None
+    if not isinstance(model_capabilities, dict) or "can_disable_reasoning" not in model_capabilities:
+        return None
+    return bool(model_capabilities["can_disable_reasoning"])
+
+
+def _slot_reasoning_effort(
+    provider: dict[str, Any], model: str, current_effort: str = ""
+) -> str | None:
+    if _model_supports_reasoning(provider, model) is not True:
+        return None
+
+    from hermes_cli.main import _prompt_reasoning_effort_selection
+
+    allow_disable = _model_can_disable_reasoning(provider, model) is not False
+    if not allow_disable and current_effort == "none":
+        current_effort = ""
+    selected = _prompt_reasoning_effort_selection(
+        list(VALID_REASONING_EFFORTS),
+        current_effort=current_effort,
+        allow_disable=allow_disable,
+    )
+    return selected or (current_effort or None)
+
+
+def _edit_slot_parameters(
+    current: dict[str, Any], provider: dict[str, Any] | None, *, role: str
+) -> dict[str, Any]:
+    slot = dict(current)
+    if role == "reference":
+        current_max_tokens = slot.get("max_tokens")
+        max_tokens_label = current_max_tokens if isinstance(current_max_tokens, int) else "preset default"
+        max_tokens_action = _prompt_choice(
+            "Max tokens",
+            [
+                f"Keep current ({max_tokens_label})",
+                "Use preset default (unset override)",
+                "Set custom limit",
+            ],
+        )
+        if max_tokens_action == 1:
+            slot.pop("max_tokens", None)
+        elif max_tokens_action == 2:
+            value = _prompt_positive_int(
+                "Max tokens",
+                current_max_tokens if isinstance(current_max_tokens, int) else None,
+            )
+            if value is not None:
+                slot["max_tokens"] = value
+    else:
+        slot.pop("max_tokens", None)
+
+    current_effort = str(slot.get("reasoning_effort") or "").strip().lower()
+    if provider is not None:
+        model = str(slot.get("model") or "")
+        reasoning_support = _model_supports_reasoning(provider, model)
+        if reasoning_support is False:
+            if "reasoning_effort" in slot:
+                print(
+                    f"Note: {slot.get('provider')}:{model} does not support reasoning; "
+                    "dropping the existing reasoning_effort override."
+                )
+            slot.pop("reasoning_effort", None)
+        elif reasoning_support is True:
+            if (
+                _model_can_disable_reasoning(provider, model) is False
+                and current_effort == "none"
+            ):
+                print(
+                    f"Note: {slot.get('provider')}:{model} requires reasoning; "
+                    "dropping the existing disabled-reasoning override."
+                )
+                slot.pop("reasoning_effort", None)
+            effort_action = _prompt_choice(
+                "Reasoning effort",
+                [
+                    "Keep or change reasoning effort",
+                    "Use provider default (unset override)",
+                ],
+            )
+            if effort_action == 1:
+                slot.pop("reasoning_effort", None)
+            else:
+                effort = _slot_reasoning_effort(provider, model, current_effort)
+                if effort:
+                    slot["reasoning_effort"] = effort
+    return slot
+
+
+def _pick_slot(
+    current: dict[str, Any] | None = None, *, role: str = "reference"
+) -> dict[str, Any]:
+    if current:
+        parameter_label = (
+            "reasoning_effort"
+            if role == "aggregator"
+            else "max_tokens / reasoning_effort"
+        )
+        action = _prompt_choice(
+            "Edit existing slot",
+            [
+                f"Keep provider/model; edit {parameter_label}",
+                "Change provider/model",
+            ],
+        )
+        if action == 0:
+            providers = _model_options()
+            return _edit_slot_parameters(
+                current, _provider_for_slot(providers, current), role=role
+            )
+
     providers = _model_options()
     if not providers:
         raise RuntimeError("No configured model providers found. Run `hermes model` first.")
@@ -66,7 +212,32 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     current_model = (current or {}).get("model", "")
     model_default = models.index(current_model) if current_model in models else 0
     model = models[_prompt_choice(f"Select model for {provider.get('slug')}", models, model_default)]
-    return {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    slot = {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    same_model = slot["provider"] == current_provider and slot["model"] == current_model
+    current_effort = (
+        str((current or {}).get("reasoning_effort") or "").strip().lower()
+        if same_model
+        else ""
+    )
+    reasoning_support = _model_supports_reasoning(provider, str(model))
+    if current and "reasoning_effort" in current and reasoning_support is False:
+        print(
+            f"Note: {slot['provider']}:{slot['model']} does not support reasoning; "
+            "dropping the existing reasoning_effort override."
+        )
+    elif (
+        same_model
+        and current_effort == "none"
+        and _model_can_disable_reasoning(provider, str(model)) is False
+    ):
+        print(
+            f"Note: {slot['provider']}:{slot['model']} requires reasoning; "
+            "dropping the existing disabled-reasoning override."
+        )
+    effort = _slot_reasoning_effort(provider, str(model), current_effort)
+    if effort:
+        slot["reasoning_effort"] = effort
+    return slot
 
 
 def _format_slot(slot: dict[str, Any]) -> str:
@@ -111,7 +282,7 @@ def cmd_moa(args) -> None:
         idx = 0
         while True:
             base = existing[idx] if idx < len(existing) else None
-            picked = _pick_slot(base)
+            picked = _pick_slot(base, role="reference")
             picked["enabled"] = bool((base or {}).get("enabled", True))
             refs.append(picked)
             idx += 1
@@ -121,7 +292,7 @@ def cmd_moa(args) -> None:
         print("Configure aggregator model.")
         current = dict(current)
         current["reference_models"] = refs
-        current["aggregator"] = _pick_slot(current.get("aggregator"))
+        current["aggregator"] = _pick_slot(current.get("aggregator"), role="aggregator")
         moa["presets"][preset_name] = current
         moa.setdefault("default_preset", preset_name)
         cfg["moa"] = normalize_moa_config(moa)

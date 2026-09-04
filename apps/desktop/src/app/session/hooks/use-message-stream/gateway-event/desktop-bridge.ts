@@ -1,3 +1,8 @@
+import {
+  hasLivePreviewSurface,
+  requestPopoutPreviewAct,
+  requestPopoutPreviewRead
+} from '@/app/chat/right-rail/preview-popout-bridge'
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -10,6 +15,7 @@ import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
 import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
 import { $toursEnabled } from '@/store/tours'
+import { isBrowserWindow } from '@/store/windows'
 
 import type { GatewayEventContext } from './types'
 
@@ -45,7 +51,7 @@ const loadPreviewEngine = () => {
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
+  const { event, payload, explicitSid, isActiveEvent } = ctx
 
   if (event.type === 'terminal.read.request') {
     // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -69,18 +75,28 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'preview.read.request') {
     // read_preview tool: serialize the active preview tab (a Browser
     // webview's page text is async) and answer. Empty text = nothing open.
+    // The popped-out Browser owns the live webview in another renderer, so
+    // that window stays silent on the gateway and answers via the pop-out
+    // bridge when the chat window has no local surface.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      if (isBrowserWindow()) {
+        return true
+      }
+
       const start = typeof payload?.start === 'number' ? payload.start : undefined
       const count = typeof payload?.count === 'number' ? payload.count : undefined
 
-      void readActivePreview({ count, start }).then(result => {
+      void (async () => {
+        const local = hasLivePreviewSurface() ? await readActivePreview({ count, start }) : null
+        const result = local ?? (await requestPopoutPreviewRead({ count, start })) ?? (await readActivePreview({ count, start }))
+
         void $gateway.get()?.request('preview.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
-      })
+      })()
     }
 
     return true
@@ -91,10 +107,23 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     // drive the pane's history. Dynamic import keeps the injected engine off
     // the boot path. Active session only: a background turn must never reach
     // into the page the user is working in (desktop AGENTS.md: offer, don't
-    // hijack).
+    // hijack). After pop-out the live webview is in `?win=browser`; that
+    // window stays silent here and serves acts through the pop-out bridge so
+    // the chat window keeps the session gate.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      if (isBrowserWindow()) {
+        return true
+      }
+
+      // Every mounted desktop window can observe the same gateway event. A
+      // scoped mismatch belongs to another window, so answering here would race
+      // the owning window and could make a refusal win before its real result.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const answer = (result: unknown) =>
         $gateway.get()?.request('preview.act.respond', {
           request_id: requestId,
@@ -102,23 +131,41 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         })
 
       if (isActiveEvent) {
-        void loadPreviewEngine()
-          .then(run =>
-            run({
-              amount: payload?.amount,
-              key: payload?.key,
-              kind: payload?.action ?? '',
-              max: payload?.max,
-              ref: payload?.ref,
-              selector: payload?.selector,
-              submit: payload?.submit,
-              text: payload?.text,
-              to: payload?.to as PreviewActAction['to']
-            })
-          )
-          .then(answer, error =>
+        const action = {
+          amount: payload?.amount,
+          key: payload?.key,
+          kind: payload?.action ?? '',
+          max: payload?.max,
+          ref: payload?.ref,
+          selector: payload?.selector,
+          submit: payload?.submit,
+          text: payload?.text,
+          to: payload?.to as PreviewActAction['to']
+        }
+
+        void (async () => {
+          try {
+            if (hasLivePreviewSurface()) {
+              const run = await loadPreviewEngine()
+              answer(await run(action))
+
+              return
+            }
+
+            const remote = await requestPopoutPreviewAct(action)
+
+            if (remote) {
+              answer(remote)
+
+              return
+            }
+
+            const run = await loadPreviewEngine()
+            answer(await run(action))
+          } catch (error) {
             answer({ error: error instanceof Error ? error.message : String(error), success: false })
-          )
+          }
+        })()
       } else {
         void answer({
           error: 'The in-app browser only takes actions in the session the user is looking at.',

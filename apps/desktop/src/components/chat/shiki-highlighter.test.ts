@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { chunkByLines, exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
+import { chunkByLines, copyableCodeText, exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
 
 describe('exceedsHighlightBudget', () => {
   it('highlights normal-sized blocks', () => {
@@ -33,5 +33,46 @@ describe('chunkByLines', () => {
     expect(chunks).toHaveLength(5)
     expect(chunks.map(chunk => chunk.text).join('\n')).toBe(code)
     expect(chunks.reduce((sum, chunk) => sum + chunk.lines, 0)).toBe(1000)
+  })
+})
+
+
+describe('copyableCodeText', () => {
+  it('unwraps quoted URL reference directives before copying a code block', () => {
+    expect(copyableCodeText('curl @url:`https://example.com/image.png` -o image.png')).toBe(
+      'curl https://example.com/image.png -o image.png'
+    )
+  })
+
+  it('unwraps bare URL reference directives without losing code punctuation', () => {
+    expect(copyableCodeText('curl @url:https://example.com/image.png; echo done')).toBe(
+      'curl https://example.com/image.png; echo done'
+    )
+  })
+
+  it('unwraps each supported URL quote style without changing other references', () => {
+    const code = `first @url:'https://one.example'
+second @url:"https://two.example" @file:\`src/app.ts\``
+
+    expect(copyableCodeText(code)).toBe('first https://one.example\nsecond https://two.example @file:`src/app.ts`')
+  })
+
+  it('keeps hostless or malformed HTTP(S) URL directives raw', () => {
+    for (const code of [
+      '@url:http://',
+      '@url:https://',
+      '@url:http://?',
+      '@url:https://?',
+      '@url:http://:80',
+      '@url:https://#fragment',
+    ]) {
+      expect(copyableCodeText(code)).toBe(code)
+    }
+  })
+
+  it('leaves invalid URL directives and other reference kinds unchanged', () => {
+    const code = '@url:ftp://example.com @url:example.com @image:https://example.com/image.png'
+
+    expect(copyableCodeText(code)).toBe(code)
   })
 })

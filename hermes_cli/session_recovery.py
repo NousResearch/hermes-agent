@@ -914,6 +914,7 @@ def _verify_row_counts(
 def _verify_recovered_database(
     output: Path, *, expected_counts: dict[str, Optional[int]], copy_report: dict[str, dict[str, Any]],
     allow_partial: bool = False, orphan_cleanup: Optional[dict[str, Any]] = None,
+    semantic_cleanup: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     verification: dict[str, Any] = {"errors": [], "warnings": [], "loss_detected": False}
     open_error = _db_opens_cleanly(output)
@@ -1098,7 +1099,7 @@ def _recover_via_lost_and_found(
         source, output, inspection, disk_space, verification, on_source_change="healthy",
         allow_partial=True, mode="lost_and_found_salvage", best_effort=True, unreadable_schemas=missing_required,
         sqlite3_cli=cli_report, lost_and_found=mapping, session_stubs=stubbing, fts_rebuild=fts, copy=copy_report,
-        orphan_cleanup=orphan_cleanup, derived_metadata=derived_metadata,
+        orphan_cleanup=orphan_cleanup, semantic_cleanup=semantic_cleanup, derived_metadata=derived_metadata,
     )
 
 
@@ -1164,6 +1165,10 @@ def recover_session_database(
                 output, topic_tables=any(inspection["tables"][table].get("available") for table in _TOPIC_TABLES),
             )
             copy_report: dict[str, dict[str, Any]] = {}
+            semantic_cleanup: dict[str, Any] = {
+                "malformed_json_values_quarantined": 0,
+                "columns": {},
+            }
             for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES):
                 if table not in _CANONICAL_TABLES and not inspection["tables"][table].get("available"):
                     copy_report[table] = {"status": "missing", "copied_rows": 0}
@@ -1174,7 +1179,11 @@ def recover_session_database(
                     source_conn, destination_conn, table, salvage=allow_partial, chunk_size=chunk_size,
                     progress_cb=progress_cb, source_rows=inspection["tables"][table].get("rows"),
                 )
-            semantic_cleanup = _quarantine_malformed_json(destination_conn)
+                # Message FTS triggers inspect the owning session's model_config.
+                # Quarantine immediately after copying sessions so malformed JSON
+                # cannot make the subsequent message copy fail.
+                if table == "sessions":
+                    semantic_cleanup = _quarantine_malformed_json(destination_conn)
             orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
             derived_metadata = _finalize_derived_metadata(destination_conn)
         finally:
@@ -1194,7 +1203,7 @@ def recover_session_database(
         return _recovery_report(
             source, output, inspection, disk_space, verification, on_source_change="complete",
             allow_partial=allow_partial, copy=copy_report, orphan_cleanup=orphan_cleanup,
-            derived_metadata=derived_metadata,
+            semantic_cleanup=semantic_cleanup, derived_metadata=derived_metadata,
         )
     finally:
         temp_dir.cleanup()

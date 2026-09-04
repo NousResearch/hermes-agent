@@ -76,6 +76,14 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
             calls.append(("read", path, max_bytes, read_limit))
             return b"hello", 5, path
 
+        def inspect_file(self, path):
+            calls.append(("inspect", path))
+            return path, 5
+
+        def stream_file(self, path):
+            calls.append(("stream", path))
+            return iter((b"hello",))
+
         def write_text(self, path, content, *, max_bytes):
             calls.append(("write", path, content, max_bytes))
             return path, len(content.encode("utf-8"))
@@ -142,7 +150,52 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
         ("read", "/srv/repos/project/logo.png", web_server._FS_DATA_URL_MAX_BYTES, None),
         ("write", "/srv/repos/project/README.md", "updated", web_server._FS_TEXT_WRITE_MAX_BYTES),
         ("git-root", "/srv/repos/project/src"),
-        ("read", "/srv/repos/project/report.txt", web_server._FS_TEXT_SOURCE_MAX_BYTES, None),
+        ("inspect", "/srv/repos/project/report.txt"),
+        ("stream", "/srv/repos/project/report.txt"),
+    ]
+
+
+def test_fs_download_rejects_sensitive_remote_path_before_streaming(client, monkeypatch):
+    calls = []
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            calls.append(("inspect", path))
+            return "/srv/repos/project/.env", 9
+
+        def stream_file(self, _path):
+            raise AssertionError("sensitive remote content must not be streamed")
+
+    monkeypatch.setattr(web_server, "_fs_backend", lambda profile=None: FakeSshFs(), raising=False)
+
+    response = client.get("/api/fs/download", params={"path": "/srv/repos/project/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 403
+    assert calls == [("inspect", "/srv/repos/project/safe-link")]
+
+
+def test_fs_download_streams_remote_file_without_text_source_cap(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(web_server, "_FS_TEXT_SOURCE_MAX_BYTES", 3)
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            calls.append(("inspect", path))
+            return "/srv/repos/project/report.pdf", 6
+
+        def stream_file(self, path):
+            calls.append(("stream", path))
+            return iter((b"123", b"456"))
+
+    monkeypatch.setattr(web_server, "_fs_backend", lambda profile=None: FakeSshFs(), raising=False)
+
+    response = client.get("/api/fs/download", params={"path": "/srv/repos/project/report.pdf", "profile": "remote-dev"})
+
+    assert response.status_code == 200
+    assert response.content == b"123456"
+    assert calls == [
+        ("inspect", "/srv/repos/project/report.pdf"),
+        ("stream", "/srv/repos/project/report.pdf"),
     ]
 
 

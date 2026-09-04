@@ -6,11 +6,13 @@ import base64
 import binascii
 import posixpath
 import shlex
+import subprocess
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.ssh import SSHEnvironment
 
 
@@ -156,6 +158,67 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
         except (ValueError, binascii.Error) as exc:
             raise SshWorkspaceFsError("EIO", "SSH filesystem returned invalid file data") from exc
         return data, size, target
+
+    def inspect_file(self, path: str) -> tuple[str, int]:
+        """Resolve a remote regular file without reading its contents."""
+        target = self._normalize(path)
+        quoted = shlex.quote(target)
+        command = f"""
+p={quoted}
+if [ ! -e "$p" ] && [ ! -L "$p" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
+target=$(realpath "$p" 2>/dev/null || readlink -f "$p" 2>/dev/null) || {{ printf '__HERMES_FS_ERROR__:EACCES\\n'; exit 46; }}
+if [ ! -f "$target" ]; then printf '__HERMES_FS_ERROR__:ENOTREG\\n'; exit 45; fi
+size=$(stat -c %s "$target" 2>/dev/null || stat -f %z "$target" 2>/dev/null) || {{ printf '__HERMES_FS_ERROR__:EACCES\\n'; exit 46; }}
+path64=$(printf '%s' "$target" | base64 | tr -d '\\r\\n')
+printf '__HERMES_FS_SIZE__:%s\\n' "$size"
+printf '__HERMES_FS_PATH__:%s\\n' "$path64"
+"""
+        result = self._execute(command)
+        output = result.get("output", "")
+        if result.get("returncode") != 0:
+            raise SshWorkspaceFsError(self._error_code(output))
+        lines = output.splitlines()
+        if len(lines) != 2 or not lines[0].startswith("__HERMES_FS_SIZE__:") or not lines[1].startswith("__HERMES_FS_PATH__:"):
+            raise SshWorkspaceFsError("EIO", "SSH filesystem did not return file metadata")
+        try:
+            size = int(lines[0].split(":", 1)[1])
+            resolved = base64.b64decode(lines[1].split(":", 1)[1], validate=True).decode("utf-8", errors="strict")
+        except (ValueError, UnicodeError, binascii.Error) as exc:
+            raise SshWorkspaceFsError("EIO", "SSH filesystem returned invalid file metadata") from exc
+        return resolved, size
+
+    def stream_file(self, path: str, *, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        """Yield a previously-authorized remote file without buffering it."""
+        target = self._normalize(path)
+
+        def _chunks() -> Iterator[bytes]:
+            command = self._env._build_ssh_command()
+            command.extend(["bash", "-c", shlex.quote(f"exec cat < {shlex.quote(target)}")])
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
+            try:
+                if process.stdout is None:
+                    raise SshWorkspaceFsError("EIO", "SSH file stream has no stdout")
+                while chunk := process.stdout.read(chunk_size):
+                    yield chunk
+                if process.wait(timeout=self._env.timeout) != 0:
+                    raise SshWorkspaceFsError("EIO", "SSH file stream failed")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                if process.stdout is not None:
+                    process.stdout.close()
+
+        return _chunks()
 
     def write_text(self, path: str, content: str, *, max_bytes: int) -> tuple[str, int]:
         target = self._normalize(path)

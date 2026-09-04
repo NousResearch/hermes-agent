@@ -114,7 +114,7 @@ try:
         WebSocket, WebSocketDisconnect,
     )
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, SecretStr, field_validator
     from starlette.concurrency import run_in_threadpool
@@ -130,7 +130,7 @@ except ImportError:
             WebSocket, WebSocketDisconnect,
         )
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel, SecretStr, field_validator
         from starlette.concurrency import run_in_threadpool
@@ -3284,17 +3284,15 @@ async def fs_download(path: str, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
         try:
-            data, _size, target = await asyncio.to_thread(
-                backend.read_bytes, path, max_bytes=_FS_TEXT_SOURCE_MAX_BYTES
-            )
+            target, _size = await asyncio.to_thread(backend.inspect_file, path)
         except Exception as exc:
             _raise_fs_backend_error(exc)
         target_path = Path(target)
         if _is_sensitive_path(target_path):
             raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
         filename = urllib.parse.quote(target_path.name)
-        return Response(
-            content=data,
+        return StreamingResponse(
+            backend.stream_file(target),
             media_type=_fs_mime_type(target_path),
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
         )

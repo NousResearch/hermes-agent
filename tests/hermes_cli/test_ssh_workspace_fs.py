@@ -1,4 +1,5 @@
 import base64
+import io
 
 import pytest
 
@@ -75,6 +76,50 @@ def test_ssh_workspace_fs_maps_remote_size_failure():
         backend.read_bytes("/srv/repos/large.bin", max_bytes=3)
 
     assert raised.value.code == "EFBIG"
+
+
+def test_ssh_workspace_fs_inspects_resolved_remote_file():
+    resolved = "/srv/repos/.env"
+    encoded = base64.b64encode(resolved.encode()).decode()
+    env = FakeEnv(
+        [
+            {
+                "returncode": 0,
+                "output": f"__HERMES_FS_SIZE__:8\n__HERMES_FS_PATH__:{encoded}\n",
+            }
+        ]
+    )
+    backend = SshWorkspaceFs(env)
+
+    assert backend.inspect_file("safe-link") == (resolved, 8)
+    assert "realpath \"$p\"" in env.calls[0][0]
+
+
+def test_ssh_workspace_fs_streams_remote_file_without_buffering(monkeypatch):
+    env = FakeEnv([])
+    env._build_ssh_command = lambda: ["ssh", "dev@example"]
+    captured = {}
+
+    class FakeProcess:
+        stdout = io.BytesIO(b"hello")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(ssh_workspace_fs.subprocess, "Popen", fake_popen)
+    backend = SshWorkspaceFs(env)
+
+    assert list(backend.stream_file("README.md", chunk_size=2)) == [b"he", b"ll", b"o"]
+    assert captured["command"][:2] == ["ssh", "dev@example"]
+    assert "/srv/repos/README.md" in captured["command"][-1]
 
 
 def test_ssh_workspace_factory_disables_agent_file_sync(monkeypatch):

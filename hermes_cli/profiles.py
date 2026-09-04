@@ -45,6 +45,7 @@ from hermes_constants import (
     mark_named_profile_deleted,
     named_profile_is_deleted,
 )
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -1193,6 +1194,80 @@ def profiles_to_serve(
     return serve
 
 
+def _read_cloned_bundled_manifest(manifest_file: Path) -> Dict[str, str]:
+    """Read a profile's ``skills/.bundled_manifest`` into ``{name: origin_hash}``.
+
+    Handles both the v1 (plain names) and v2 (``name:hash``) formats, mirroring
+    ``tools.skills_sync._read_manifest`` for an arbitrary path.
+    """
+    try:
+        raw = manifest_file.read_text(encoding="utf-8")
+    except (OSError, IOError):
+        return {}
+    entries: Dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if ":" in line:
+            name, _, hash_val = line.partition(":")
+            entries[name.strip()] = hash_val.strip()
+        else:
+            # v1 format: plain name — empty hash triggers migration on next sync.
+            entries[line] = ""
+    return entries
+
+
+def _prune_cloned_bundled_manifest(skills_dir: Path) -> int:
+    """Drop stale bundled-provenance entries from a cloned skills manifest.
+
+    ``profile create --clone`` / ``--clone-all`` copies the source profile's
+    whole skills tree, including its ``.bundled_manifest``. Bundled skills are
+    re-seeded per profile by ``sync_skills()`` only while missing, so an entry
+    whose skill no longer exists in the cloned tree keeps reporting phantom
+    bundled provenance forever: it never self-heals and blocks the skill's
+    absence from being treated as a deliberate user deletion. Prune those
+    entries right after the copy.
+
+    Returns the number of dropped entries (0 when nothing changed).
+    """
+    from tools.skills_sync import _discover_bundled_skills
+
+    manifest_file = skills_dir / ".bundled_manifest"
+    if not manifest_file.is_file():
+        return 0
+    entries = _read_cloned_bundled_manifest(manifest_file)
+    if not entries:
+        return 0
+
+    live = {skill_name for skill_name, _ in _discover_bundled_skills(skills_dir)}
+    stale = sorted(set(entries) - live)
+    if not stale:
+        return 0
+
+    kept_lines = [
+        name if not entries[name] else f"{name}:{entries[name]}"
+        for name in sorted(set(entries) & live)
+    ]
+    try:
+        atomic_write_text(
+            manifest_file,
+            "\n".join(kept_lines) + "\n",
+            tmp_prefix=".bundled_manifest_",
+            preserve_mode=True,
+        )
+    except OSError as e:
+        logger.debug("Failed to rewrite cloned manifest %s: %s", manifest_file, e)
+        return 0
+    logger.debug(
+        "Pruned %d stale bundled-manifest entr%s from cloned skills (%s)",
+        len(stale),
+        "y" if len(stale) == 1 else "ies",
+        ", ".join(stale),
+    )
+    return len(stale)
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1292,6 +1367,8 @@ def create_profile(
                 "profile %s: dropped cloned single-use OAuth grants %s "
                 "(inherits the root grant instead)", canon, stripped,
             )
+        # Drop manifest entries whose bundled skill did not survive the copy.
+        _prune_cloned_bundled_manifest(profile_dir / "skills")
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1324,7 +1401,11 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+                dest_skills = profile_dir / "skills"
+                shutil.copytree(source_skills, dest_skills, symlinks=True, dirs_exist_ok=True)
+                # Drop manifest entries whose bundled skill did not survive
+                # the copy (deleted upstream, excluded paths, ...).
+                _prune_cloned_bundled_manifest(dest_skills)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

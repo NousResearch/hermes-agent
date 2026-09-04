@@ -130,7 +130,10 @@ class TestCreateProfile:
             for line in content.splitlines()
         )
         mode = stat.S_IMODE(env_path.stat().st_mode)
-        assert mode == 0o600
+        if sys.platform != "win32":
+            # Windows has no POSIX permission bits — os.chmod there only
+            # toggles the read-only attribute, so 0o600 is unenforceable.
+            assert mode == 0o600
 
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):
@@ -284,7 +287,9 @@ class TestBackfillProfileEnvs:
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
             assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
-            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+            if sys.platform != "win32":
+                # Windows has no POSIX permission bits to assert on.
+                assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 
     def test_placeholder_when_default_has_no_env(self, profile_env):
@@ -1175,5 +1180,115 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
+
+
+# ===================================================================
+# Cloned .bundled_manifest pruning
+# ===================================================================
+
+def _make_skill(skills_dir, name, *, frontmatter_name=None):
+    d = skills_dir / name
+    d.mkdir(parents=True)
+    if frontmatter_name:
+        (d / "SKILL.md").write_text(
+            f"---\nname: {frontmatter_name}\ndescription: x\n---\n# Skill\n",
+            encoding="utf-8",
+        )
+    else:
+        (d / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+    return d
+
+
+class TestPruneClonedBundledManifest:
+    """Tests for _prune_cloned_bundled_manifest()."""
+
+    def test_drops_stale_entries_keeps_live(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir, "alpha")
+        manifest = skills_dir / ".bundled_manifest"
+        manifest.write_text("alpha:abc123\nghost:dead00\n", encoding="utf-8")
+
+        pruned = profiles._prune_cloned_bundled_manifest(skills_dir)
+
+        assert pruned == 1
+        assert manifest.read_text(encoding="utf-8") == "alpha:abc123\n"
+
+    def test_frontmatter_name_matches_manifest_key(self, tmp_path):
+        # Manifest keys are frontmatter names; dir basename may differ.
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir, "dir-name", frontmatter_name="front-name")
+        manifest = skills_dir / ".bundled_manifest"
+        manifest.write_text("front-name:abc123\n", encoding="utf-8")
+
+        assert profiles._prune_cloned_bundled_manifest(skills_dir) == 0
+        assert manifest.read_text(encoding="utf-8") == "front-name:abc123\n"
+
+    def test_excluded_paths_do_not_count_as_live(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir / "node_modules" / "pkg", "alpha")
+        manifest = skills_dir / ".bundled_manifest"
+        manifest.write_text("alpha:abc123\n", encoding="utf-8")
+
+        assert profiles._prune_cloned_bundled_manifest(skills_dir) == 1
+        assert manifest.read_text(encoding="utf-8") == "\n"
+
+    def test_v1_plain_name_entries_preserved_when_pruning(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir, "alpha")
+        manifest = skills_dir / ".bundled_manifest"
+        manifest.write_text("alpha\nghost\n", encoding="utf-8")
+
+        pruned = profiles._prune_cloned_bundled_manifest(skills_dir)
+
+        assert pruned == 1
+        # v1 entries stay v1 (no ':' appended) so migration still triggers.
+        assert manifest.read_text(encoding="utf-8") == "alpha\n"
+
+    def test_noop_when_all_live_or_missing(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir, "alpha")
+        manifest = skills_dir / ".bundled_manifest"
+        manifest.write_text("alpha:abc123\n", encoding="utf-8")
+
+        assert profiles._prune_cloned_bundled_manifest(skills_dir) == 0
+        assert profiles._prune_cloned_bundled_manifest(tmp_path / "absent") == 0
+
+
+class TestClonePrunesStaleManifest:
+    """create_profile --clone / --clone-all must not carry dead bundled
+    provenance into the new profile."""
+
+    def test_clone_config_drops_ghost_entries(self, profile_env):
+        default_home = profile_env / ".hermes"
+        _make_skill(default_home / "skills", "alpha")
+        ghost_dir = default_home / "skills" / "ghost"
+        ghost_dir.mkdir()
+        (default_home / "skills" / ".bundled_manifest").write_text(
+            "alpha:abc123\nghost:dead00\n", encoding="utf-8"
+        )
+        # The source deleted the bundled skill but its manifest entry survived.
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cloned = (profile_dir / "skills" / ".bundled_manifest").read_text(
+            encoding="utf-8"
+        )
+        assert "alpha:abc123" in cloned
+        assert "ghost" not in cloned
+
+    def test_clone_all_drops_ghost_entries(self, profile_env):
+        default_home = profile_env / ".hermes"
+        _make_skill(default_home / "skills", "alpha")
+        (default_home / "skills" / ".bundled_manifest").write_text(
+            "alpha:abc123\nghost:dead00\n", encoding="utf-8"
+        )
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        cloned = (profile_dir / "skills" / ".bundled_manifest").read_text(
+            encoding="utf-8"
+        )
+        assert "alpha:abc123" in cloned
+        assert "ghost" not in cloned
 
 

@@ -226,4 +226,47 @@ describe('useBackgroundQueueDrain', () => {
     expect(submitText).toHaveBeenCalledTimes(2)
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
   })
+
+  it('does not drain restored queues while the session list is still loading', async () => {
+    setSessionsLoading(true)
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'wait for session list', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('drains a restored background queue once the session list finishes loading', async () => {
+    setSessionsLoading(true)
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    expect(submitText).not.toHaveBeenCalled()
+
+    setSessionsLoading(false)
+
+    await waitFor(() => {
+      expect(submitText).toHaveBeenCalledWith('send after load', {
+        attachments: [],
+        fromQueue: true,
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a'
+      })
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+  })
 })

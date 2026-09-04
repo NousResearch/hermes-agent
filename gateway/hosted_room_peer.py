@@ -15,6 +15,7 @@ import math
 import os
 import re
 import stat
+import time
 import urllib.parse
 from dataclasses import asdict, dataclass
 from functools import lru_cache, partial
@@ -520,6 +521,10 @@ def decode_room_grant(
     permissions = payload.get("permissions")
     if not isinstance(permissions, list) or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")
+    # Hash the complete signed bearer in canonical base64 form so padding or
+    # equivalent base64 spellings cannot bypass exact revocation.
+    canonical_token = _b64encode(encoded) + "." + _b64encode(supplied_signature)
+    payload["_token_sha256"] = hashlib.sha256(canonical_token.encode("ascii")).hexdigest()
     return payload
 
 
@@ -536,7 +541,6 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
 
 @dataclass(frozen=True)
 class RoomLinkProbe:

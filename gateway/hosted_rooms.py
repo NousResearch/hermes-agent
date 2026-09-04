@@ -654,7 +654,9 @@ def revoke_room_grant_id(
     expiry = float(expires_at)
     if expiry <= timestamp:
         return
-    grant_id = _room_grant_id(claims)
+    token_sha256 = str(claims.get("_token_sha256") or "")
+    if len(token_sha256) != 64 or any(c not in "0123456789abcdef" for c in token_sha256):
+        raise HostedRoomError("exact revocation requires a verified signed-token digest")
     scope_key = _room_grant_scope_key(claims)
     with _transaction(db_path, immediate=True) as conn:
         conn.execute(
@@ -662,13 +664,17 @@ def revoke_room_grant_id(
             (timestamp,),
         )
         conn.execute(
-            """INSERT INTO hosted_room_revoked_grant_ids(
-                   scope_key, grant_id, expires_at
+            "DELETE FROM hosted_room_revoked_grant_tokens WHERE expires_at<=?",
+            (timestamp,),
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_revoked_grant_tokens(
+                   scope_key, token_sha256, expires_at
                ) VALUES (?, ?, ?)
-               ON CONFLICT(scope_key, grant_id) DO UPDATE SET
-                   expires_at=MAX(hosted_room_revoked_grant_ids.expires_at,
+               ON CONFLICT(scope_key, token_sha256) DO UPDATE SET
+                   expires_at=MAX(hosted_room_revoked_grant_tokens.expires_at,
                                   excluded.expires_at)""",
-            (scope_key, grant_id, expiry),
+            (scope_key, token_sha256, expiry),
         )
 
 
@@ -930,6 +936,15 @@ def room_grant_is_revoked(
     issued_at = float(claims.get("issued_at") or 0)
     grant_id = _room_grant_id(claims)
     with _transaction(db_path) as conn:
+        exact_token = conn.execute(
+            """SELECT 1 FROM hosted_room_revoked_grant_tokens
+                 WHERE scope_key=? AND token_sha256=? AND expires_at>?""",
+            (scope_key, str(claims.get("_token_sha256") or ""), timestamp),
+        ).fetchone()
+        if exact_token is not None:
+            return True
+        # Pre-migration rows lack token identity; retain their deny semantics
+        # until expiry rather than silently reactivating revoked credentials.
         exact = conn.execute(
             """SELECT 1 FROM hosted_room_revoked_grant_ids
                  WHERE scope_key=? AND grant_id=? AND expires_at>?""",

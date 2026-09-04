@@ -44,6 +44,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import asyncio
 import contextlib
 import contextvars
 import copy
@@ -6728,8 +6729,23 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
 
+    # OpenAI's sync client stores callable credentials in the private
+    # ``_api_key_provider`` slot and leaves ``api_key`` as an empty string.
+    # Copying only ``sync_client.api_key`` therefore strips key_cmd / Entra
+    # credentials when vision and other auxiliary work switch to AsyncOpenAI.
+    # AsyncOpenAI expects an async token provider, so adapt the sync callable
+    # through a worker thread; a key helper may perform bounded local I/O.
+    sync_key_provider = getattr(sync_client, "_api_key_provider", None)
+    if callable(sync_key_provider):
+        async def _async_key_provider() -> str:
+            return await asyncio.to_thread(sync_key_provider)
+
+        async_api_key: Any = _async_key_provider
+    else:
+        async_api_key = sync_client.api_key
+
     async_kwargs = {
-        "api_key": sync_client.api_key,
+        "api_key": async_api_key,
         "base_url": str(sync_client.base_url),
     }
     sync_base_url = str(sync_client.base_url)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
-
 import json
 import hashlib
 import sqlite3
@@ -25,6 +23,7 @@ from gateway.hosted_room_peer import (
     catalog_mapping,
     issue_room_grant,
 )
+from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 from tui_gateway.hosted_room_service import (
     HostedRoomService,
     _grant_revoke_is_terminal,

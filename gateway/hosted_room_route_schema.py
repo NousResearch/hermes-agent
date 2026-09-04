@@ -40,11 +40,67 @@ def initialize_route_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE hosted_room_peer_reservations "
             "ADD COLUMN mutation_id TEXT NOT NULL DEFAULT 'legacy'"
         )
-    conn.execute("CREATE TRIGGER IF NOT EXISTS trg_hosted_room_links_reject_fenced_insert\n           BEFORE INSERT ON hosted_room_links\n           WHEN EXISTS (\n               SELECT 1 FROM hosted_room_disband_fences\n                WHERE room_id=NEW.room_id\n           )\n           OR EXISTS (\n               SELECT 1 FROM hosted_rooms\n                WHERE room_id=NEW.room_id AND disbanded_at IS NOT NULL\n           )\n           OR EXISTS (\n               SELECT 1 FROM hosted_room_retired_ids\n                WHERE room_id=NEW.room_id\n           )\n           BEGIN\n               SELECT RAISE(ABORT, 'Group Chat route registration is fenced');\n           END")
-    conn.execute("CREATE TRIGGER IF NOT EXISTS trg_hosted_room_links_reject_fenced_update\n           BEFORE UPDATE ON hosted_room_links\n           WHEN EXISTS (\n               SELECT 1 FROM hosted_room_disband_fences\n                WHERE room_id=NEW.room_id\n           )\n           OR EXISTS (\n               SELECT 1 FROM hosted_rooms\n                WHERE room_id=NEW.room_id AND disbanded_at IS NOT NULL\n           )\n           OR EXISTS (\n               SELECT 1 FROM hosted_room_retired_ids\n                WHERE room_id=NEW.room_id\n           )\n           BEGIN\n               SELECT RAISE(ABORT, 'Group Chat route registration is fenced');\n           END")
-    conn.execute("CREATE TRIGGER IF NOT EXISTS trg_hosted_room_links_reject_unrevoked_delete\n           BEFORE DELETE ON hosted_room_links\n           WHEN NOT EXISTS (\n               SELECT 1 FROM hosted_room_disband_fences\n                WHERE room_id=OLD.room_id AND revocation_complete_at IS NOT NULL\n           )\n           BEGIN\n               SELECT RAISE(ABORT, 'Group Chat routes are not revoked');\n           END")
-    conn.execute("CREATE TRIGGER IF NOT EXISTS trg_hosted_peer_reservation_nonce_insert\n           AFTER INSERT ON hosted_room_peer_reservations\n           WHEN NEW.mutation_id='legacy'\n           BEGIN\n               UPDATE hosted_room_peer_reservations\n                  SET mutation_id=lower(hex(randomblob(16)))\n                WHERE room_id=NEW.room_id AND member_id=NEW.member_id\n                  AND target_profile=NEW.target_profile;\n           END")
-    conn.execute('CREATE TRIGGER IF NOT EXISTS trg_hosted_peer_reservation_nonce_update\n           AFTER UPDATE ON hosted_room_peer_reservations\n           WHEN NEW.mutation_id=OLD.mutation_id\n           BEGIN\n               UPDATE hosted_room_peer_reservations\n                  SET mutation_id=lower(hex(randomblob(16)))\n                WHERE room_id=NEW.room_id AND member_id=NEW.member_id\n                  AND target_profile=NEW.target_profile;\n           END')
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_hosted_room_links_reject_fenced_insert
+           BEFORE INSERT ON hosted_room_links
+           WHEN EXISTS (
+               SELECT 1 FROM hosted_room_disband_fences
+                WHERE room_id=NEW.room_id
+           )
+           OR EXISTS (
+               SELECT 1 FROM hosted_rooms
+                WHERE room_id=NEW.room_id AND disbanded_at IS NOT NULL
+           )
+           OR EXISTS (
+               SELECT 1 FROM hosted_room_retired_ids
+                WHERE room_id=NEW.room_id
+           )
+           BEGIN
+               SELECT RAISE(ABORT, 'Group Chat route registration is fenced');
+           END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_hosted_room_links_reject_fenced_update
+           BEFORE UPDATE ON hosted_room_links
+           WHEN EXISTS (
+               SELECT 1 FROM hosted_room_disband_fences
+                WHERE room_id=NEW.room_id
+           )
+           OR EXISTS (
+               SELECT 1 FROM hosted_rooms
+                WHERE room_id=NEW.room_id AND disbanded_at IS NOT NULL
+           )
+           OR EXISTS (
+               SELECT 1 FROM hosted_room_retired_ids
+                WHERE room_id=NEW.room_id
+           )
+           BEGIN
+               SELECT RAISE(ABORT, 'Group Chat route registration is fenced');
+           END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_hosted_room_links_reject_unrevoked_delete
+           BEFORE DELETE ON hosted_room_links
+           WHEN NOT EXISTS (
+               SELECT 1 FROM hosted_room_disband_fences
+                WHERE room_id=OLD.room_id AND revocation_complete_at IS NOT NULL
+           )
+           BEGIN
+               SELECT RAISE(ABORT, 'Group Chat routes are not revoked');
+           END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_hosted_peer_reservation_nonce_insert
+           AFTER INSERT ON hosted_room_peer_reservations
+           WHEN NEW.mutation_id='legacy'
+           BEGIN
+               UPDATE hosted_room_peer_reservations
+                  SET mutation_id=lower(hex(randomblob(16)))
+                WHERE room_id=NEW.room_id AND member_id=NEW.member_id
+                  AND target_profile=NEW.target_profile;
+           END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_hosted_peer_reservation_nonce_update
+           AFTER UPDATE ON hosted_room_peer_reservations
+           WHEN NEW.mutation_id=OLD.mutation_id
+           BEGIN
+               UPDATE hosted_room_peer_reservations
+                  SET mutation_id=lower(hex(randomblob(16)))
+                WHERE room_id=NEW.room_id AND member_id=NEW.member_id
+                  AND target_profile=NEW.target_profile;
+           END""")
 
 
 def route_schema_is_current(conn: sqlite3.Connection) -> bool:

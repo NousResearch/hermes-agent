@@ -1488,3 +1488,35 @@ class TestFlushPendingSync:
         consumer.finish()
         await task
 
+
+
+
+
+class TestOnDeltaSurrogateSanitize:
+    """Stream deltas are surrogate-sanitized at the consumer entry point.
+
+    Regression for the streaming half of the lone-surrogate bug: with
+    streaming enabled, raw deltas used to reach the consumer unchanged and
+    Telegram's strict UTF-16 length/edit paths raised UnicodeEncodeError
+    before the final-response boundary sanitizer ever ran.
+    """
+
+    def _consumer(self):
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        config = StreamConsumerConfig(cursor=" ▉")
+        return GatewayStreamConsumer(adapter, "chat_123", config)
+
+    def test_lone_surrogate_delta_is_sanitized_before_queueing(self):
+        consumer = self._consumer()
+        consumer.on_delta("half emoji \ud83d and more")
+        queued = consumer._queue.get_nowait()
+        assert "\ud83d" not in queued
+        # The Telegram-facing content is UTF-16 encodable.
+        queued.encode("utf-16-le")
+        assert "half emoji" in queued and "and more" in queued
+
+    def test_clean_delta_passes_through_unchanged(self):
+        consumer = self._consumer()
+        consumer.on_delta("plain text 🚀 with a real emoji")
+        assert consumer._queue.get_nowait() == "plain text 🚀 with a real emoji"

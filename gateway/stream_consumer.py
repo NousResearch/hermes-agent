@@ -508,7 +508,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         boundary: the current message is finalized and subsequent text goes out as a new
         message below any tool-progress messages."""
         if text:
-            self._queue.put(text)
+            # Sanitize lone surrogates at the single entry point for stream
+            # deltas. Backends can emit a truncated emoji half (an unpaired
+            # UTF-16 surrogate); Telegram's length/edit paths encode strictly
+            # as UTF-16 and would raise UnicodeEncodeError mid-stream, before
+            # the final-response boundary sanitizer is ever reached. Local
+            # import mirrors run.py and avoids a gateway<->agent import cycle.
+            from agent.message_sanitization import _sanitize_surrogates
+            self._queue.put(_sanitize_surrogates(text))
         elif text is None:
             self.on_segment_break()
 

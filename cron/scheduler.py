@@ -545,6 +545,10 @@ _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 # false "ok" (#60432). Token keying keeps an interruption scoped to that exact execution: a later run of the
 # same job ID (recurring jobs reuse the ID every fire) must not inherit the stale flag.
 _interrupted_job_ids: set = set()
+# Executions observed during shutdown but whose owner-fenced terminal write has
+# not yet succeeded.  Pending tokens suppress normal-result delivery, but do
+# not authorize the worker to skip its own terminal write.
+_interrupting_job_ids: set = set()
 
 
 class _CancelEventLike(Protocol):
@@ -854,10 +858,36 @@ def mark_running_jobs_interrupted(
 ) -> list:
     """Best-effort: mark every in-flight cron job interrupted; returns the job IDs marked.
 
-    Called by gateway shutdown right after ``process_registry.kill_all()``: a job whose tool was
-    killed must never report success. ``only_owners`` (``(job_id, fire_owner)`` pairs) restricts
-    marking. Tokens go into ``_interrupted_job_ids`` BEFORE ``last_status`` is written so
-    ``run_one_job`` sees them.
+    Called by the gateway shutdown path immediately after it force-kills
+    tool subprocesses (``process_registry.kill_all()``). A job whose tool
+    subprocess was just killed out from under it must never be allowed to
+    report success — even though its agent thread is still alive in this
+    same process and may go on to produce a plausible-looking final
+    response from the now-truncated tool output.
+
+    Records execution tokens in ``_interrupting_job_ids`` BEFORE writing
+    ``last_status`` so ``run_one_job`` suppresses a plausible normal result
+    while shutdown races its thread.  A successful terminal write promotes
+    the token to ``_interrupted_job_ids``; only that confirmed state lets the
+    worker skip its own terminal write.  If the write is unavailable, the
+    pending token still suppresses delivery but leaves the worker responsible
+    for eventually persisting terminal state.  See the checks near the end of
+    ``run_one_job``. This does not attempt to correlate the killed
+    subprocess PID to a specific job ID (the process registry tracks PIDs,
+    not cron job IDs); any job still dispatched at the moment of a forced
+    kill is treated as interrupted, matching the coarser precedent already
+    set by ``GatewayRunner._interrupt_running_agents``, which interrupts
+    every entry in ``_running_agents`` on a drain timeout without
+    per-agent correlation either.
+
+    ``only_owners``: optional set of ``(job_id, fire_owner)`` pairs. When
+    given (dashboard webhook drain), ONLY those exact executions are
+    marked — unrelated runs sharing the process (e.g. the desktop ticker's
+    own jobs) are left untouched. Interruption flags are recorded per
+    execution token, so a later run of the same job ID never consumes a
+    stale flag that targeted its dead predecessor.
+
+    Returns the list of job IDs marked, for the caller to log.
     """
     with _running_lock:
         restart_safe_waiters = set(_restart_safe_waiter_job_ids)
@@ -877,28 +907,47 @@ def mark_running_jobs_interrupted(
                     _running_job_ids - registered_ids - restart_safe_waiters
                 )
             )
-        _interrupted_job_ids.update(
+        _interrupting_job_ids.update(
             token if token is not None else job_id
             for token, job_id, _owner, _profile_home in active_fires
         )
     marked = []
-    for _token, job_id, fire_owner, profile_home in active_fires:
+    for token, job_id, fire_owner, profile_home in active_fires:
+        interrupt_key = token if token is not None else job_id
         if not fire_owner:
             logger.warning(
                 "Job '%s' interrupted before its durable fire owner was registered; "
                 "leaving persisted state untouched",
-                job_id)
-            # Still report it: shutdown uses the returned IDs for the interrupted-cron notice. The
-            # in-memory flag WAS recorded above; only the persisted last_status write is skipped.
-            # See #82232.
+                job_id,
+            )
+            # Report the interruption to the caller, but leave the token
+            # pending rather than confirmed: the worker must still perform
+            # its own terminal write because shutdown did not persist one.
             marked.append(job_id)
             continue
         try:
             with use_cron_store(profile_home):
-                if mark_job_run(
-                    job_id, False, reason, expected_fire_owner=fire_owner):
-                    marked.append(job_id)
+                persisted = mark_job_run(
+                    job_id,
+                    False,
+                    reason,
+                    expected_fire_owner=fire_owner,
+                )
+            with _running_lock:
+                if persisted is True:
+                    _interrupting_job_ids.discard(interrupt_key)
+                    _interrupted_job_ids.add(interrupt_key)
+                elif persisted is False:
+                    # Authoritative owner loss: no write by this worker is
+                    # allowed or needed.  A pending worker-side write is still
+                    # fenced by its stale expected owner.
+                    _interrupting_job_ids.discard(interrupt_key)
+            if persisted is True:
+                marked.append(job_id)
         except Exception as e:
+            # Keep the token pending.  This continues to suppress delivery,
+            # while _consume_interrupted_flag returns False so the worker
+            # retries the terminal write rather than assuming this one landed.
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
     return marked
 
@@ -908,23 +957,38 @@ def _is_interrupted(job_id: str, token: Optional[object] = None) -> bool:
     what to deliver; does not clear the flag (the authoritative pre-``last_status`` check needs it).
     ``token`` scopes to one execution so a fresh run reusing the job ID isn't poisoned."""
     with _running_lock:
-        if token is not None and token in _interrupted_job_ids:
+        if token is not None and (
+            token in _interrupted_job_ids or token in _interrupting_job_ids
+        ):
             return True
-        return job_id in _interrupted_job_ids
+        return (
+            job_id in _interrupted_job_ids
+            or job_id in _interrupting_job_ids
+        )
 
 
 def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bool:
-    """Return True and clear the flag if shutdown marked THIS execution interrupted. Called right
-    before ``last_status`` is written; consuming stops the flag leaking into a later run."""
+    """Return True and clear the flag if the shutdown path already marked
+    THIS execution interrupted (see ``mark_running_jobs_interrupted``).
+
+    Called by ``run_one_job`` right before it would otherwise write its own
+    ``last_status``.  Return True only for a confirmed flag whose shutdown
+    terminal write succeeded.  A pending flag still gets cleared, but returns
+    False so the worker remains responsible for durable terminal state.
+    Consuming rather than just checking keeps either flag from leaking across
+    a later, unrelated run of the same recurring job ID."""
     with _running_lock:
-        hit = False
-        if token is not None and token in _interrupted_job_ids:
-            _interrupted_job_ids.discard(token)
-            hit = True
+        confirmed = False
+        if token is not None:
+            if token in _interrupted_job_ids:
+                _interrupted_job_ids.discard(token)
+                confirmed = True
+            _interrupting_job_ids.discard(token)
         if job_id in _interrupted_job_ids:
             _interrupted_job_ids.discard(job_id)
-            hit = True
-        return hit
+            confirmed = True
+        _interrupting_job_ids.discard(job_id)
+        return confirmed
 
 
 def _inactivity_watchdog_loop(

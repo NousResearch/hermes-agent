@@ -1182,4 +1182,3 @@ def test_none_probe_cannot_authorize_unfenced_exception_delivery(
 
     fence.assert_called_once_with("stale-worker", expected_owner="old-owner")
     delivered.assert_not_called()
-

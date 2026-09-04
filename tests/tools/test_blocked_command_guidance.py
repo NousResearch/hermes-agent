@@ -2,8 +2,10 @@
 
 import pytest
 
-from tools.approval import _hardline_block_result, _PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION
+from tools.approval import _hardline_block_result
+from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION
 from tools.terminal_tool import _foreground_background_guidance
+from tools import approval_floors
 
 
 class TestParserLimitRecovery:
@@ -27,7 +29,8 @@ class TestParserLimitRecovery:
 
     def test_save_failure_falls_back_to_manual_recipe(self, monkeypatch):
         import tools.approval as ap
-        monkeypatch.setattr(ap, "_save_blocked_payload", lambda c: None)
+        from tools import approval_floors
+        monkeypatch.setattr(approval_floors, "_save_blocked_payload", lambda c: None)
         r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, "python3 -c 'x'")
         assert "write_file" in r["message"]
         assert "bash /path/script.sh" in r["message"]

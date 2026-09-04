@@ -63,16 +63,16 @@ except Exception as exc:  # noqa: BLE001 - friendly guidance beats a traceback
 cfg = load_config()
 if len(sys.argv) >= 3:
     provider, model = sys.argv[1], sys.argv[2]
-    mode = decide_image_input_mode(provider, model, cfg)
-    tool_img = _supports_media_in_tool_results(provider, model)
-    vis = _lookup_supports_vision(provider, model, cfg)
-    fast = (mode == "native") and (tool_img or vis is True)
 else:
     provider = _read_main_provider() or ""
     model = _read_main_model() or ""
-    mode = decide_image_input_mode(provider, model, cfg)
-    tool_img = _supports_media_in_tool_results(provider, model)
-    vis = _lookup_supports_vision(provider, model, cfg)
+
+mode = decide_image_input_mode(provider, model, cfg)
+tool_img = _supports_media_in_tool_results(provider, model)
+vis = _lookup_supports_vision(provider, model, cfg)
+if len(sys.argv) >= 3:
+    fast = (mode == "native") and (tool_img or vis is True)
+else:
     fast = _should_use_native_vision_fast_path()
 
 print(f"provider/model    : {provider} / {model}")

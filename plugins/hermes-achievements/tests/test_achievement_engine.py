@@ -145,6 +145,46 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertEqual(aggregate_local_chat["local_model_chat_sessions"], 1)
         self.assertEqual(plugin_api.evaluate_definition(definition, aggregate_local_chat)["state"], "unlocked")
 
+    def test_open_weights_pilgrim_recognizes_local_provider_and_endpoint_metadata(self):
+        lmstudio_chat = plugin_api.aggregate_stats([
+            {
+                "model_names": {"qwen3.6-27b-mtp"},
+                "model_providers": {"lmstudio"},
+                "model_base_urls": {"http://127.0.0.1:1234/v1"},
+            },
+        ])
+        loopback_custom_chat = plugin_api.aggregate_stats([
+            {
+                "model_names": {"qwen3.6-27b-mtp"},
+                "model_providers": {"custom"},
+                "model_base_urls": {"http://localhost:8000/v1"},
+            },
+        ])
+        remote_qwen_chat = plugin_api.aggregate_stats([
+            {
+                "model_names": {"qwen3.6-27b-mtp"},
+                "model_providers": {"openrouter"},
+                "model_base_urls": {"https://openrouter.ai/api/v1"},
+            },
+        ])
+
+        self.assertEqual(lmstudio_chat["local_model_chat_sessions"], 1)
+        self.assertEqual(loopback_custom_chat["local_model_chat_sessions"], 1)
+        self.assertEqual(remote_qwen_chat["local_model_chat_sessions"], 0)
+
+    def test_session_fingerprint_tracks_model_route_metadata(self):
+        fingerprint = plugin_api.session_fingerprint({
+            "started_at": 100,
+            "last_active": 200,
+            "model": "qwen3.6-27b-mtp",
+            "billing_provider": "lmstudio",
+            "billing_base_url": "http://127.0.0.1:1234/v1",
+            "title": "Local model run",
+        })
+
+        self.assertEqual(fingerprint["billing_provider"], "lmstudio")
+        self.assertEqual(fingerprint["billing_base_url"], "http://127.0.0.1:1234/v1")
+
     def test_config_surgeon_ignores_generic_config_mentions(self):
         stats = plugin_api.analyze_messages("s1", "Config talk", [{"content": "config config configuration not configured"}])
         self.assertEqual(stats["config_events"], 0)

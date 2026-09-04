@@ -115,6 +115,33 @@ class _FakeSessionDB:
         pass
 
 
+class _LocalModelSessionDB(_FakeSessionDB):
+    def __init__(self):
+        super().__init__(session_count=1)
+
+    def list_sessions_rich(
+        self,
+        source: Optional[str] = None,
+        exclude_sources: Optional[List[str]] = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_children: bool = False,
+        project_compression_tips: bool = True,
+    ) -> List[Dict[str, Any]]:
+        now = int(time.time())
+        return [{
+            "id": "local-qwen",
+            "title": "Local model run",
+            "preview": "local model run",
+            "started_at": now - 30,
+            "last_active": now,
+            "source": "cli",
+            "model": "qwen3.6-27b-mtp",
+            "billing_provider": "lmstudio",
+            "billing_base_url": "http://127.0.0.1:1234/v1",
+        }]
+
+
 def _install_fake_session_db(plugin_api, fake_db):
     """Inject a fake SessionDB so ``scan_sessions`` finds it via its local import.
 
@@ -149,6 +176,17 @@ def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
     )
     assert len(result["sessions"]) == 500
     assert result["scan_meta"]["sessions_total"] == 500
+
+
+def test_scan_sessions_counts_lmstudio_route_as_local_model_chat(plugin_api):
+    fake_db = _LocalModelSessionDB()
+    _install_fake_session_db(plugin_api, fake_db)
+
+    result = plugin_api.scan_sessions()
+
+    assert result["aggregate"]["local_model_chat_sessions"] == 1
+    assert result["sessions"][0]["model_providers"] == {"lmstudio"}
+    assert result["sessions"][0]["model_base_urls"] == {"http://127.0.0.1:1234/v1"}
 
 
 def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugin_api):

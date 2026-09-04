@@ -4,6 +4,7 @@ Mounted at /api/plugins/hermes-achievements/ by Hermes dashboard.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import re
@@ -11,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import urlparse
 
 try:
     from hermes_constants import get_hermes_home
@@ -258,6 +260,8 @@ def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
         "last_active": meta.get("last_active"),
         "started_at": meta.get("started_at"),
         "model": meta.get("model"),
+        "billing_provider": meta.get("billing_provider"),
+        "billing_base_url": meta.get("billing_base_url"),
         "title": meta.get("title") or meta.get("preview") or "Untitled",
     }
 
@@ -336,6 +340,36 @@ def is_local_model_name(model_name: str) -> bool:
         return False
     local_markers = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local"]
     return any(marker in name for marker in local_markers)
+
+
+def is_local_model_provider(provider_name: str) -> bool:
+    name = (provider_name or "").strip().lower().replace("_", "-")
+    return name in {"lmstudio", "lm-studio", "ollama", "llama.cpp", "llamacpp", "local", "vllm-local"}
+
+
+def is_local_model_base_url(base_url: str) -> bool:
+    try:
+        hostname = (urlparse((base_url or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def is_local_model_session(
+    model_names: Set[str],
+    provider_names: Set[str],
+    base_urls: Set[str],
+) -> bool:
+    return (
+        any(is_local_model_name(str(name)) for name in model_names)
+        or any(is_local_model_provider(str(name)) for name in provider_names)
+        or any(is_local_model_base_url(str(url)) for url in base_urls)
+    )
 
 
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -447,6 +481,8 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         "release_events": len(re.findall(r"\bgit\s+tag|release|version bump|changelog|publish|pushed? tag", full_text, re.I)),
         "cache_events": len(re.findall(r"cache hit|prompt caching|cache_read", full_text, re.I)),
         "model_names": set(),
+        "model_providers": set(),
+        "model_base_urls": set(),
     }
 
 
@@ -658,15 +694,13 @@ def scan_sessions(
             stats["started_at"] = meta.get("started_at")
             stats["last_active"] = meta.get("last_active")
             stats["source"] = meta.get("source")
-            if meta.get("model"):
-                stats.setdefault("model_names", set())
-                if isinstance(stats["model_names"], set):
-                    stats["model_names"].add(str(meta.get("model")))
-                elif isinstance(stats["model_names"], list):
-                    if str(meta.get("model")) not in stats["model_names"]:
-                        stats["model_names"].append(str(meta.get("model")))
-                else:
-                    stats["model_names"] = {str(meta.get("model"))}
+            # Route metadata belongs to the session row, not its messages. Set
+            # it from the current row even when the message analysis came from
+            # a checkpoint, so stale cached routing data cannot survive a
+            # provider/base-URL correction.
+            stats["model_names"] = {str(meta.get("model"))} if meta.get("model") else set()
+            stats["model_providers"] = {str(meta.get("billing_provider"))} if meta.get("billing_provider") else set()
+            stats["model_base_urls"] = {str(meta.get("billing_base_url"))} if meta.get("billing_base_url") else set()
 
             sessions.append(stats)
             checkpoint_sessions[sid] = {"fingerprint": fp, "stats": _json_safe(stats)}
@@ -766,11 +800,13 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
             agg[key] += s.get(key, 0)
         model_names.update(s.get("model_names") or set())
         session_models = s.get("model_names") or set()
+        session_providers = s.get("model_providers") or set()
+        session_base_urls = s.get("model_base_urls") or set()
         for model_name in session_models:
             provider = model_provider(str(model_name))
             if provider:
                 provider_names.add(provider)
-        if any(is_local_model_name(str(model_name)) for model_name in session_models):
+        if is_local_model_session(session_models, session_providers, session_base_urls):
             agg["local_model_chat_sessions"] += 1
         if s.get("started_at"):
             try:

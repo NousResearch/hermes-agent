@@ -105,4 +105,55 @@ async def test_distinct_status_keys_do_not_collide(adapter):
     assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
     assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
 
+@pytest.mark.asyncio
+async def test_delete_message_drops_cached_status_id(adapter):
+    """cleanup_progress deletes the bubble; the status cache must not keep that id."""
+    adapter._status_message_ids[("chat-1", "lifecycle")] = "3202"
+    adapter._bot.delete_message = AsyncMock(return_value=True)
+
+    ok = await adapter.delete_message("chat-1", "3202")
+
+    assert ok is True
+    assert ("chat-1", "lifecycle") not in adapter._status_message_ids
+
+
+@pytest.mark.asyncio
+async def test_status_after_delete_sends_fresh_instead_of_editing_tombstone(adapter):
+    """Next status emit after cleanup must send, not edit the deleted id."""
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="3202"),
+        SendResult(success=True, message_id="3203"),
+    ]
+    adapter._bot.delete_message = AsyncMock(return_value=True)
+
+    first = await adapter.send_or_update_status("chat-1", "lifecycle", "starting")
+    assert first.message_id == "3202"
+    await adapter.delete_message("chat-1", "3202")
+
+    second = await adapter.send_or_update_status("chat-1", "lifecycle", "still working")
+
+    assert second.message_id == "3203"
+    adapter.edit_message.assert_not_awaited()
+    assert adapter.send.await_count == 2
+    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "3203"
+
+
+@pytest.mark.asyncio
+async def test_finalize_missing_message_does_not_retry_plain_text(monkeypatch):
+    """A gone message is not a MarkdownV2 format failure (no second plain-text edit)."""
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    adapter._bot = MagicMock()
+    gone = Exception("Bad Request: message to edit not found")
+    adapter._bot.edit_message_text = AsyncMock(side_effect=gone)
+    adapter._status_message_ids[("123", "lifecycle")] = "456"
+
+    result = await adapter.edit_message("123", "456", "still working", finalize=True)
+
+    assert result.success is False
+    assert "not found" in (result.error or "").lower()
+    assert adapter._bot.edit_message_text.await_count == 1
+    assert ("123", "lifecycle") not in adapter._status_message_ids
 

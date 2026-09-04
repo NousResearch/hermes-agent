@@ -365,6 +365,17 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+def _is_stale_telegram_edit_target(error: object) -> bool:
+    """True when Telegram says the edit/delete target message no longer exists."""
+    text = str(error or "").lower()
+    return (
+        "message to edit not found" in text
+        or "message to delete not found" in text
+        or "message_id_invalid" in text
+        or "message identifier is not specified" in text
+    )
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -526,6 +537,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # Last truncated mid-stream preview per (chat_id, message_id): past the 4096 cap every edit
         # truncates to the SAME text, and resending burns flood budget. Dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
+
+    def _forget_status_message_id(self, chat_id: str, message_id: str) -> None:
+        """Drop status-cache rows that point at a deleted/missing Telegram message."""
+        chat = str(chat_id)
+        mid = str(message_id)
+        stale = [
+            key
+            for key, cached in self._status_message_ids.items()
+            if key[0] == chat and str(cached) == mid
+        ]
+        for key in stale:
+            self._status_message_ids.pop(key, None)
 
     @property
     def send_path_degraded(self) -> bool:
@@ -3421,6 +3444,9 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
+            if _is_stale_telegram_edit_target(fmt_err):
+                self._forget_status_message_id(chat_id, message_id)
+                raise
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
             await self._edit_text(chat_id, message_id, plain)
         return False
@@ -3523,6 +3549,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if any(m in err_str for m in _transient_markers):
                 logger.warning("[%s] Transient network error editing message %s (will retry): %s", self.name, message_id, safe_error)
                 return SendResult(success=False, error=safe_error, retryable=True)
+            if _is_stale_telegram_edit_target(e):
+                self._forget_status_message_id(chat_id, message_id)
+                logger.debug("[%s] Edit target %s is gone; cache dropped: %s", self.name, message_id, safe_error)
+                return SendResult(success=False, error=safe_error)
             logger.error("[%s] Failed to edit Telegram message %s: %s", self.name, message_id, safe_error)
             return SendResult(success=False, error=safe_error)
 
@@ -3632,8 +3662,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         try:
             await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
+            self._forget_status_message_id(chat_id, message_id)
             return True
         except Exception as e:
+            if _is_stale_telegram_edit_target(e):
+                self._forget_status_message_id(chat_id, message_id)
             logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))
             return False
 

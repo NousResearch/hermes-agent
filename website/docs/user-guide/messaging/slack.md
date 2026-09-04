@@ -675,6 +675,26 @@ The gating options compose — each answers a different question:
 
 Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
 
+### Bounded context for explicit channel mentions
+
+Enable `history_backfill` when a top-level `@Hermes` request should include a
+small amount of recent context from that channel:
+
+```yaml
+slack:
+  require_mention: true
+  history_backfill: true
+  history_backfill_limit: 20
+  history_backfill_char_limit: 4000
+```
+
+Hermes fetches this context only for explicitly mentioned, non-command,
+top-level channel messages. Ambient messages, DMs, group DMs, and thread
+replies do not trigger a history fetch. The context is bounded, chronological,
+and passed as untrusted background rather than as instructions; thread
+broadcasts and Slack service messages are excluded. The app must already have
+the `channels:history` or `groups:history` scope appropriate to that channel.
+
 ### Accepting messages from other bots (`allow_bots`)
 
 By default Hermes ignores every message authored by another Slack bot or app (including Workflow Builder posts). For multi-agent workspaces — several Hermes instances or peer bots collaborating in one channel — opt in with `allow_bots`:

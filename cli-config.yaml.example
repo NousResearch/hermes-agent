@@ -1354,6 +1354,10 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#       # Add bounded recent channel context to explicit top-level @mentions.
+#       history_backfill: false
+#       history_backfill_limit: 20
+#       history_backfill_char_limit: 4000
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

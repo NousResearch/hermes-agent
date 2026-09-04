@@ -14,7 +14,13 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
-import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
+import {
+  checkHermesUpdate,
+  getActionStatus,
+  getHermesConfigRecord,
+  saveHermesConfigRecord,
+  updateHermes
+} from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
@@ -53,6 +59,13 @@ export const $updateApply = atom<UpdateApplyState>(IDLE)
 export const $updateChecking = atom<boolean>(false)
 export const $updateOverlayOpen = atom<boolean>(false)
 export const $updateStatus = atom<DesktopUpdateStatus | null>(null)
+
+// Background update checks are opt-out. This preference controls checking and
+// notifications only; applying a code update remains an explicit action so a
+// dirty checkout can never be overwritten silently.
+const AUTO_UPDATE_CHECKS_CONFIG_KEY = 'automatic_update_checks'
+const AUTO_UPDATE_CHECKS_DEFAULT = true
+export const $automaticUpdateChecksEnabled = atom(AUTO_UPDATE_CHECKS_DEFAULT)
 
 // Client and backend are independently updatable; each keeps its own state.
 export const $backendUpdateStatus = atom<DesktopUpdateStatus | null>(null)
@@ -1010,6 +1023,123 @@ let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
 let lastConnectionMode: string | undefined
+let automaticUpdatePreferenceLoaded = false
+let automaticUpdatePreferenceRevision = 0
+let automaticUpdateSaveChain: Promise<void> = Promise.resolve()
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function configuredAutomaticUpdateChecks(config: Record<string, unknown>): boolean | undefined {
+  const desktop = isRecord(config.desktop) ? config.desktop : null
+
+  if (desktop && typeof desktop[AUTO_UPDATE_CHECKS_CONFIG_KEY] === 'boolean') {
+    return desktop[AUTO_UPDATE_CHECKS_CONFIG_KEY]
+  }
+
+  // Accept a flat value from older config writers while always writing the
+  // setting under `desktop`, which is the canonical config.yaml section.
+  return typeof config[AUTO_UPDATE_CHECKS_CONFIG_KEY] === 'boolean'
+    ? config[AUTO_UPDATE_CHECKS_CONFIG_KEY]
+    : undefined
+}
+
+async function hydrateAutomaticUpdateChecks(): Promise<void> {
+  const revision = automaticUpdatePreferenceRevision
+
+  try {
+    const config = await getHermesConfigRecord()
+
+    if (revision !== automaticUpdatePreferenceRevision) {
+      return
+    }
+
+    const value = configuredAutomaticUpdateChecks(config)
+
+    if (value !== undefined) {
+      $automaticUpdateChecksEnabled.set(value)
+    }
+  } catch {
+    // Keep the safe default when the config endpoint is unavailable; the
+    // update poller itself remains usable and the next toggle retries a write.
+  } finally {
+    if (pollerStarted && revision === automaticUpdatePreferenceRevision) {
+      automaticUpdatePreferenceLoaded = true
+      syncBackgroundTimer()
+    }
+  }
+}
+
+function runBackgroundChecks(): void {
+  if (!automaticUpdatePreferenceLoaded || !$automaticUpdateChecksEnabled.get()) {
+    return
+  }
+
+  void checkUpdates()
+  void checkBackendUpdates()
+}
+
+function syncBackgroundTimer(): void {
+  if (!pollerStarted) {
+    return
+  }
+
+  if (backgroundTimer !== null) {
+    clearInterval(backgroundTimer)
+    backgroundTimer = null
+  }
+
+  if (!automaticUpdatePreferenceLoaded || !$automaticUpdateChecksEnabled.get()) {
+    return
+  }
+
+  runBackgroundChecks()
+  backgroundTimer = setInterval(runBackgroundChecks, 30 * 60 * 1000)
+}
+
+export function setAutomaticUpdateChecksEnabled(enabled: boolean): void {
+  automaticUpdatePreferenceRevision += 1
+  automaticUpdatePreferenceLoaded = true
+  $automaticUpdateChecksEnabled.set(enabled)
+  syncBackgroundTimer()
+
+  if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+    return
+  }
+
+  const revision = automaticUpdatePreferenceRevision
+
+  // Serialize read-modify-write operations so a rapid toggle cannot lose a
+  // newer value to an older config response. Stale queued writes are skipped
+  // before PUT, while the latest toggle remains authoritative in the atom.
+  automaticUpdateSaveChain = automaticUpdateSaveChain
+    .then(async () => {
+      if (revision !== automaticUpdatePreferenceRevision) {
+        return
+      }
+
+      const config = await getHermesConfigRecord()
+
+      if (revision !== automaticUpdatePreferenceRevision) {
+        return
+      }
+
+      const desktop = isRecord(config.desktop) ? config.desktop : {}
+
+      await saveHermesConfigRecord({
+        ...config,
+        desktop: {
+          ...desktop,
+          [AUTO_UPDATE_CHECKS_CONFIG_KEY]: enabled
+        }
+      })
+    })
+    .catch(() => {
+      // A transient config write failure must not break the update poller;
+      // the UI remains usable and a later toggle retries the write.
+    })
+}
 
 // Passive checks run at most once per day per client. The main process and the
 // backend each keep a 24h cache, so a tick or focus that lands inside the window
@@ -1044,8 +1174,14 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
-  runPassiveChecks()
   void refreshDesktopVersion()
+
+  if (!automaticUpdatePreferenceLoaded) {
+    void hydrateAutomaticUpdateChecks()
+  } else {
+    syncBackgroundTimer()
+  }
+
   bridge.onProgress(ingestProgress)
 
   // The poller starts at mount, before the gateway connects — so the first
@@ -1058,13 +1194,12 @@ export function startUpdatePoller(): void {
 
     lastConnectionMode = conn?.mode
 
-    if (conn?.mode === 'remote') {
+    if (conn?.mode === 'remote' && automaticUpdatePreferenceLoaded && $automaticUpdateChecksEnabled.get()) {
       void checkBackendUpdates()
     }
   })
 
   window.addEventListener('focus', onFocus)
-  backgroundTimer = setInterval(runPassiveChecks, BACKGROUND_UPDATE_CHECK_MS)
 }
 
 export function stopUpdatePoller(): void {
@@ -1081,6 +1216,18 @@ export function stopUpdatePoller(): void {
 }
 
 function onFocus() {
+  if (!automaticUpdatePreferenceLoaded || !$automaticUpdateChecksEnabled.get()) {
+    return
+  }
+
+  const now = Date.now()
+
+  if (now - lastFocusAt < 5 * 60 * 1000) {
+    return
+  }
+
+  lastFocusAt = now
+  runBackgroundChecks()
   void refreshDesktopVersion()
 
   if (passiveCheckDue(Date.now())) {

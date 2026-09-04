@@ -13127,14 +13127,20 @@ async def get_memory_status():
         # Built-in memory file sizes (so the UI can show what a reset would erase).
         mem_dir = get_hermes_home() / "memories"
         files = {}
+        paths = {}
         for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
             path = mem_dir / fname
             files[key] = path.stat().st_size if path.exists() else 0
+            # The desktop uses this read-only metadata to hand the existing
+            # file to the operating system's file association. Returning the
+            # resolved path keeps the renderer from guessing the active home.
+            paths[key] = str(path)
 
         return {
             "active": active,
             "providers": _discover_memory_provider_statuses(),
             "builtin_files": files,
+            "builtin_paths": paths,
         }
 
     return await asyncio.to_thread(_run)

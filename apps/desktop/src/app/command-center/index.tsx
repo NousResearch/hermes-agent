@@ -48,6 +48,9 @@ const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfi
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 const LOG_TAIL_LINES = 100
+const ACTION_POLL_INTERVAL_MS = 1200
+const ACTION_POLL_DEADLINE_MS = 5 * 60 * 1000
+const ACTION_POLL_REQUEST_TIMEOUT_MS = 5000
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -156,6 +159,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
+  const [systemActionStarting, setSystemActionStarting] = useState(false)
+  const systemRequestRef = useRef(0)
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -186,6 +191,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [debouncedQuery, sessions])
 
   const refreshSystem = useCallback(async (): Promise<StatusResponse | null> => {
+    const requestId = systemRequestRef.current + 1
+    systemRequestRef.current = requestId
     setSystemLoading(true)
     setSystemError('')
 
@@ -195,20 +202,28 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         getLogs({
           file: logFile,
           level: logLevel,
-            lines: LOG_TAIL_LINES
+          lines: LOG_TAIL_LINES
         })
       ])
+
+      if (systemRequestRef.current !== requestId) {
+        return null
+      }
 
       setStatus(nextStatus)
       setLogs(nextLogs.lines)
 
       return nextStatus
     } catch (error) {
-      setSystemError(error instanceof Error ? error.message : String(error))
+      if (systemRequestRef.current === requestId) {
+        setSystemError(error instanceof Error ? error.message : String(error))
+      }
 
       return null
     } finally {
-      setSystemLoading(false)
+      if (systemRequestRef.current === requestId) {
+        setSystemLoading(false)
+      }
     }
   }, [logFile, logLevel])
 
@@ -272,6 +287,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
+      setSystemActionStarting(true)
       setSystemError('')
       let actionSucceeded = false
 
@@ -286,16 +302,39 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
         let nextStatus: ActionStatusResponse | null = null
 
-        for (let attempt = 0; attempt < 18; attempt += 1) {
-          await new Promise(resolve => window.setTimeout(resolve, 1200))
-          const polled = await getActionStatus(started.name, 180)
-          nextStatus = polled
-          setSystemAction(polled)
-          upsertDesktopActionTask(polled)
+        // Updates can restart the dashboard/backend and briefly make the
+        // status endpoint unavailable. Keep following the durable action for
+        // up to five minutes, while bounding both the total wait and each
+        // status request so a hung endpoint cannot stretch this indefinitely.
+        const actionDeadline = Date.now() + ACTION_POLL_DEADLINE_MS
 
-          if (!polled.running) {
-            actionSucceeded = polled.exit_code === 0
+        while (Date.now() < actionDeadline) {
+          const delayMs = Math.min(ACTION_POLL_INTERVAL_MS, actionDeadline - Date.now())
+
+          await new Promise(resolve => window.setTimeout(resolve, delayMs))
+
+          if (Date.now() >= actionDeadline) {
             break
+          }
+
+          try {
+            const timeoutMs = Math.min(ACTION_POLL_REQUEST_TIMEOUT_MS, actionDeadline - Date.now())
+            const polled = await getActionStatus(started.name, 180, undefined, timeoutMs)
+            nextStatus = polled
+            setSystemAction(polled)
+            upsertDesktopActionTask(polled)
+
+            if (!polled.running) {
+              actionSucceeded = polled.exit_code === 0
+
+              break
+            }
+          } catch (error) {
+            // A restart/update may take the dashboard down for a few seconds.
+            // Retry while the action's durable log is still being completed.
+            if (Date.now() >= actionDeadline) {
+              setSystemError(error instanceof Error ? error.message : String(error))
+            }
           }
         }
 
@@ -315,9 +354,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           setSystemAction(pendingStatus)
           upsertDesktopActionTask(pendingStatus)
         }
+
+        if (Date.now() >= actionDeadline && (!nextStatus || nextStatus.running)) {
+          setSystemError(cc.actionTimedOut)
+        }
       } catch (error) {
         setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
+        setSystemActionStarting(false)
+
         if (kind === 'restart' && actionSucceeded) {
           // Gateway startup can finish after the action process exits. Keep
           // the status card in sync instead of leaving a stale "stopped" pill.
@@ -478,10 +523,20 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                         </div>
                       </div>
                       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
+                        <Button
+                          disabled={systemActionStarting || systemAction?.running === true}
+                          onClick={() => void runSystemAction('restart')}
+                          size="xs"
+                          variant="text"
+                        >
                           {cc.restartGateway}
                         </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
+                        <Button
+                          disabled={systemActionStarting || systemAction?.running === true}
+                          onClick={() => void runSystemAction('update')}
+                          size="xs"
+                          variant="textStrong"
+                        >
                           {cc.updateHermes}
                         </Button>
                       </div>

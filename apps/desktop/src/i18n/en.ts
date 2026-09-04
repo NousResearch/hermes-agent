@@ -912,9 +912,12 @@ export const en: Translations = {
       updateReadyUnknown: 'A new update is ready.',
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
-      automaticUpdates: 'Automatic updates',
+      automaticUpdates: 'Automatic update checks',
       automaticUpdatesDesc:
-        'Hermes checks for updates automatically in the background and lets you know when one is ready.',
+        'Check for updates and notify me in the background. Installing remains a manual action.',
+      updateParked: 'Update is waiting for a safe checkout.',
+      updateParkedDesc:
+        'Your local repair changes are preserved. Review or move them before installing the upstream update.',
       branchCommit: (branch, commit) => `Branch ${branch} · Commit ${commit}`,
       never: 'never',
       justNow: 'just now',
@@ -1680,6 +1683,7 @@ export const en: Translations = {
       bundled: 'Built-in',
       hub: 'Hub'
     },
+    provenanceSummary: (agent, bundled, hub) => `${agent} learned · ${bundled} built-in · ${hub} hub`,
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,
     emptyNoneAvailable: noun => `No ${noun} available yet.`,
@@ -1946,6 +1950,7 @@ export const en: Translations = {
     actionDone: 'done',
     actionFailed: 'failed',
     actionStartedWaiting: 'Action started, waiting for status...',
+    actionTimedOut: 'Action is still running; check recent logs for the final status.',
     loadingStatus: 'Loading status...',
     recentLogs: 'Recent logs',
     noLogs: 'No logs loaded yet.',
@@ -2001,6 +2006,7 @@ export const en: Translations = {
       builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
+      openFile: 'Open file',
       bytes: size => size,
       empty: 'empty',
       resetMemory: 'Reset memory',

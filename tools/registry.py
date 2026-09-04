@@ -380,18 +380,26 @@ def _check_fn_cached(fn: Callable) -> bool:
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
-            # Recent success → flake: serve last-good True, do NOT cache (next call re-probes).
-            logger.warning(
+            # Recent success → treat this failure as a flake. Serve last-good
+            # True and do NOT cache the failure, so the next call re-probes
+            # rather than pinning a stale verdict for the full TTL.
+            logger.info(
                 "check_fn %s failed (%s) within %.0fs of last success; "
                 "treating as transient and keeping tool(s) available",
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
             return True
 
-        # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
-            "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
-            exc_info=exc_info)
+        # A False result is an expected capability decision for optional
+        # integrations (for example, browser control when no browser is
+        # attached), not a runtime fault. An exception is different: retain a
+        # warning so probe failures remain diagnosable without promoting a
+        # normal unavailable capability to the error log.
+        log = logger.warning if raised else logger.info
+        log(
+            "check_fn %s %s; dependent tools will be unavailable this turn",
+            getattr(fn, "__qualname__", fn),
+            "raised" if raised else "returned False",
+        )
         _check_fn_cache[cache_key] = (now, False)
         return False
 

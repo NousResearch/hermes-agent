@@ -3058,8 +3058,13 @@ DEFAULT_CONFIG = {
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
-        # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
-        # strings; a single string is shell-split.
+        # Background update checks surfaced by Hermes Desktop. Applying an
+        # update remains explicit; this only controls checks and notifications.
+        "automatic_update_checks": True,
+        # Extra Electron command-line flags appended to every desktop launch,
+        # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
+        # explicit ozone backend, or GPU workaround flags. A list of strings;
+        # a single string is also accepted and shell-split.
         "electron_flags": [],
         # Linux Ozone backend hint, bridged to ELECTRON_OZONE_PLATFORM_HINT
         # at launch (an explicit env var still wins). "auto" is Chromium's

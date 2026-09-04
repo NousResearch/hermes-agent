@@ -177,7 +177,10 @@ def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "EMAILS_DIR", d)
 
     assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
-    assert not (d / "agent@example-host.local").exists()
+    # On Windows/macOS, the case-folded spelling resolves to the existing
+    # path, so checking ``Path.exists`` would be true even when no write took
+    # place.  Inspect the directory's exact stored names instead.
+    assert sorted(p.name for p in d.iterdir()) == ["agent@Example-Host.local"]
 
 
 def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):

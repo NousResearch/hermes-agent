@@ -761,9 +761,16 @@ def _probe_failure_next_step(name: str, exc: BaseException) -> str:
 def cmd_mcp_test(args):
     """Test connection to an MCP server."""
     name = args.name
-    cfg = _lookup_server(name, _get_mcp_servers(), "Available")
-    if cfg is None:
-        return
+    servers = _get_mcp_servers()
+
+    if name not in servers:
+        _error(f"Server '{name}' not found in config.")
+        available = list(servers.keys())
+        if available:
+            _info(f"Available: {', '.join(available)}")
+        return 1
+
+    cfg = servers[name]
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -787,16 +794,17 @@ def cmd_mcp_test(args):
     try:
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        elapsed = time.monotonic() - start
-        _error(f"Connection failed ({elapsed:.1f}s): {_probe_failure_reason(exc)}")
-        _info(_probe_failure_next_step(name, exc))
-        return
-    _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
+        elapsed_ms = (time.monotonic() - start) * 1000
+        _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
+        return 1
+
+    _success(f"Connected ({elapsed_ms:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
     if tools:
         print()
         _print_tools(tools, 36, 55)
     print()
+    return 0
 
 
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
@@ -1113,11 +1121,34 @@ def mcp_command(args):
             if rc:
                 _sys.exit(rc)
         return
-    handler = {
-        "add": cmd_mcp_add, "remove": cmd_mcp_remove, "rm": cmd_mcp_remove, "list": cmd_mcp_list,
-        "ls": cmd_mcp_list, "test": cmd_mcp_test, "configure": cmd_mcp_configure,
-        "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
-    }.get(action)
+    if action == "catalog":
+        from hermes_cli.mcp_picker import show_catalog
+        show_catalog()
+        return
+    if action == "install":
+        from hermes_cli.mcp_picker import install_by_name
+        import sys as _sys
+        rc = install_by_name(getattr(args, "identifier", "") or "")
+        if rc:
+            _sys.exit(rc)
+        return
+
+    if action == "test":
+        return cmd_mcp_test(args)
+
+    handlers = {
+        "add": cmd_mcp_add,
+        "remove": cmd_mcp_remove,
+        "rm": cmd_mcp_remove,
+        "list": cmd_mcp_list,
+        "ls": cmd_mcp_list,
+        "configure": cmd_mcp_configure,
+        "config": cmd_mcp_configure,
+        "login": cmd_mcp_login,
+        "reauth": cmd_mcp_reauth,
+    }
+
+    handler = handlers.get(action)
     if handler:
         handler(args)
         return

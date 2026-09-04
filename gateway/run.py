@@ -32297,10 +32297,13 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             logger.info("Received %s — initiating shutdown", sig_name or "SIGTERM/SIGINT")
 
         if _shutdown_ctx is not None:
-            def _log_context() -> None:
-                # The most useful line for "gateway keeps dying" tickets.
-                from gateway.shutdown_forensics import format_context_for_log
-                logger.warning("Shutdown context: %s", format_context_for_log(_shutdown_ctx))
+            try:
+                logger.log(
+                    logging.INFO if planned_takeover or planned_stop else logging.WARNING,
+                    "Shutdown context: %s", format_context_for_log(_shutdown_ctx)
+                )
+            except Exception as _e:
+                logger.debug("format_context_for_log failed: %s", _e)
 
             def _diagnostic() -> None:
                 # Heavyweight (ps auxf, pstree, dmesg), detached so it finishes even if our cgroup is torn

@@ -487,9 +487,11 @@ function Show-ProgressWindow {
 }
 
 function Show-ErrorFinale([string]$Message) {
-    # Terse by design: a title + the debug-share pointer. No error text, no
-    # log tail -- `hermes debug share` uploads the real evidence and the
-    # relaunched Desktop surfaces the result message.
+    # Keep the terminal surface concise, but preserve actionable classification
+    # from the hand-off. A parked dirty checkout is an intentional safety skip,
+    # not a broken install; hiding that distinction behind the generic debug
+    # pointer made every safe update refusal look like a crash.
+    $isSkipped = $Message -match '^Update skipped:'
     if ($script:UiServer) {
         # The shim renders the error state itself; leave the window up for
         # the user to read and close. Nothing to hold for — the page keeps
@@ -503,8 +505,8 @@ function Show-ErrorFinale([string]$Message) {
         $ui = $script:Ui
         if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
-        $ui.Title.Text = "Failed to update"
-        $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
+        $ui.Title.Text = if ($isSkipped) { "Update skipped" } else { "Failed to update" }
+        $ui.Sub.Text = $Message
         $close = New-Object System.Windows.Forms.Button
         $close.Text = "Close"
         $close.SetBounds(100, 252, 80, 28)
@@ -1581,13 +1583,38 @@ try {
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
-    if ($res.Code -ne 0 -and $res.Code -ne 2) {
-        # One retry for the update-boundary class (fresh code on disk, stale
-        # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
-        Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
+    $retryPolicyPath = Join-Path $PSScriptRoot "retry-policy.ps1"
+    if (Test-Path -LiteralPath $retryPolicyPath) {
+        . $retryPolicyPath
+        $shouldRetry = Test-HermesUpdateShouldRetry -ExitCode $res.Code -InstallRoot $InstallRoot
+    } else {
+        # The child may have swapped to a checkout without the companion policy
+        # while this older script is still running in memory. Preserve the
+        # previous fail-closed behavior instead of calling an undefined function.
+        Write-HandoffLog "retry policy is unavailable after checkout swap; using legacy retry rules"
+        $shouldRetry = $res.Code -ne 0 -and $res.Code -ne 2
+    }
+    # A parked feature branch with uncommitted local repairs is a deterministic
+    # safety refusal. Do not spend another full update cycle producing the same
+    # result; retain the non-zero code so the update is not reported as complete,
+    # but give the user the exact, non-destructive next step.
+    $parkedBranchSkipped = $res.Output -match '(?im)CODE UPDATE SKIPPED'
+
+    if ($parkedBranchSkipped) {
+        $shouldRetry = $false
+        Write-HandoffLog "hermes update skipped (parked dirty checkout); not retrying"
+    } elseif ($shouldRetry) {
+        # One retry for update-boundary failures. Most exit-2 safety refusals
+        # remain terminal, but self-lock deferral also uses exit 2 and writes
+        # .update-incomplete after the code swap. That marker is only a retry
+        # signal here: the fresh process's early-recovery pass finishes core
+        # dependency sync before native modules load, then `update` continues
+        # the remaining Desktop/skills stages of the full pipeline.
+        Write-HandoffLog "first attempt left retryable update state; retrying once in a fresh process"
         Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
+        $parkedBranchSkipped = $res.Output -match '(?im)CODE UPDATE SKIPPED'
     }
 
     # -- 4. Truthful completion: don't trust exit 0 -------------------------
@@ -1624,7 +1651,11 @@ try {
         $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `hermes desktop --force-build` from a terminal to retry."
     } else {
         $finalCode = $res.Code
-        $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        $finalMsg = if ($parkedBranchSkipped) {
+            "Update skipped: this checkout is parked on a local repair branch with uncommitted changes. Nothing was overwritten. Save or review the local changes, then explicitly switch to main before retrying the upstream update."
+        } else {
+            "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        }
     }
     exit $finalCode
 } finally {

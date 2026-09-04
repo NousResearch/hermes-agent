@@ -327,6 +327,25 @@ class TestCheckFnExceptionHandling:
         # Should return False, not raise
         assert reg.is_toolset_available("broken") is False
 
+    def test_check_fn_exception_remains_a_warning(self, caplog):
+        reg = ToolRegistry()
+
+        def broken_check():
+            raise RuntimeError("probe failed")
+
+        reg.register(
+            name="t",
+            toolset="broken-warning",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=broken_check,
+        )
+
+        with caplog.at_level(logging.INFO, logger="tools.registry"):
+            assert reg.is_toolset_available("broken-warning") is False
+
+        assert any(record.levelno == logging.WARNING and "raised" in record.message for record in caplog.records)
+
 
     def test_check_tool_availability_survives_raising_check(self):
         reg = ToolRegistry()

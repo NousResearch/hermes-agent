@@ -298,10 +298,37 @@ class TestMcpTest:
         )
         from hermes_cli.mcp_config import cmd_mcp_test
 
-        cmd_mcp_test(_make_args(name="ink"))
+        result = cmd_mcp_test(_make_args(name="ink"))
         out = capsys.readouterr().out
+        assert result == 0
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+
+    def test_test_failure_returns_nonzero(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://mcp.ml.ink/mcp"},
+        })
+
+        def mock_probe(name, config, **kw):
+            raise TimeoutError("probe timed out")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        result = cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert result == 1
+        assert "Connection failed" in out
+
+    def test_dispatcher_propagates_test_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.cmd_mcp_test", lambda args: 1
+        )
+        from hermes_cli.mcp_config import mcp_command
+
+        assert mcp_command(_make_args(mcp_action="test")) == 1
 
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""

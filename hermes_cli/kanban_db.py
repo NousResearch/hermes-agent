@@ -3449,6 +3449,18 @@ def create_task(
             # compose create_task calls under one outer commit so the
             # dispatcher can never observe a partially constructed graph.
             with write_txn(conn, allow_nested=True):
+                # Close the small race left by the fast-path lookup above.
+                # Feature-delivery resume relies on one durable child task per
+                # idempotency key even when two runners wake at once.
+                if idempotency_key:
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if existing:
+                        return existing["id"]
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -4330,6 +4342,45 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+
+
+def transition_workflow_step_cas(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    workflow_template_id: str,
+    expected_step: str,
+    new_step: str,
+    event_payload: Optional[dict] = None,
+    audit_event: Optional[tuple[str, dict]] = None,
+) -> bool:
+    """Atomically advance one opt-in workflow step and record one event.
+
+    The ordinary Kanban ``status`` column is intentionally untouched.  A stale
+    expected step, a different workflow, or a regular task with no workflow
+    returns ``False`` and writes no event.
+    """
+
+    with write_txn(conn):
+        cursor = conn.execute(
+            "UPDATE tasks SET current_step_key = ? "
+            "WHERE id = ? AND workflow_template_id = ? AND current_step_key = ?",
+            (new_step, task_id, workflow_template_id, expected_step),
+        )
+        if cursor.rowcount != 1:
+            return False
+        payload = dict(event_payload or {})
+        payload.update(
+            {
+                "workflow_template_id": workflow_template_id,
+                "from_step": expected_step,
+                "to_step": new_step,
+            }
+        )
+        _append_event(conn, task_id, "workflow_step_transitioned", payload)
+        if audit_event is not None:
+            _append_event(conn, task_id, audit_event[0], audit_event[1])
+    return True
 
 
 def _end_run(
@@ -7721,7 +7772,14 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+def _ensure_git_worktree(
+    repo_root: Path,
+    target: Path,
+    branch_name: str,
+    *,
+    start_point: str = "HEAD",
+    detached: bool = False,
+) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
@@ -7730,12 +7788,17 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         if target_common == repo_common:
             return
     target.parent.mkdir(parents=True, exist_ok=True)
-    if _git_branch_exists(repo_root, branch_name):
+    if detached:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "--detach",
+            str(target), start_point,
+        ]
+    elif _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
     else:
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), start_point,
         ]
     result = subprocess.run(
         cmd,

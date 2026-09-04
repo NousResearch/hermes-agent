@@ -3702,7 +3702,19 @@ export const zh: Translations = {
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',
-    secretPlaceholder: '密钥值'
+    secretPlaceholder: '密钥值',
+    secureCredential: {
+      title: '安全输入凭据',
+      description: 'Hermes Desktop 会直接保存此值。它不会添加到聊天中，也不会向 AI 显示。',
+      savingAs: '保存为',
+      unavailable: '凭据请求已不可用。',
+      saveFailed: 'Hermes 无法保存此凭据。',
+      placeholder: '粘贴令牌或密码',
+      cancel: '取消',
+      save: '安全保存',
+      saving: '正在保存',
+      loading: '正在加载凭据请求'
+    }
   },
 
   desktop: {

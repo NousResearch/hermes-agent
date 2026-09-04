@@ -8653,6 +8653,17 @@ def _wire_callbacks(sid: str):
         if metadata:
             pl["metadata"] = metadata
         val = _block("secret.request", sid, pl)
+        if isinstance(val, dict) and val.get("stored") is True:
+            # Hermes Desktop's separate credential window already persisted the
+            # value through the profile-aware /api/env endpoint. Only this
+            # non-secret receipt crosses the agent-facing gateway connection.
+            return {
+                "success": True,
+                "stored_as": env_var,
+                "validated": False,
+                "skipped": False,
+                "message": "ok",
+            }
         if not val:
             return {
                 "success": True,

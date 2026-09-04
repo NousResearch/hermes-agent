@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $gateway } from '@/store/gateway'
@@ -20,11 +20,19 @@ function renderPrompts(sessionId: string | null = 's1') {
   )
 }
 
+beforeEach(() => {
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: {}
+  })
+})
+
 afterEach(() => {
   cleanup()
   clearAllPrompts()
   $activeSessionId.set(null)
   $gateway.set(null)
+  delete window.hermesDesktop.secureCredential
   vi.clearAllMocks()
 })
 
@@ -47,21 +55,46 @@ describe('PromptOverlays', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('dismisses a stale secret dialog when the gateway no longer has the value request', async () => {
-    const request = vi.fn().mockRejectedValue(new Error('no pending value request'))
+  it('opens native credential capture and sends only a stored receipt to the gateway', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 'ok' })
+    const capture = vi.fn().mockResolvedValue({ status: 'saved' })
 
     $activeSessionId.set('s1')
     $gateway.set({ request } as never)
+    window.hermesDesktop.secureCredential = { capture }
     setSecretRequest({ envVar: 'TEST_SECRET', prompt: 'Paste a secret', requestId: 'secret-1', sessionId: 's1' })
 
     renderPrompts()
 
-    expect(screen.getByText('TEST_SECRET')).toBeTruthy()
+    await waitFor(() => expect($secretRequest.get()).toBeNull())
+    expect(capture).toHaveBeenCalledWith({
+      envVar: 'TEST_SECRET',
+      locale: 'en',
+      profile: 'default',
+      prompt: 'Paste a secret',
+      requestId: 'secret-1'
+    })
+    expect(request).toHaveBeenCalledWith('secret.respond', {
+      request_id: 'secret-1',
+      value: { stored: true }
+    })
+    expect(screen.queryByLabelText('TEST_SECRET')).toBeNull()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  it('maps cancellation in the native credential window to an empty response', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 'ok' })
+    const capture = vi.fn().mockResolvedValue({ status: 'cancelled' })
+
+    $activeSessionId.set('s1')
+    $gateway.set({ request } as never)
+    window.hermesDesktop.secureCredential = { capture }
+    setSecretRequest({ envVar: 'TEST_SECRET', prompt: 'Paste a secret', requestId: 'secret-2', sessionId: 's1' })
+
+    renderPrompts()
 
     await waitFor(() => expect($secretRequest.get()).toBeNull())
-    expect(request).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    expect(request).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-2', value: '' })
     expect(notifyError).not.toHaveBeenCalled()
   })
 })

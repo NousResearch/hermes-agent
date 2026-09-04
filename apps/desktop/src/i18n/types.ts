@@ -3075,6 +3075,18 @@ export interface Translations {
     secretTitle: string
     secretDesc: string
     secretPlaceholder: string
+    secureCredential: {
+      title: string
+      description: string
+      savingAs: string
+      unavailable: string
+      saveFailed: string
+      placeholder: string
+      cancel: string
+      save: string
+      saving: string
+      loading: string
+    }
   }
 
   desktop: {

@@ -14185,6 +14185,197 @@ function closeHudWindow() {
 // the shortcut on a cold launch without the renderer ever visiting Settings),
 // same authority split as keep-awake. Registration failure is surfaced, never
 // swallowed: a chord another app already owns comes back as `error: 'taken'`.
+// ---------------------------------------------------------------------------
+// Secure credential entry.
+//
+// The agent-facing renderer receives request metadata and a final status only.
+// The secret is typed in a separate sandboxed window, crosses its narrow IPC
+// bridge once, and is written through the existing profile-aware /api/env
+// endpoint by Electron main. It never returns to chat or a gateway tool result.
+// ---------------------------------------------------------------------------
+
+type CredentialCaptureResult = { status: 'busy' | 'cancelled' | 'saved' }
+
+type PendingCredentialCapture = {
+  envVar: string
+  locale: string
+  profile: null | string
+  prompt: string
+  promise: Promise<CredentialCaptureResult>
+  requestId: string
+  resolve: (result: CredentialCaptureResult) => void
+  settled: boolean
+  window: BrowserWindow
+}
+
+let pendingCredentialCapture: PendingCredentialCapture | null = null
+
+function credentialEntryUrl() {
+  if (DEV_SERVER) {
+    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=credential#/`
+  }
+
+  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=credential#/`
+}
+
+function finishCredentialCapture(pending: PendingCredentialCapture, result: CredentialCaptureResult) {
+  if (pending.settled) {
+    return
+  }
+
+  pending.settled = true
+  pending.resolve(result)
+
+  if (pendingCredentialCapture === pending) {
+    pendingCredentialCapture = null
+  }
+
+  if (!pending.window.isDestroyed()) {
+    pending.window.close()
+  }
+}
+
+ipcMain.handle('hermes:credential:capture', (event, rawRequest) => {
+  const requestId = typeof rawRequest?.requestId === 'string' ? rawRequest.requestId.trim() : ''
+  const envVar = typeof rawRequest?.envVar === 'string' ? rawRequest.envVar.trim() : ''
+  const prompt = typeof rawRequest?.prompt === 'string' ? rawRequest.prompt.trim().slice(0, 500) : ''
+  const profile = typeof rawRequest?.profile === 'string' ? rawRequest.profile.trim() || null : null
+  const locale = typeof rawRequest?.locale === 'string' ? rawRequest.locale.trim().slice(0, 16) : 'en'
+
+  if (
+    !BrowserWindow.fromWebContents(event.sender) ||
+    !requestId ||
+    !/^[A-Z][A-Z0-9_]{0,127}$/.test(envVar) ||
+    (profile !== null && profile !== 'default' && !PROFILE_NAME_RE.test(profile))
+  ) {
+    throw new Error('Invalid secure credential request.')
+  }
+
+  if (pendingCredentialCapture) {
+    if (pendingCredentialCapture.requestId === requestId) {
+      pendingCredentialCapture.window.show()
+      pendingCredentialCapture.window.focus()
+
+      return pendingCredentialCapture.promise
+    }
+
+    return { status: 'busy' } satisfies CredentialCaptureResult
+  }
+
+  const parent = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+
+  const win = new BrowserWindow({
+    width: 520,
+    height: 430,
+    parent: parent || undefined,
+    modal: Boolean(parent),
+    show: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#111318',
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      devTools: false
+    }
+  })
+
+  // Best-effort OS screen-capture protection. On Windows this uses
+  // SetWindowDisplayAffinity; it is defence in depth, not a DRM guarantee.
+  win.setContentProtection(true)
+  win.setMenuBarVisibility(false)
+
+  // Credential entry owns a fixed-size layout like Quick Entry, so it opts out
+  // of the main app's persisted UI zoom.
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
+
+  let resolveCapture!: (result: CredentialCaptureResult) => void
+
+  const promise = new Promise<CredentialCaptureResult>(resolve => {
+    resolveCapture = resolve
+  })
+
+  const pending: PendingCredentialCapture = {
+    envVar,
+    locale,
+    profile,
+    prompt,
+    promise,
+    requestId,
+    resolve: resolveCapture,
+    settled: false,
+    window: win
+  }
+
+  pendingCredentialCapture = pending
+
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) {
+      win.show()
+      win.focus()
+    }
+  })
+  win.once('closed', () => finishCredentialCapture(pending, { status: 'cancelled' }))
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', navigationEvent => navigationEvent.preventDefault())
+  void win.loadURL(credentialEntryUrl()).catch(() => finishCredentialCapture(pending, { status: 'cancelled' }))
+
+  return promise
+})
+
+ipcMain.handle('hermes:credential:request:get', event => {
+  const pending = pendingCredentialCapture
+
+  if (!pending || pending.window.webContents.id !== event.sender.id) {
+    throw new Error('Credential request is no longer available.')
+  }
+
+  return { envVar: pending.envVar, locale: pending.locale, prompt: pending.prompt }
+})
+
+ipcMain.handle('hermes:credential:submit', async (event, payload) => {
+  const pending = pendingCredentialCapture
+
+  if (!pending || pending.window.webContents.id !== event.sender.id) {
+    return { error: 'Credential request is no longer available.', ok: false }
+  }
+
+  const value = typeof payload?.value === 'string' ? payload.value : ''
+
+  if (!value || value.length > 65_536) {
+    return { error: 'Enter a credential before saving.', ok: false }
+  }
+
+  try {
+    await handleHermesApiRequest({
+      body: { key: pending.envVar, value },
+      method: 'PUT',
+      path: '/api/env',
+      profile: pending.profile
+    })
+    finishCredentialCapture(pending, { status: 'saved' })
+
+    return { ok: true }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Hermes could not save this credential.', ok: false }
+  }
+})
+
+ipcMain.handle('hermes:credential:cancel', event => {
+  const pending = pendingCredentialCapture
+
+  if (pending && pending.window.webContents.id === event.sender.id) {
+    finishCredentialCapture(pending, { status: 'cancelled' })
+  }
+
+  return { ok: true }
+})
+
 const QUICK_ENTRY_CONFIG_PATH = path.join(app.getPath('userData'), 'quick-entry.json')
 
 let quickEntryWindow = null

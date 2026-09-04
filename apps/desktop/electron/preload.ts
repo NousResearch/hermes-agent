@@ -1,5 +1,18 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+const isCredentialWindow = new URLSearchParams(globalThis.location.search).get('win') === 'credential'
+
+if (isCredentialWindow) {
+  // Deliberately expose ONLY the credential-window bridge. The secret entry
+  // renderer cannot reach chat, gateway sockets, files, clipboard, plugins,
+  // or the general Desktop API surface.
+  contextBridge.exposeInMainWorld('hermesCredential', {
+    getRequest: () => ipcRenderer.invoke('hermes:credential:request:get'),
+    submit: value => ipcRenderer.invoke('hermes:credential:submit', { value }),
+    cancel: () => ipcRenderer.invoke('hermes:credential:cancel')
+  })
+} else {
+
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
@@ -43,6 +56,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  secureCredential: {
+    capture: request => ipcRenderer.invoke('hermes:credential:capture', request)
+  },
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),
     setState: state => ipcRenderer.send('hermes:wake-indicator:set', state),
@@ -539,3 +555,4 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:open-find-bar', listener)
   }
 })
+}

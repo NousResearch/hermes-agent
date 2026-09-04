@@ -16,6 +16,11 @@ export {}
 
 declare global {
   interface Window {
+    hermesCredential?: {
+      getRequest: () => Promise<{ envVar: string; locale: string; prompt: string }>
+      submit: (value: string) => Promise<{ ok: boolean; error?: string }>
+      cancel: () => Promise<{ ok: boolean }>
+    }
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
@@ -85,6 +90,15 @@ declare global {
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
       claimAmbientCue: (key: string) => Promise<boolean>
+      secureCredential?: {
+        capture: (request: {
+          envVar: string
+          locale?: string
+          profile?: null | string
+          prompt?: string
+          requestId: string
+        }) => Promise<{ status: 'busy' | 'cancelled' | 'saved' }>
+      }
       wakeIndicator?: {
         getState: () => Promise<WakeIndicatorState>
         setState: (state: WakeIndicatorState) => void

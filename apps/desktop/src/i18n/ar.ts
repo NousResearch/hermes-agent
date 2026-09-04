@@ -2772,7 +2772,19 @@ export const ar = defineLocale({
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',
-    secretPlaceholder: 'القيمة السرية'
+    secretPlaceholder: 'القيمة السرية',
+    secureCredential: {
+      title: 'إدخال آمن لبيانات الاعتماد',
+      description: 'يحفظ Hermes Desktop هذه القيمة مباشرة. لا تُضاف إلى الدردشة ولا تظهر للذكاء الاصطناعي.',
+      savingAs: 'الحفظ باسم',
+      unavailable: 'لم يعد طلب بيانات الاعتماد متاحا.',
+      saveFailed: 'تعذر على Hermes حفظ بيانات الاعتماد.',
+      placeholder: 'ألصق الرمز أو كلمة المرور',
+      cancel: 'إلغاء',
+      save: 'حفظ بأمان',
+      saving: 'جار الحفظ',
+      loading: 'جار تحميل طلب بيانات الاعتماد'
+    }
   },
   desktop: {
     audioReadFailed: 'فشلت قراءة الصوت',

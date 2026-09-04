@@ -3165,7 +3165,19 @@ export const ja = defineLocale({
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
-    secretPlaceholder: 'シークレット値'
+    secretPlaceholder: 'シークレット値',
+    secureCredential: {
+      title: '認証情報を安全に入力',
+      description: 'Hermes Desktop がこの値を直接保存します。チャットに追加されたり、AI に表示されたりしません。',
+      savingAs: '保存先',
+      unavailable: '認証情報のリクエストは利用できなくなりました。',
+      saveFailed: 'Hermes はこの認証情報を保存できませんでした。',
+      placeholder: 'トークンまたはパスワードを貼り付け',
+      cancel: 'キャンセル',
+      save: '安全に保存',
+      saving: '保存中',
+      loading: '認証情報のリクエストを読み込み中'
+    }
   },
 
   desktop: {

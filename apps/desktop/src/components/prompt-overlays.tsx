@@ -17,9 +17,10 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
-import { KeyRound, Loader2, Lock } from '@/lib/icons'
+import { Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { $activeProfile } from '@/store/profile'
 import { clearSecretRequest, clearSudoRequest, sessionSecretRequest, sessionSudoRequest } from '@/store/prompts'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
@@ -138,40 +139,50 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
   )
 }
 
+const activeCredentialCaptures = new Map<string, Promise<void>>()
+
 function SecretDialog({ sessionId }: { sessionId: string | null }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const copy = t.prompts
   const $request = useMemo(() => sessionSecretRequest(sessionId), [sessionId])
   const request = useStore($request)
   const gateway = useStore($gateway)
-  const [value, setValue] = useState('')
-  const [submitting, setSubmitting] = useState(false)
+  const profile = useStore($activeProfile)
 
   useEffect(() => {
-    setValue('')
-    setSubmitting(false)
-  }, [request?.requestId])
+    if (!request || activeCredentialCaptures.has(request.requestId)) {
+      return
+    }
 
-  const send = useCallback(
-    async (secret: string) => {
-      if (!request) {
-        return
-      }
+    const capture = window.hermesDesktop.secureCredential?.capture
 
-      if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed)
+    if (!gateway || !capture) {
+      notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed)
 
-        return
-      }
+      return
+    }
 
-      setSubmitting(true)
-
+    const task = (async () => {
       try {
+        const result = await capture({
+          envVar: request.envVar,
+          locale,
+          profile,
+          prompt: request.prompt,
+          requestId: request.requestId
+        })
+
+        // The gateway receives only a storage receipt. The credential value was
+        // already written by Electron main and never entered this renderer.
         await gateway.request<{ status?: string }>('secret.respond', {
           request_id: request.requestId,
-          value: secret
+          value: result.status === 'saved' ? { stored: true } : ''
         })
-        triggerHaptic('submit')
+
+        if (result.status === 'saved') {
+          triggerHaptic('submit')
+        }
+
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
         if (isMissingPendingPromptRequest(error, 'value')) {
@@ -181,62 +192,18 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
         }
 
         notifyError(error, copy.secretSendFailed)
-        setSubmitting(false)
+      } finally {
+        activeCredentialCaptures.delete(request.requestId)
       }
-    },
-    [copy.gatewayDisconnected, copy.secretSendFailed, gateway, request]
-  )
+    })()
 
-  const onOpenChange = useCallback(
-    (open: boolean) => {
-      if (!open && !submitting && request) {
-        void send('')
-      }
-    },
-    [request, send, submitting]
-  )
+    activeCredentialCaptures.set(request.requestId, task)
+  }, [copy.gatewayDisconnected, copy.secretSendFailed, gateway, locale, profile, request])
 
-  const onSubmit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault()
-      void send(value)
-    },
-    [send, value]
-  )
-
-  if (!request) {
-    return null
-  }
-
-  return (
-    <Dialog onOpenChange={onOpenChange} open>
-      <DialogContent showCloseButton={false}>
-        <DialogHeader>
-          <DialogTitle icon={KeyRound}>{request.envVar || copy.secretTitle}</DialogTitle>
-          <DialogDescription>{request.prompt || copy.secretDesc}</DialogDescription>
-        </DialogHeader>
-
-        <form className="grid gap-3" onSubmit={onSubmit}>
-          <Input
-            autoFocus
-            disabled={submitting}
-            onChange={event => setValue(event.target.value)}
-            placeholder={request.envVar || copy.secretPlaceholder}
-            type="password"
-            value={value}
-          />
-          <DialogFooter>
-            <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={submitting || !value} type="submit">
-              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : t.common.send}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
+  // The actual input lives in the dedicated native window. Rendering no form
+  // here ensures password managers, DOM inspection, and chat capture cannot
+  // observe a credential field in the agent-facing renderer.
+  return null
 }
 
 /** Mid-turn prompt surfaces for ONE session. Mounted by both the primary chat

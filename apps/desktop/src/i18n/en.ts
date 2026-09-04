@@ -3571,7 +3571,19 @@ export const en: Translations = {
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
-    secretPlaceholder: 'secret value'
+    secretPlaceholder: 'secret value',
+    secureCredential: {
+      title: 'Secure credential entry',
+      description: 'Hermes Desktop saves this value directly. It is not added to chat or shown to the AI.',
+      savingAs: 'Saving as',
+      unavailable: 'Credential request is no longer available.',
+      saveFailed: 'Hermes could not save this credential.',
+      placeholder: 'Paste token or password',
+      cancel: 'Cancel',
+      save: 'Save securely',
+      saving: 'Saving',
+      loading: 'Loading credential request'
+    }
   },
 
   desktop: {

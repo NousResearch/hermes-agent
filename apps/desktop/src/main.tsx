@@ -51,6 +51,10 @@ if (winParam === 'hud') {
 
 if (winParam === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
+} else if (winParam === 'credential') {
+  void import('./app/secure-credential/secure-credential-root').then(({ mountSecureCredential }) =>
+    mountSecureCredential()
+  )
 } else if (winParam === 'quick') {
   void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
 } else if (winParam === 'wake') {

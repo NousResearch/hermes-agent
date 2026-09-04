@@ -3029,7 +3029,19 @@ export const zhHant = defineLocale({
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',
-    secretPlaceholder: '密鑰值'
+    secretPlaceholder: '密鑰值',
+    secureCredential: {
+      title: '安全輸入憑證',
+      description: 'Hermes Desktop 會直接儲存此值。它不會加入聊天，也不會顯示給 AI。',
+      savingAs: '儲存為',
+      unavailable: '憑證要求已無法使用。',
+      saveFailed: 'Hermes 無法儲存此憑證。',
+      placeholder: '貼上權杖或密碼',
+      cancel: '取消',
+      save: '安全儲存',
+      saving: '正在儲存',
+      loading: '正在載入憑證要求'
+    }
   },
 
   desktop: {

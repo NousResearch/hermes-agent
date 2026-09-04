@@ -1252,9 +1252,9 @@ class AIAgent(
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
-            # observe_call may have raised the identical-call streak halt (hard_stop_enabled, tool-agnostic).
+            # observe_call may have raised a streak halt (hard_stop_enabled, tool-agnostic): exact or near-identical.
             streak_halt = self._tool_guardrails.halt_decision
-            if streak_halt is not None and streak_halt.code == "identical_call_streak_halt":
+            if streak_halt is not None and streak_halt.code in {"identical_call_streak_halt", "near_identical_call_streak_halt"}:
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:

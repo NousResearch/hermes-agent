@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
@@ -61,10 +63,26 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_warn_after": ("warn_after", "exact_failure"),
     "same_tool_failure_warn_after": ("warn_after", "same_tool_failure"),
     "no_progress_warn_after": ("warn_after", "idempotent_no_progress"),
+    "near_identical_warn_after": ("warn_after", "near_identical_no_progress"),
     "exact_failure_block_after": ("hard_stop_after", "exact_failure"),
     "same_tool_failure_halt_after": ("hard_stop_after", "same_tool_failure"),
     "no_progress_block_after": ("hard_stop_after", "idempotent_no_progress"),
+    "near_identical_block_after": ("hard_stop_after", "near_identical_no_progress"),
 }
+
+# Near-identical streak: the exact-match streak above is defeated by a model that reshuffles a shell
+# command (`export X; cmd` vs `cmd && export X`) or gets a trivially drifting result (`CHANGED:47/47`
+# -> `CHANGED:48/48`) — it re-ran the same terminal command 200+ times until the iteration budget with
+# no byte-identical pair in sight. Compare token SETS instead: consecutive calls to one tool whose
+# args AND result both overlap at least this much are one non-progressing loop. Both sides must
+# match so a sweep over N distinct records (similar args, different results) is never flagged.
+NEAR_IDENTICAL_ARGS_JACCARD = 0.8
+NEAR_IDENTICAL_RESULT_JACCARD = 0.9
+_IDENTIFIER_MIN_CHARS = 8  # a differing token this long containing a digit = a record id, not a rephrase
+_NEAR_IDENTICAL_WINDOW_SLACK = 4  # window = block_after + slack; how many off-pattern calls a loop may contain
+_NEAR_IDENTICAL_RESULT_WINDOW_CHARS = 4000
+_NEAR_IDENTICAL_TOKEN_RE = re.compile(r"[^a-z0-9_#]+")
+_DIGIT_RUN_RE = re.compile(r"\d+")
 
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
@@ -117,6 +135,10 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # Near-identical (token-overlap) streak on one tool; wider than exact so a genuine
+    # edit -> re-run -> different-output cycle (which changes the result set) never trips it.
+    near_identical_warn_after: int = 4
+    near_identical_block_after: int = 8
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
@@ -249,6 +271,16 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Stopped {tool_name}: the same call with identical arguments returned the same result "
         "{count} times in a row. Stop repeating it unchanged; use the result already provided or change strategy."
     ),
+    "near_identical_call_streak_warning": (
+        "{tool_name} has been called {count} times in a row with near-identical arguments and "
+        "near-identical results. Rephrasing the same command is not progress; act on the result you "
+        "already have or change approach."
+    ),
+    "near_identical_call_streak_halt": (
+        "Stopped {tool_name}: {count} consecutive calls with near-identical arguments returned "
+        "near-identical results. This is a loop. Stop re-running it; act on the result already provided "
+        "or change strategy."
+    ),
     "loop_web_search_cap": (
         "Blocked web_search: this turn has already made {cap} web searches, the per-turn limit. "
         "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
@@ -298,6 +330,10 @@ class ToolCallGuardrailController:
         self._identical_streak_result_hash: str = ""
         self._identical_streak_count: int = 0
         self._identical_streak_first_call_id: str = ""
+        # Near-identical window (see NEAR_IDENTICAL_ARGS_JACCARD): recent (tool, signature, args tokens, result tokens).
+        self._near_window: deque[tuple[str, ToolCallSignature, frozenset[str], frozenset[str]]] = deque(
+            maxlen=self.config.near_identical_block_after + _NEAR_IDENTICAL_WINDOW_SLACK,
+        )
         # tool_call_id -> spillover path, so a stub referencing a persisted-output preview can't dangle.
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
@@ -434,10 +470,52 @@ class ToolCallGuardrailController:
             if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after and self._halt_decision is None:
                 self._decide("halt", "identical_call_streak_halt", tool_name, count, signature)
 
+        near_decision = self._observe_near_identical(tool_name, _coerce_args(args), result if is_plain_str else None, signature)
+        if near_decision is not None and notice is None:
+            notice = f"[hermes note: {near_decision.message}]"
+
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
             stub = self._build_result_reference_stub(tool_name, args)
         return IdenticalCallObservation(notice=notice, stub=stub)
+
+    def _observe_near_identical(
+        self, tool_name: str, args: Mapping[str, Any], result: str | None, signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        """Advance the near-identical streak; return a warn/halt decision when it crosses a threshold.
+
+        ``count`` = this call plus every call in the recent window on the SAME tool whose args token set
+        overlaps at >= NEAR_IDENTICAL_ARGS_JACCARD and result token set at >= NEAR_IDENTICAL_RESULT_JACCARD.
+        A window (not a consecutive streak) so a loop survives the model decorating one iteration with
+        `echo EXIT:$?`. A landed file edit clears the window (edit -> re-run is progress). Pollers are exempt
+        (an unchanged poll is progress). Non-string results are never counted.
+        """
+        if file_mutation_result_landed(tool_name, result):
+            # An edit that landed makes the next re-run a new experiment.
+            self._near_window.clear()
+            return None
+        if result is None or is_stall_guard_repeatable(tool_name):
+            return None
+        args_tokens = _token_set(" ".join(_leaf_strings(args)))
+        result_tokens = _token_set(result[:_NEAR_IDENTICAL_RESULT_WINDOW_CHARS], fold_digits=True)
+        # Byte-identical args are the exact streak's business (and a poll shape upstream allows when the
+        # result drifts); this window counts REPHRASED calls — rewording a command is not waiting on it.
+        count = 1 + sum(
+            1 for prev_tool, prev_sig, prev_args, prev_result in self._near_window
+            if prev_tool == tool_name
+            and prev_sig != signature
+            and _jaccard(args_tokens, prev_args) >= NEAR_IDENTICAL_ARGS_JACCARD
+            and not _differs_by_identifier(args_tokens, prev_args)
+            and _jaccard(result_tokens, prev_result) >= NEAR_IDENTICAL_RESULT_JACCARD
+        )
+        self._near_window.append((tool_name, signature, args_tokens, result_tokens))
+        if self.config.hard_stop_enabled and count >= self.config.near_identical_block_after:
+            if self._halt_decision is None:
+                return self._decide("halt", "near_identical_call_streak_halt", tool_name, count, signature)
+            return None
+        if self.config.warnings_enabled and count >= self.config.near_identical_warn_after:
+            return self._decide("warn", "near_identical_call_streak_warning", tool_name, count, signature)
+        return None
 
     def record_persisted_result(self, tool_call_id: str, file_path: str) -> None:
         """Remember the spillover path a persisted result was saved to."""
@@ -522,6 +600,35 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
 def _result_hash(result: str | None) -> str:
     parsed = safe_json_loads(result or "")
     return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+
+
+def _token_set(text: str, *, fold_digits: bool = False) -> frozenset[str]:
+    """Lowercase alphanumeric tokens of ``text``; order and punctuation are what a reshuffled command varies.
+    ``fold_digits`` collapses every digit run to ``#`` so a counter that ticks (``47/47`` -> ``48/48``) reads as unchanged."""
+    if fold_digits:
+        text = _DIGIT_RUN_RE.sub("#", text)
+    return frozenset(t for t in _NEAR_IDENTICAL_TOKEN_RE.split(text.lower()) if t)
+
+
+def _leaf_strings(value: Any) -> list[str]:
+    """Flatten arg values to their string leaves (unescaped — JSON's ``\\n`` would glue tokens together)."""
+    if isinstance(value, Mapping):
+        return [s for v in value.values() for s in _leaf_strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _leaf_strings(v)]
+    return [str(value)]
+
+
+def _differs_by_identifier(a: frozenset[str], b: frozenset[str]) -> bool:
+    """True when the tokens present on only one side include an identifier-shaped token (id, slug, hash,
+    path segment). Same command over N distinct records is iteration, not a loop — even at high overlap."""
+    return any(len(t) >= _IDENTIFIER_MIN_CHARS and any(ch.isdigit() for ch in t) for t in a ^ b)
+
+
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a and not b:
+        return 1.0
+    return len(a & b) / len(a | b)
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

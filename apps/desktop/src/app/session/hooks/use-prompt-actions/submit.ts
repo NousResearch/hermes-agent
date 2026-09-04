@@ -630,6 +630,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
             if (targetIsCurrentView()) {
               activeSessionIdRef.current = sessionId
+              // Publish the recovered runtime to the visible renderer before
+              // prompt.submit can emit tool/clarify events against it. Keeping
+              // only the mutable ref current lets the turn run successfully in
+              // the new backend runtime while React still renders the reclaimed
+              // one; the next user message then appears to "unlock" a clarify
+              // card that was pending all along.
+              setActiveSessionId(sessionId)
             }
           }
         } catch {

@@ -167,7 +167,7 @@ def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
 
     seen = {}
 
-    def fake_resolve(cfg, parent_agent):
+    def fake_resolve(cfg, parent_agent, **kwargs):
         seen["cfg"] = cfg
         return {
             "model": cfg.get("model"), "provider": None, "base_url": None,

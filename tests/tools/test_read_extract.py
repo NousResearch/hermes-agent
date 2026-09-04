@@ -601,6 +601,22 @@ class TestReadFileToolIntegration(unittest.TestCase):
         self.assertIn("1|", res["content"])  # line-number gutter
         self.assertIn("print(1)", res["content"])
 
+    def test_utf8_markdown_and_astro_read_as_text(self):
+        fixtures = {
+            "README.md": "# 日本語の見出し\n本文 café résumé\n",
+            "component.astro": "---\nconst title = '猫';\n---\n<h1>{title}</h1>\n",
+        }
+
+        for filename, content in fixtures.items():
+            p = os.path.join(self.tmp, filename)
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(content)
+
+            res = json.loads(read_file_tool(p))
+
+            self.assertNotIn("error", res, res)
+            self.assertFalse(res.get("is_binary", False), res)
+            self.assertIn(content.splitlines()[0], res["content"])
 
     def test_corrupt_docx_surfaces_extraction_error(self):
         p = os.path.join(self.tmp, "bad.docx")

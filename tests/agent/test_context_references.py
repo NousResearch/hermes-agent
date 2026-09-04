@@ -121,6 +121,45 @@ def test_missing_file_becomes_warning(sample_repo: Path):
     assert "not found" in result.message.lower()
 
 
+def test_utf8_markdown_and_astro_references_are_inlined(tmp_path: Path, monkeypatch):
+    """Known text files stay readable even when MIME detection says otherwise."""
+    from agent import context_references
+    from agent.context_references import preprocess_context_references
+
+    markdown = tmp_path / "README.md"
+    astro = tmp_path / "component.astro"
+    markdown.write_text("# 日本語の見出し\n本文 café résumé\n", encoding="utf-8")
+    astro.write_text(
+        "---\nconst title = '猫';\n---\n<h1>{title}</h1>\n",
+        encoding="utf-8",
+    )
+
+    real_guess_type = context_references.mimetypes.guess_type
+
+    def generic_mime_for_text_files(name, *args, **kwargs):
+        if str(name).lower().endswith((".md", ".astro")):
+            return "application/octet-stream", None
+        return real_guess_type(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        context_references.mimetypes,
+        "guess_type",
+        generic_mime_for_text_files,
+    )
+
+    result = preprocess_context_references(
+        "Review @file:README.md and @file:component.astro",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "# 日本語の見出し" in result.message
+    assert "<h1>{title}</h1>" in result.message
+    assert "binary file" not in result.message.lower()
+
+
 def test_binary_reference_block_maps_host_attachment_to_container_path(tmp_path: Path, monkeypatch):
     """Docker backend: a staged binary attachment's host path is rendered as the
     bind-mounted in-container path so the agent's tools can read it.

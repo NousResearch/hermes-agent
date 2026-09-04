@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 
-from hermes_cli._subprocess_compat import resolve_executable
+from hermes_cli._subprocess_compat import platform_executable_dirs, resolve_executable
 from hermes_cli.config import (
     cfg_get,
     load_config, save_config, get_env_value, save_env_value,
@@ -804,6 +804,25 @@ def _cua_driver_env() -> dict:
         return cua_driver_child_env()
     except Exception:
         return dict(os.environ)
+
+
+def _cua_installer_env(resolved_commands: list[str]) -> dict[str, str]:
+    """Build a child PATH that contains all validated installer command dirs."""
+    env = _cua_driver_env()
+    candidates = [str(Path(command).parent) for command in resolved_commands]
+    candidates.extend(platform_executable_dirs())
+    candidates.extend(entry for entry in env.get("PATH", "").split(os.pathsep) if entry)
+
+    entries: list[str] = []
+    for candidate in candidates:
+        try:
+            valid = Path(candidate).is_dir()
+        except OSError:
+            valid = False
+        if valid and candidate not in entries:
+            entries.append(candidate)
+    env["PATH"] = os.pathsep.join(entries)
+    return env
 
 
 _CUA_DRIVER_CONTRACT_CACHE: dict = {}
@@ -1664,6 +1683,7 @@ def _run_cua_driver_installer(
             f'"{ps_oneliner}"'
         )
         script_path = None
+        installer_env = _cua_driver_env()
     else:
         # Download-then-exec instead of `bash -c "$(curl …)"`: no shell=True,
         # no command substitution, and the script lands in a mkstemp file
@@ -1680,10 +1700,25 @@ def _run_cua_driver_installer(
         manual_hint = f'bash -c "$(curl -fsSL {install_url})"'
         fd, script_path = _tempfile.mkstemp(prefix="cua-driver-install-", suffix=".sh")
         os.close(fd)
+        curl = resolve_executable("curl")
+        bash = resolve_executable("bash")
+        if curl is None or bash is None:
+            missing = "curl" if curl is None else "bash"
+            _print_warning(
+                f"    cua-driver installer requires {missing}, but no executable "
+                "was found on PATH or the known platform paths."
+            )
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
+            return False
+        installer_env = _cua_installer_env([curl, bash])
         try:
             dl = subprocess.run(
-                ["curl", "-fsSL", "-o", script_path, install_url],
+                [curl, "-fsSL", "-o", script_path, install_url],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+                env=installer_env,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             _print_warning(f"    cua-driver installer download failed: {e}")
@@ -1696,17 +1731,6 @@ def _run_cua_driver_installer(
             _print_warning(
                 "    cua-driver installer download failed: "
                 f"{(dl.stderr or '').strip()[:200]}"
-            )
-            try:
-                os.remove(script_path)
-            except OSError:
-                pass
-            return False
-        bash = resolve_executable("bash")
-        if bash is None:
-            _print_warning(
-                "    cua-driver installer requires bash, but no executable bash "
-                "was found on PATH or the known platform paths."
             )
             try:
                 os.remove(script_path)
@@ -1727,8 +1751,6 @@ def _run_cua_driver_installer(
         if installer_timeout is None
         else installer_timeout
     )
-
-    installer_env = _cua_driver_env()
     if pin_version:
         # Both upstream installers (install.sh and install.ps1) honour
         # CUA_DRIVER_RS_VERSION over their baked default.

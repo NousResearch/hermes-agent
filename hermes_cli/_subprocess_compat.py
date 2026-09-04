@@ -38,6 +38,7 @@ from typing import Mapping, Sequence
 __all__ = [
     "IS_WINDOWS",
     "resolve_executable",
+    "platform_executable_dirs",
     "resolve_node_command",
     "split_command_line",
     "suppress_platform_ver_console",
@@ -71,56 +72,130 @@ NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
 
 
-def _platform_bin_dirs() -> tuple[str, ...]:
-    """Return existing package-manager bin directories for this platform."""
-    if sys.platform != "linux":
+def _nixos_per_user_profile_dirs(user: str | None) -> tuple[str, ...]:
+    """Return declarative NixOS profile directories for *user*."""
+    if not user or os.sep != "/":
         return ()
-
-    home = os.path.expanduser("~")
-    candidates = (
-        "/run/current-system/sw/bin",
-        "/run/current-system/sw/sbin",
-        "/nix/var/nix/profiles/default/bin",
-        "/nix/var/nix/profiles/default/sbin",
-        os.path.join(home, ".nix-profile", "bin"),
-        os.path.join(home, ".nix-profile", "sbin"),
-        os.path.join(home, ".local", "state", "nix", "profiles", "profile", "bin"),
-        os.path.join(home, ".local", "state", "nix", "profiles", "profile", "sbin"),
-    )
-    return tuple(path for path in candidates if os.path.isdir(path))
+    base = os.path.join("/etc", "profiles", "per-user", user)
+    return (os.path.join(base, "bin"), os.path.join(base, "sbin"))
 
 
-def _platform_search_path() -> str:
-    """Return the normal PATH plus known package-manager bin directories."""
-    entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
-    for candidate in _platform_bin_dirs():
+def _platform_bin_dirs(
+    *, home: str | os.PathLike[str] | None = None, user: str | None = None
+) -> tuple[str, ...]:
+    """Return existing platform and package-manager executable directories.
+
+    These are fallback directories only: the caller's explicit PATH is always
+    searched first. ``home`` and ``user`` let system-service generators resolve
+    a command for the account that will run the service rather than for the
+    account that happened to generate the unit.
+    """
+    candidates: list[str] = []
+    if os.name == "posix":
+        candidates.extend(
+            (
+                "/usr/local/sbin",
+                "/usr/local/bin",
+                "/usr/sbin",
+                "/usr/bin",
+                "/sbin",
+                "/bin",
+            )
+        )
+
+    if sys.platform == "linux":
+        resolved_home = os.fspath(home) if home is not None else os.path.expanduser("~")
+        candidates.extend(
+            (
+                "/run/current-system/sw/bin",
+                "/run/current-system/sw/sbin",
+                "/nix/var/nix/profiles/default/bin",
+                "/nix/var/nix/profiles/default/sbin",
+                os.path.join(resolved_home, ".nix-profile", "bin"),
+                os.path.join(resolved_home, ".nix-profile", "sbin"),
+                os.path.join(
+                    resolved_home, ".local", "state", "nix", "profiles", "profile", "bin"
+                ),
+                os.path.join(
+                    resolved_home, ".local", "state", "nix", "profiles", "profile", "sbin"
+                ),
+            )
+        )
+        effective_user = user or os.environ.get("USER") or os.environ.get("LOGNAME")
+        candidates.extend(_nixos_per_user_profile_dirs(effective_user))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        try:
+            present = os.path.isdir(candidate)
+        except OSError:
+            present = False
+        if present:
+            seen.add(candidate)
+            result.append(candidate)
+    return tuple(result)
+
+
+def platform_executable_dirs(
+    *, home: str | os.PathLike[str] | None = None, user: str | None = None
+) -> tuple[str, ...]:
+    """Return the validated fallback directories used by the resolver."""
+    return _platform_bin_dirs(home=home, user=user)
+
+
+def _platform_search_path(
+    *,
+    path: str | None = None,
+    home: str | os.PathLike[str] | None = None,
+    user: str | None = None,
+) -> str:
+    """Return an explicit PATH plus known fallback directories."""
+    base = os.environ.get("PATH", "") if path is None else path
+    entries = [entry for entry in base.split(os.pathsep) if entry]
+    if home is None and user is None:
+        platform_dirs = _platform_bin_dirs()
+    else:
+        platform_dirs = _platform_bin_dirs(home=home, user=user)
+    for candidate in platform_dirs:
         if candidate not in entries:
             entries.append(candidate)
     return os.pathsep.join(entries)
 
 
-def resolve_executable(name: str, *, fallback: str | None = None) -> str | None:
-    """Resolve an executable through PATH and known NixOS profile paths.
+def resolve_executable(
+    name: str,
+    *,
+    fallback: str | None = None,
+    path: str | None = None,
+    home: str | os.PathLike[str] | None = None,
+    user: str | None = None,
+) -> str | None:
+    """Resolve an executable without changing the parent process environment.
 
-    The caller's PATH takes precedence. On Linux, Hermes also checks existing
-    NixOS system and user profile directories because supervised services often
-    start with a reduced PATH that omits them. The process environment is not
-    modified.
+    ``PATH`` (or the explicit ``path`` argument) always wins. Existing
+    conventional POSIX directories and NixOS system/user profiles are then
+    searched as fallbacks. Passing ``path=""`` with ``home``/``user`` gives a
+    target-user lookup suitable for a systemd unit generated under sudo.
     """
     if not isinstance(name, str) or not name.strip():
         return None
 
-    resolved = shutil.which(name)
+    if path is None:
+        resolved = shutil.which(name)
+    else:
+        resolved = shutil.which(name, path=path)
     if resolved:
         return resolved
 
-    platform_dirs = _platform_bin_dirs()
-    if platform_dirs:
-        search_path = _platform_search_path()
-        if search_path != os.environ.get("PATH", ""):
-            resolved = shutil.which(name, path=search_path)
-            if resolved:
-                return resolved
+    search_path = _platform_search_path(path=path, home=home, user=user)
+    base_path = os.environ.get("PATH", "") if path is None else path
+    if search_path != base_path:
+        resolved = shutil.which(name, path=search_path)
+        if resolved:
+            return resolved
 
     if fallback and os.path.isfile(fallback) and os.access(fallback, os.X_OK):
         return fallback

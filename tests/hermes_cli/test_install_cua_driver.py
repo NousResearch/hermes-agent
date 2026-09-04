@@ -23,6 +23,7 @@ cleanly on missing-arch assets, and the upgrade path uses
 from __future__ import annotations
 
 import json
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -77,6 +78,57 @@ class TestCuaDriverRuntimeContract:
             "version": "0.20.0",
             "reason": "",
         }
+
+    def test_installer_resolves_curl_and_passes_profile_path_to_child(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        script_path = tmp_path / "cua-install.sh"
+        profile_bin = tmp_path / "Alice Smith" / "nix-profile" / "bin"
+        profile_bin.mkdir(parents=True)
+        curl = profile_bin / "curl"
+        bash = profile_bin / "bash"
+        for command in (curl, bash):
+            command.write_text("", encoding="utf-8")
+            command.chmod(0o755)
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if "-o" in argv:
+                script_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 0
+        fake_proc.communicate.return_value = ("", None)
+        monkeypatch.setattr(
+            tools_config,
+            "resolve_executable",
+            lambda name: {"curl": str(curl), "bash": str(bash)}.get(name),
+        )
+        monkeypatch.setattr(tools_config, "_cua_driver_env", lambda: {"PATH": "/usr/bin"})
+        monkeypatch.setattr(tools_config, "_clear_stale_cua_install_lock", lambda: None)
+        monkeypatch.setattr(tools_config, "_resolved_cua_driver_cmd", lambda: "/usr/bin/cua-driver")
+        monkeypatch.setattr(tools_config, "_cua_driver_cmd", lambda: "cua-driver")
+        monkeypatch.setattr(tools_config, "subprocess", __import__("subprocess"))
+        monkeypatch.setattr(tools_config.subprocess, "run", fake_run)
+        monkeypatch.setattr(tools_config.subprocess, "Popen", lambda *args, **kwargs: fake_proc)
+        monkeypatch.setattr(
+            "tempfile.mkstemp",
+            lambda **kwargs: (os.open(script_path, os.O_CREAT | os.O_RDWR, 0o600), str(script_path)),
+        )
+
+        assert tools_config._run_cua_driver_installer(
+            label="Testing", verbose=False, show_progress=False
+        ) is True
+        assert calls[0][0][0] == str(curl)
+        assert calls[0][1]["env"]["PATH"].split(os.pathsep)[0] == str(profile_bin)
+        assert fake_proc is not None
 
     @pytest.mark.parametrize("version", ["0.19.4", "bad-version"])
     def test_old_or_unversioned_driver_needs_repair(self, version):
@@ -1333,7 +1385,11 @@ class TestInstallerNoShell:
         with patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
              patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
-             patch.object(tools_config, "resolve_executable", return_value=bash_path), \
+             patch.object(
+                 tools_config,
+                 "resolve_executable",
+                 side_effect=lambda name: "/usr/bin/curl" if name == "curl" else bash_path,
+             ), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \
@@ -1349,7 +1405,7 @@ class TestInstallerNoShell:
         assert len(run_calls) == 1 and len(popen_calls) == 1
         # Download: plain argv curl, no shell.
         dl_cmd = run_calls[0][1]
-        assert isinstance(dl_cmd, list) and dl_cmd[0] == "curl"
+        assert isinstance(dl_cmd, list) and dl_cmd[0] == "/usr/bin/curl"
         # Exec: argv list [resolved bash, <mkstemp path>], shell=False.
         exec_cmd, exec_kw = popen_calls[0][1], popen_calls[0][2]
         assert isinstance(exec_cmd, list) and exec_cmd[0] == "/usr/bin/bash"

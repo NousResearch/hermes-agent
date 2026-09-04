@@ -455,6 +455,66 @@ class TestSubprocessCompatHelpers:
 
         assert resolve_executable("hermes-definitely-missing", fallback="/bin/absent") is None
 
+    def test_resolve_executable_uses_target_users_nixos_profile(self, tmp_path):
+        from hermes_cli._subprocess_compat import resolve_executable
+
+        target_home = tmp_path / "home" / "alice"
+        profile_bin = target_home / ".nix-profile" / "bin"
+        profile_bin.mkdir(parents=True)
+        executable = profile_bin / "hermes-target-profile-test"
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+
+        assert resolve_executable(
+            "hermes-target-profile-test",
+            path="",
+            home=str(target_home),
+            user="alice",
+        ) == str(executable)
+
+    def test_resolve_executable_preserves_spaces_symlinks_and_concurrent_calls(
+        self, tmp_path, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from hermes_cli._subprocess_compat import resolve_executable
+
+        spaced_bin = tmp_path / "Alice Smith" / "bin"
+        spaced_bin.mkdir(parents=True)
+        real = spaced_bin / "hermes-space-test"
+        real.write_text("#!/bin/sh\n", encoding="utf-8")
+        real.chmod(0o755)
+        link = spaced_bin / "hermes-space-link"
+        link.symlink_to(real)
+        monkeypatch.setenv("PATH", str(spaced_bin))
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(resolve_executable, ["hermes-space-link"] * 64))
+
+        assert results == [str(link)] * 64
+
+    def test_platform_bin_dirs_include_posix_fallbacks_and_per_user_profile(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import _subprocess_compat as sc
+
+        target_home = tmp_path / "home" / "alice"
+        per_user_bin = tmp_path / "etc" / "profiles" / "per-user" / "alice" / "bin"
+        per_user_bin.mkdir(parents=True)
+        monkeypatch.setattr(sc, "sys", type("Platform", (), {"platform": "linux"})())
+        monkeypatch.setattr(
+            sc.os.path,
+            "isdir",
+            lambda path: path in {"/usr/local/bin", "/usr/bin", str(per_user_bin)},
+        )
+        monkeypatch.setattr(sc, "_nixos_per_user_profile_dirs", lambda user: (str(per_user_bin),))
+
+        dirs = sc._platform_bin_dirs(home=str(target_home), user="alice")
+
+        assert "/usr/local/bin" in dirs
+        assert "/usr/bin" in dirs
+        assert str(per_user_bin) in dirs
+
 
     @pytest.mark.windows_only
     def test_windows_detach_flags_exclude_detached_process(self):

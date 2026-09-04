@@ -6,6 +6,7 @@ Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 
 import json
 import logging
+import os
 import threading
 
 from tools.registry import registry, tool_error, tool_result
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 # Thread-local storage for the lark client injected by feishu_comment handler.
 _local = threading.local()
 
+# Module-level cache for the fallback client built from env vars.
+_env_client_cache = {"client": None}
+
 
 def set_client(client):
     """Store a lark client for the current thread (called by feishu_comment)."""
@@ -22,8 +26,48 @@ def set_client(client):
 
 
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return the lark client for the current thread, or build one from env.
+
+    Priority:
+    1. Thread-local client injected by feishu_comment handler (comment context).
+    2. Fallback client built from FEISHU_APP_ID / FEISHU_APP_SECRET env vars
+       (DM / general context). Cached at module level.
+    """
+    c = getattr(_local, "client", None)
+    if c is not None:
+        return c
+    return _build_env_client()
+
+
+def _build_env_client():
+    """Build a lark Client from environment variables (cached)."""
+    if _env_client_cache["client"] is not None:
+        return _env_client_cache["client"]
+    app_id = os.getenv("FEISHU_APP_ID", "").strip()
+    app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
+    if not app_id or not app_secret:
+        return None
+    try:
+        import lark_oapi as lark
+    except ImportError:
+        return None
+    # Domain shorthand: "feishu" (default) → FEISHU_DOMAIN constant,
+    # "lark" → LARK_DOMAIN constant, otherwise treat as a raw URL.
+    domain_name = os.getenv("FEISHU_DOMAIN", "feishu").strip().lower()
+    if domain_name == "lark":
+        domain = lark.LARK_DOMAIN
+    else:
+        domain = lark.FEISHU_DOMAIN
+    client = (
+        lark.Client.builder()
+        .app_id(app_id)
+        .app_secret(app_secret)
+        .domain(domain)
+        .log_level(lark.LogLevel.WARNING)
+        .build()
+    )
+    _env_client_cache["client"] = client
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +117,7 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
 
     client = get_client()
     if client is None:
-        return tool_error("Feishu client not available (not in a Feishu comment context)")
+        return tool_error("Feishu client not available — set FEISHU_APP_ID/FEISHU_APP_SECRET or run in comment context")
 
     try:
         from lark_oapi import AccessTokenType

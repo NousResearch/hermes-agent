@@ -152,7 +152,7 @@ class TestConfig:
         mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
-            with patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/out.png"):
+            with patch("plugins.image_gen._common.save_b64_image", return_value="/tmp/out.png"):
                 provider = XAIImageGenProvider()
                 result = provider.generate(prompt="test", model="grok-imagine-image-quality")
 
@@ -265,7 +265,7 @@ class TestGenerate:
         }
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp):
-            with patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/test.png"):
+            with patch("plugins.image_gen._common.save_b64_image", return_value="/tmp/test.png"):
                 provider = XAIImageGenProvider()
                 result = provider.generate(prompt="A cat playing piano")
 
@@ -295,7 +295,7 @@ class TestGenerate:
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
              patch(
-                 "plugins.image_gen.xai.save_url_image",
+                 "plugins.image_gen._common.save_url_image",
                  side_effect=req_lib.HTTPError("404 from CDN"),
              ):
             provider = XAIImageGenProvider()
@@ -401,7 +401,7 @@ class TestGenerate:
         mock_resp.json.return_value = {"data": [{"url": "https://xai.image/edited.png"}]}
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
-             patch("plugins.image_gen.xai.save_url_image", return_value="/tmp/edited.png"):
+             patch("plugins.image_gen._common.save_url_image", return_value="/tmp/edited.png"):
             provider = XAIImageGenProvider()
             result = provider.generate(
                 prompt="make the robot red",
@@ -422,7 +422,7 @@ class TestGenerate:
         mock_resp.json.return_value = {"data": [{"url": "https://xai.image/edited.png"}]}
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
-             patch("plugins.image_gen.xai.save_url_image", return_value="/tmp/edited.png"):
+             patch("plugins.image_gen._common.save_url_image", return_value="/tmp/edited.png"):
             provider = XAIImageGenProvider()
             result = provider.generate(
                 prompt="combine these robots into one product shot",
@@ -447,7 +447,7 @@ class TestGenerate:
         mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
-             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/test.png"):
+             patch("plugins.image_gen._common.save_b64_image", return_value="/tmp/test.png"):
             provider = XAIImageGenProvider()
             provider.generate(prompt="test")
 
@@ -475,7 +475,7 @@ class TestGenerate:
         }
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
-             patch("plugins.image_gen.xai.save_url_image") as mock_save_url:
+             patch("plugins.image_gen._common.save_url_image") as mock_save_url:
             provider = XAIImageGenProvider()
             result = provider.generate(prompt="A cat playing piano")
 

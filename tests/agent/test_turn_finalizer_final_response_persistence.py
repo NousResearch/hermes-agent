@@ -366,6 +366,44 @@ def test_failed_turn_does_not_recover_stream_buffer_as_final_response(monkeypatc
     assert result["failed"] is True
 
 
+def test_stream_recovered_final_response_survives_persist_step_failure(monkeypatch):
+    """#95514 + #8049 ordering: the stream-recovered ``final_response`` is bound as soon
+    as it is computed, BEFORE the fallible tail-shaping / override / persist calls in the
+    guarded persist step. A raise later in that step (here the persist-override) must not
+    drop text the user already saw — the caller still gets the streamed answer and the
+    failure is reported via ``cleanup_errors``."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._current_streamed_assistant_text = "  streamed answer  "
+
+    def exploding_override(_messages):
+        raise RuntimeError("override exploded")
+
+    agent._apply_persist_user_message_override = exploding_override
+    messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": ""}]
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == "streamed answer"
+    assert result["cleanup_errors"] == ["persist_session: override exploded"]
+    # The blank tail was filled before the raise (same order as the inline BASE block).
+    assert messages[-1]["content"] == "streamed answer"
+
+
 def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypatch):
     """Labeled empty-terminal excerpt is delivery-only, not durable content.
 

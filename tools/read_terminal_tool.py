@@ -1,20 +1,35 @@
 #!/usr/bin/env python3
 """Read the in-app terminal pane in the Hermes desktop GUI.
 
-The embedded terminal's buffer lives in the desktop renderer (xterm.js), so this
-tool round-trips through the gateway's blocking-prompt bridge — the same one
-`clarify` uses: tui_gateway emits ``terminal.read.request``, the renderer answers
-with ``terminal.read.respond``. This module is just schema + a thin dispatcher
-over the platform-injected callback.
-
-Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions.
+The buffer lives in the desktop renderer (xterm.js), so this round-trips through the
+gateway's blocking-prompt bridge (as `clarify` does): tui_gateway emits
+``terminal.read.request``, the renderer answers ``terminal.read.respond``. Lives in the
+``desktop_ui`` toolset, enabled only for desktop-sourced sessions.
 """
 
-import json
 from typing import Callable, Optional
 
+from tools.desktop_ui import passthrough_json
 from tools.registry import registry, tool_error
+
+
+def read_pane(callback: Optional[Callable], window, errors: tuple) -> str:
+    """Shared body of the read_terminal / read_preview / read_window bridges. ``window`` is
+    ``((key, value, floor), ...)`` (None omitted, else int-coerced and floored); ``errors`` =
+    (not_desktop, not_integers, fail_prefix, empty)."""
+    if callback is None:
+        return tool_error(errors[0])
+    try:
+        kwargs = {key: max(floor, int(val)) for key, val, floor in window if val is not None}
+    except (TypeError, ValueError):
+        return tool_error(errors[1])
+    try:
+        raw = callback(**kwargs)
+    except Exception as exc:
+        return tool_error(f"{errors[2]}{exc}")
+    if not raw:
+        return tool_error(errors[3])
+    return passthrough_json(raw)
 
 
 def read_terminal_tool(
@@ -23,31 +38,12 @@ def read_terminal_tool(
     callback: Optional[Callable] = None,
 ) -> str:
     """Return the in-app terminal's contents (+ line metadata) as a JSON string."""
-    if callback is None:
-        return tool_error("read_terminal is only available in the Hermes desktop app.")
-
-    try:
-        window = {
-            key: max(floor, int(val))
-            for key, val, floor in (("start", start_line, 0), ("count", count, 1))
-            if val is not None
-        }
-    except (TypeError, ValueError):
-        return tool_error("start_line and count must be integers.")
-
-    try:
-        raw = callback(**window)
-    except Exception as exc:
-        return tool_error(f"Failed to read terminal: {exc}")
-
-    if not raw:
-        return tool_error("No in-app terminal is open, or the read timed out.")
-
-    # Desktop answers with a JSON object; pass it through, else wrap the raw text.
-    try:
-        return json.dumps(json.loads(raw), ensure_ascii=False)
-    except (TypeError, ValueError):
-        return json.dumps({"text": str(raw)}, ensure_ascii=False)
+    return read_pane(callback, (("start", start_line, 0), ("count", count, 1)), (
+        "read_terminal is only available in the Hermes desktop app.",
+        "start_line and count must be integers.",
+        "Failed to read terminal: ",
+        "No in-app terminal is open, or the read timed out.",
+    ))
 
 
 READ_TERMINAL_SCHEMA = {
@@ -79,9 +75,15 @@ registry.register(
     toolset="desktop_ui",
     schema=READ_TERMINAL_SCHEMA,
     handler=lambda args, **kw: read_terminal_tool(
-        start_line=args.get("start_line"),
-        count=args.get("count"),
-        callback=kw.get("callback"),
+        start_line=args.get("start_line"), count=args.get("count"), callback=kw.get("callback")
     ),
     emoji="🖥️",
 )
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import json  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

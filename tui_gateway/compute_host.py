@@ -126,10 +126,12 @@ def _build_sha() -> str:
 
 
 # Slice of ``ComputeHost.shutdown``'s budget held back for the post-drain
-# finalize.  ``HostSupervisor._terminate_pid`` SIGKILLs the host
+# finalize.  ``HostSupervisor._terminate_pid`` force-kills the host
 # ``_SHUTDOWN_TIMEOUT_SECS`` (10s — the same value as ``shutdown``'s default
-# ``wait``) after SIGTERM, so a drain allowed to consume the whole budget would
-# leave the flush racing that kill and persist nothing at all.
+# ``wait``) after the graceful SIGTERM, so a drain allowed to consume the whole
+# budget would leave the flush racing that kill and persist nothing at all.
+# (Force-kill is SIGKILL on POSIX, taskkill /T /F on Windows — see
+# ``gateway.status.terminate_pid``.)
 _FLUSH_RESERVE_SECS = 1.0
 
 

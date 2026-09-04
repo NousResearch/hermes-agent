@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import queue
-import signal
 import subprocess
 import sys
 import threading
@@ -93,13 +92,19 @@ def _default_registry_path() -> Path:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    # NOT os.kill(pid, 0): on Windows that is NOT a no-op probe. CPython maps
+    # sig=0 to GenerateConsoleCtrlEvent(0, pid), broadcasting Ctrl+C to the
+    # target's whole console process group (bpo-14484). Callers here are
+    # read-only status checks — a probe must never be able to kill anything.
+    # gateway.status._pid_exists is the repo's canonical no-kill cross-platform
+    # probe (psutil-backed, ctypes handle fallback on Windows).
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
+        from gateway.status import _pid_exists
+    except Exception:
+        logger.debug("gateway.status unavailable for pid probe", exc_info=True)
         return False
-    except PermissionError:
-        return True
+    try:
+        return bool(_pid_exists(pid))
     except Exception:
         return False
 
@@ -606,8 +611,17 @@ class HostSupervisor:
         return is_compute_host_identity(pid)
 
     def _terminate_pid(self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS) -> None:
+        # Route termination through gateway.status.terminate_pid so Windows
+        # gets a real tree-kill (taskkill /T /F) instead of bare signals:
+        # signal.SIGKILL does not exist on Windows (AttributeError at import
+        # time), and raw SIGTERM there does not cascade to child processes.
         try:
-            os.kill(pid, signal.SIGTERM)
+            from gateway.status import terminate_pid as _do_terminate
+        except Exception:
+            logger.debug("gateway.status unavailable for pid terminate", exc_info=True)
+            return
+        try:
+            _do_terminate(pid)
         except ProcessLookupError:
             return
         except Exception:
@@ -619,11 +633,11 @@ class HostSupervisor:
                 return
             time.sleep(0.05)
         try:
-            os.kill(pid, signal.SIGKILL)
+            _do_terminate(pid, force=True)
         except ProcessLookupError:
             return
         except Exception:
-            logger.debug("failed to SIGKILL compute host pid=%s", pid, exc_info=True)
+            logger.debug("failed to force-kill compute host pid=%s", pid, exc_info=True)
 
     def _terminate_process(self, proc: subprocess.Popen[str]) -> None:
         if proc.poll() is not None:

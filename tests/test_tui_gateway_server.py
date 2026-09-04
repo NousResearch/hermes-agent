@@ -12161,6 +12161,61 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_preserves_named_custom_provider(monkeypatch):
+    from hermes_cli import runtime_provider
+
+    config = {
+        "model": {"provider": "custom:named-endpoint"},
+        "providers": {
+            "named-endpoint": {"api": "https://named.invalid/v1"},
+            "model-endpoint": {
+                "api": "https://model.invalid/v1",
+                "models": {"colliding-model": {}},
+            },
+        },
+    }
+    monkeypatch.setattr(runtime_provider, "load_config", lambda: config)
+    monkeypatch.setattr(
+        runtime_provider, "_get_model_config", lambda: config["model"]
+    )
+
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="example-model",
+        provider="custom",
+        requested_provider="custom",
+        base_url="https://named.invalid/v1",
+    )
+    assert server._session_info(agent)["provider"] == "custom:named-endpoint"
+
+    agent.base_url = ""
+    agent.requested_provider = "custom:named-endpoint"
+    config["model"]["provider"] = "openai"
+    session = {
+        "history": [],
+        "model_override": {"model": "colliding-model", "provider": "custom"},
+        "_metadata_mirror": {"model": "colliding-model", "provider": "custom"},
+    }
+    assert server._session_info(agent, session)["provider"] == "custom:named-endpoint"
+
+    agent.base_url = "https://adhoc.invalid/v1"
+    assert server._session_info(agent)["provider"] == "custom"
+
+    session["pending_model_switch"] = {
+        "display_model": "pending-model",
+        "display_provider": "custom",
+    }
+    agent.base_url = "https://named.invalid/v1"
+    assert server._session_info(agent, session)["provider"] == "custom:named-endpoint"
+
+    session["pending_model_switch"]["display_model"] = "colliding-model"
+    agent.base_url = "https://adhoc.invalid/v1"
+    assert server._session_info(agent, session)["provider"] == "custom"
+
+    agent.base_url = ""
+    assert server._session_info(agent, session)["provider"] == "custom"
+
+
 def test_session_info_includes_session_title(monkeypatch):
     class _FakeDB:
         def get_session_title(self, key):

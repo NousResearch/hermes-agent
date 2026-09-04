@@ -2403,6 +2403,33 @@ class TestListSessionsRich:
             for row in db.find_orphaned_gateway_sessions()
         )
 
+    @pytest.mark.parametrize(
+        "unsafe_model_config",
+        ["{not-json", "[]", '"scalar"', "5", "null"],
+    )
+    def test_unsafe_model_config_child_does_not_break_continuation_reads(
+        self, db, unsafe_model_config
+    ):
+        """Malformed child ``model_config`` must fail open on the
+        ``_NON_CONTINUATION_CHILD_FILTER_SQL`` paths (``{alias}``-formatted):
+        the child still counts as the parent's continuation."""
+        db.create_session("parent", "telegram")
+        db.append_message("parent", "user", "parent message")
+        db.end_session("parent", "compression")
+        db.create_session("child", "telegram", parent_session_id="parent")
+        db.append_message("child", "user", "child message")
+        db._conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            (unsafe_model_config, "child"),
+        )
+        db._conn.commit()
+
+        child = db.find_live_compression_child("parent")
+        assert child is not None
+        assert child["id"] == "child"
+        assert db.reopen_orphaned_compression_session("parent") is False
+        assert db.get_session("parent")["end_reason"] == "compression"
+
 
 
 

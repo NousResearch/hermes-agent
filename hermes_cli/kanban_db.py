@@ -4835,7 +4835,18 @@ def claim_review_task(
              "source_status": "review"},
             run_id=run_id,
         )
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+    # Same post-commit contract as claim_task: the review lane is dispatched
+    # from the dispatcher process too, so a plugin registered there must see
+    # reviewer spawns as well as implementation spawns.
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_claimed",
+        task_id,
+        board=get_current_board(),
+        assignee=claimed.assignee if claimed else None,
+        run_id=run_id,
+    )
+    return claimed
 
 
 def _retry_status_for_run(

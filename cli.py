@@ -291,8 +291,9 @@ _TERMINAL_ENV_MAPPINGS = {
         "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
         "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
-        "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
-        "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
+        "container_disk", "container_persistent", "docker_volumes", "docker_host_path_map", "docker_env",
+        "docker_extra_args", "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network",
+        "docker_run_as_host_user",
         "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
         "sandbox_dir", "persistent_shell",
     )
@@ -385,6 +386,7 @@ def _cli_config_defaults():
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
             "docker_image": img, "docker_forward_env": [], "singularity_image": f"docker://{img}",
             "modal_image": img, "daytona_image": img, "docker_volumes": [],
+            "docker_host_path_map": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
         },
@@ -4529,6 +4531,25 @@ def main(
         configure_windows_stdio()
 
     os.environ["HERMES_INTERACTIVE"] = "1"  # terminal_tool: interactive sudo prompts with timeout
+
+    # A dispatcher-spawned Kanban worker receives a one-shot ownership marker.
+    # Consume it before agent/tool construction and convert it to process-local
+    # ContextVar authority; ordinary descendants inherit the generic env but not
+    # this proof. A malformed or stale marker denies runtime mount authority
+    # without making the whole CLI unavailable for diagnostics.
+    if os.environ.get("HERMES_KANBAN_WORKER_OWNERSHIP") or (
+        os.environ.get("HERMES_SESSION_SOURCE", "").strip().lower() == "kanban"
+    ):
+        from agent.delegation_context import bootstrap_dispatcher_authority
+
+        try:
+            bootstrap_dispatcher_authority(
+                task_id=os.environ.get("HERMES_KANBAN_TASK", ""),
+                workspace=os.environ.get("HERMES_KANBAN_WORKSPACE"),
+            )
+        except Exception as exc:  # denial is a policy state, not a CLI crash
+            logger.warning("Kanban worker authority denied: %s", exc)
+
     # The banner names affected plugins; the raw per-name compat warnings would only duplicate it on stderr.
     with suppress(Exception):
         from hermes_cli.plugin_compat import quiet_for_interactive

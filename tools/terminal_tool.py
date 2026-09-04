@@ -137,9 +137,103 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
     if config.get("env_type") != "docker":
         return False
+    if config.get("docker_runtime_mounts"):
+        return True
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+
+
+def _kanban_runtime_context_allowed() -> bool:
+    """Whether this execution has positive dispatcher-owned runtime authority."""
+    try:
+        from agent.delegation_context import has_dispatcher_owned_authority
+
+        return bool(has_dispatcher_owned_authority())
+    except Exception:
+        # A provenance probe failure must never restore ambient env authority.
+        return False
+
+
+def _load_kanban_runtime(
+    path_map: list | None = None,
+) -> tuple[dict, list[dict], object] | None:
+    """Validate and translate a dispatcher runtime after profile config loads.
+
+    A present runtime without positive authority is denied. Invalid identity,
+    provenance, endpoint selection, or path translation likewise fails closed
+    rather than falling back to tmpfs or profile volumes and reporting a
+    misleading successful task.
+    """
+    from hermes_cli.kanban_runtime import (
+        DockerEndpointSelectorError,
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        KanbanRuntimeError,
+        decode_kanban_terminal_runtime,
+        resolve_docker_endpoint_selector,
+        translate_runtime_mounts,
+    )
+
+    raw = os.getenv(KANBAN_TERMINAL_RUNTIME_ENV, "").strip()
+    if not raw:
+        return None
+    if not _kanban_runtime_context_allowed():
+        raise RuntimeError(
+            "Kanban terminal runtime is present without dispatcher authority; "
+            "refusing profile-Docker fallback"
+        )
+    task_id = os.getenv("HERMES_KANBAN_TASK", "").strip()
+    workspace = os.getenv("HERMES_KANBAN_WORKSPACE", "").strip()
+    source = os.getenv("HERMES_SESSION_SOURCE", "").strip().lower()
+    if source != "kanban" or not task_id or not workspace:
+        raise RuntimeError(
+            "Kanban terminal runtime is present without dispatcher-owned "
+            "session/task/workspace identity; refusing host mounts"
+        )
+    try:
+        selector = resolve_docker_endpoint_selector()
+        runtime = decode_kanban_terminal_runtime(
+            raw,
+            expected_task_id=task_id,
+            expected_workspace=workspace,
+        )
+        mounts = translate_runtime_mounts(
+            runtime,
+            path_map=path_map or [],
+            docker_host=selector.daemon_host or None,
+        )
+    except (KanbanRuntimeError, DockerEndpointSelectorError) as exc:
+        raise RuntimeError(f"invalid Kanban Docker runtime: {exc}") from exc
+    return runtime, mounts, selector
+
+
+def _active_kanban_runtime_container_key() -> str | None:
+    """Portable physical key for an authorized task runtime, when active."""
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        decode_kanban_terminal_runtime,
+        physical_task_key,
+    )
+
+    raw = os.getenv(KANBAN_TERMINAL_RUNTIME_ENV, "").strip()
+    if not raw:
+        return None
+    if not _kanban_runtime_context_allowed():
+        raise RuntimeError(
+            "Kanban terminal runtime is present without dispatcher authority; "
+            "refusing profile-Docker fallback"
+        )
+    task_id = os.getenv("HERMES_KANBAN_TASK", "").strip()
+    workspace = os.getenv("HERMES_KANBAN_WORKSPACE", "").strip()
+    source = os.getenv("HERMES_SESSION_SOURCE", "").strip().lower()
+    if source != "kanban" or not task_id or not workspace:
+        raise RuntimeError("invalid dispatcher identity for Kanban terminal runtime")
+    runtime = decode_kanban_terminal_runtime(
+        raw,
+        expected_task_id=task_id,
+        expected_workspace=workspace,
+    )
+    return physical_task_key(runtime["task_id"])
 
 
 def _check_all_guards(command: str, env_type: str,
@@ -414,6 +508,9 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        keyed profile would split from its gateway sessions), else ``"default"``,
        which subagent ids collapse onto to share the parent's container.
     """
+    kanban_key = _active_kanban_runtime_container_key()
+    if kanban_key is not None:
+        return kanban_key
     if task_id and _has_isolation_overrides(task_id):
         return task_id
     scope = _session_scope()
@@ -611,15 +708,44 @@ def _get_env_config() -> Dict[str, Any]:
         container_cpu, container_memory, container_disk = 1.0, 5120, 51200
 
     if env_type == "docker":
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
+        docker_forward_env = _parse_env_var(
+            "TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"
+        )
+        docker_volumes = _parse_env_var(
+            "TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"
+        )
+        docker_host_path_map = _parse_env_var(
+            "TERMINAL_DOCKER_HOST_PATH_MAP", "[]", json.loads, "valid JSON"
+        )
+        docker_env = _parse_env_var(
+            "TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"
+        )
+        docker_extra_args = _parse_env_var(
+            "TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"
+        )
         docker_shm_size = _tenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
-        docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
+        docker_forward_env = []
+        docker_volumes = []
+        docker_host_path_map = []
+        docker_env = {}
+        docker_extra_args = []
+        docker_shm_size = "1g"
 
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
+
+    docker_runtime_mounts: list[dict] = []
+    kanban_endpoint_selector = None
+    if env_type == "docker" and os.getenv("HERMES_KANBAN_TERMINAL_RUNTIME"):
+        loaded_runtime = _load_kanban_runtime(docker_host_path_map)
+        if loaded_runtime is not None:
+            _runtime, docker_runtime_mounts, kanban_endpoint_selector = loaded_runtime
+            # The runtime is the complete host-bind authority. Profile volumes,
+            # cwd auto-mounting, and task overrides cannot widen it.
+            docker_volumes = []
+            host_cwd = None
+            cwd = "/workspace"
+            mount_docker_cwd = False
 
     return {
         "env_type": env_type,
@@ -652,6 +778,9 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": container_disk,
         "container_persistent": _tenv_bool("TERMINAL_CONTAINER_PERSISTENT", "true"),
         "docker_volumes": docker_volumes,
+        "docker_runtime_mounts": docker_runtime_mounts,
+        "docker_host_path_map": docker_host_path_map,
+        "kanban_endpoint_selector": kanban_endpoint_selector,
         "docker_env": docker_env,
         "docker_run_as_host_user": _tenv_bool("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false"),
         "docker_network": _tenv_bool("TERMINAL_DOCKER_NETWORK", "true"),

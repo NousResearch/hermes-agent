@@ -32,11 +32,6 @@ _WORKSPACE_TARGET = "/workspace"
 _ALLOWED_WORKSPACE_KINDS = {"scratch", "dir", "worktree"}
 _ALLOWED_PURPOSES = {"workspace", "git-common-dir"}
 
-# Policy classes for the final typed bind plan (P1-A).
-POLICY_TASK_AUTHORITY = "task-authority"
-POLICY_TRUSTED_SUBSTRATE = "trusted-substrate"
-_ALLOWED_POLICY_CLASSES = {POLICY_TASK_AUTHORITY, POLICY_TRUSTED_SUBSTRATE}
-
 
 def physical_task_key(task_id: str) -> str:
     """Deterministic portable-safe physical key derived from a logical task id.
@@ -587,7 +582,10 @@ class DockerEndpointSelector:
             return ("--context", self.context)
         if self.selection == "host":
             return ("--host", self.host)
-        return ()
+        # Even the implicit default is pinned explicitly. Otherwise a later
+        # ambient DOCKER_HOST/DOCKER_CONTEXT change could retarget lifecycle
+        # calls after authorization and host-path translation were decided.
+        return ("--context", "default")
 
     def command_prefix(self, docker_exe: str) -> list[str]:
         return [docker_exe, *self.cli_args]
@@ -615,8 +613,6 @@ def resolve_docker_endpoint_selector(
     raises :class:`DockerEndpointSelectorError` — it never silently falls back
     to a different daemon than the one authorization was computed against.
     """
-    import shutil as shutil_mod
-
     env = environ if environ is not None else os.environ
 
     ctx_name = str(env.get("DOCKER_CONTEXT", "")).strip()

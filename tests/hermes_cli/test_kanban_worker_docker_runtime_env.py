@@ -44,10 +44,12 @@ def test_default_spawn_emits_task_scoped_runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import kanban_db_workspace as kbw
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
     captured = {}
 
@@ -61,11 +63,11 @@ def test_default_spawn_emits_task_scoped_runtime(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
-        kb,
-        "_workspace_mount_authority_roots",
+        kbw,
+        "workspace_mount_authority_roots",
         lambda task, workspace, board=None: [str(tmp_path.resolve())],
     )
-    kb._default_spawn(_make_task(kb), str(workspace))
+    kbd._default_spawn(_make_task(kb), str(workspace))
 
     env = captured["env"]
     runtime = decode_kanban_terminal_runtime(
@@ -82,6 +84,7 @@ def test_default_spawn_emits_task_scoped_runtime(monkeypatch, tmp_path):
 
 def test_mount_authority_uses_exact_generated_scratch(monkeypatch, tmp_path):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_workspace as kbw
 
     root = tmp_path / "workspaces"
     workspace = root / "t_runtime"
@@ -90,7 +93,7 @@ def test_mount_authority_uses_exact_generated_scratch(monkeypatch, tmp_path):
     monkeypatch.setattr(kb, "read_board_metadata", lambda board: {})
     task = _make_task(kb, workspace_kind="scratch")
 
-    assert kb._workspace_mount_authority_roots(
+    assert kbw.workspace_mount_authority_roots(
         task, str(workspace), board="default"
     ) == [str(workspace.resolve())]
 
@@ -99,6 +102,7 @@ def test_mount_authority_rejects_generated_scratch_symlink_escape(
     monkeypatch, tmp_path
 ):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_workspace as kbw
 
     root = tmp_path / "workspaces"
     outside = tmp_path / "opt-data"
@@ -114,7 +118,7 @@ def test_mount_authority_rejects_generated_scratch_symlink_escape(
     monkeypatch.setattr(kb, "read_board_metadata", lambda board: {})
     task = _make_task(kb, workspace_kind="scratch")
 
-    assert kb._workspace_mount_authority_roots(
+    assert kbw.workspace_mount_authority_roots(
         task, str(linked), board="default"
     ) == []
 
@@ -126,6 +130,7 @@ def test_mount_authority_prefers_project_folders_over_broader_board_default(
     from types import SimpleNamespace
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_workspace as kbw
     from hermes_cli import projects_db as project_db
 
     project_root = tmp_path / "project"
@@ -155,6 +160,72 @@ def test_mount_authority_prefers_project_folders_over_broader_board_default(
         ),
     )
 
-    assert kb._workspace_mount_authority_roots(
+    assert kbw.workspace_mount_authority_roots(
         task, str(workspace), board="default"
     ) == [str(project_root.resolve())]
+
+
+def test_project_authority_rejects_external_hermes_and_sibling_paths(
+    monkeypatch, tmp_path
+):
+    import contextlib
+    from types import SimpleNamespace
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_workspace as kbw
+    from hermes_cli import projects_db as project_db
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    external = tmp_path / "opt-data"
+    hermes_state = tmp_path / ".hermes"
+    sibling = tmp_path / "sibling-project"
+    for path in (external, hermes_state, sibling):
+        path.mkdir()
+
+    task = _make_task(kb, workspace_kind="dir")
+    task.project_id = "p_test"
+    monkeypatch.setattr(
+        kb,
+        "read_board_metadata",
+        lambda board: {"default_workdir": str(tmp_path)},
+    )
+
+    @contextlib.contextmanager
+    def fake_connect_closing():
+        yield object()
+
+    monkeypatch.setattr(project_db, "connect_closing", fake_connect_closing)
+    monkeypatch.setattr(
+        project_db,
+        "get_project",
+        lambda conn, ident: SimpleNamespace(
+            primary_path=str(project_root),
+            folders=[SimpleNamespace(path=str(project_root))],
+        ),
+    )
+
+    for candidate in (external, hermes_state, sibling):
+        assert kbw.workspace_mount_authority_roots(
+            task, str(candidate), board="default"
+        ) == []
+
+
+def test_board_authority_rejects_sibling_path(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_workspace as kbw
+
+    project_root = tmp_path / "project"
+    sibling = tmp_path / "sibling-project"
+    project_root.mkdir()
+    sibling.mkdir()
+    monkeypatch.setattr(
+        kb,
+        "read_board_metadata",
+        lambda board: {"default_workdir": str(project_root)},
+    )
+    task = _make_task(kb, workspace_kind="dir")
+
+    assert kbw.workspace_mount_authority_roots(
+        task, str(sibling), board="default"
+    ) == []

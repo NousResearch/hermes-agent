@@ -2206,6 +2206,39 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
+
+    # Dispatcher-owned task runtime. It crosses the worker process boundary in
+    # a dedicated versioned envelope rather than the lower-authority profile
+    # docker_volumes setting, and is validated again after profile config loads.
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        build_kanban_terminal_runtime,
+        encode_kanban_terminal_runtime,
+    )
+
+    env[KANBAN_TERMINAL_RUNTIME_ENV] = encode_kanban_terminal_runtime(
+        build_kanban_terminal_runtime(
+            task_id=task.id,
+            workspace_kind=task.workspace_kind or "scratch",
+            workspace=workspace,
+            authorized_roots=_kbw.workspace_mount_authority_roots(
+                task, workspace, board=board
+            ),
+        )
+    )
+
+    # One-shot positive ownership proof. CLI bootstrap consumes this marker and
+    # stores authority in process-local ContextVar state, so ambient Kanban env
+    # values alone cannot grant a cron job or fresh child process mount rights.
+    from agent.delegation_context import (
+        DISPATCHER_OWNERSHIP_BOOTSTRAP_ENV,
+        dispatcher_ownership_marker,
+    )
+
+    env[DISPATCHER_OWNERSHIP_BOOTSTRAP_ENV] = dispatcher_ownership_marker(
+        task.id
+    )
+
     # TERMINAL_CWD takes precedence over process cwd in file_tools and
     # build_context_files_prompt; without it relative writes land in the gateway
     # user's home and workers load the gateway's AGENTS.md. file_tools rejects

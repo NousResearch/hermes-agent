@@ -50,11 +50,7 @@ def test_context_beats_docker_host():
 
 
 def test_remote_context_is_remote():
-    sel = resolve_docker_endpoint_selector(
-        environ={"DOCKER_HOST": ""},
-        inspect_context=_fake_inspect({}),
-    ) if False else None
-    # sticky path with a remote current context:
+    # Sticky path with a remote current context.
     def inspect(argv):
         if "show" in argv:
             return ("my-remote\n", "", 0)
@@ -78,6 +74,15 @@ def test_explicit_host_selected():
     assert sel.daemon_host == "ssh://docker@box"
     assert sel.is_remote
     assert sel.cli_args == ("--host", "ssh://docker@box")
+
+
+def test_implicit_default_is_explicitly_pinned():
+    sel = resolve_docker_endpoint_selector(
+        environ={},
+        inspect_context=lambda argv: ("", "context unavailable", 1),
+    )
+    assert sel.selection == "default"
+    assert sel.cli_args == ("--context", "default")
 
 
 def test_local_context_with_stale_path_map_does_not_translate(tmp_path):
@@ -120,7 +125,6 @@ def test_missing_context_mapping_fails_closed_for_remote_translation():
     """Remote endpoint without a valid mapping must fail closed."""
     from hermes_cli.kanban_runtime import KanbanRuntimeError, translate_host_path
 
-    real = translate_host_path.__globals__
     # Use an existing local directory so the failure is purely the missing map.
     with pytest.raises(KanbanRuntimeError, match="docker_host_path_map"):
         translate_host_path(
@@ -151,8 +155,6 @@ def test_frozen_selector_pins_lifecycle_argv(monkeypatch, tmp_path):
             self.stderr = ""
             self.returncode = 0
 
-    real_run = __import__("subprocess").run
-
     def recording_run(cmd, *a, **kw):
         cmd = list(cmd)
         captured_cmds.append(cmd)
@@ -172,7 +174,7 @@ def test_frozen_selector_pins_lifecycle_argv(monkeypatch, tmp_path):
     monkeypatch.setattr("subprocess.run", recording_run)
 
     sel = _selector()
-    env = DockerEnvironment(
+    DockerEnvironment(
         image="busybox",
         cwd="/workspace",
         task_id="kbt-pin",
@@ -184,7 +186,6 @@ def test_frozen_selector_pins_lifecycle_argv(monkeypatch, tmp_path):
         endpoint_selector=sel,
     )
 
-    joined = [" ".join(c[:5]) for c in captured_cmds]
     # Every docker invocation starts with the same pinned prefix.
     docker_cmds = [c for c in captured_cmds if c and c[0].endswith("docker")]
     assert len(docker_cmds) >= 3, captured_cmds

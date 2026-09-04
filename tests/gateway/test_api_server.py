@@ -1427,6 +1427,113 @@ class TestResponsesEndpoint:
         assert stored_history == compressed_history
 
 
+    def test_persisted_repaired_transcript_is_stored_once(self, adapter):
+        prior = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        current = "new question"
+        transcript = [
+            {
+                "role": "user",
+                "content": "old question\n\nrepaired context",
+                "_row_id": 1,
+                "_db_persisted": True,
+            },
+            {
+                "role": "assistant",
+                "content": "old answer",
+                "timestamp": 1.0,
+                "_row_id": 2,
+                "_db_persisted": True,
+            },
+            {
+                "role": "user",
+                "content": f"adjacent user context\n\n{current}",
+                "timestamp": 2.0,
+                "_row_id": 3,
+                "_db_persisted": True,
+            },
+            {
+                "role": "assistant",
+                "content": "new answer",
+                "timestamp": 3.0,
+                "_row_id": 4,
+                "_db_persisted": True,
+            },
+        ]
+        result = {"messages": transcript}
+
+        assert adapter._response_messages_turn_start_index(
+            prior, current, result
+        ) == 3
+        assert adapter._build_response_conversation_history(
+            prior, current, result, "new answer"
+        ) == transcript
+        assert [
+            message["content"]
+            for message in adapter._turn_transcript_messages(
+                prior, current, result
+            )
+        ] == ["new answer"]
+
+    def test_persisted_response_history_grows_linearly(self, adapter):
+        history = []
+        for turn in range(8):
+            current = f"turn-{turn}"
+            transcript = [
+                {**message, "_db_persisted": True}
+                for message in history
+            ]
+            if transcript and turn % 2 == 0:
+                transcript[0] = {
+                    **transcript[0],
+                    "content": f"{transcript[0]['content']}\n\nrepaired-{turn}",
+                }
+            transcript.extend([
+                {
+                    "role": "user",
+                    "content": current,
+                    "_row_id": turn * 2 + 1,
+                    "_db_persisted": True,
+                },
+                {
+                    "role": "assistant",
+                    "content": f"answer-{turn}",
+                    "_row_id": turn * 2 + 2,
+                    "_db_persisted": True,
+                },
+            ])
+
+            stored = adapter._build_response_conversation_history(
+                history, current, {"messages": transcript}, f"answer-{turn}"
+            )
+
+            assert stored == transcript
+            assert len(stored) == len(history) + 2
+            history = stored
+
+        assert len(history) == 16
+
+    def test_unpersisted_turn_suffix_keeps_legacy_append_behavior(self, adapter):
+        prior = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        suffix = [{"role": "assistant", "content": "new answer"}]
+
+        stored = adapter._build_response_conversation_history(
+            prior,
+            "new question",
+            {"messages": suffix},
+            "new answer",
+        )
+
+        assert stored == prior + [
+            {"role": "user", "content": "new question"},
+            {"role": "assistant", "content": "new answer"},
+        ]
+
     @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
         """Response output must not replay previous tool artifacts."""

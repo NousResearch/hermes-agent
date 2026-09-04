@@ -7136,7 +7136,55 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _response_message_matches_current_user(
+        message: Any,
+        user_message: Any,
+    ) -> bool:
+        """Match the current user payload while ignoring persistence metadata.
+
+        Session persistence adds ``_row_id``, ``_db_persisted``, and
+        timestamps. Alternation repair may also merge an adjacent user message
+        ahead of the current payload, while preserving it as a delimited suffix.
+        """
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return False
+        content = message.get("content")
+        if content == user_message:
+            return True
+        return (
+            isinstance(content, str)
+            and isinstance(user_message, str)
+            and content.endswith(f"\n\n{user_message}")
+        )
+
+    @classmethod
+    def _persisted_response_turn_start_index(
+        cls,
+        agent_messages: Any,
+        user_message: Any,
+    ) -> int:
+        """Find the current-turn suffix in an authoritative persisted transcript."""
+        if not isinstance(agent_messages, list) or not agent_messages:
+            return 0
+        if not any(
+            isinstance(message, dict)
+            and (
+                message.get("_db_persisted") is True
+                or message.get("_row_id") is not None
+            )
+            for message in agent_messages
+        ):
+            return 0
+        for index in range(len(agent_messages) - 1, -1, -1):
+            if cls._response_message_matches_current_user(
+                agent_messages[index], user_message
+            ):
+                return index + 1
+        return 0
+
+    @classmethod
     def _build_response_conversation_history(
+        cls,
         conversation_history: List[Dict[str, Any]],
         user_message: Any,
         result: Dict[str, Any],
@@ -7157,7 +7205,16 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_messages = result.get("messages") if isinstance(result, dict) else None
 
         if isinstance(agent_messages, list) and agent_messages:
-            turn_start = APIServerAdapter._response_messages_turn_start_index(
+            if cls._persisted_response_turn_start_index(
+                agent_messages,
+                user_message,
+            ):
+                # AIAgent returned its durable full transcript. Persistence
+                # metadata and alternation repair can make its prefix differ
+                # from ``prior`` even though it already owns the whole history.
+                return list(agent_messages)
+
+            turn_start = cls._response_messages_turn_start_index(
                 conversation_history,
                 user_message,
                 result,
@@ -7185,8 +7242,9 @@ class APIServerAdapter(BasePlatformAdapter):
         full_history.append({"role": "assistant", "content": final_response})
         return full_history
 
-    @staticmethod
+    @classmethod
     def _response_messages_turn_start_index(
+        cls,
         conversation_history: List[Dict[str, Any]],
         user_message: Any,
         result: Dict[str, Any],
@@ -7195,6 +7253,13 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_messages = result.get("messages") if isinstance(result, dict) else None
         if not isinstance(agent_messages, list) or not agent_messages:
             return 0
+
+        persisted_turn_start = cls._persisted_response_turn_start_index(
+            agent_messages,
+            user_message,
+        )
+        if persisted_turn_start:
+            return persisted_turn_start
 
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}

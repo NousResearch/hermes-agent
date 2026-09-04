@@ -149,6 +149,8 @@ class HonchoSessionManager:
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
+        self._client_config_lock = threading.RLock()
+        self._session_create_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
         # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client.
@@ -218,8 +220,17 @@ class HonchoSessionManager:
         that daemon threads cannot see, migrating every access onto the
         first-built profile's client (#69123, #74065).
         """
-        self._honcho = get_honcho_client(self._config)
-        return self._honcho
+        with self._client_config_lock:
+            current = get_honcho_client(self._config)
+            with self._cache_lock:
+                if self._honcho is None:
+                    self._honcho = current
+                elif current is not self._honcho:
+                    self._honcho = current
+                    self._client_generation += 1
+                    self._peers_cache.clear()
+                    self._sessions_cache.clear()
+            return current
 
     def _record_auth_failure(self, exc: BaseException) -> None:
         detail = _redact_tokens(str(exc))
@@ -342,30 +353,34 @@ class HonchoSessionManager:
     def _sdk_session(self, session_id: str) -> Any:
         """Get or create the SDK session; a client rebuild clears the cache, so re-fetch."""
         while True:
-            with self._cache_lock:
-                cached = self._sessions_cache.get(session_id)
-                generation = self._client_generation
-            if cached is not None:
-                return cached
-            sdk_session = self.honcho.session(session_id)
-            with self._cache_lock:
-                if self._client_generation == generation:
-                    return self._sessions_cache.setdefault(session_id, sdk_session)
+            with self._client_config_lock:
+                self.honcho  # synchronize config-driven singleton replacement first
+                with self._cache_lock:
+                    cached = self._sessions_cache.get(session_id)
+                    generation = self._client_generation
+                if cached is not None:
+                    return cached
+                sdk_session = self.honcho.session(session_id)
+                with self._cache_lock:
+                    if self._client_generation == generation:
+                        return self._sessions_cache.setdefault(session_id, sdk_session)
             # The client was rebuilt while we resolved; this object holds the
             # discarded transport. Don't cache it — resolve afresh.
 
     def _get_or_create_peer(self, peer_id: str) -> Any:
         """Get or create a Honcho peer (one get-or-create API call, then cached)."""
         while True:
-            with self._cache_lock:
-                if peer_id in self._peers_cache:
-                    return self._peers_cache[peer_id]
-                generation = self._client_generation
+            with self._client_config_lock:
+                self.honcho  # synchronize config-driven singleton replacement first
+                with self._cache_lock:
+                    if peer_id in self._peers_cache:
+                        return self._peers_cache[peer_id]
+                    generation = self._client_generation
 
-            peer = self._authed_call("peer setup", lambda: self.honcho.peer(peer_id))
-            with self._cache_lock:
-                if self._client_generation == generation:
-                    return self._peers_cache.setdefault(peer_id, peer)
+                peer = self._authed_call("peer setup", lambda: self.honcho.peer(peer_id))
+                with self._cache_lock:
+                    if self._client_generation == generation:
+                        return self._peers_cache.setdefault(peer_id, peer)
             # Client rebuilt mid-resolve — drop the stale object and retry.
 
     def _get_or_create_honcho_session(
@@ -377,10 +392,12 @@ class HonchoSessionManager:
         Returns:
             Tuple of (honcho_session, existing_messages).
         """
-        with self._cache_lock:
-            if session_id in self._sessions_cache:
-                logger.debug("Honcho session '%s' retrieved from cache", session_id)
-                return self._sessions_cache[session_id], []
+        with self._client_config_lock:
+            self.honcho  # synchronize config-driven singleton replacement first
+            with self._cache_lock:
+                if session_id in self._sessions_cache:
+                    logger.debug("Honcho session '%s' retrieved from cache", session_id)
+                    return self._sessions_cache[session_id], []
 
         self._authed_call("session setup", lambda: self._sdk_session(session_id))
 
@@ -389,6 +406,7 @@ class HonchoSessionManager:
         auth_dead = False
         try:
             from honcho.session import SessionPeerConfig
+
             user_config = SessionPeerConfig(
                 observe_me=self._user_observe_me,
                 observe_others=self._user_observe_others,
@@ -404,21 +422,44 @@ class HonchoSessionManager:
                 lambda: self._sdk_session(session_id).add_peers(peer_entries),
             )
 
-            # Sync back: server-side config (set via Honcho UI) wins over
-            # local defaults. Read the effective config after add_peers.
-            # Note: observation booleans are manager-scoped, not per-session.
-            # Last session init wins. Fine for CLI; gateway should scope per-session.
-            try:
-                def _read_server_configs() -> tuple[Any, Any]:
-                    sdk_session = self._sdk_session(session_id)
-                    return (
-                        sdk_session.get_peer_configuration(user_peer),
-                        sdk_session.get_peer_configuration(assistant_peer),
-                    )
-
-                server_user, server_ai = self._authed_call(
-                    "peer configuration read", _read_server_configs
+            def _read_server_configs() -> tuple[Any, Any]:
+                sdk_session = self._sdk_session(session_id)
+                return (
+                    sdk_session.get_peer_configuration(user_peer),
+                    sdk_session.get_peer_configuration(assistant_peer),
                 )
+
+            server_user, server_ai = self._authed_call(
+                "peer configuration read", _read_server_configs
+            )
+            if getattr(self._config, "observation_explicit", False) is True:
+                configured_peers = [
+                    (user_peer, user_config, server_user),
+                    (assistant_peer, ai_config, server_ai),
+                ]
+                updates = [
+                    (peer, local_config)
+                    for peer, local_config, server_config in configured_peers
+                    if (
+                        server_config.observe_me,
+                        server_config.observe_others,
+                    ) != (
+                        local_config.observe_me,
+                        local_config.observe_others,
+                    )
+                ]
+                # Disable observers before enabling others so the server's
+                # observer limit is never exceeded during a handoff.
+                updates.sort(key=lambda update: update[1].observe_others is True)
+                for peer, local_config in updates:
+                    self._authed_call(
+                        "peer configuration update",
+                        lambda peer=peer, local_config=local_config: self._sdk_session(
+                            session_id
+                        ).set_peer_configuration(peer, local_config),
+                    )
+            else:
+                # Without an explicit local policy, retain server-managed values.
                 if server_user.observe_me is not None:
                     self._user_observe_me = server_user.observe_me
                 if server_user.observe_others is not None:
@@ -429,20 +470,19 @@ class HonchoSessionManager:
                     self._ai_observe_others = server_ai.observe_others
                 logger.debug(
                     "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                    self._user_observe_me, self._user_observe_others,
-                    self._ai_observe_me, self._ai_observe_others,
+                    self._user_observe_me,
+                    self._user_observe_others,
+                    self._ai_observe_me,
+                    self._ai_observe_others,
                 )
-            except HonchoAuthError:
-                raise
-            except Exception as e:
-                logger.debug("Honcho get_peer_configuration failed (using local config): %s", e)
         except HonchoAuthError:
             # Already recorded by _authed_call; skip the remaining init calls.
             auth_dead = True
         except Exception as e:
             logger.warning(
-                "Honcho session '%s' add_peers failed (non-fatal): %s",
-                session_id, e,
+                "Honcho session '%s' peer configuration failed (non-fatal): %s",
+                session_id,
+                e,
             )
 
         # Load existing messages via context() - single call for messages + metadata
@@ -608,6 +648,10 @@ class HonchoSessionManager:
         Returns:
             The session.
         """
+        with self._session_create_lock:
+            return self._get_or_create(key)
+
+    def _get_or_create(self, key: str) -> HonchoSession:
         with self._cache_lock:
             if key in self._cache:
                 logger.debug("Local session cache hit: %s", key)
@@ -628,11 +672,13 @@ class HonchoSessionManager:
 
         # All expensive I/O outside the lock — Honcho's persistence is source of truth
         honcho_session_id = self._sanitize_id(key)
-        user_peer = self._get_or_create_peer(user_peer_id)
-        assistant_peer = self._get_or_create_peer(assistant_peer_id)
-        honcho_session, existing_messages = self._get_or_create_honcho_session(
-            honcho_session_id, user_peer, assistant_peer
-        )
+        # Keep both peers and the session on one client generation.
+        with self._client_config_lock:
+            user_peer = self._get_or_create_peer(user_peer_id)
+            assistant_peer = self._get_or_create_peer(assistant_peer_id)
+            honcho_session, existing_messages = self._get_or_create_honcho_session(
+                honcho_session_id, user_peer, assistant_peer
+            )
 
         local_messages = []
         for msg in existing_messages:
@@ -668,17 +714,24 @@ class HonchoSessionManager:
 
         # Resolved inside the operation so a retry after a client rebuild gets fresh objects.
         def _sync_messages() -> int:
-            user_peer = self._get_or_create_peer(session.user_peer_id)
-            assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-            honcho_session = self._sessions_cache.get(session.honcho_session_id)
-            if honcho_session is None:
-                honcho_session, _ = self._get_or_create_honcho_session(
-                    session.honcho_session_id, user_peer, assistant_peer
-                )
-            honcho_messages = [
-                (user_peer if m["role"] == "user" else assistant_peer).message(m["content"])
-                for m in new_messages
-            ]
+            # Resolve every SDK object on one client generation, then release the
+            # config lock before the network write. In-flight calls may finish on
+            # their captured generation while a later config change redirects new
+            # calls; independent sessions must not serialize on Honcho latency.
+            with self._client_config_lock:
+                user_peer = self._get_or_create_peer(session.user_peer_id)
+                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+                honcho_session = self._sessions_cache.get(session.honcho_session_id)
+                if honcho_session is None:
+                    honcho_session, _ = self._get_or_create_honcho_session(
+                        session.honcho_session_id, user_peer, assistant_peer
+                    )
+                honcho_messages = [
+                    (user_peer if m["role"] == "user" else assistant_peer).message(
+                        m["content"]
+                    )
+                    for m in new_messages
+                ]
             honcho_session.add_messages(honcho_messages)
             return len(honcho_messages)
 
@@ -835,25 +888,20 @@ class HonchoSessionManager:
         """
         import time
 
-        # Hold the reentrant lock across get_or_create so a concurrent caller
-        # can't observe the (old-popped, new-not-yet-inserted) gap and create
-        # its own session under the raw key.  `_cache_lock` is an RLock so
-        # nested reacquisition inside get_or_create is safe.
-        with self._cache_lock:
-            # Remove old session from caches (but don't delete from Honcho)
-            old_session = self._cache.pop(key, None)
-            if old_session:
-                self._sessions_cache.pop(old_session.honcho_session_id, None)
+        # Serialize the reset transaction without holding _cache_lock across
+        # client I/O; all code that needs both locks takes the client guard first.
+        with self._session_create_lock:
+            with self._cache_lock:
+                old_session = self._cache.pop(key, None)
+                if old_session:
+                    self._sessions_cache.pop(old_session.honcho_session_id, None)
 
-            # Create new session with timestamp suffix
             timestamp = int(time.time())
             new_key = f"{key}:{timestamp}"
-
-            # get_or_create will create a fresh session
             session = self.get_or_create(new_key)
 
-            # Cache under the original key so callers find it by the expected name
-            self._cache[key] = session
+            with self._cache_lock:
+                self._cache[key] = session
 
         logger.info("Created new session for %s (honcho: %s)", key, session.honcho_session_id)
         return session

@@ -18,6 +18,7 @@ import os
 import logging
 import hashlib
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -471,6 +472,8 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
+    # Whether observationMode or observation was explicitly set in config.
+    observation_explicit: bool = False
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -558,6 +561,10 @@ class HonchoClientConfig:
             return cls.from_env(host=resolved_host)
 
         host_block = _host_block(raw, resolved_host)
+        observation_explicit = any(
+            key in host_block or key in raw
+            for key in ("observationMode", "observation")
+        )
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
@@ -809,6 +816,7 @@ class HonchoClientConfig:
                 ),
                 host_block.get("observation") or raw.get("observation"),
             ),
+            observation_explicit=observation_explicit,
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
@@ -1040,7 +1048,7 @@ def _client_cache_key(config: HonchoClientConfig | None) -> tuple:
             "explicit",
             config.host,
             config.workspace_id,
-            config.base_url or "",
+            resolve_effective_base_url(config) or "",
             config.environment,
             str(config.config_path) if config.config_path is not None else "",
             str(config.hermes_home) if config.hermes_home is not None else "",
@@ -1107,6 +1115,28 @@ def _config_yaml_timeout() -> float | None:
         return None
     except Exception:
         return None
+
+
+def _config_yaml_base_url() -> str | None:
+    """Read honcho.base_url via the cached config loader."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        honcho_cfg = load_config_readonly().get("honcho", {})
+        if isinstance(honcho_cfg, dict):
+            raw = honcho_cfg.get("base_url")
+            return raw.strip() or None if isinstance(raw, str) else None
+        return None
+    except Exception:
+        return None
+
+
+def resolve_effective_base_url(config: HonchoClientConfig) -> str | None:
+    """Resolve and normalize the base URL used to build the Honcho client."""
+    resolved_base_url = _sanitize_url(config.base_url or _config_yaml_base_url())
+    if not resolved_base_url:
+        return None
+    return re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
 
 
 def _honcho_json_timeout() -> float | None:
@@ -1243,7 +1273,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     # starts with a live access token rather than 401ing an hour in.
     _apply_fresh_oauth_token(config)
 
-    if not config.api_key and not config.base_url:
+    if not config.api_key and not resolve_effective_base_url(config):
         raise ValueError(
             "Honcho API key not found. "
             "Get your API key at https://app.honcho.dev, "
@@ -1277,21 +1307,18 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # Allow config.yaml honcho.base_url to override the SDK's environment
         # mapping, enabling remote self-hosted Honcho deployments without
         # requiring the server to live on localhost.
-        resolved_base_url = config.base_url
+        resolved_base_url = resolve_effective_base_url(config)
         resolved_timeout = config.timeout
-        if not resolved_base_url or resolved_timeout is None:
+        if resolved_timeout is None:
             try:
                 from hermes_cli.config import load_config
                 hermes_cfg = load_config()
                 honcho_cfg = hermes_cfg.get("honcho", {})
                 if isinstance(honcho_cfg, dict):
-                    if not resolved_base_url:
-                        resolved_base_url = _sanitize_url(honcho_cfg.get("base_url", "").strip() or None)
-                    if resolved_timeout is None:
-                        resolved_timeout = _resolve_optional_float(
-                            honcho_cfg.get("timeout"),
-                            honcho_cfg.get("request_timeout"),
-                        )
+                    resolved_timeout = _resolve_optional_float(
+                        honcho_cfg.get("timeout"),
+                        honcho_cfg.get("request_timeout"),
+                    )
             except Exception:
                 pass
 
@@ -1331,18 +1358,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             effective_api_key = config.api_key if _explicit_key else "local"
         else:
             effective_api_key = config.api_key
-
-        # The Honcho SDK's route builders (e.g. routes.workspaces()) already
-        # include the version prefix (e.g. "/v3/workspaces").  When a user-supplied
-        # base_url already ends in a version segment (e.g.
-        # "http://localhost:38000/v3", "https://honcho.my.ts.net/v3"), concatenating
-        # the two produces "/v3/v3/workspaces" → 404 on every call.  This is a pure
-        # routing concern independent of host, so strip a trailing version segment
-        # from ANY base_url — loopback, LAN, custom domain, or cloud alike.  The
-        # SDK then appends its own versioned paths correctly.
-        if resolved_base_url:
-            import re as _re
-            resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
 
         kwargs: dict = {
             "workspace_id": config.workspace_id,

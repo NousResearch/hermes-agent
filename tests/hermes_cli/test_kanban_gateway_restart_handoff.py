@@ -113,7 +113,7 @@ def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
     monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
-    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("shutil.which", lambda _name, *args, **kwargs: None)
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unsafe direct spawn"))
 
     with pytest.raises(RuntimeError, match="restart-safe systemd scope"):

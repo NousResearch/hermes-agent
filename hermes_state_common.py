@@ -279,6 +279,19 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+# Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
+# < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
+# died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
+_SQL_IN_CHUNK = 900
+
+
+def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
+    """Yield *ids* (any iterable) as lists of at most *size* elements."""
+    ids = list(ids)
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
+
+
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 

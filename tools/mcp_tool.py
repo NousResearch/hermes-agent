@@ -7355,10 +7355,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                 props = repaired.get("properties") or {}
                 valid = [r for r in required if isinstance(r, str) and r in props]
                 if len(valid) != len(required):
-                    if valid:
-                        repaired["required"] = valid
-                    else:
-                        repaired.pop("required", None)
+                    repaired["required"] = valid
+                # else: keep as-is (including empty []) — strict backends
+                # (DeepSeek-V4) reject a missing `required` as null, see #56123
 
         return repaired
 

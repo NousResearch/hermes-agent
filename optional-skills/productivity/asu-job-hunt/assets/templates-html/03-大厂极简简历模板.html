@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>叶星瑶｜数据分析师 / Data Analyst</title><style>
+:root { --ink:#20252b; --muted:#5e6773; --blue:#2c5b95; --light:#edf1f5; --rule:#315f98; --paper:#fff; }
+* { box-sizing:border-box; }
+html { background:#e9eef3; }
+body { margin:0; padding:76px 18px 42px !important; color:var(--ink); font-family:Arial, "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; font-size:14px; line-height:1.46; }
+.resume-toolbar { position:fixed; z-index:1000; left:0; right:0; top:0; min-height:58px; padding:10px 18px; display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:9px; background:rgba(255,255,255,.97); border-bottom:1px solid #ccd5df; box-shadow:0 2px 10px rgba(21,41,62,.12); }
+.toolbar-title { margin-right:auto; color:#3b4b5d; font-size:13px; letter-spacing:.06em; }
+.resume-toolbar button { border:1px solid #9db0c4; border-radius:5px; background:#fff; color:#24466e; padding:7px 13px; font:inherit; cursor:pointer; }
+.resume-toolbar button:hover { background:#edf4fb; border-color:#315f98; }
+.resume-toolbar button[data-action=pdf] { color:#fff; background:#315f98; border-color:#315f98; }
+.toolbar-control { display:flex; align-items:center; gap:5px; color:#526273; font-size:12px; white-space:nowrap; }
+.toolbar-control select { border:1px solid #9db0c4; border-radius:5px; background:#fff; color:#24466e; padding:6px 7px; font:inherit; }
+.toolbar-control input[type=color] { width:34px; height:30px; padding:2px; border:1px solid #9db0c4; border-radius:5px; background:#fff; cursor:pointer; }
+.resume-toolbar button[data-action=bold] { min-width:68px; }
+.resume-page { width:min(900px, 100%); min-height:1120px; margin:0 auto; padding:48px 58px 60px; background:var(--paper); box-shadow:0 10px 30px rgba(37,57,77,.12); }
+.resume-header { display:grid; grid-template-columns:1fr 136px; gap:24px; align-items:start; padding-bottom:20px; }
+.identity h1 { margin:0 0 6px; font-size:34px; line-height:1.12; letter-spacing:.06em; color:#121417; }
+.identity .headline { margin:0 0 13px; color:var(--blue); font-weight:700; font-size:16px; }
+.contact-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:5px 20px; color:#424b56; }
+.contact-grid span { white-space:normal; }
+.photo-frame { width:118px; height:148px; justify-self:end; border:1px solid #cbd4de; padding:4px; background:#fff; }
+.photo-frame img { width:100%; height:100%; object-fit:cover; display:block; }
+.resume-section { margin-top:22px; break-inside:auto; }
+.section-title { display:flex; align-items:baseline; gap:9px; margin:0 0 11px; padding:0 0 6px; color:var(--blue); font-size:21px; line-height:1.18; border-bottom:2px solid var(--rule); }
+.section-en { color:#8993a0; font-size:12px; font-weight:400; text-transform:uppercase; letter-spacing:.12em; }
+.entry { margin:0 0 13px; break-inside:avoid; }
+.entry-head { display:grid; grid-template-columns:150px minmax(0,1fr) minmax(110px,auto); column-gap:10px; align-items:baseline; margin-bottom:3px; }
+.entry-head .date { color:#4f5965; font-weight:700; white-space:nowrap; }
+.entry-head .org { color:#1d2630; }
+.entry-head .role { text-align:right; color:#293846; }
+.entry-copy { margin:4px 0; }
+.bullet-list { margin:4px 0 0; padding-left:22px; }
+.bullet-list li { margin:4px 0; padding-left:3px; }
+.section-copy { margin:6px 0; }
+.standalone { margin-top:0; }
+.page-break { break-before:page; page-break-before:always; }
+.two-column { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(205px,.8fr); gap:30px; }
+.two-column .resume-section { margin-top:0; }
+.side-card { border-left:3px solid var(--blue); padding-left:15px; }
+.side-card .section-title { font-size:17px; border-bottom:0; margin-bottom:8px; }
+.side-card .bullet-list { padding-left:19px; }
+.wide-header .resume-header { grid-template-columns:138px 1fr; }
+.wide-header .photo-frame { grid-column:1; grid-row:1; justify-self:start; }
+.wide-header .identity { grid-column:2; grid-row:1; }
+.wide-header .identity h1 { font-size:31px; }
+
+/* Template-specific art direction, keeping the content editable text. */
+.variant-blue-line .section-title { font-weight:800; }
+.variant-blue-line .resume-section:first-of-type { margin-top:16px; }
+.variant-blue-line .resume-header { border-bottom:4px solid var(--rule); }
+.variant-band .section-title { padding:6px 12px; color:#fff; background:linear-gradient(90deg,var(--blue) 0 118px,#edf0f3 118px); border-bottom:0; }
+.variant-band .section-title span:first-child { min-width:95px; }
+.variant-band .resume-section { margin-top:18px; }
+.variant-english .section-title { text-transform:none; letter-spacing:.01em; }
+.variant-english .section-title span:first-child::after { content:" /"; color:#a9b1bc; }
+.variant-english .entry-head { border-bottom:1px dotted #aab4c0; padding-bottom:4px; }
+.variant-gray .section-title { color:#303841; border-color:#818a94; }
+.variant-gray .resume-header { border-bottom:1px solid #7a858f; }
+.variant-black .section-title { color:#14171a; border-bottom:3px solid #14171a; }
+.variant-black .section-title::before { content:""; width:8px; height:22px; background:#14171a; display:inline-block; margin-right:1px; }
+.variant-ribbon .identity h1 { color:var(--blue); }
+.variant-ribbon .section-title { padding:6px 12px; color:#fff; border:0; background:linear-gradient(90deg,#315f98 0 145px,#eff1f3 145px); }
+.variant-ribbon .section-title span:first-child { min-width:120px; }
+.variant-ribbon .entry-head { grid-template-columns:135px minmax(0,1fr) minmax(100px,auto); }
+.variant-compact { font-size:13px; }
+.variant-compact .resume-page { padding:38px 48px 50px; }
+.variant-compact .resume-section { margin-top:16px; }
+.variant-compact .entry { margin-bottom:9px; }
+.variant-compact .bullet-list li { margin:2px 0; }
+.variant-centered .identity { text-align:center; }
+.variant-centered .resume-header { grid-template-columns:1fr; }
+.variant-centered .photo-frame { grid-row:1; grid-column:1; justify-self:center; order:-1; margin-bottom:6px; }
+.variant-centered .contact-grid { max-width:600px; margin:0 auto; text-align:center; }
+.variant-centered .section-title { justify-content:center; border-color:#5b6b7b; }
+.variant-dense .resume-page { padding:34px 46px 46px; }
+.variant-dense .resume-header { padding-bottom:14px; }
+.variant-dense .resume-section { margin-top:14px; }
+.variant-dense .section-title { margin-bottom:8px; font-size:18px; }
+.variant-dense .entry { margin-bottom:8px; }
+.variant-dense .entry-head { grid-template-columns:128px minmax(0,1fr) minmax(90px,auto); }
+.variant-dense .bullet-list li { margin:2px 0; }
+.variant-top-banner .resume-page { padding-top:0; }
+.variant-top-banner .resume-header { margin:0 -58px 24px; padding:42px 58px 28px; background:#243b5a; border-bottom:8px solid #8db4dc; }
+.variant-top-banner .identity h1, .variant-top-banner .identity .headline, .variant-top-banner .contact-grid { color:#fff; }
+.variant-top-banner .headline { opacity:.88; }
+.variant-top-banner .photo-frame { border-color:#fff; }
+.variant-sidebar .layout-sidebar { display:grid; grid-template-columns:205px minmax(0,1fr); gap:30px; align-items:start; margin-top:24px; }
+.variant-sidebar .sidebar { padding:18px 15px; background:#eef2f5; border-top:10px solid var(--blue); }
+.variant-sidebar .sidebar .resume-section { margin-top:0; }
+.variant-sidebar .sidebar .section-title { font-size:16px; border:0; color:#283d56; }
+.variant-sidebar .sidebar .entry-head { grid-template-columns:1fr; gap:1px; }
+.variant-sidebar .sidebar .entry-head .role { text-align:left; color:#334b68; }
+.variant-sidebar .sidebar .entry-head .org { color:#334b68; }
+.variant-sidebar .main-column .entry-head { grid-template-columns:150px minmax(0,1fr) minmax(110px,auto); }
+.variant-sidebar .main-column .resume-section:first-child { margin-top:0; }
+.variant-sidebar .main-column .section-title { color:#1f2d3b; }
+.variant-right-rail .resume-page { border-right:14px solid var(--blue); padding-right:44px; }
+.variant-right-rail .resume-header { border-bottom:1px solid #b8c3ce; }
+.variant-right-rail .section-title { border-left:10px solid var(--blue); padding-left:11px; border-bottom:1px solid #9eabb8; }
+.variant-two-column .layout-two-column { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,.9fr); gap:28px; align-items:start; margin-top:22px; }
+.variant-two-column .layout-two-column .resume-section { margin-top:0; }
+.variant-two-column .layout-two-column .resume-section + .resume-section { margin-top:24px; }
+.variant-two-column .layout-two-column .section-title { font-size:18px; }
+.variant-two-column .entry-head { grid-template-columns:1fr; gap:1px; }
+.variant-two-column .entry-head .role { text-align:left; color:var(--blue); }
+.variant-timeline .entry { position:relative; margin-left:10px; padding:0 0 8px 20px; border-left:2px solid #a9b8c7; }
+.variant-timeline .entry::before { content:""; position:absolute; left:-7px; top:3px; width:11px; height:11px; border-radius:50%; background:var(--blue); box-shadow:0 0 0 3px #e7edf3; }
+.variant-timeline .entry-head { grid-template-columns:128px minmax(0,1fr); }
+.variant-timeline .entry-head .role { grid-column:2; text-align:left; color:var(--blue); }
+.variant-cards .resume-section { padding:15px 17px; background:#f7f9fb; border:1px solid #d6dee7; border-radius:8px; }
+.variant-cards .section-title { border:0; margin-bottom:8px; color:#234f82; }
+.variant-cards .entry { padding-bottom:7px; border-bottom:1px solid #dfe5eb; }
+.variant-cards .entry:last-child { border-bottom:0; }
+.variant-serif .identity h1, .variant-serif .section-title { font-family:Georgia, "Times New Roman", "Microsoft YaHei", serif; }
+.variant-serif .section-title { color:#33414e; border-bottom:1px solid #33414e; font-weight:700; }
+.variant-split .resume-header { grid-template-columns:1fr; border-bottom:1px solid #263746; }
+.variant-split .contact-grid { display:flex; flex-wrap:wrap; justify-content:space-between; gap:5px 18px; }
+.variant-split .photo-frame { position:absolute; top:48px; right:58px; }
+.variant-split .identity { padding-right:155px; }
+.variant-portfolio .resume-page { max-width:820px; border-top:12px solid #202d3c; }
+.variant-portfolio .section-title { justify-content:center; border-bottom:0; letter-spacing:.08em; }
+.variant-portfolio .section-title::before, .variant-portfolio .section-title::after { content:""; height:1px; flex:1; background:#9daab6; }
+.variant-portfolio .entry { text-align:center; }
+.variant-portfolio .entry-head { grid-template-columns:1fr; }
+.variant-portfolio .entry-head .role { text-align:center; color:var(--blue); }
+.variant-modern .resume-header { border-bottom:12px solid #e8eef4; }
+.variant-modern .section-title { color:#1e6792; border-bottom:1px solid #77a8c2; }
+.variant-modern .section-title::before { content:"01"; color:#77a8c2; font-size:12px; letter-spacing:.08em; }
+.variant-academic .resume-page { border-top:16px solid #17191b; }
+.variant-academic .section-title { letter-spacing:.04em; }
+.variant-academic .section-en { color:#17191b; }
+.variant-two-page .resume-page { min-height:1120px; }
+.variant-two-page .page-break { display:block; }
+
+@media (max-width:720px) {
+  body { padding:70px 8px 20px !important; font-size:13px; }
+  .resume-toolbar { padding:8px; gap:5px; }
+  .toolbar-title { display:none; }
+  .resume-toolbar button { padding:6px 8px; font-size:12px; }
+  .toolbar-control select { max-width:84px; padding:6px 3px; }
+  .toolbar-control input[type=color] { width:30px; }
+  .resume-page { padding:28px 24px 40px; min-height:auto; }
+  .resume-header, .wide-header .resume-header { grid-template-columns:1fr; }
+  .photo-frame, .wide-header .photo-frame { grid-column:auto; grid-row:auto; justify-self:start; order:-1; }
+  .contact-grid { grid-template-columns:1fr; }
+  .entry-head { grid-template-columns:1fr; gap:1px; }
+  .entry-head .role { text-align:left; }
+  .two-column { grid-template-columns:1fr; }
+  .variant-sidebar .layout-sidebar, .variant-two-column .layout-two-column { grid-template-columns:1fr; }
+  .variant-top-banner .resume-header { margin:0 -24px 20px; padding:30px 24px 22px; }
+  .variant-right-rail .resume-page { padding-right:24px; }
+  .variant-split .photo-frame { position:static; }
+  .variant-split .identity { padding-right:0; }
+}
+@media print {
+  html { background:#fff; }
+  body { padding:0 !important; background:#fff; }
+  .resume-toolbar { display:none !important; }
+  .resume-page { width:100%; min-height:auto; margin:0; padding:10mm 12mm 10mm; box-shadow:none; }
+  .variant-compact .resume-page { padding:10mm 12mm 10mm; }
+  body:not(.variant-two-page) { font-size:11.5px; line-height:1.36; }
+  body:not(.variant-two-page) .resume-section { margin-top:12px; }
+  body:not(.variant-two-page) .entry { margin-bottom:6px; }
+  body:not(.variant-two-page) .bullet-list li { margin:1px 0; }
+  body:not(.variant-two-page) .section-title { margin-bottom:7px; padding-bottom:4px; }
+  body.variant-two-page { font-size:11.5px; line-height:1.36; }
+  body.variant-two-page .resume-section { margin-top:12px; }
+  body.variant-two-page .entry { margin-bottom:6px; }
+  body.variant-two-page .bullet-list li { margin:1px 0; }
+  body.variant-two-page .section-title { margin-bottom:7px; padding-bottom:4px; }
+  body.variant-centered:not(.variant-two-page) { font-size:10.5px; line-height:1.32; }
+  body.variant-centered:not(.variant-two-page) .resume-page { padding:7mm 10mm 8mm; }
+  body.variant-centered:not(.variant-two-page) .resume-section { margin-top:8px; }
+  .page-break { break-before:page; page-break-before:always; }
+}
+</style></head>
+<body class="variant-english wide-header variant-timeline">
+<div class="resume-toolbar" role="toolbar" aria-label="简历工具" contenteditable="false">
+  <span class="toolbar-title">HTML 简历</span>
+  <button type="button" data-action="edit">编辑</button>
+  <label class="toolbar-control">字体<select data-action="font" aria-label="字体"><option value="Microsoft YaHei">微软雅黑</option><option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="Arial">Arial</option><option value="Georgia">Georgia</option><optgroup label="本地字体" data-local-font-group></optgroup></select></label>
+  <button type="button" data-action="local-fonts" title="读取系统中已安装的字体（需浏览器授权）">本地字体</button>
+  <button type="button" data-action="import-font" title="导入本地字体文件（TTF / OTF / WOFF / WOFF2）">导入字体</button>
+  <input type="file" accept=".ttf,.otf,.ttc,.woff,.woff2" multiple data-font-file-input hidden>
+  <label class="toolbar-control color-control">文字颜色<input type="color" data-action="color" value="#20252b" aria-label="文字颜色"></label>
+  <button type="button" data-action="bold" title="对选中文字加粗或取消加粗"><strong>B</strong> 加粗</button>
+  <button type="button" data-action="photo">替换照片</button>
+  <button type="button" data-action="pdf">导出 PDF</button>
+  <input type="file" accept="image/*" data-photo-input hidden>
+</div>
+<main class="resume-page" contenteditable="false">
+  <header class="resume-header">
+    <div class="identity"><h1>叶星瑶</h1><p class="headline">数据分析师 / Data Analyst</p><div class="contact-grid"><span>深圳市 · 共青团员</span><span>出生年月：2001.08</span><span>电话：188-0000-0000</span><span>邮箱：sample@example.com</span><span>微信：sample-id</span><span>英语：CET-6</span></div></div>
+    <figure class="photo-frame"><img src="../fictional-resume-photo.png" alt="示例证件照"></figure>
+  </header>
+  <section class="resume-section"><h2 class="section-title"><span>教育背景</span><span class="section-en">Education</span></h2><article class="entry"><div class="entry-head"><span class="date">2024.09–2027.07</span><strong class="org">清华大学</strong><strong class="role">数据科学与大数据技术 硕士</strong></div><ul class="bullet-list"><li>研究方向为机器学习、数据挖掘与可解释分析；参与校级数据科学实验室项目。</li></ul></article><article class="entry"><div class="entry-head"><span class="date">2020.09–2024.07</span><strong class="org">北京大学</strong><strong class="role">统计学 学士</strong></div><ul class="bullet-list"><li>专业排名前 10%，主修概率论、数理统计、回归分析、数据库与算法设计。</li></ul></article></section><section class="resume-section"><h2 class="section-title"><span>实习经历</span><span class="section-en">Experience</span></h2><article class="entry"><div class="entry-head"><span class="date">2025.07–至今</span><strong class="org">示例科技公司</strong><strong class="role">数据分析师助理</strong></div><ul class="bullet-list"><li>使用 SQL、Excel、Python 构建业务看板与留存分析模型，定位渠道差异并提出运营建议。</li><li>参与 A/B 测试设计与显著性检验，推动核心页面点击率提升 12%。</li></ul></article><article class="entry"><div class="entry-head"><span class="date">2024.12–2025.05</span><strong class="org">示例科技公司</strong><strong class="role">风险数据分析实习生</strong></div><ul class="bullet-list"><li>完成 ETL、风险指标监控和逻辑回归建模，模型 AUC 提升 0.08。</li></ul></article></section><section class="resume-section"><h2 class="section-title"><span>项目经历</span><span class="section-en">Projects</span></h2><article class="entry"><div class="entry-head"><span class="date">2024.09–2025.07</span><strong class="org">XX 电商平台用户画像项目</strong><strong class="role">核心成员</strong></div><ul class="bullet-list"><li>基于 Hive 构建用户特征宽表，使用 K-Means 与决策树进行分群，转化率提升 20%、复购率提升 15%。</li></ul></article></section><section class="resume-section"><h2 class="section-title"><span>其他技能</span><span class="section-en">Skills</span></h2><ul class="bullet-list standalone"><li>Python：NumPy、Pandas、Scikit-learn；熟悉 R、SQL、Java 基础。</li><li>可视化：Excel 高级功能、Tableau、Matplotlib；能够搭建可复用的分析模板。</li><li>统计方法：回归、聚类、分类、假设检验、A/B 测试和实验设计。</li></ul></section><section class="resume-section"><h2 class="section-title"><span>校园经历与荣誉</span><span class="section-en">Highlights</span></h2><ul class="bullet-list standalone"><li>获得 2025 年学业一等奖学金、2024 年学业二等奖学金；获校级优秀学生干部。</li><li>参与 CCF-C 学术论文项目，负责数据处理、实验复现、结果分析与英文技术写作。</li><li>组织校内技术分享与开源实践活动，累计服务师生 300 余人次。</li></ul></section><section class="resume-section"><h2 class="section-title"><span>自我评价</span><span class="section-en">Profile</span></h2><p class="section-copy">具备从业务理解、方案设计、编码实现到上线运维的完整工程能力，擅长把复杂需求拆解为可验证、可交付的模块。重视用户体验、技术质量和团队沟通，能够在快速变化的 AI 应用场景中持续学习并稳定交付。</p></section>
+</main>
+<script>
+(() => {
+  const root = document.querySelector('.resume-page');
+  const editButton = document.querySelector('[data-action="edit"]');
+  const fontSelect = document.querySelector('[data-action="font"]');
+  const colorInput = document.querySelector('[data-action="color"]');
+  const boldButton = document.querySelector('[data-action="bold"]');
+  const photoButton = document.querySelector('[data-action="photo"]');
+  const pdfButton = document.querySelector('[data-action="pdf"]');
+  const photoInput = document.querySelector('[data-photo-input]');
+  let savedRange = null;
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !root.contains(selection.anchorNode)) return;
+    savedRange = selection.getRangeAt(0).cloneRange();
+  });
+  const restoreSelection = () => {
+    if (!savedRange) return;
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(savedRange);
+  };
+  const applyFormat = (command, value = null) => {
+    if (root.getAttribute('contenteditable') !== 'true') editButton.click();
+    root.focus();
+    restoreSelection();
+    document.execCommand(command, false, value);
+  };
+  editButton?.addEventListener('click', () => {
+    const editing = root.getAttribute('contenteditable') === 'true';
+    root.setAttribute('contenteditable', String(!editing));
+    root.classList.toggle('is-editing', !editing);
+    editButton.textContent = editing ? '编辑' : '完成编辑';
+    if (!editing) root.focus();
+  });
+  photoButton?.addEventListener('click', () => photoInput?.click());
+  photoInput?.addEventListener('change', (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { const image = document.querySelector('.photo-frame img'); if (image) image.src = reader.result; };
+    reader.readAsDataURL(file);
+  });
+  const localFontGroup = fontSelect ? fontSelect.querySelector('[data-local-font-group]') : null;
+  const localFontButton = document.querySelector('[data-action="local-fonts"]');
+  const importFontButton = document.querySelector('[data-action="import-font"]');
+  const fontFileInput = document.querySelector('[data-font-file-input]');
+  const toolbarTitle = document.querySelector('.toolbar-title');
+  const localFontValuePrefix = 'local:';
+  const removeLocalFontsValue = '__remove_local_fonts__';
+  const installedFontBlocklist = ['icon', 'emoji', 'symbol', 'wingdings', 'webdings', 'dingbat', 'awesome'];
+  const fontFaces = new Map();
+  let localFonts = [];
+  let installedFontNames = [];
+  let statusTimer = null;
+
+  const setToolStatus = (text) => {
+    if (!toolbarTitle) return;
+    toolbarTitle.textContent = text;
+    window.clearTimeout(statusTimer);
+    statusTimer = window.setTimeout(() => { toolbarTitle.textContent = 'HTML 简历'; }, 3000);
+  };
+  const registerLocalFont = async (name, dataUrl) => {
+    const fontFace = new FontFace(name, `url(${dataUrl})`);
+    await fontFace.load();
+    const previous = fontFaces.get(name);
+    if (previous) document.fonts.delete(previous);
+    document.fonts.add(fontFace);
+    fontFaces.set(name, fontFace);
+  };
+  const refreshLocalFontOptions = () => {
+    if (!localFontGroup) return;
+    const names = [];
+    installedFontNames.forEach((name) => {
+      if (!names.includes(name)) names.push(name);
+    });
+    localFonts.forEach((font) => {
+      if (!names.includes(font.name)) names.push(font.name);
+    });
+    localFontGroup.innerHTML = '';
+    names.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = localFontValuePrefix + name;
+      option.textContent = name;
+      localFontGroup.appendChild(option);
+    });
+    if (names.length) {
+      const removeOption = document.createElement('option');
+      removeOption.value = removeLocalFontsValue;
+      removeOption.textContent = '移除全部本地字体';
+      localFontGroup.appendChild(removeOption);
+    }
+  };
+  const importFontFile = (file) => new Promise((resolve) => {
+    const name = (file.name || '本地字体').replace(/\.(ttf|otf|ttc|woff2?|sfnt)$/i, '').trim() || '本地字体';
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = String(reader.result || '');
+      try {
+        await registerLocalFont(name, dataUrl);
+      } catch (error) {
+        setToolStatus('字体文件无法解析');
+        resolve();
+        return;
+      }
+      localFonts = localFonts.filter((font) => font.name !== name);
+      localFonts.push({ name, data: dataUrl });
+      setToolStatus('本地字体已导入（刷新后需重新导入）');
+      resolve();
+    };
+    reader.onerror = () => {
+      setToolStatus('字体文件无法读取');
+      resolve();
+    };
+    reader.readAsDataURL(file);
+  });
+  const loadInstalledFonts = async () => {
+    if (typeof window.queryLocalFonts !== 'function') {
+      setToolStatus('当前浏览器不支持读取本地字体，可用「导入字体」');
+      return;
+    }
+    setToolStatus('正在读取本地字体...');
+    try {
+      const fonts = await window.queryLocalFonts();
+      const families = new Set();
+      fonts.forEach((font) => {
+        if (!font || typeof font.family !== 'string') return;
+        const family = font.family.trim();
+        if (!family) return;
+        const lower = family.toLowerCase();
+        if (installedFontBlocklist.some((part) => lower.includes(part))) return;
+        families.add(family);
+      });
+      installedFontNames = Array.from(families).sort((a, b) => a.localeCompare(b));
+      refreshLocalFontOptions();
+      setToolStatus(`已读取 ${installedFontNames.length} 个本地字体`);
+    } catch (error) {
+      setToolStatus(error && error.name === 'NotAllowedError' ? '已拒绝本地字体读取权限' : '本地字体读取失败');
+    }
+  };
+  const removeAllLocalFonts = () => {
+    fontFaces.forEach((fontFace) => document.fonts.delete(fontFace));
+    fontFaces.clear();
+    localFonts = [];
+    installedFontNames = [];
+    refreshLocalFontOptions();
+    setToolStatus('已清除本地字体');
+  };
+
+  fontSelect?.addEventListener('change', () => {
+    const value = fontSelect.value;
+    if (value === removeLocalFontsValue) {
+      removeAllLocalFonts();
+      fontSelect.value = 'Microsoft YaHei';
+      return;
+    }
+    if (value.startsWith(localFontValuePrefix)) {
+      applyFormat('fontName', `"${value.slice(localFontValuePrefix.length)}", "Microsoft YaHei", sans-serif`);
+      return;
+    }
+    applyFormat('fontName', value);
+  });
+  localFontButton?.addEventListener('click', () => { loadInstalledFonts(); });
+  importFontButton?.addEventListener('click', () => {
+    if (!('FontFace' in window && 'fonts' in document)) {
+      setToolStatus('当前浏览器不支持导入字体文件');
+      return;
+    }
+    fontFileInput?.click();
+  });
+  fontFileInput?.addEventListener('change', async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length) return;
+    setToolStatus('正在导入字体...');
+    for (const file of files) await importFontFile(file);
+    refreshLocalFontOptions();
+  });
+  colorInput?.addEventListener('input', () => applyFormat('foreColor', colorInput.value));
+  boldButton?.addEventListener('click', () => applyFormat('bold'));
+  pdfButton?.addEventListener('click', () => window.print());
+})();
+</script></body></html>

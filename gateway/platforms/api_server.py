@@ -70,7 +70,7 @@ _STATIC_FEATURE_FLAGS = {
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
-    "skills_api": True, "audio_api": False, "realtime_voice": False,
+    "skills_api": True, "audio_api": False, "realtime_voice": True,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
@@ -97,7 +97,8 @@ _CAPABILITY_ENDPOINTS = (
     ("browser_control_register", ("POST", "/v1/browser-control/register")),
     ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
     ("artifact_upload", ("POST", "/v1/artifacts/upload")),
-    ("artifact_download", ("GET", "/v1/artifacts/download/{artifact_id}")))
+    ("artifact_download", ("GET", "/v1/artifacts/download/{artifact_id}")),
+    ("realtime_voice", ("GET", "/v1/audio/converse")))
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
 
@@ -118,6 +119,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_converse as _api_server_converse
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
@@ -1549,6 +1551,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        routes.extend(_api_server_converse._http_routes(self))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -3761,6 +3764,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         return await _api_runs._handle_runs(self, request, _api_server=sys.modules[__name__])
+
+    async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketResponse":
+        return await _api_server_converse._handle_converse_ws(self, request)
 
     def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
         return _api_runs._request_owns_run(self, request, run_id)

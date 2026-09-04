@@ -4330,8 +4330,15 @@ class GatewayRunner(
             return executor
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Return the gateway-owned executor for blocking agent work."""
-        return GatewayRunner._get_or_create_pool(self, "_executor", _TURN_MAX_WORKERS, "hermes-gateway")
+        """Return the gateway-owned executor for blocking agent work.
+
+        Sized by ``gateway.agent_executor_workers`` (default ``_TURN_MAX_WORKERS``); bare runners
+        (tests) without a config keep the default, and the chosen size is logged once, at creation.
+        """
+        max_workers = getattr(getattr(self, "config", None), "agent_executor_workers", None) or _TURN_MAX_WORKERS
+        if getattr(self, "_executor", None) is None:
+            logger.info("Gateway agent executor: max_workers=%d", max_workers)
+        return GatewayRunner._get_or_create_pool(self, "_executor", max_workers, "hermes-gateway")
 
     def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for best-effort session housekeeping."""

@@ -597,6 +597,10 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
+    # Worker threads in the gateway-owned executor that runs synchronous agent turns. Every
+    # messaging turn holds one worker for its whole duration (model streaming and HITL approval
+    # waits included), so on busy installs this pool, not the CPU, bounds turn concurrency.
+    agent_executor_workers: int = 10
     # The default profile's gateway serves every profile on the host (profiles stamped into session
     # keys, per-profile adapters/credentials). On by default (DEFAULT_CONFIG), but UNSET here is
     # ``None``: a request the gateway settles at boot, not a verdict. ``hermes_cli.gateway_multiplex_mode
@@ -634,7 +638,7 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles",
+        "max_concurrent_sessions", "agent_executor_workers", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
@@ -762,6 +766,10 @@ class GatewayConfig:
         max_concurrent_sessions = _coerce_optional_positive_int(
             pick("max_concurrent_sessions"), key_label("max_concurrent_sessions")
         )
+        # Invalid or non-positive values warn and keep the historical pool size.
+        agent_executor_workers = _coerce_optional_positive_int(
+            pick("agent_executor_workers"), key_label("agent_executor_workers")
+        ) or 10
 
         try:
             session_store_max_age_days = max(int(data.get("session_store_max_age_days", 90)), 0)
@@ -786,6 +794,7 @@ class GatewayConfig:
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
+            agent_executor_workers=agent_executor_workers,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),

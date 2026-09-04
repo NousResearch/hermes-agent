@@ -11,7 +11,6 @@ async def set_home(runner, event):
 
 
 def _replace_home(runner, event):
-    import logging
     import secrets
 
     from gateway.config import (
@@ -23,7 +22,7 @@ def _replace_home(runner, event):
     from gateway.group_home_identity import home_thread_from_source
     from gateway.group_home_consent import text
     from gateway.run import _home_target_env_var, _home_thread_env_var
-    from hermes_cli.config import _CONFIG_LOCK, save_env_value
+    from hermes_cli.config import _CONFIG_LOCK, _env_write_blocked, save_env_value
 
     source = event.source
     if source.platform is None:
@@ -51,6 +50,12 @@ def _replace_home(runner, event):
     )
     try:
         with _CONFIG_LOCK:
+            target_key = _home_target_env_var(source.platform.value)
+            thread_key = _home_thread_env_var(source.platform.value)
+            if _env_write_blocked(target_key, "set") or _env_write_blocked(
+                thread_key, "set"
+            ):
+                raise RuntimeError("legacy Home delivery setting is managed")
             persist_home_channel(home, enabled_if_new=not via_relay)
             # The canonical save must succeed before the live selection changes.
             from hermes_cli.config import load_config
@@ -63,21 +68,12 @@ def _replace_home(runner, event):
             )
             if stored != home.to_dict():
                 raise RuntimeError("home persistence was not confirmed")
+            save_env_value(target_key, home.chat_id)
+            save_env_value(thread_key, home.thread_id or "")
             platform = runner.config.platforms.setdefault(
                 source.platform, PlatformConfig(enabled=not via_relay)
             )
             platform.home_channel = home
-            try:
-                save_env_value(
-                    _home_target_env_var(source.platform.value), home.chat_id
-                )
-                save_env_value(
-                    _home_thread_env_var(source.platform.value), home.thread_id or ""
-                )
-            except Exception:
-                logging.getLogger("gateway.run").warning(
-                    "Home saved; legacy delivery setting could not be updated"
-                )
     except Exception:
         return text("home_failed", command_prefix=runner._typed_command_prefix_for(source))
     return text("home_saved", command_prefix=runner._typed_command_prefix_for(source))

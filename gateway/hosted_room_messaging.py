@@ -1746,14 +1746,29 @@ def stop_room(service: Any, room: Mapping[str, Any], event: Any) -> str:
     name = _clean_line(room.get("name") or room.get("room_id"), limit=72)
     if room.get("_room_mode") == "desktop":
         from gateway.desktop_room_mailbox import (
+            command_state,
             enqueue_command,
             default_db_path,
             latest_command_states,
         )
 
         room_id = str(room["room_id"])
+        mailbox_path = default_db_path()
+        existing_stop = command_state(mailbox_path, cancel_id)
+        if existing_stop is not None:
+            enqueue_command(
+                mailbox_path,
+                command_id=cancel_id,
+                room_id=room_id,
+                authority_hash=_desktop_authority_hash(room),
+                action="stop",
+                payload=existing_stop.get("payload", {}),
+            )
+            if room.get("desktop_available"):
+                return f"Stop requested for {name}."
+            return f"Stop saved for {name}. Open or update Hermes Desktop to apply it."
         current = room.get("desktop_command") or latest_command_states(
-            default_db_path(),
+            mailbox_path,
             [room_id],
         ).get(room_id)
         target_command_id = (
@@ -1769,7 +1784,7 @@ def stop_room(service: Any, room: Mapping[str, Any], event: Any) -> str:
                 "Open this Group Chat in Hermes Desktop to Stop it safely."
             )
         enqueue_command(
-            default_db_path(),
+            mailbox_path,
             command_id=cancel_id,
             room_id=room_id,
             authority_hash=_desktop_authority_hash(room),

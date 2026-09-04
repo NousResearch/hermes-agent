@@ -4612,18 +4612,82 @@ class GatewaySlashCommandsMixin:
                 return _agg_note
 
         if _preview:
-            # Report what WOULD be compressed — no agent, no writes.
+            # Report what WOULD be compressed — no agent, no writes. Mirror
+            # the real compression path below: keep tool-result messages
+            # (compaction rewrites them too) and fold in the system prompt
+            # + tool schemas, so this matches cli.py's preview branch and
+            # the two surfaces report the same figure for the same session
+            # state (#98360) instead of the gateway silently dropping the
+            # three biggest payload buckets.
             from agent.model_metadata import estimate_request_tokens_rough
+            from agent.skill_utils import parse_config_string_list
+            from gateway.run import _load_gateway_config, _platform_config_key
+            from model_tools import get_tool_definitions
+
             _pv_msgs = [
-                {"role": m.get("role"), "content": m.get("content")}
-                for m in history
-                if m.get("role") in {"user", "assistant"} and m.get("content")
+                m for m in history
+                if m.get("role") in {"user", "assistant", "tool"}
             ]
-            approx_tokens = estimate_request_tokens_rough(_pv_msgs)
+
+            # Track which payload buckets we couldn't resolve, so a lookup
+            # failure degrades to a labeled lower bound instead of silently
+            # posing as the full context (reviewer feedback on #98368).
+            _omitted_buckets = []
+
+            _sys_prompt = ""
+            _get_session = getattr(self._session_db, "get_session", None)
+            if callable(_get_session):
+                try:
+                    _pv_session_row = await _get_session(session_entry.session_id)
+                except Exception:
+                    _pv_session_row = None
+                    _omitted_buckets.append("system prompt")
+                if isinstance(_pv_session_row, dict):
+                    _raw_prompt = _pv_session_row.get("system_prompt")
+                    if isinstance(_raw_prompt, str) and _raw_prompt.strip():
+                        _sys_prompt = _raw_prompt
+            else:
+                _omitted_buckets.append("system prompt")
+
+            _pv_tools = None
+            if source.platform:
+                try:
+                    _pv_cfg = _load_gateway_config()
+                    _pv_platform_key = _platform_config_key(source.platform)
+                    _pv_enabled = self._resolve_enabled_toolsets_for_source(
+                        _pv_cfg, source, _pv_platform_key
+                    )
+                    _pv_disabled = parse_config_string_list(
+                        (_pv_cfg.get("agent") or {}).get("disabled_toolsets")
+                    ) or None
+                    _pv_tools = get_tool_definitions(
+                        enabled_toolsets=_pv_enabled,
+                        disabled_toolsets=_pv_disabled,
+                        quiet_mode=True,
+                    ) or None
+                except Exception:
+                    logger.warning(
+                        "Compress preview could not resolve tool schemas for "
+                        "session %s; estimate will exclude tool schemas.",
+                        session_entry.session_id,
+                        exc_info=True,
+                    )
+                    _omitted_buckets.append("tool schemas")
+            else:
+                _omitted_buckets.append("tool schemas")
+
+            approx_tokens = estimate_request_tokens_rough(
+                _pv_msgs, system_prompt=_sys_prompt, tools=_pv_tools
+            )
             report = summarize_compress_preview(
                 _pv_msgs, partial, keep_last, focus_topic, approx_tokens
             )
             lines = [f"🗜️ {line}" for line in report["lines"]]
+            if _omitted_buckets:
+                lines.append(
+                    "⚠️ Lower bound — could not resolve: "
+                    + ", ".join(_omitted_buckets) + "."
+                )
             if _aggressive:
                 lines.append(_agg_note)
             return "\n".join(lines)

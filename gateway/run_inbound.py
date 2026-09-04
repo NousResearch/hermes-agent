@@ -191,8 +191,10 @@ class GatewayInboundMixin:
                 return None
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
+            # A bot cannot pair, and answering one during a loop-guard cooldown would be outbound traffic.
             if (
                 source.chat_type == "dm"
+                and not getattr(source, "is_bot", False)
                 and self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) == "pair"
             ):
                 await self._hm_offer_pairing_code(source)

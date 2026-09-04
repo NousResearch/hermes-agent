@@ -365,6 +365,28 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+def _callback_identity(value: Any) -> Optional[str]:
+    """Normalize a Telegram id for comparison (int on the wire, str in config/state)."""
+    return None if value is None else str(value)
+
+
+@dataclasses.dataclass(frozen=True)
+class _ClarifyPrompt:
+    """A pending clarify's session key plus the identity of the message that rendered its buttons.
+
+    Telegram message ids are unique within a chat, so ``(chat_id, message_id)`` names this exact
+    prompt.  A ``cl:`` callback carrying a matching clarify id but arriving on some *other* message
+    cannot be a deliberate tap on this one and must not resolve it (#102957).  ``thread_id`` is
+    recorded for the audit line only: it is implied by the message, so gating on it would add false
+    rejects (Telegram omits it for a forum's General topic) without narrowing anything.
+    """
+
+    session_key: str
+    chat_id: Optional[str] = None
+    message_id: Optional[str] = None
+    thread_id: Optional[str] = None
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -514,7 +536,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._choice_picker_state: Dict[str, dict] = {}
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
-        self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
+        self._clarify_state: Dict[str, "_ClarifyPrompt"] = {}  # clarify_id → prompt binding (#102957)
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -3829,7 +3851,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
                 rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
-            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
+            return text, keyboard, lambda msg: self._bind_clarify_prompt(clarify_id, session_key, msg)
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
@@ -4342,6 +4364,43 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
 
+    def _bind_clarify_prompt(self, clarify_id: str, session_key: str, msg: Any) -> None:
+        """Register a pending clarify against the message that carries its buttons (#102957)."""
+        self._clarify_state[clarify_id] = _ClarifyPrompt(
+            session_key=session_key, chat_id=_callback_identity(getattr(msg, "chat_id", None)),
+            message_id=_callback_identity(getattr(msg, "message_id", None)),
+            thread_id=_callback_identity(getattr(msg, "message_thread_id", None)))
+
+    async def _clarify_callback_matches_prompt(self, query, clarify_id: str, prompt: "_ClarifyPrompt") -> bool:
+        """Fail closed unless the tap came from the message that rendered this clarify (#102957).
+
+        The allowlist gate upstream of this proves only that the caller may answer *some* prompt here — it
+        cannot tell a deliberate tap from a callback that arrived on another message.  On a mismatch the
+        entry is left pending so the real prompt stays answerable, and the rejection is logged with enough
+        non-secret provenance (callback-query id, immutable caller id, both message identities) to tell a
+        stale tap from a mismatched one after the fact.
+        """
+        if prompt.message_id is None:
+            # Nothing to match against: the send path reported no message id.  Only a Bot API response can
+            # reach this branch — no caller-controlled input does — so treat it as unverifiable, not hostile.
+            logger.warning(
+                "[%s] Telegram clarify callback unverifiable — no prompt message bound (id=%s)", self.name, clarify_id)
+            return True
+        message = getattr(query, "message", None)
+        actual_chat_id = _callback_identity(getattr(message, "chat_id", None))
+        actual_message_id = _callback_identity(getattr(message, "message_id", None))
+        if actual_chat_id == prompt.chat_id and actual_message_id == prompt.message_id:
+            return True
+        logger.warning(
+            "[%s] Telegram clarify callback rejected — prompt binding mismatch (id=%s, expected chat=%s message=%s "
+            "thread=%s, got chat=%s message=%s thread=%s, callback_query=%s, caller_id=%s)",
+            self.name, clarify_id, prompt.chat_id, prompt.message_id, prompt.thread_id, actual_chat_id,
+            actual_message_id, _callback_identity(getattr(message, "message_thread_id", None)),
+            getattr(query, "id", None), _callback_identity(getattr(query.from_user, "id", None)))
+        with contextlib.suppress(Exception):
+            await query.answer(text="⛔ This button belongs to a different prompt.")
+        return False
+
     async def _handle_clarify_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``cl:<clarify_id>:<idx|other>`` — resolve a clarify prompt or flip to text capture."""
         parts = data.split(":", 2)
@@ -4349,10 +4408,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         clarify_id = parts[1]
         choice_token = parts[2]
-        session_key = await self._claim_callback_state(
+        prompt = await self._claim_callback_state(
             query, cb, self._clarify_state, clarify_id, "⛔ You are not authorized to answer this prompt.",
             "This prompt has already been resolved.", pop=False)
-        if not session_key:
+        if not prompt:
+            return
+        if not await self._clarify_callback_matches_prompt(query, clarify_id, prompt):
             return
         user_display = getattr(query.from_user, "first_name", "User")
         if choice_token == "other":
@@ -4401,7 +4462,11 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text=f"✓ {resolved_text[:60]}")
             await self._edit_html_quiet(
                 query, f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
-            logger.info("Telegram clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, resolved_text, user_display)
+            logger.info(
+                "Telegram clarify button resolved (id=%s, choice=%r, user=%s, caller_id=%s, callback_query=%s, "
+                "chat=%s, message=%s)", clarify_id, resolved_text, user_display,
+                _callback_identity(getattr(query.from_user, "id", None)), getattr(query, "id", None),
+                prompt.chat_id, prompt.message_id)
         else:
             # Entry evicted / gateway restarted between ask and tap.
             await self._notify_clarify_expired(query, user_display)
